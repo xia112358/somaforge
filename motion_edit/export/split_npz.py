@@ -9,6 +9,15 @@ from motion_edit.adapters.holosoma_npz import load_motion_npz, subset_arrays
 from motion_edit.schema import SegmentRecord
 
 
+def _contact_edit_value(segment: SegmentRecord, key: str):
+    if key in segment.metadata:
+        return segment.metadata.get(key)
+    edit = segment.metadata.get("contact_anchor_edit")
+    if isinstance(edit, dict):
+        return edit.get(key)
+    return None
+
+
 def export_split_npz(output_dir: str | Path, segments: list[SegmentRecord]) -> list[Path]:
     root = Path(output_dir).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -33,16 +42,34 @@ def export_split_npz(output_dir: str | Path, segments: list[SegmentRecord]) -> l
         clipped["motion_edit_source_anchor_id"] = np.asarray(str(segment.metadata.get("source_anchor_id") or ""))
         clipped["motion_edit_target_anchor_id"] = np.asarray(str(segment.metadata.get("target_anchor_id") or ""))
         clipped["motion_edit_old_anchor_world"] = np.asarray(
-            json.dumps(segment.metadata.get("old_anchor_world") or [], sort_keys=True)
+            json.dumps(_contact_edit_value(segment, "old_world_position") or _contact_edit_value(segment, "old_anchor_world") or [], sort_keys=True)
         )
         clipped["motion_edit_new_anchor_world"] = np.asarray(
-            json.dumps(segment.metadata.get("new_anchor_world") or [], sort_keys=True)
+            json.dumps(_contact_edit_value(segment, "new_world_position") or _contact_edit_value(segment, "new_anchor_world") or [], sort_keys=True)
         )
         clipped["motion_edit_delta_world"] = np.asarray(
-            json.dumps(segment.metadata.get("delta_world") or [], sort_keys=True)
+            json.dumps(_contact_edit_value(segment, "delta_world") or [], sort_keys=True)
         )
+        clipped["motion_edit_requested_delta_world"] = np.asarray(
+            json.dumps(_contact_edit_value(segment, "requested_delta_world") or [], sort_keys=True)
+        )
+        clipped["motion_edit_tangent_delta"] = np.asarray(
+            json.dumps(_contact_edit_value(segment, "tangent_delta") or [], sort_keys=True)
+        )
+        clipped["motion_edit_surface_id"] = np.asarray(str(_contact_edit_value(segment, "surface_id") or ""))
+        clipped["motion_edit_surface_normal"] = np.asarray(
+            json.dumps(_contact_edit_value(segment, "surface_normal") or [], sort_keys=True)
+        )
+        clipped["motion_edit_surface_coordinates_before"] = np.asarray(
+            json.dumps(_contact_edit_value(segment, "surface_coordinates_before") or {}, sort_keys=True)
+        )
+        clipped["motion_edit_surface_coordinates_after"] = np.asarray(
+            json.dumps(_contact_edit_value(segment, "surface_coordinates_after") or {}, sort_keys=True)
+        )
+        clipped["motion_edit_constraint_mode"] = np.asarray(str(_contact_edit_value(segment, "constraint_mode") or ""))
+        clipped["motion_edit_clamped"] = np.asarray(bool(_contact_edit_value(segment, "clamped") or False))
         clipped["motion_edit_affected_frames"] = np.asarray(
-            json.dumps(segment.metadata.get("affected_frames") or [], sort_keys=True)
+            json.dumps(_contact_edit_value(segment, "affected_frames") or [], sort_keys=True)
         )
         clipped["motion_edit_contact_patches"] = np.asarray(
             json.dumps(segment.metadata.get("contact_patches") or [], sort_keys=True)

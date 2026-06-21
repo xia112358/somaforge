@@ -7,6 +7,15 @@ from motion_edit.layers import group_by_motion
 from motion_edit.schema import SegmentRecord
 
 
+def _contact_edit_value(segment: SegmentRecord, key: str):
+    if key in segment.metadata:
+        return segment.metadata.get(key)
+    edit = segment.metadata.get("contact_anchor_edit")
+    if isinstance(edit, dict):
+        return edit.get(key)
+    return None
+
+
 def export_motion_manifest(path: str | Path, segments: list[SegmentRecord]) -> Path:
     out = Path(path).expanduser().resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -31,10 +40,18 @@ def export_motion_manifest(path: str | Path, segments: list[SegmentRecord]) -> P
                         "transition_type": item.metadata.get("transition_type"),
                         "source_anchor_id": item.metadata.get("source_anchor_id"),
                         "target_anchor_id": item.metadata.get("target_anchor_id"),
-                        "old_anchor_world": item.metadata.get("old_anchor_world"),
-                        "new_anchor_world": item.metadata.get("new_anchor_world"),
-                        "delta_world": item.metadata.get("delta_world"),
-                        "affected_frames": item.metadata.get("affected_frames"),
+                        "old_anchor_world": _contact_edit_value(item, "old_world_position") or item.metadata.get("old_anchor_world"),
+                        "new_anchor_world": _contact_edit_value(item, "new_world_position") or item.metadata.get("new_anchor_world"),
+                        "delta_world": _contact_edit_value(item, "delta_world"),
+                        "requested_delta_world": _contact_edit_value(item, "requested_delta_world"),
+                        "tangent_delta": _contact_edit_value(item, "tangent_delta"),
+                        "affected_frames": _contact_edit_value(item, "affected_frames"),
+                        "surface_id": _contact_edit_value(item, "surface_id"),
+                        "surface_normal": _contact_edit_value(item, "surface_normal"),
+                        "surface_coordinates_before": _contact_edit_value(item, "surface_coordinates_before"),
+                        "surface_coordinates_after": _contact_edit_value(item, "surface_coordinates_after"),
+                        "constraint_mode": _contact_edit_value(item, "constraint_mode"),
+                        "clamped": _contact_edit_value(item, "clamped"),
                         "active_body": item.metadata.get("active_body"),
                         "support_bodies": item.metadata.get("support_bodies"),
                         "contact_metadata": {

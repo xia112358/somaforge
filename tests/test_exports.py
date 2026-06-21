@@ -46,7 +46,18 @@ def _contact_segment(motion_path: str) -> SegmentRecord:
             "new_anchor_world": [0.1, 0.0, 0.0],
             "delta_world": [0.1, 0.0, 0.0],
             "affected_frames": [1, 4],
-            "contact_anchor_edit": {"edit_type": "move_contact_anchor", "anchor_id": "anchor_src"},
+            "contact_anchor_edit": {
+                "edit_type": "move_contact_anchor",
+                "anchor_id": "anchor_src",
+                "requested_delta_world": [0.1, 0.0, 0.2],
+                "tangent_delta": [0.1, 0.0],
+                "surface_id": "platform_top",
+                "surface_normal": [0.0, 0.0, 1.0],
+                "surface_coordinates_before": {"u": 0.0, "v": 0.0},
+                "surface_coordinates_after": {"u": 0.1, "v": 0.0},
+                "constraint_mode": "reject",
+                "clamped": False,
+            },
         },
     )
 
@@ -96,6 +107,13 @@ class ExportContactMetadataTests(unittest.TestCase):
         self.assertEqual(json.loads(str(data["motion_edit_old_anchor_world"])), [0.0, 0.0, 0.0])
         self.assertEqual(json.loads(str(data["motion_edit_new_anchor_world"])), [0.1, 0.0, 0.0])
         self.assertEqual(json.loads(str(data["motion_edit_delta_world"])), [0.1, 0.0, 0.0])
+        self.assertEqual(json.loads(str(data["motion_edit_requested_delta_world"])), [0.1, 0.0, 0.2])
+        self.assertEqual(json.loads(str(data["motion_edit_tangent_delta"])), [0.1, 0.0])
+        self.assertEqual(str(data["motion_edit_surface_id"]), "platform_top")
+        self.assertEqual(json.loads(str(data["motion_edit_surface_normal"])), [0.0, 0.0, 1.0])
+        self.assertEqual(json.loads(str(data["motion_edit_surface_coordinates_after"])), {"u": 0.1, "v": 0.0})
+        self.assertEqual(str(data["motion_edit_constraint_mode"]), "reject")
+        self.assertFalse(bool(data["motion_edit_clamped"]))
         self.assertEqual(json.loads(str(data["motion_edit_affected_frames"])), [1, 4])
         self.assertEqual(json.loads(str(data["motion_edit_contact_patches"]))[0]["patch_type"], "foot")
 
@@ -115,7 +133,14 @@ class ExportContactMetadataTests(unittest.TestCase):
         self.assertEqual(item["old_anchor_world"], [0.0, 0.0, 0.0])
         self.assertEqual(item["new_anchor_world"], [0.1, 0.0, 0.0])
         self.assertEqual(item["delta_world"], [0.1, 0.0, 0.0])
+        self.assertEqual(item["requested_delta_world"], [0.1, 0.0, 0.2])
+        self.assertEqual(item["tangent_delta"], [0.1, 0.0])
         self.assertEqual(item["affected_frames"], [1, 4])
+        self.assertEqual(item["surface_id"], "platform_top")
+        self.assertEqual(item["surface_normal"], [0.0, 0.0, 1.0])
+        self.assertEqual(item["surface_coordinates_after"], {"u": 0.1, "v": 0.0})
+        self.assertEqual(item["constraint_mode"], "reject")
+        self.assertFalse(item["clamped"])
         self.assertEqual(item["transition_type"], "support_transfer")
         self.assertEqual(item["contact_metadata"]["event_count"], 1)
         self.assertEqual(item["contact_metadata"]["anchor_count"], 2)
