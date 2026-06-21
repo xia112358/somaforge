@@ -9,8 +9,11 @@ from pathlib import Path
 from unittest import mock
 from urllib.request import Request, urlopen
 
+import numpy as np
+
 from motion_edit import cli
 from motion_edit.cli import build_parser
+from motion_edit.contact import contact_graph_from_masks, write_contact_layer
 from motion_edit.io import read_jsonl, write_jsonl
 from motion_edit.schema import SegmentRecord
 from motion_edit.workbench import (
@@ -135,6 +138,13 @@ class CutterSessionTests(unittest.TestCase):
             layers_root = root / "layers"
             workbench_root = root / "workbench"
             write_workbench_segments("candidates/source", [_segment(), _segment_b()], layers_root=layers_root)
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True, False], [False, False], [True, False]]),
+                body_names=["LF", "RF"],
+                source="source",
+            )
+            write_contact_layer(layers_root / "contact" / "source", graph)
 
             session = export_cutter_session_file(
                 motion_id="motion_a",
@@ -149,6 +159,10 @@ class CutterSessionTests(unittest.TestCase):
             records = read_jsonl(session.segment_path)
             self.assertEqual(session.segment_path, workbench_root / "sessions" / "session_a" / "motion_a.segments.jsonl")
             self.assertEqual(session.manifest_path, workbench_root / "sessions" / "session_a" / "session.json")
+            self.assertEqual(
+                session.contact_overlay_path,
+                workbench_root / "sessions" / "session_a" / "motion_a.contact_overlay.json",
+            )
             self.assertEqual(len(records), 2)
             meta = records[0]["metadata"]["motion_edit_cutter_session"]
             self.assertEqual(meta["source_layer"], "candidates/source")
@@ -160,6 +174,10 @@ class CutterSessionTests(unittest.TestCase):
             self.assertEqual(manifest["source_layer"], "candidates/source")
             self.assertEqual(manifest["motion_path"], "/tmp/session_motion.npz")
             self.assertEqual(manifest["output_layer"], "manual/session_a")
+            self.assertEqual(
+                manifest["contact_overlay_file"],
+                str(workbench_root / "sessions" / "session_a" / "motion_a.contact_overlay.json"),
+            )
             self.assertEqual(manifest["viewer_port"], 8123)
             self.assertEqual(manifest["sync_status"], "prepared")
 
