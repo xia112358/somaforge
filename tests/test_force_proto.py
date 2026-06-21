@@ -190,12 +190,29 @@ class ForceProtoContactTests(unittest.TestCase):
                 cli._cmd_export_contact_overlay(export_args)
                 overlay_text = overlay_path.read_text(encoding="utf-8")
                 graph_before_move = read_contact_graph(layers_root / "contact" / "force_contact", "motion_a")
+                unsafe_default_args = argparse.Namespace(
+                    source="contact/force_contact",
+                    motion_id="motion_a",
+                    anchor_id=graph_before_move.anchors[0].anchor_id,
+                    delta_world=[0.1, 0.0, 0.0],
+                    tangent_delta=None,
+                    new_world_position=None,
+                    mode="reject",
+                    allow_free_3d=False,
+                    output_source="contact/force_contact_moved",
+                    edit_source="manual",
+                )
+                with self.assertRaises(ValueError):
+                    cli._cmd_move_contact_anchor(unsafe_default_args)
                 move_args = argparse.Namespace(
                     source="contact/force_contact",
                     motion_id="motion_a",
                     anchor_id=graph_before_move.anchors[0].anchor_id,
                     delta_world=[0.1, 0.0, 0.0],
+                    tangent_delta=None,
                     new_world_position=None,
+                    mode="reject",
+                    allow_free_3d=True,
                     output_source="contact/force_contact_moved",
                     edit_source="manual",
                 )

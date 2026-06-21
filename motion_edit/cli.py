@@ -106,7 +106,10 @@ def _cmd_move_contact_anchor(args: argparse.Namespace) -> None:
         motion_id=args.motion_id,
         anchor_id=args.anchor_id,
         delta_world=delta_world,
+        tangent_delta=args.tangent_delta,
         new_world_position=new_world,
+        mode=args.mode,
+        allow_free_3d=args.allow_free_3d,
         source=args.edit_source,
     )
     moved_anchor = next(anchor for anchor in moved_graph.anchors if anchor.anchor_id == args.anchor_id)
@@ -403,7 +406,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--motion-id", required=True)
     p.add_argument("--anchor-id", required=True)
     p.add_argument("--delta-world", nargs=3, type=float, default=None)
+    p.add_argument("--tangent-delta", nargs=2, type=float, default=None)
     p.add_argument("--new-world-position", nargs=3, type=float, default=None)
+    p.add_argument("--mode", choices=("reject", "clamp"), default="reject")
+    p.add_argument("--allow-free-3d", action="store_true")
     p.add_argument("--output-source", default=None, help="Destination contact layer path, default <source>_edited")
     p.add_argument("--edit-source", default="manual")
     p.set_defaults(func=_cmd_move_contact_anchor)

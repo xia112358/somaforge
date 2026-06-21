@@ -235,7 +235,15 @@ class ContactEventTests(unittest.TestCase):
             body_names=["left_foot", "right_foot"],
         )
 
-        moved_graph, edit = move_anchor_in_graph(graph, anchor_id=graph.anchors[0].anchor_id, delta_world=[0.1, 0.0, 0.0])
+        with self.assertRaises(ValueError):
+            move_anchor_in_graph(graph, anchor_id=graph.anchors[0].anchor_id, delta_world=[0.1, 0.0, 0.0])
+
+        moved_graph, edit = move_anchor_in_graph(
+            graph,
+            anchor_id=graph.anchors[0].anchor_id,
+            delta_world=[0.1, 0.0, 0.0],
+            allow_free_3d=True,
+        )
 
         self.assertEqual(moved_graph.anchors[0].world_position, [1.1, 2.0, 0.0])
         self.assertEqual(moved_graph.patches[0].patch_center_world, [1.1, 2.0, 0.0])
@@ -264,6 +272,7 @@ class ContactEventTests(unittest.TestCase):
                 motion_id="motion_a",
                 anchor_id=graph.anchors[0].anchor_id,
                 delta_world=[0.1, 0.0, 0.0],
+                allow_free_3d=True,
             )
             loaded = read_contact_graph(root / "moved", "motion_a")
             edit_lines = (root / "moved" / "edits" / "motion_a.jsonl").read_text(encoding="utf-8").splitlines()

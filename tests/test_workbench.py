@@ -451,6 +451,9 @@ class WorkbenchCliTests(unittest.TestCase):
         self.assertEqual(overlay_args.cmd, "export-contact-overlay")
         self.assertEqual(move_anchor_args.cmd, "move-contact-anchor")
         self.assertEqual(move_anchor_args.delta_world, [0.1, 0.0, 0.0])
+        self.assertIsNone(move_anchor_args.tangent_delta)
+        self.assertEqual(move_anchor_args.mode, "reject")
+        self.assertFalse(move_anchor_args.allow_free_3d)
         self.assertTrue(workbench_args.dry_run)
 
     def test_existing_view_command_still_calls_launch_viewer(self) -> None:
