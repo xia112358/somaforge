@@ -9,6 +9,12 @@ The package stores metadata and segment layers under `motion_edit/data/` and kee
 ```text
 data/
   catalogs/
+  motions/
+    raw/
+    generated/
+  motion_versions/
+  segments/
+  tokens/
   layers/
     manual/
     candidates/
@@ -20,6 +26,7 @@ data/
   exports/
     cutter_segments/
     contact_overlays/
+    split_npz/
     manifests/
     motions/
   backups/
@@ -29,6 +36,11 @@ data/
 
 ```bash
 ~/motion_edit/motion-edit import-force-proto --motion-dir /path/to/masked_motions --layer-name force_contact
+~/motion_edit/motion-edit migrate-layer-to-canonical --motion-version-id climb00_raw --motion /path/to/climb_00_z_scale_1.0.npz --source candidates/force_contact --contact-layer contact/force_contact
+~/motion_edit/motion-edit cutter /path/to/climb_00_z_scale_1.0.npz --motion-version-id climb00_raw --update-canonical --session-name climb00_check --with-terrain
+~/motion_edit/motion-edit mark-segment-status --motion-version-id climb00_raw --segment-id SEG_ID --status accepted
+~/motion_edit/motion-edit build-token-catalog --motion-version-id climb00_raw
+~/motion_edit/motion-edit export-split-npz --motion-version-id climb00_raw --status accepted
 ~/motion_edit/motion-edit list-contact-layer --source contact/force_contact --motion-id climb_00_z_scale_1.0
 ~/motion_edit/motion-edit move-contact-anchor --source contact/force_contact --motion-id climb_00_z_scale_1.0 --anchor-id climb_00_z_scale_1.0_anchor_LF_000100_000140 --delta-world 0.10 0.0 0.0 --output-source contact/force_contact_farther --edit-plan data/workbench/climb00_farther.json --source-motion /path/to/climb_00_z_scale_1.0.npz
 ~/motion_edit/motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
@@ -53,6 +65,8 @@ data/
 ## Concepts
 
 - `MotionRef`: a path reference to qpos / Holosoma fullbody / OmniRetarget motion data.
+- `MotionAssetRecord`: an immutable full-motion source reference.
+- `MotionVersionRecord`: one raw or generated full-trajectory version. This is the durable motion unit.
 - `ContactEventRecord`: a contact state change such as touchdown, liftoff, support switch, or active body change.
 - `ContactAnchorRecord`: a persistent body-part contact interval. This is the primary handle for later visual editing.
 - `ContactPatchRecord`: a concrete contact patch attached to an anchor, currently derived from anchor intervals.
@@ -60,7 +74,24 @@ data/
 - `ContactTransitionRecord`: a transfer segment between contact states or anchors.
 - `ContactGraph`: the per-motion aggregate of events, anchors, patches, and transitions.
 - `SegmentRecord`: one motion interval with `source`, `status`, backward-compatible mask strings, structured contact metadata, and cutter export fields.
+- `TokenRecord`: a token index entry that references one canonical segment. It does not copy motion arrays.
 - `EditRecord`: a provenance record for edits such as clip, splice, LTE edit, terrain offset, mirror, or relative-root transforms.
+
+## Storage Rule
+
+Full trajectories are stored as motion versions. Each motion version has exactly one current canonical segmentation:
+
+```text
+MotionVersionRecord
+  -> full motion npz path
+  -> ContactGraph
+  -> data/segments/<motion_version_id>.jsonl
+  -> data/tokens/<motion_version_id>.jsonl
+```
+
+`accepted`, `rejected`, `manual`, and cutter-refined states are statuses or provenance fields on canonical `SegmentRecord`s. They should not become competing active segment layers for the same motion version. Legacy `data/layers/{candidates,manual,accepted,rejected}` paths remain for compatibility and migration, but the canonical path is preferred for new curation.
+
+Split `.npz` files are export caches only. `export-split-npz` reads canonical segments and materializes clips for downstream training/export; those clips are safe to delete and regenerate.
 
 ## Layer Policy
 
@@ -157,14 +188,18 @@ The cutter is still the visual frontend. `motion_edit` owns the durable session,
 
 ```bash
 ~/motion_edit/motion-edit import-force-proto --motion-dir /path/to/masked_motions --layer-name force_contact
-~/motion_edit/motion-edit list-layer --source candidates/force_contact --motion-id climb_00_z_scale_1.0
+~/motion_edit/motion-edit migrate-layer-to-canonical \
+  --motion-version-id climb00_raw \
+  --motion /path/to/climb_00_z_scale_1.0.npz \
+  --source candidates/force_contact \
+  --contact-layer contact/force_contact
 ~/motion_edit/motion-edit list-contact-layer --source contact/force_contact --motion-id climb_00_z_scale_1.0
 ~/motion_edit/motion-edit move-contact-anchor --source contact/force_contact --motion-id climb_00_z_scale_1.0 --anchor-id <anchor_id> --delta-world 0.10 0.0 0.0 --output-source contact/climb00_anchor_farther --edit-plan data/workbench/climb00_farther.json --source-motion /path/to/climb_00_z_scale_1.0.npz --source-segments candidates/force_contact
 ~/motion_edit/motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
-~/motion_edit/motion-edit cutter /path/to/climb_00_z_scale_1.0.npz --source candidates/force_contact --session-name climb00_check --with-terrain
-~/motion_edit/motion-edit accept --source candidates/force_contact --layer-name climb00_checked --motion-id climb_00_z_scale_1.0 --index 0 --index 1
-~/motion_edit/motion-edit export-split-npz --source accepted/climb00_checked
-~/motion_edit/motion-edit export-manifest --source accepted/climb00_checked --output data/exports/manifests/climb00_checked.json
+~/motion_edit/motion-edit cutter /path/to/climb_00_z_scale_1.0.npz --motion-version-id climb00_raw --update-canonical --session-name climb00_check --with-terrain
+~/motion_edit/motion-edit mark-segment-status --motion-version-id climb00_raw --segment-id <segment_id> --status accepted
+~/motion_edit/motion-edit build-token-catalog --motion-version-id climb00_raw
+~/motion_edit/motion-edit export-split-npz --motion-version-id climb00_raw --status accepted
 ```
 
 This keeps automatic segmentation, manual review, and downstream export in one place.
