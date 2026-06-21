@@ -7,7 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
-from motion_edit.export import export_cutter_segments, export_motion_manifest, export_split_npz
+from motion_edit.contact import contact_graph_from_masks
+from motion_edit.export import export_contact_overlay, export_cutter_segments, export_motion_manifest, export_split_npz
 from motion_edit.io import read_jsonl
 from motion_edit.schema import SegmentRecord
 
@@ -45,6 +46,21 @@ def _contact_segment(motion_path: str) -> SegmentRecord:
 
 
 class ExportContactMetadataTests(unittest.TestCase):
+    def test_contact_overlay_export_writes_contact_graph(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True, False], [False, False], [True, False]]),
+                body_names=["LF", "RF"],
+            )
+            out = export_contact_overlay(root / "overlay.json", graph)
+            overlay = json.loads(out.read_text(encoding="utf-8"))
+
+        self.assertEqual(overlay["schema_version"], 1)
+        self.assertEqual(overlay["contact_graph"]["motion_id"], "motion_a")
+        self.assertGreaterEqual(len(overlay["contact_graph"]["anchors"]), 1)
+
     def test_cutter_export_preserves_contact_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -92,4 +108,3 @@ class ExportContactMetadataTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
