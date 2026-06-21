@@ -18,6 +18,7 @@ def ensure_data_dirs() -> None:
         LAYERS_ROOT / "candidates",
         LAYERS_ROOT / "accepted",
         LAYERS_ROOT / "rejected",
+        LAYERS_ROOT / "contact",
         EXPORTS_ROOT / "cutter_segments",
         EXPORTS_ROOT / "manifests",
         WORKBENCH_ROOT / "sessions",

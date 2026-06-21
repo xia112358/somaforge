@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 
 from .contact import contact_graph_from_masks, mask_string, segment_from_contact_transition
+from .contact.graph import ContactGraph
 from .schema import SegmentRecord
 
 
@@ -21,24 +23,52 @@ def _body_names(data: np.lib.npyio.NpzFile) -> list[str] | None:
     return None
 
 
-def segments_from_masked_motion(path: Path, *, source: str = "force_contact", status: str = "candidate") -> list[SegmentRecord]:
-    with np.load(path, allow_pickle=True) as data:
-        starts = np.asarray(data["proto_start_idx"], dtype=np.int64)
-        ends = np.asarray(data["proto_end_idx"], dtype=np.int64)
-        contact = _optional_mask(data, "contact_part_mask")
-        active = _optional_mask(data, "active_part_mask")
-        support = _optional_mask(data, "support_part_mask")
-        body_names = _body_names(data)
+class _MaskedMotion(NamedTuple):
+    starts: np.ndarray
+    ends: np.ndarray
+    contact: np.ndarray | None
+    active: np.ndarray | None
+    support: np.ndarray | None
+    body_names: list[str] | None
 
+
+def _load_masked_motion(path: Path) -> _MaskedMotion:
+    with np.load(path, allow_pickle=True) as data:
+        return _MaskedMotion(
+            starts=np.asarray(data["proto_start_idx"], dtype=np.int64),
+            ends=np.asarray(data["proto_end_idx"], dtype=np.int64),
+            contact=_optional_mask(data, "contact_part_mask"),
+            active=_optional_mask(data, "active_part_mask"),
+            support=_optional_mask(data, "support_part_mask"),
+            body_names=_body_names(data),
+        )
+
+
+def contact_graph_from_masked_motion(path: Path, *, source: str = "force_contact") -> ContactGraph:
+    inputs = _load_masked_motion(path)
+    return contact_graph_from_masks(
+        motion_id=path.stem,
+        proto_starts=inputs.starts,
+        proto_ends=inputs.ends,
+        contact_mask=inputs.contact,
+        active_mask=inputs.active,
+        support_mask=inputs.support,
+        body_names=inputs.body_names,
+        source=source,
+    )
+
+
+def segments_from_masked_motion(path: Path, *, source: str = "force_contact", status: str = "candidate") -> list[SegmentRecord]:
+    inputs = _load_masked_motion(path)
     motion_id = path.stem
     graph = contact_graph_from_masks(
         motion_id=motion_id,
-        proto_starts=starts,
-        proto_ends=ends,
-        contact_mask=contact,
-        active_mask=active,
-        support_mask=support,
-        body_names=body_names,
+        proto_starts=inputs.starts,
+        proto_ends=inputs.ends,
+        contact_mask=inputs.contact,
+        active_mask=inputs.active,
+        support_mask=inputs.support,
+        body_names=inputs.body_names,
         source=source,
     )
     segments: list[SegmentRecord] = []
@@ -57,10 +87,10 @@ def segments_from_masked_motion(path: Path, *, source: str = "force_contact", st
             clip_output_dir=str(Path("motion_edit/data/exports/clips") / motion_id),
             clip_file_name=path.name,
             atom_label=f"{source}_{proto_id:02d}",
-            contact_start=mask_string(contact[start_i]) if contact is not None else None,
-            contact_end=mask_string(contact[end_frame]) if contact is not None else None,
-            active=mask_string(active[start_i]) if active is not None else None,
-            support=mask_string(support[start_i]) if support is not None else None,
+            contact_start=mask_string(inputs.contact[start_i]) if inputs.contact is not None else None,
+            contact_end=mask_string(inputs.contact[end_frame]) if inputs.contact is not None else None,
+            active=mask_string(inputs.active[start_i]) if inputs.active is not None else None,
+            support=mask_string(inputs.support[start_i]) if inputs.support is not None else None,
             events=graph.events,
             anchors=graph.anchors,
             metadata={"proto_index": proto_id},
@@ -69,7 +99,7 @@ def segments_from_masked_motion(path: Path, *, source: str = "force_contact", st
         segments.append(segment)
 
     if not graph.transitions:
-        for proto_id, (start, end) in enumerate(zip(starts, ends)):
+        for proto_id, (start, end) in enumerate(zip(inputs.starts, inputs.ends)):
             start_i = int(start)
             end_i = int(end)
             end_frame = max(start_i, end_i - 1)
@@ -86,10 +116,10 @@ def segments_from_masked_motion(path: Path, *, source: str = "force_contact", st
                 clip_output_dir=str(Path("motion_edit/data/exports/clips") / motion_id),
                 clip_file_name=path.name,
                 atom_label=f"{source}_{proto_id:02d}",
-                contact_start=mask_string(contact[start_i]) if contact is not None else None,
-                contact_end=mask_string(contact[end_frame]) if contact is not None else None,
-                active=mask_string(active[start_i]) if active is not None else None,
-                support=mask_string(support[start_i]) if support is not None else None,
+                contact_start=mask_string(inputs.contact[start_i]) if inputs.contact is not None else None,
+                contact_end=mask_string(inputs.contact[end_frame]) if inputs.contact is not None else None,
+                active=mask_string(inputs.active[start_i]) if inputs.active is not None else None,
+                support=mask_string(inputs.support[start_i]) if inputs.support is not None else None,
                 metadata={"proto_index": proto_id},
             )
             segment.validate()

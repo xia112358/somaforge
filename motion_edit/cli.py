@@ -9,10 +9,11 @@ from .adapters.lte import import_lte_catalog
 from .curation import filter_segments, load_layer_segments, write_status_layer
 from .editing import clip_motion, splice_motions
 from .export import export_cutter_segments, export_motion_manifest, export_split_npz
-from .force_proto import segments_from_masked_motion
+from .force_proto import contact_graph_from_masked_motion, segments_from_masked_motion
 from .io import read_jsonl, segment_from_dict
 from .layers import iter_layer_files, read_layer, write_layer
 from .paths import BACKUPS_ROOT, EXPORTS_ROOT, LAYERS_ROOT, ensure_data_dirs, layer_dir
+from .contact import write_contact_layer
 from .viewer import launch_viewer
 from .workbench import (
     WorkbenchSession,
@@ -44,8 +45,10 @@ def _cmd_import_force_proto(args: argparse.Namespace) -> None:
     for motion_path in sorted(motion_dir.glob(args.pattern)):
         segments = segments_from_masked_motion(motion_path, source=args.source, status="candidate")
         write_layer(out_dir / f"{motion_path.stem}.jsonl", segments)
+        graph = contact_graph_from_masked_motion(motion_path, source=args.source)
+        write_contact_layer(LAYERS_ROOT / "contact" / args.layer_name, graph)
         total += len(segments)
-    print(f"wrote {total} candidate segments to {out_dir}")
+    print(f"wrote {total} candidate segments to {out_dir}; contact layer={LAYERS_ROOT / 'contact' / args.layer_name}")
 
 
 def _cmd_import_manual_cuts(args: argparse.Namespace) -> None:
