@@ -25,7 +25,7 @@ from motion_edit.contact import (
     write_contact_jsonl,
     write_contact_layer,
 )
-from motion_edit.contact.schema import ContactAnchorRecord
+from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord
 from motion_edit.schema import SegmentRecord
 
 
@@ -41,6 +41,15 @@ class ContactEventTests(unittest.TestCase):
             object_position=[0.0, 0.2, 0.3],
             object_id="terrain",
             normal=[0.0, 0.0, 1.0],
+            surface_id="platform_top",
+            surface_type="box_face",
+            surface_normal=[0.0, 0.0, 1.0],
+            surface_origin=[0.0, 0.0, 0.0],
+            surface_tangent_u=[1.0, 0.0, 0.0],
+            surface_tangent_v=[0.0, 1.0, 0.0],
+            surface_bounds={"u": [-1.0, 1.0], "v": [-0.5, 0.5]},
+            surface_coordinates={"u": 0.1, "v": 0.2},
+            surface_binding_source="manual",
             editable=True,
             position_source="manual",
         )
@@ -53,8 +62,40 @@ class ContactEventTests(unittest.TestCase):
         self.assertEqual(loaded.world_position, [0.1, 0.2, 0.3])
         self.assertEqual(loaded.object_position, [0.0, 0.2, 0.3])
         self.assertEqual(loaded.normal, [0.0, 0.0, 1.0])
+        self.assertEqual(loaded.surface_id, "platform_top")
+        self.assertEqual(loaded.surface_type, "box_face")
+        self.assertEqual(loaded.surface_normal, [0.0, 0.0, 1.0])
+        self.assertEqual(loaded.surface_bounds, {"u": [-1.0, 1.0], "v": [-0.5, 0.5]})
+        self.assertEqual(loaded.surface_coordinates, {"u": 0.1, "v": 0.2})
+        self.assertEqual(loaded.surface_binding_source, "manual")
         self.assertTrue(loaded.editable)
         self.assertEqual(loaded.position_source, "manual")
+
+    def test_anchor_edit_surface_constraint_fields_validate(self) -> None:
+        edit = ContactAnchorEditRecord(
+            edit_id="edit_a",
+            motion_id="motion_a",
+            anchor_id="anchor_lf",
+            body="LF",
+            old_world_position=[0.0, 0.0, 0.0],
+            new_world_position=[0.1, 0.0, 0.0],
+            requested_delta_world=[0.1, 0.0, 0.2],
+            delta_world=[0.1, 0.0, 0.0],
+            tangent_delta=[0.1, 0.0],
+            surface_id="platform_top",
+            surface_normal=[0.0, 0.0, 1.0],
+            surface_coordinates_before={"u": 0.0, "v": 0.0},
+            surface_coordinates_after={"u": 0.1, "v": 0.0},
+            constraint_mode="reject",
+            clamped=False,
+        )
+
+        data = edit.to_dict()
+
+        self.assertEqual(data["requested_delta_world"], [0.1, 0.0, 0.2])
+        self.assertEqual(data["delta_world"], [0.1, 0.0, 0.0])
+        self.assertEqual(data["tangent_delta"], [0.1, 0.0])
+        self.assertEqual(data["surface_id"], "platform_top")
 
     def test_move_contact_anchor_records_old_new_and_delta(self) -> None:
         anchor = ContactAnchorRecord(

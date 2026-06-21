@@ -21,6 +21,7 @@ ContactTransitionType = Literal[
     "micro_adjust",
     "unknown",
 ]
+ContactSurfaceType = Literal["plane", "box_face", "mesh_face", "heightfield", "unknown"]
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,15 @@ class ContactAnchorRecord:
     object_position: list[float] | None = None
     object_id: str | None = None
     normal: list[float] | None = None
+    surface_id: str | None = None
+    surface_type: ContactSurfaceType = "unknown"
+    surface_normal: list[float] | None = None
+    surface_origin: list[float] | None = None
+    surface_tangent_u: list[float] | None = None
+    surface_tangent_v: list[float] | None = None
+    surface_bounds: dict[str, Any] | None = None
+    surface_coordinates: dict[str, Any] | None = None
+    surface_binding_source: str | None = None
     patch_id: str | None = None
     editable: bool = True
     position_source: str | None = None
@@ -109,9 +119,17 @@ class ContactAnchorEditRecord:
     edit_type: str = "move_contact_anchor"
     old_world_position: list[float] | None = None
     new_world_position: list[float] | None = None
+    requested_delta_world: list[float] | None = None
     delta_world: list[float] | None = None
+    tangent_delta: list[float] | None = None
     delta_object: list[float] | None = None
     affected_frames: list[int] | None = None
+    surface_id: str | None = None
+    surface_normal: list[float] | None = None
+    surface_coordinates_before: dict[str, Any] | None = None
+    surface_coordinates_after: dict[str, Any] | None = None
+    constraint_mode: str | None = None
+    clamped: bool = False
     source: str = "manual"
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -124,6 +142,12 @@ class ContactAnchorEditRecord:
             raise ValueError(f"{self.edit_id}: old_world_position must have length 3")
         if self.delta_world is not None and len(self.delta_world) != 3:
             raise ValueError(f"{self.edit_id}: delta_world must have length 3")
+        if self.requested_delta_world is not None and len(self.requested_delta_world) != 3:
+            raise ValueError(f"{self.edit_id}: requested_delta_world must have length 3")
+        if self.tangent_delta is not None and len(self.tangent_delta) != 2:
+            raise ValueError(f"{self.edit_id}: tangent_delta must have length 2")
+        if self.surface_normal is not None and len(self.surface_normal) != 3:
+            raise ValueError(f"{self.edit_id}: surface_normal must have length 3")
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
