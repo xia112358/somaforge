@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 
 from motion_edit.contact import (
     anchors_from_contact_mask,
     detect_contact_events,
+    read_contact_anchors,
+    read_contact_events,
+    read_contact_transitions,
     segment_from_contact_transition,
     transitions_from_proto_indices,
+    write_contact_jsonl,
 )
 
 
@@ -152,7 +158,30 @@ class ContactEventTests(unittest.TestCase):
         self.assertGreaterEqual(len(segment.metadata["contact_events"]), 1)
         self.assertGreaterEqual(len(segment.metadata["contact_anchors"]), 1)
 
+    def test_contact_records_roundtrip_as_typed_jsonl(self) -> None:
+        contact = np.asarray([[False, True], [True, True], [True, False]])
+        events, anchors, transitions = transitions_from_proto_indices(
+            motion_id="motion_a",
+            starts=[0],
+            ends=[3],
+            contact_mask=contact,
+            body_names=["LF", "RF"],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_contact_jsonl(root / "events.jsonl", events)
+            write_contact_jsonl(root / "anchors.jsonl", anchors)
+            write_contact_jsonl(root / "transitions.jsonl", transitions)
+
+            loaded_events = read_contact_events(root / "events.jsonl")
+            loaded_anchors = read_contact_anchors(root / "anchors.jsonl")
+            loaded_transitions = read_contact_transitions(root / "transitions.jsonl")
+
+        self.assertEqual(loaded_events[0].event_id, events[0].event_id)
+        self.assertEqual(loaded_anchors[0].anchor_id, anchors[0].anchor_id)
+        self.assertEqual(loaded_transitions[0].transition_id, transitions[0].transition_id)
+
 
 if __name__ == "__main__":
     unittest.main()
-
