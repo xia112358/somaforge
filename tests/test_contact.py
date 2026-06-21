@@ -13,6 +13,7 @@ from motion_edit.contact import (
     detect_contact_events,
     make_anchor_move_edit,
     move_contact_anchor,
+    move_anchor_in_graph,
     read_contact_anchors,
     read_contact_events,
     read_contact_graph,
@@ -75,6 +76,26 @@ class ContactEventTests(unittest.TestCase):
         self.assertEqual(edit.old_world_position, [1.0, 2.0, 0.0])
         self.assertEqual(edit.new_world_position, [1.1, 2.0, 0.0])
         self.assertEqual(edit.delta_world, [0.10000000000000009, 0.0, 0.0])
+
+    def test_move_anchor_in_graph_updates_anchor_patch_and_returns_edit(self) -> None:
+        graph = contact_graph_from_masks(
+            motion_id="motion_a",
+            contact_mask=np.asarray([[True, False], [True, False], [False, False]]),
+            body_pos_w=np.asarray(
+                [
+                    [[1.0, 2.0, 0.0], [0.0, 0.0, 0.0]],
+                    [[1.0, 2.0, 0.0], [0.0, 0.0, 0.0]],
+                    [[9.0, 9.0, 9.0], [0.0, 0.0, 0.0]],
+                ]
+            ),
+            body_names=["left_foot", "right_foot"],
+        )
+
+        moved_graph, edit = move_anchor_in_graph(graph, anchor_id=graph.anchors[0].anchor_id, delta_world=[0.1, 0.0, 0.0])
+
+        self.assertEqual(moved_graph.anchors[0].world_position, [1.1, 2.0, 0.0])
+        self.assertEqual(moved_graph.patches[0].patch_center_world, [1.1, 2.0, 0.0])
+        self.assertEqual(edit.edit_type, "move_contact_anchor")
 
     def test_detects_touchdown_liftoff_active_and_support_changes(self) -> None:
         contact = np.asarray(
