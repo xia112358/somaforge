@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .contact import mask_string, segment_from_contact_transition, transitions_from_proto_indices
+from .contact import contact_graph_from_masks, mask_string, segment_from_contact_transition
 from .schema import SegmentRecord
 
 
@@ -31,10 +31,10 @@ def segments_from_masked_motion(path: Path, *, source: str = "force_contact", st
         body_names = _body_names(data)
 
     motion_id = path.stem
-    events, anchors, transitions = transitions_from_proto_indices(
+    graph = contact_graph_from_masks(
         motion_id=motion_id,
-        starts=starts,
-        ends=ends,
+        proto_starts=starts,
+        proto_ends=ends,
         contact_mask=contact,
         active_mask=active,
         support_mask=support,
@@ -42,7 +42,7 @@ def segments_from_masked_motion(path: Path, *, source: str = "force_contact", st
         source=source,
     )
     segments: list[SegmentRecord] = []
-    for proto_id, transition in enumerate(transitions):
+    for proto_id, transition in enumerate(graph.transitions):
         start_i = transition.start_frame
         end_i = transition.end_frame
         end_frame = max(start_i, end_i - 1)
@@ -61,14 +61,14 @@ def segments_from_masked_motion(path: Path, *, source: str = "force_contact", st
             contact_end=mask_string(contact[end_frame]) if contact is not None else None,
             active=mask_string(active[start_i]) if active is not None else None,
             support=mask_string(support[start_i]) if support is not None else None,
-            events=events,
-            anchors=anchors,
+            events=graph.events,
+            anchors=graph.anchors,
             metadata={"proto_index": proto_id},
         )
         segment.validate()
         segments.append(segment)
 
-    if not transitions:
+    if not graph.transitions:
         for proto_id, (start, end) in enumerate(zip(starts, ends)):
             start_i = int(start)
             end_i = int(end)
