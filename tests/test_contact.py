@@ -11,6 +11,8 @@ from motion_edit.contact import (
     bind_segment_to_contact_graph,
     contact_graph_from_masks,
     detect_contact_events,
+    make_anchor_move_edit,
+    move_contact_anchor,
     read_contact_anchors,
     read_contact_events,
     read_contact_graph,
@@ -21,10 +23,59 @@ from motion_edit.contact import (
     write_contact_jsonl,
     write_contact_layer,
 )
+from motion_edit.contact.schema import ContactAnchorRecord
 from motion_edit.schema import SegmentRecord
 
 
 class ContactEventTests(unittest.TestCase):
+    def test_anchor_world_position_roundtrips_jsonl(self) -> None:
+        anchor = ContactAnchorRecord(
+            motion_id="motion_a",
+            anchor_id="anchor_lf",
+            body="LF",
+            start_frame=0,
+            end_frame=10,
+            world_position=[0.1, 0.2, 0.3],
+            object_position=[0.0, 0.2, 0.3],
+            object_id="terrain",
+            normal=[0.0, 0.0, 1.0],
+            editable=True,
+            position_source="manual",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "anchors.jsonl"
+            write_contact_jsonl(path, [anchor])
+            loaded = read_contact_anchors(path)[0]
+
+        self.assertEqual(loaded.world_position, [0.1, 0.2, 0.3])
+        self.assertEqual(loaded.object_position, [0.0, 0.2, 0.3])
+        self.assertEqual(loaded.normal, [0.0, 0.0, 1.0])
+        self.assertTrue(loaded.editable)
+        self.assertEqual(loaded.position_source, "manual")
+
+    def test_move_contact_anchor_records_old_new_and_delta(self) -> None:
+        anchor = ContactAnchorRecord(
+            motion_id="motion_a",
+            anchor_id="anchor_lf",
+            body="LF",
+            start_frame=0,
+            end_frame=10,
+            world_position=[1.0, 2.0, 0.0],
+            position_source="body_pos_w_mean",
+        )
+
+        moved = move_contact_anchor(anchor, delta_world=[0.1, 0.0, 0.0])
+        edit = make_anchor_move_edit(anchor, new_world_position=[1.1, 2.0, 0.0], affected_frames=[0, 10], source="lte")
+
+        self.assertEqual(moved.world_position, [1.1, 2.0, 0.0])
+        self.assertEqual(moved.position_source, "manual")
+        self.assertEqual(moved.metadata["contact_anchor_edits"][-1]["old_world_position"], [1.0, 2.0, 0.0])
+        self.assertEqual(edit.edit_type, "move_contact_anchor")
+        self.assertEqual(edit.old_world_position, [1.0, 2.0, 0.0])
+        self.assertEqual(edit.new_world_position, [1.1, 2.0, 0.0])
+        self.assertEqual(edit.delta_world, [0.10000000000000009, 0.0, 0.0])
+
     def test_detects_touchdown_liftoff_active_and_support_changes(self) -> None:
         contact = np.asarray(
             [

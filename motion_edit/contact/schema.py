@@ -54,8 +54,12 @@ class ContactAnchorRecord:
     end_frame: int
     role: ContactAnchorRole = "unknown"
     world_position: list[float] | None = None
+    object_position: list[float] | None = None
     object_id: str | None = None
+    normal: list[float] | None = None
     patch_id: str | None = None
+    editable: bool = True
+    position_source: str | None = None
     source: str = "contact_mask"
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -77,6 +81,8 @@ class ContactPatchRecord:
     body: str
     start_frame: int
     end_frame: int
+    patch_type: str = "unknown"
+    patch_center_world: list[float] | None = None
     link_names: list[str] | None = None
     sphere_ids: list[str] | None = None
     anchor_id: str | None = None
@@ -88,6 +94,36 @@ class ContactPatchRecord:
             raise ValueError(f"{self.patch_id}: start_frame must be >= 0")
         if self.end_frame <= self.start_frame:
             raise ValueError(f"{self.patch_id}: end_frame must be > start_frame")
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ContactAnchorEditRecord:
+    edit_id: str
+    motion_id: str
+    anchor_id: str
+    body: str
+    edit_type: str = "move_contact_anchor"
+    old_world_position: list[float] | None = None
+    new_world_position: list[float] | None = None
+    delta_world: list[float] | None = None
+    delta_object: list[float] | None = None
+    affected_frames: list[int] | None = None
+    source: str = "manual"
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def validate(self) -> None:
+        if self.edit_type != "move_contact_anchor":
+            raise ValueError(f"{self.edit_id}: unsupported edit_type {self.edit_type}")
+        if self.new_world_position is not None and len(self.new_world_position) != 3:
+            raise ValueError(f"{self.edit_id}: new_world_position must have length 3")
+        if self.old_world_position is not None and len(self.old_world_position) != 3:
+            raise ValueError(f"{self.edit_id}: old_world_position must have length 3")
+        if self.delta_world is not None and len(self.delta_world) != 3:
+            raise ValueError(f"{self.edit_id}: delta_world must have length 3")
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
@@ -119,4 +155,3 @@ class ContactTransitionRecord:
     def to_dict(self) -> dict[str, Any]:
         self.validate()
         return asdict(self)
-
