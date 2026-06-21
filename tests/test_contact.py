@@ -8,6 +8,7 @@ import numpy as np
 
 from motion_edit.contact import (
     anchors_from_contact_mask,
+    contact_graph_from_masks,
     detect_contact_events,
     read_contact_anchors,
     read_contact_events,
@@ -181,6 +182,23 @@ class ContactEventTests(unittest.TestCase):
         self.assertEqual(loaded_events[0].event_id, events[0].event_id)
         self.assertEqual(loaded_anchors[0].anchor_id, anchors[0].anchor_id)
         self.assertEqual(loaded_transitions[0].transition_id, transitions[0].transition_id)
+
+    def test_contact_graph_groups_events_anchors_and_transitions(self) -> None:
+        contact = np.asarray([[True, False], [False, False], [True, False]])
+
+        graph = contact_graph_from_masks(
+            motion_id="motion_a",
+            contact_mask=contact,
+            body_names=["LF", "RF"],
+            source="test",
+        )
+
+        self.assertEqual(graph.motion_id, "motion_a")
+        self.assertTrue(any(event.event_type == "liftoff" for event in graph.events))
+        self.assertTrue(any(event.event_type == "touchdown" for event in graph.events))
+        self.assertEqual(len(graph.anchors), 2)
+        self.assertEqual(graph.transitions[0].active_body, "LF")
+        self.assertEqual(graph.to_dict()["motion_id"], "motion_a")
 
 
 if __name__ == "__main__":
