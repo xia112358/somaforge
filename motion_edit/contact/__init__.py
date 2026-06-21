@@ -1,5 +1,5 @@
 from .anchors import anchors_from_contact_mask
-from .actions import move_anchor_in_graph
+from .actions import move_anchor_in_contact_layer, move_anchor_in_graph
 from .bindings import bind_segment_to_contact_graph, contact_metadata_for_bounds
 from .edits import make_anchor_move_edit, move_contact_anchor
 from .events import bodies_from_mask, body_names_for_mask, detect_contact_events
@@ -45,6 +45,7 @@ __all__ = [
     "mask_string",
     "make_anchor_move_edit",
     "move_contact_anchor",
+    "move_anchor_in_contact_layer",
     "move_anchor_in_graph",
     "patches_from_anchors",
     "read_contact_anchors",

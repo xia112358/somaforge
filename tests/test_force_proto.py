@@ -164,7 +164,7 @@ class ForceProtoContactTests(unittest.TestCase):
             root = Path(tmp)
             motion_dir = root / "motions"
             motion_dir.mkdir()
-            _write_proto_motion(motion_dir / "motion_a.npz")
+            _write_proto_motion_with_positions(motion_dir / "motion_a.npz")
             layers_root = root / "layers"
             args = argparse.Namespace(
                 motion_dir=str(motion_dir),
@@ -189,6 +189,17 @@ class ForceProtoContactTests(unittest.TestCase):
                 )
                 cli._cmd_export_contact_overlay(export_args)
                 overlay_text = overlay_path.read_text(encoding="utf-8")
+                graph_before_move = read_contact_graph(layers_root / "contact" / "force_contact", "motion_a")
+                move_args = argparse.Namespace(
+                    source="contact/force_contact",
+                    motion_id="motion_a",
+                    anchor_id=graph_before_move.anchors[0].anchor_id,
+                    delta_world=[0.1, 0.0, 0.0],
+                    new_world_position=None,
+                    output_source="contact/force_contact_moved",
+                    edit_source="manual",
+                )
+                cli._cmd_move_contact_anchor(move_args)
 
             segments = read_layer(
                 layers_root / "candidates" / "force_contact" / "motion_a.jsonl",
@@ -196,10 +207,12 @@ class ForceProtoContactTests(unittest.TestCase):
                 default_status="candidate",
             )
             graph = read_contact_graph(layers_root / "contact" / "force_contact", "motion_a")
+            moved_graph = read_contact_graph(layers_root / "contact" / "force_contact_moved", "motion_a")
 
         self.assertEqual(len(segments), 1)
         self.assertEqual(len(graph.transitions), 1)
         self.assertGreaterEqual(len(graph.anchors), 1)
+        self.assertNotEqual(moved_graph.anchors[0].world_position, graph.anchors[0].world_position)
         self.assertIn("motion_a: events=", out.getvalue())
         self.assertIn("patches=", out.getvalue())
         self.assertIn("transitions=1", out.getvalue())

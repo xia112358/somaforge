@@ -13,7 +13,7 @@ from .force_proto import contact_graph_from_masked_motion, segments_from_masked_
 from .io import read_jsonl, segment_from_dict
 from .layers import iter_layer_files, read_layer, write_layer
 from .paths import BACKUPS_ROOT, EXPORTS_ROOT, LAYERS_ROOT, ensure_data_dirs, layer_dir
-from .contact import write_contact_layer
+from .contact import move_anchor_in_contact_layer, write_contact_layer
 from .contact.layers import read_contact_graph
 from .viewer import launch_viewer
 from .workbench import (
@@ -94,6 +94,26 @@ def _cmd_export_contact_overlay(args: argparse.Namespace) -> None:
     graph = read_contact_graph(LAYERS_ROOT / args.source, args.motion_id)
     output = export_contact_overlay(args.output, graph)
     print(f"wrote contact overlay {output}")
+
+
+def _cmd_move_contact_anchor(args: argparse.Namespace) -> None:
+    destination = args.output_source or f"{args.source}_edited"
+    new_world = args.new_world_position
+    delta_world = args.delta_world
+    moved_graph, edit = move_anchor_in_contact_layer(
+        LAYERS_ROOT / args.source,
+        LAYERS_ROOT / destination,
+        motion_id=args.motion_id,
+        anchor_id=args.anchor_id,
+        delta_world=delta_world,
+        new_world_position=new_world,
+        source=args.edit_source,
+    )
+    moved_anchor = next(anchor for anchor in moved_graph.anchors if anchor.anchor_id == args.anchor_id)
+    print(
+        f"moved anchor {args.anchor_id} motion={args.motion_id} "
+        f"world_position={moved_anchor.world_position} edit={edit.edit_id} output={LAYERS_ROOT / destination}"
+    )
 
 
 def _cmd_summarize(_args: argparse.Namespace) -> None:
@@ -377,6 +397,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--motion-id", required=True)
     p.add_argument("--output", required=True)
     p.set_defaults(func=_cmd_export_contact_overlay)
+
+    p = sub.add_parser("move-contact-anchor")
+    p.add_argument("--source", required=True, help="Contact layer path relative to data/layers, e.g. contact/force_contact")
+    p.add_argument("--motion-id", required=True)
+    p.add_argument("--anchor-id", required=True)
+    p.add_argument("--delta-world", nargs=3, type=float, default=None)
+    p.add_argument("--new-world-position", nargs=3, type=float, default=None)
+    p.add_argument("--output-source", default=None, help="Destination contact layer path, default <source>_edited")
+    p.add_argument("--edit-source", default="manual")
+    p.set_defaults(func=_cmd_move_contact_anchor)
 
     p = sub.add_parser("export-manifest")
     p.add_argument("--source", required=True, help="Layer path relative to data/layers")
