@@ -9,6 +9,10 @@ EXPORTS_ROOT = DATA_ROOT / "exports"
 CATALOGS_ROOT = DATA_ROOT / "catalogs"
 BACKUPS_ROOT = DATA_ROOT / "backups"
 WORKBENCH_ROOT = DATA_ROOT / "workbench"
+MOTIONS_ROOT = DATA_ROOT / "motions"
+MOTION_VERSIONS_ROOT = DATA_ROOT / "motion_versions"
+SEGMENTS_ROOT = DATA_ROOT / "segments"
+TOKENS_ROOT = DATA_ROOT / "tokens"
 
 
 def ensure_data_dirs() -> None:
@@ -19,8 +23,14 @@ def ensure_data_dirs() -> None:
         LAYERS_ROOT / "accepted",
         LAYERS_ROOT / "rejected",
         LAYERS_ROOT / "contact",
+        MOTIONS_ROOT / "raw",
+        MOTIONS_ROOT / "generated",
+        MOTION_VERSIONS_ROOT,
+        SEGMENTS_ROOT,
+        TOKENS_ROOT,
         EXPORTS_ROOT / "cutter_segments",
         EXPORTS_ROOT / "manifests",
+        EXPORTS_ROOT / "split_npz",
         WORKBENCH_ROOT / "sessions",
         BACKUPS_ROOT,
     ]:

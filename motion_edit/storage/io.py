@@ -1,0 +1,88 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Iterable
+
+from motion_edit.io import read_jsonl, segment_from_dict, segment_to_dict, write_jsonl
+from motion_edit.paths import MOTION_VERSIONS_ROOT, SEGMENTS_ROOT, TOKENS_ROOT
+from motion_edit.schema import SegmentRecord
+from motion_edit.storage.schema import MotionVersionRecord, TokenRecord
+
+
+def motion_version_path(motion_version_id: str) -> Path:
+    return MOTION_VERSIONS_ROOT / f"{motion_version_id}.json"
+
+
+def canonical_segment_path(motion_version_id: str) -> Path:
+    return SEGMENTS_ROOT / f"{motion_version_id}.jsonl"
+
+
+def token_catalog_path(motion_version_id: str) -> Path:
+    return TOKENS_ROOT / f"{motion_version_id}.jsonl"
+
+
+def write_motion_version(record: MotionVersionRecord, path: str | Path | None = None) -> Path:
+    out = Path(path).expanduser() if path is not None else motion_version_path(record.motion_version_id)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(record.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+    return out
+
+
+def read_motion_version(motion_version_id: str, path: str | Path | None = None) -> MotionVersionRecord:
+    source = Path(path).expanduser() if path is not None else motion_version_path(motion_version_id)
+    data = json.loads(source.read_text(encoding="utf-8"))
+    return MotionVersionRecord(**data)
+
+
+def write_canonical_segments(motion_version_id: str, segments: Iterable[SegmentRecord], path: str | Path | None = None) -> Path:
+    out = Path(path).expanduser() if path is not None else canonical_segment_path(motion_version_id)
+    records = []
+    for segment in segments:
+        metadata = dict(segment.metadata)
+        metadata["motion_version_id"] = motion_version_id
+        updated = SegmentRecord(
+            motion_id=segment.motion_id,
+            segment_id=segment.segment_id,
+            start_frame=segment.start_frame,
+            end_frame=segment.end_frame,
+            source=segment.source,
+            status=segment.status,
+            track=segment.track,
+            motion_path=segment.motion_path,
+            clip_npz=segment.clip_npz,
+            clip_output_dir=segment.clip_output_dir,
+            clip_file_name=segment.clip_file_name,
+            atom_label=segment.atom_label,
+            score=segment.score,
+            contact_start=segment.contact_start,
+            contact_end=segment.contact_end,
+            active=segment.active,
+            support=segment.support,
+            metadata=metadata,
+        )
+        updated.validate()
+        records.append(segment_to_dict(updated))
+    write_jsonl(out, records)
+    return out
+
+
+def read_canonical_segments(motion_version_id: str, path: str | Path | None = None) -> list[SegmentRecord]:
+    source = Path(path).expanduser() if path is not None else canonical_segment_path(motion_version_id)
+    return [segment_from_dict(record, default_source="canonical", default_status="candidate") for record in read_jsonl(source)]
+
+
+def write_token_catalog(motion_version_id: str, tokens: Iterable[TokenRecord], path: str | Path | None = None) -> Path:
+    out = Path(path).expanduser() if path is not None else token_catalog_path(motion_version_id)
+    write_jsonl(out, (token.to_dict() for token in tokens))
+    return out
+
+
+def read_token_catalog(motion_version_id: str, path: str | Path | None = None) -> list[TokenRecord]:
+    source = Path(path).expanduser() if path is not None else token_catalog_path(motion_version_id)
+    return [TokenRecord(**record) for record in read_jsonl(source)]
+
+
+def resolve_motion_path(motion_version_id: str) -> Path:
+    version = read_motion_version(motion_version_id)
+    return Path(version.motion_path).expanduser()
