@@ -15,8 +15,6 @@ from .layers import iter_layer_files, read_layer, write_layer
 from .paths import BACKUPS_ROOT, EXPORTS_ROOT, LAYERS_ROOT, ensure_data_dirs, layer_dir
 from .contact import write_contact_layer
 from .contact.layers import read_contact_graph
-from .contact.io import read_contact_anchors, read_contact_events, read_contact_transitions
-from .contact.io import read_contact_patches
 from .viewer import launch_viewer
 from .workbench import (
     WorkbenchSession,
@@ -212,27 +210,26 @@ def _cmd_list_contact_layer(args: argparse.Namespace) -> None:
     total_transitions = 0
     for event_path in event_files:
         motion_id = event_path.stem
-        events = read_contact_events(event_path)
-        anchors = read_contact_anchors(root / "anchors" / f"{motion_id}.jsonl")
-        patch_path = root / "patches" / f"{motion_id}.jsonl"
-        patches = read_contact_patches(patch_path) if patch_path.exists() else []
-        transitions = read_contact_transitions(root / "transitions" / f"{motion_id}.jsonl")
-        total_events += len(events)
-        total_anchors += len(anchors)
-        total_patches += len(patches)
-        total_transitions += len(transitions)
-        print(f"{motion_id}: events={len(events)} anchors={len(anchors)} patches={len(patches)} transitions={len(transitions)}")
-        for anchor in anchors[: args.limit]:
+        graph = read_contact_graph(root, motion_id)
+        total_events += len(graph.events)
+        total_anchors += len(graph.anchors)
+        total_patches += len(graph.patches)
+        total_transitions += len(graph.transitions)
+        print(
+            f"{motion_id}: events={len(graph.events)} anchors={len(graph.anchors)} "
+            f"patches={len(graph.patches)} transitions={len(graph.transitions)}"
+        )
+        for anchor in graph.anchors[: args.limit]:
             print(
                 f"  anchor {anchor.start_frame:5d}->{anchor.end_frame:<5d} "
                 f"{anchor.anchor_id} body={anchor.body} role={anchor.role}"
             )
-        for patch in patches[: args.limit]:
+        for patch in graph.patches[: args.limit]:
             print(
                 f"  patch  {patch.start_frame:5d}->{patch.end_frame:<5d} "
                 f"{patch.patch_id} body={patch.body} anchor={patch.anchor_id}"
             )
-        for transition in transitions[: args.limit]:
+        for transition in graph.transitions[: args.limit]:
             print(
                 f"  transition {transition.start_frame:5d}->{transition.end_frame:<5d} "
                 f"{transition.transition_id} active={transition.active_body} "
