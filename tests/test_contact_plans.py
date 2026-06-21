@@ -3,7 +3,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+import argparse
 
+from motion_edit import cli
 from motion_edit.contact import (
     ContactEditPlan,
     append_anchor_edit_to_plan,
@@ -120,6 +122,53 @@ class ContactEditPlanTests(unittest.TestCase):
             written = write_contact_edit_plan(path, plan)
 
             self.assertTrue(written.exists())
+
+    def test_validate_contact_edit_plan_command_marks_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "plan.json"
+            write_contact_edit_plan(
+                path,
+                ContactEditPlan(
+                    plan_id="plan_a",
+                    source_motion_path="motion_a.npz",
+                    source_motion_id="motion_a",
+                    source_contact_layer="contact/force_contact",
+                    edits=[_surface_edit().to_dict()],
+                ),
+            )
+
+            cli._cmd_validate_contact_edit_plan(argparse.Namespace(plan=str(path), allow_free=False, no_write=False))
+            loaded = read_contact_edit_plan(path)
+
+        self.assertEqual(loaded.status, "validated")
+
+    def test_validate_contact_edit_plan_command_rejects_free_edit(self) -> None:
+        edit = ContactAnchorEditRecord(
+            edit_id="edit_free",
+            motion_id="motion_a",
+            anchor_id="anchor_lf",
+            body="left_foot",
+            old_world_position=[0.0, 0.0, 0.0],
+            new_world_position=[0.0, 0.0, 0.1],
+            delta_world=[0.0, 0.0, 0.1],
+            affected_frames=[0, 10],
+            constraint_mode="free_3d",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "plan.json"
+            write_contact_edit_plan(
+                path,
+                ContactEditPlan(
+                    plan_id="plan_a",
+                    source_motion_path="motion_a.npz",
+                    source_motion_id="motion_a",
+                    source_contact_layer="contact/force_contact",
+                    edits=[edit.to_dict()],
+                ),
+            )
+
+            with self.assertRaises(ValueError):
+                cli._cmd_validate_contact_edit_plan(argparse.Namespace(plan=str(path), allow_free=False, no_write=False))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import shutil
 from pathlib import Path
 
@@ -13,7 +14,14 @@ from .force_proto import contact_graph_from_masked_motion, segments_from_masked_
 from .io import read_jsonl, segment_from_dict
 from .layers import iter_layer_files, read_layer, write_layer
 from .paths import BACKUPS_ROOT, EXPORTS_ROOT, LAYERS_ROOT, ensure_data_dirs, layer_dir
-from .contact import append_anchor_edit_to_plan, move_anchor_in_contact_layer, write_contact_layer
+from .contact import (
+    append_anchor_edit_to_plan,
+    move_anchor_in_contact_layer,
+    read_contact_edit_plan,
+    validate_contact_edit_plan,
+    write_contact_edit_plan,
+    write_contact_layer,
+)
 from .contact.layers import read_contact_graph
 from .viewer import launch_viewer
 from .workbench import (
@@ -134,6 +142,17 @@ def _cmd_move_contact_anchor(args: argparse.Namespace) -> None:
         )
         action = "appended" if args.append_to_plan else "wrote"
         print(f"{action} edit plan {args.edit_plan} edits={len(plan.edits)} status={plan.status}")
+
+
+def _cmd_validate_contact_edit_plan(args: argparse.Namespace) -> None:
+    plan = read_contact_edit_plan(args.plan)
+    warnings = validate_contact_edit_plan(plan, allow_free=args.allow_free)
+    if not args.no_write:
+        plan = replace(plan, status="validated")
+        write_contact_edit_plan(args.plan, plan)
+    print(f"validated contact edit plan {args.plan} edits={len(plan.edits)} status={plan.status}")
+    for warning in warnings:
+        print(f"warning: {warning}")
 
 
 def _cmd_summarize(_args: argparse.Namespace) -> None:
@@ -435,6 +454,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--source-motion", default=None)
     p.add_argument("--source-segments", default=None)
     p.set_defaults(func=_cmd_move_contact_anchor)
+
+    p = sub.add_parser("validate-contact-edit-plan")
+    p.add_argument("--plan", required=True)
+    p.add_argument("--allow-free", action="store_true")
+    p.add_argument("--no-write", action="store_true")
+    p.set_defaults(func=_cmd_validate_contact_edit_plan)
 
     p = sub.add_parser("export-manifest")
     p.add_argument("--source", required=True, help="Layer path relative to data/layers")
