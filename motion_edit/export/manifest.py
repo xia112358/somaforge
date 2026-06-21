@@ -31,6 +31,10 @@ def export_motion_manifest(path: str | Path, segments: list[SegmentRecord]) -> P
                         "transition_type": item.metadata.get("transition_type"),
                         "source_anchor_id": item.metadata.get("source_anchor_id"),
                         "target_anchor_id": item.metadata.get("target_anchor_id"),
+                        "old_anchor_world": item.metadata.get("old_anchor_world"),
+                        "new_anchor_world": item.metadata.get("new_anchor_world"),
+                        "delta_world": item.metadata.get("delta_world"),
+                        "affected_frames": item.metadata.get("affected_frames"),
                         "active_body": item.metadata.get("active_body"),
                         "support_bodies": item.metadata.get("support_bodies"),
                         "contact_metadata": {
@@ -38,6 +42,8 @@ def export_motion_manifest(path: str | Path, segments: list[SegmentRecord]) -> P
                             "event_count": len(item.metadata.get("contact_events") or []),
                             "anchor_count": len(item.metadata.get("contact_anchors") or []),
                             "patch_count": len(item.metadata.get("contact_patches") or []),
+                            "patches": item.metadata.get("contact_patches") or [],
+                            "anchor_edit": item.metadata.get("contact_anchor_edit"),
                         },
                     }
                     for item in items

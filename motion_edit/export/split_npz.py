@@ -32,6 +32,21 @@ def export_split_npz(output_dir: str | Path, segments: list[SegmentRecord]) -> l
         )
         clipped["motion_edit_source_anchor_id"] = np.asarray(str(segment.metadata.get("source_anchor_id") or ""))
         clipped["motion_edit_target_anchor_id"] = np.asarray(str(segment.metadata.get("target_anchor_id") or ""))
+        clipped["motion_edit_old_anchor_world"] = np.asarray(
+            json.dumps(segment.metadata.get("old_anchor_world") or [], sort_keys=True)
+        )
+        clipped["motion_edit_new_anchor_world"] = np.asarray(
+            json.dumps(segment.metadata.get("new_anchor_world") or [], sort_keys=True)
+        )
+        clipped["motion_edit_delta_world"] = np.asarray(
+            json.dumps(segment.metadata.get("delta_world") or [], sort_keys=True)
+        )
+        clipped["motion_edit_affected_frames"] = np.asarray(
+            json.dumps(segment.metadata.get("affected_frames") or [], sort_keys=True)
+        )
+        clipped["motion_edit_contact_patches"] = np.asarray(
+            json.dumps(segment.metadata.get("contact_patches") or [], sort_keys=True)
+        )
         out = root / f"{segment.segment_id}_frames_{segment.start_frame:04d}_{segment.end_frame:04d}.npz"
         np.savez(out, **clipped)
         written.append(out)

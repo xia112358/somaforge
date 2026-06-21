@@ -41,7 +41,12 @@ def _contact_segment(motion_path: str) -> SegmentRecord:
             "transition_type": "support_transfer",
             "contact_events": [{"event_id": "event_0"}],
             "contact_anchors": [{"anchor_id": "anchor_src"}, {"anchor_id": "anchor_dst"}],
-            "contact_patches": [{"patch_id": "patch_src"}],
+            "contact_patches": [{"patch_id": "patch_src", "patch_type": "foot"}],
+            "old_anchor_world": [0.0, 0.0, 0.0],
+            "new_anchor_world": [0.1, 0.0, 0.0],
+            "delta_world": [0.1, 0.0, 0.0],
+            "affected_frames": [1, 4],
+            "contact_anchor_edit": {"edit_type": "move_contact_anchor", "anchor_id": "anchor_src"},
         },
     )
 
@@ -88,6 +93,11 @@ class ExportContactMetadataTests(unittest.TestCase):
         self.assertEqual(str(data["motion_edit_source_anchor_id"]), "anchor_src")
         self.assertEqual(str(data["motion_edit_target_anchor_id"]), "anchor_dst")
         self.assertEqual(json.loads(str(data["motion_edit_contact_transition"]))["transition_id"], "motion_a_force_transition_0000")
+        self.assertEqual(json.loads(str(data["motion_edit_old_anchor_world"])), [0.0, 0.0, 0.0])
+        self.assertEqual(json.loads(str(data["motion_edit_new_anchor_world"])), [0.1, 0.0, 0.0])
+        self.assertEqual(json.loads(str(data["motion_edit_delta_world"])), [0.1, 0.0, 0.0])
+        self.assertEqual(json.loads(str(data["motion_edit_affected_frames"])), [1, 4])
+        self.assertEqual(json.loads(str(data["motion_edit_contact_patches"]))[0]["patch_type"], "foot")
 
     def test_manifest_includes_contact_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -102,10 +112,16 @@ class ExportContactMetadataTests(unittest.TestCase):
         self.assertEqual(item["support_bodies"], ["RF"])
         self.assertEqual(item["source_anchor_id"], "anchor_src")
         self.assertEqual(item["target_anchor_id"], "anchor_dst")
+        self.assertEqual(item["old_anchor_world"], [0.0, 0.0, 0.0])
+        self.assertEqual(item["new_anchor_world"], [0.1, 0.0, 0.0])
+        self.assertEqual(item["delta_world"], [0.1, 0.0, 0.0])
+        self.assertEqual(item["affected_frames"], [1, 4])
         self.assertEqual(item["transition_type"], "support_transfer")
         self.assertEqual(item["contact_metadata"]["event_count"], 1)
         self.assertEqual(item["contact_metadata"]["anchor_count"], 2)
         self.assertEqual(item["contact_metadata"]["patch_count"], 1)
+        self.assertEqual(item["contact_metadata"]["patches"][0]["patch_type"], "foot")
+        self.assertEqual(item["contact_metadata"]["anchor_edit"]["edit_type"], "move_contact_anchor")
 
 
 if __name__ == "__main__":
