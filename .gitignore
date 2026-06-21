@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+build/
+dist/
+*.egg-info/
+
+# Generated binary motion exports can be reproduced from layers.
+data/exports/motions/
+data/exports/split_npz/
+
+# Local logs or scratch files.
+*.log
+tmp/
