@@ -36,6 +36,9 @@ class CurationUpsertTests(unittest.TestCase):
 
         self.assertEqual([segment.segment_id for segment in accepted], ["seg_a", "seg_b"])
         self.assertTrue(all(segment.status == "accepted" for segment in accepted))
+        self.assertEqual(accepted[0].metadata["motion_edit_edits"][-1]["kind"], "curate")
+        self.assertEqual(accepted[0].metadata["motion_edit_edits"][-1]["source"], "cli")
+        self.assertEqual(accepted[0].metadata["motion_edit_edits"][-1]["params"]["new_status"], "accepted")
 
     def test_load_layer_segments_reads_candidate_layer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

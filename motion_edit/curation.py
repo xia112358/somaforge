@@ -51,10 +51,29 @@ def filter_segments(
     return selected
 
 
+def _with_curation_edit(segment: SegmentRecord, *, status: str, layer_name: str) -> SegmentRecord:
+    metadata = dict(segment.metadata)
+    edits = list(metadata.get("motion_edit_edits") or [])
+    edits.append(
+        {
+            "kind": "curate",
+            "source": "cli",
+            "parent_segment_id": segment.segment_id,
+            "params": {
+                "old_status": segment.status,
+                "new_status": status,
+                "layer_name": layer_name,
+            },
+        }
+    )
+    metadata["motion_edit_edits"] = edits
+    return replace(segment, status=status, metadata=metadata)
+
+
 def write_status_layer(status: str, layer_name: str, segments: list[SegmentRecord]) -> Path:
     root = LAYERS_ROOT / status / layer_name
     root.mkdir(parents=True, exist_ok=True)
-    changed = [replace(segment, status=status) for segment in segments]
+    changed = [_with_curation_edit(segment, status=status, layer_name=layer_name) for segment in segments]
     by_motion = group_by_motion(changed)
     for motion_id, items in by_motion.items():
         path = root / f"{motion_id}.jsonl"
