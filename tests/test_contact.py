@@ -280,9 +280,33 @@ class ContactEventTests(unittest.TestCase):
         self.assertTrue(any(event.event_type == "touchdown" for event in graph.events))
         self.assertEqual(len(graph.anchors), 2)
         self.assertEqual(len(graph.patches), 2)
+        self.assertEqual(graph.patches[0].patch_type, "foot")
         self.assertEqual(graph.transitions[0].active_body, "LF")
         self.assertEqual(graph.to_dict()["motion_id"], "motion_a")
         self.assertEqual(len(graph.to_dict()["patches"]), 2)
+
+    def test_contact_patch_uses_anchor_position_and_patch_preset(self) -> None:
+        contact = np.asarray([[True, False], [True, False], [False, False]])
+        body_pos_w = np.asarray(
+            [
+                [[1.0, 2.0, 0.0], [0.0, 0.0, 0.0]],
+                [[1.2, 2.0, 0.0], [0.0, 0.0, 0.0]],
+                [[9.0, 9.0, 9.0], [0.0, 0.0, 0.0]],
+            ]
+        )
+
+        graph = contact_graph_from_masks(
+            motion_id="motion_a",
+            contact_mask=contact,
+            body_pos_w=body_pos_w,
+            body_names=["left_foot", "right_foot"],
+        )
+
+        patch = graph.patches[0]
+        self.assertEqual(patch.patch_type, "foot")
+        self.assertEqual(patch.patch_center_world, [1.1, 2.0, 0.0])
+        self.assertEqual(patch.link_names, ["left_foot", "left_foot_sole"])
+        self.assertAlmostEqual(patch.slip_score or 0.0, 0.1)
 
     def test_contact_layer_roundtrips_graph_components(self) -> None:
         graph = contact_graph_from_masks(
