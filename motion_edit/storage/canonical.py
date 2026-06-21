@@ -9,7 +9,7 @@ from motion_edit.contact.transitions import segment_from_contact_transition
 from motion_edit.layers import read_layer
 from motion_edit.paths import LAYERS_ROOT
 from motion_edit.schema import SegmentRecord
-from motion_edit.storage.io import canonical_segment_path, write_canonical_segments, write_motion_version
+from motion_edit.storage.io import canonical_segment_path, read_canonical_segments, write_canonical_segments, write_motion_version
 from motion_edit.storage.schema import MotionVersionRecord
 
 
@@ -124,3 +124,28 @@ def write_motion_version_with_canonical_segments(
     )
     write_motion_version(record)
     return record, segment_path
+
+
+def mark_canonical_segment_status(
+    *,
+    motion_version_id: str,
+    segment_id: str,
+    status: str,
+) -> list[SegmentRecord]:
+    segments = read_canonical_segments(motion_version_id)
+    updated: list[SegmentRecord] = []
+    found = False
+    for segment in segments:
+        if segment.segment_id == segment_id:
+            metadata = dict(segment.metadata)
+            history = list(metadata.get("status_history") or [])
+            history.append({"old_status": segment.status, "new_status": status, "source": "mark_segment_status"})
+            metadata["status_history"] = history
+            updated.append(replace(segment, status=status, metadata=metadata))  # type: ignore[arg-type]
+            found = True
+        else:
+            updated.append(segment)
+    if not found:
+        raise ValueError(f"segment not found in canonical segmentation: {segment_id}")
+    write_canonical_segments(motion_version_id, updated)
+    return updated

@@ -212,6 +212,38 @@ class StorageSchemaTests(unittest.TestCase):
             self.assertEqual(segments[0].metadata["motion_version_id"], "motion_a_raw")
             self.assertIn("contact_transition", segments[0].metadata)
 
+    def test_mark_segment_status_updates_canonical_segmentation(self) -> None:
+        segment = SegmentRecord(
+            motion_id="motion_a",
+            segment_id="seg_0",
+            start_frame=0,
+            end_frame=2,
+            source="canonical",
+            status="candidate",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(storage_io, "SEGMENTS_ROOT", root / "segments"):
+                write_canonical_segments("motion_a_raw", [segment])
+                cli._cmd_mark_segment_status(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "motion_version_id": "motion_a_raw",
+                            "segment_id": "seg_0",
+                            "status": "accepted",
+                        },
+                    )()
+                )
+                loaded = read_canonical_segments("motion_a_raw")
+
+            self.assertFalse((root / "layers" / "accepted").exists())
+
+        self.assertEqual(loaded[0].status, "accepted")
+        self.assertEqual(loaded[0].metadata["status_history"][0]["old_status"], "candidate")
+        self.assertEqual(loaded[0].metadata["status_history"][0]["new_status"], "accepted")
+
 
 if __name__ == "__main__":
     unittest.main()
