@@ -14,6 +14,10 @@ def _optional_mask(data: np.lib.npyio.NpzFile, key: str) -> np.ndarray | None:
     return np.asarray(data[key], dtype=bool) if key in data else None
 
 
+def _optional_indices(data: np.lib.npyio.NpzFile, key: str) -> np.ndarray:
+    return np.asarray(data[key], dtype=np.int64) if key in data else np.asarray([], dtype=np.int64)
+
+
 def _body_names(data: np.lib.npyio.NpzFile) -> list[str] | None:
     for key in ("contact_body_names", "body_names", "contact_part_names", "part_names"):
         if key not in data:
@@ -35,8 +39,8 @@ class _MaskedMotion(NamedTuple):
 def _load_masked_motion(path: Path) -> _MaskedMotion:
     with np.load(path, allow_pickle=True) as data:
         return _MaskedMotion(
-            starts=np.asarray(data["proto_start_idx"], dtype=np.int64),
-            ends=np.asarray(data["proto_end_idx"], dtype=np.int64),
+            starts=_optional_indices(data, "proto_start_idx"),
+            ends=_optional_indices(data, "proto_end_idx"),
             contact=_optional_mask(data, "contact_part_mask"),
             active=_optional_mask(data, "active_part_mask"),
             support=_optional_mask(data, "support_part_mask"),

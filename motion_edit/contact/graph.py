@@ -36,8 +36,8 @@ def contact_graph_from_masks(
     body_names: Iterable[str] | None = None,
     source: str = "contact_mask",
 ) -> ContactGraph:
-    starts = list(proto_starts or [])
-    ends = list(proto_ends or [])
+    starts = list(proto_starts) if proto_starts is not None else []
+    ends = list(proto_ends) if proto_ends is not None else []
     events, anchors, transitions = transitions_from_proto_indices(
         motion_id=motion_id,
         starts=starts,
@@ -56,4 +56,3 @@ def contact_graph_from_masks(
             source=source,
         )
     return ContactGraph(motion_id=motion_id, events=events, anchors=anchors, transitions=transitions)
-

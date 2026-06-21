@@ -53,6 +53,52 @@ def _write_proto_motion(path: Path) -> None:
 
 
 class ForceProtoContactTests(unittest.TestCase):
+    def test_contact_graph_accepts_multi_proto_numpy_indices(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "motion_multi.npz"
+            np.savez(
+                path,
+                proto_start_idx=np.asarray([0, 2]),
+                proto_end_idx=np.asarray([2, 5]),
+                contact_part_mask=np.asarray(
+                    [
+                        [True, False],
+                        [False, False],
+                        [True, False],
+                        [True, True],
+                        [False, True],
+                    ]
+                ),
+                contact_body_names=np.asarray(["LF", "RF"]),
+            )
+
+            graph = contact_graph_from_masked_motion(path)
+
+        self.assertEqual(len(graph.transitions), 2)
+
+    def test_force_proto_without_proto_indices_derives_segments_from_event_pairs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "motion_events.npz"
+            np.savez(
+                path,
+                contact_part_mask=np.asarray(
+                    [
+                        [True, False],
+                        [False, False],
+                        [True, False],
+                        [True, False],
+                    ]
+                ),
+                contact_body_names=np.asarray(["LF", "RF"]),
+            )
+
+            segments = segments_from_masked_motion(path)
+            graph = contact_graph_from_masked_motion(path)
+
+        self.assertEqual(len(segments), 1)
+        self.assertEqual((segments[0].start_frame, segments[0].end_frame), (1, 2))
+        self.assertEqual(len(graph.transitions), 1)
+
     def test_force_proto_segments_include_structured_contact_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "motion_a.npz"
