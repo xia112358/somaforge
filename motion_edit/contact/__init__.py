@@ -21,6 +21,7 @@ from .schema import (
     ContactPatchRecord,
     ContactTransitionRecord,
 )
+from .surfaces import bind_anchor_to_plane
 from .transitions import (
     mask_string,
     segment_from_contact_transition,
@@ -37,6 +38,7 @@ __all__ = [
     "ContactTransitionRecord",
     "anchors_from_contact_mask",
     "bind_segment_to_contact_graph",
+    "bind_anchor_to_plane",
     "bodies_from_mask",
     "body_names_for_mask",
     "contact_graph_from_masks",

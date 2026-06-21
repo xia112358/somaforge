@@ -8,6 +8,7 @@ import numpy as np
 
 from motion_edit.contact import (
     anchors_from_contact_mask,
+    bind_anchor_to_plane,
     bind_segment_to_contact_graph,
     contact_graph_from_masks,
     detect_contact_events,
@@ -220,6 +221,34 @@ class ContactEventTests(unittest.TestCase):
         self.assertEqual(edit.surface_id, "top")
         self.assertEqual(edit.constraint_mode, "clamp")
         self.assertTrue(edit.clamped)
+
+    def test_bind_anchor_to_plane_creates_surface_binding_for_safe_moves(self) -> None:
+        anchor = ContactAnchorRecord(
+            motion_id="motion_a",
+            anchor_id="anchor_lf",
+            body="left_foot",
+            start_frame=0,
+            end_frame=10,
+            world_position=[0.2, 0.3, 0.0],
+        )
+
+        bound = bind_anchor_to_plane(
+            anchor,
+            surface_id="platform_top",
+            normal=[0.0, 0.0, 1.0],
+            origin=[0.0, 0.0, 0.0],
+            tangent_u=[1.0, 0.0, 0.0],
+            tangent_v=[0.0, 1.0, 0.0],
+            bounds={"u": [0.0, 1.0], "v": [0.0, 1.0]},
+            surface_type="box_face",
+            source="terrain_binding",
+        )
+        moved, edit = move_contact_anchor_on_surface(bound, tangent_delta=[0.1, 0.0])
+
+        self.assertEqual(bound.surface_coordinates, {"u": 0.2, "v": 0.3})
+        self.assertEqual(bound.surface_binding_source, "terrain_binding")
+        self.assertEqual(moved.world_position, [0.30000000000000004, 0.3, 0.0])
+        self.assertEqual(edit.surface_id, "platform_top")
 
     def test_move_anchor_in_graph_updates_anchor_patch_and_returns_edit(self) -> None:
         graph = contact_graph_from_masks(
