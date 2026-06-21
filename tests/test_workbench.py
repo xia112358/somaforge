@@ -428,6 +428,8 @@ class WorkbenchCliTests(unittest.TestCase):
         overlay_args = parser.parse_args(
             ["export-contact-overlay", "--source", "contact/force_contact", "--motion-id", "motion_a", "--output", "overlay.json"]
         )
+        validate_plan_args = parser.parse_args(["validate-contact-edit-plan", "--plan", "plan.json"])
+        generate_args = parser.parse_args(["generate-lte-augmentation", "--plan", "plan.json", "--output-motion", "out.npz"])
         move_anchor_args = parser.parse_args(
             [
                 "move-contact-anchor",
@@ -455,6 +457,9 @@ class WorkbenchCliTests(unittest.TestCase):
         self.assertEqual(workbench_args.cmd, "workbench-action")
         self.assertEqual(contact_args.cmd, "list-contact-layer")
         self.assertEqual(overlay_args.cmd, "export-contact-overlay")
+        self.assertEqual(validate_plan_args.cmd, "validate-contact-edit-plan")
+        self.assertEqual(generate_args.cmd, "generate-lte-augmentation")
+        self.assertFalse(generate_args.allow_draft)
         self.assertEqual(move_anchor_args.cmd, "move-contact-anchor")
         self.assertEqual(move_anchor_args.delta_world, [0.1, 0.0, 0.0])
         self.assertIsNone(move_anchor_args.tangent_delta)

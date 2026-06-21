@@ -22,6 +22,7 @@ from .contact import (
     write_contact_edit_plan,
     write_contact_layer,
 )
+from .contact.generation import apply_contact_edit_plan_to_motion
 from .contact.layers import read_contact_graph
 from .viewer import launch_viewer
 from .workbench import (
@@ -153,6 +154,14 @@ def _cmd_validate_contact_edit_plan(args: argparse.Namespace) -> None:
     print(f"validated contact edit plan {args.plan} edits={len(plan.edits)} status={plan.status}")
     for warning in warnings:
         print(f"warning: {warning}")
+
+
+def _cmd_generate_lte_augmentation(args: argparse.Namespace) -> None:
+    plan = read_contact_edit_plan(args.plan)
+    if plan.status not in {"validated", "locked"} and not args.allow_draft:
+        raise ValueError("contact edit plan must be validated or locked; pass --allow-draft to override")
+    output = apply_contact_edit_plan_to_motion(plan, output_motion_path=args.output_motion, mode=args.mode)
+    print(f"generated LTE augmentation {output}")
 
 
 def _cmd_summarize(_args: argparse.Namespace) -> None:
@@ -460,6 +469,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--allow-free", action="store_true")
     p.add_argument("--no-write", action="store_true")
     p.set_defaults(func=_cmd_validate_contact_edit_plan)
+
+    p = sub.add_parser("generate-lte-augmentation")
+    p.add_argument("--plan", required=True)
+    p.add_argument("--output-motion", required=True)
+    p.add_argument("--allow-draft", action="store_true")
+    p.add_argument("--mode", default="stub")
+    p.set_defaults(func=_cmd_generate_lte_augmentation)
 
     p = sub.add_parser("export-manifest")
     p.add_argument("--source", required=True, help="Layer path relative to data/layers")

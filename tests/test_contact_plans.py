@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 import argparse
+from unittest import mock
 
 from motion_edit import cli
 from motion_edit.contact import (
@@ -169,6 +170,48 @@ class ContactEditPlanTests(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 cli._cmd_validate_contact_edit_plan(argparse.Namespace(plan=str(path), allow_free=False, no_write=False))
+
+    def test_generate_lte_augmentation_refuses_draft_plan_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "plan.json"
+            write_contact_edit_plan(
+                path,
+                ContactEditPlan(
+                    plan_id="plan_a",
+                    source_motion_path="motion_a.npz",
+                    source_motion_id="motion_a",
+                    source_contact_layer="contact/force_contact",
+                    edits=[_surface_edit().to_dict()],
+                ),
+            )
+
+            with mock.patch.object(cli, "apply_contact_edit_plan_to_motion") as apply_mock:
+                with self.assertRaises(ValueError):
+                    cli._cmd_generate_lte_augmentation(
+                        argparse.Namespace(plan=str(path), output_motion="out.npz", allow_draft=False, mode="stub")
+                    )
+
+        apply_mock.assert_not_called()
+
+    def test_generate_lte_augmentation_calls_explicit_backend_for_validated_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "plan.json"
+            write_contact_edit_plan(
+                path,
+                ContactEditPlan(
+                    plan_id="plan_a",
+                    source_motion_path="motion_a.npz",
+                    source_motion_id="motion_a",
+                    source_contact_layer="contact/force_contact",
+                    edits=[_surface_edit().to_dict()],
+                    status="validated",
+                ),
+            )
+
+            with self.assertRaises(NotImplementedError):
+                cli._cmd_generate_lte_augmentation(
+                    argparse.Namespace(plan=str(path), output_motion="out.npz", allow_draft=False, mode="stub")
+                )
 
 
 if __name__ == "__main__":

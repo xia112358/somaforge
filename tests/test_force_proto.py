@@ -230,7 +230,9 @@ class ForceProtoContactTests(unittest.TestCase):
                     source_motion=str(motion_path),
                     source_segments="candidates/force_contact",
                 )
-                cli._cmd_move_contact_anchor(move_args)
+                with mock.patch.object(cli, "apply_contact_edit_plan_to_motion") as apply_mock:
+                    cli._cmd_move_contact_anchor(move_args)
+                apply_mock.assert_not_called()
                 plan = json.loads(plan_path.read_text(encoding="utf-8"))
                 motion_bytes_after_move = motion_path.read_bytes()
 
