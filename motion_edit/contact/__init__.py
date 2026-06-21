@@ -1,4 +1,5 @@
 from .anchors import anchors_from_contact_mask
+from .bindings import bind_segment_to_contact_graph, contact_metadata_for_bounds
 from .events import bodies_from_mask, body_names_for_mask, detect_contact_events
 from .graph import ContactGraph, contact_graph_from_masks
 from .io import (
@@ -30,9 +31,11 @@ __all__ = [
     "ContactPatchRecord",
     "ContactTransitionRecord",
     "anchors_from_contact_mask",
+    "bind_segment_to_contact_graph",
     "bodies_from_mask",
     "body_names_for_mask",
     "contact_graph_from_masks",
+    "contact_metadata_for_bounds",
     "detect_contact_events",
     "mask_string",
     "read_contact_anchors",

@@ -8,6 +8,7 @@ import numpy as np
 
 from motion_edit.contact import (
     anchors_from_contact_mask,
+    bind_segment_to_contact_graph,
     contact_graph_from_masks,
     detect_contact_events,
     read_contact_anchors,
@@ -19,6 +20,7 @@ from motion_edit.contact import (
     write_contact_jsonl,
     write_contact_layer,
 )
+from motion_edit.schema import SegmentRecord
 
 
 class ContactEventTests(unittest.TestCase):
@@ -221,6 +223,28 @@ class ContactEventTests(unittest.TestCase):
             [transition.transition_id for transition in loaded.transitions],
             [transition.transition_id for transition in graph.transitions],
         )
+
+    def test_bind_segment_to_contact_graph_refreshes_metadata_for_bounds(self) -> None:
+        graph = contact_graph_from_masks(
+            motion_id="motion_a",
+            contact_mask=np.asarray([[True, False], [False, False], [True, False]]),
+            body_names=["LF", "RF"],
+            source="test",
+        )
+        segment = SegmentRecord(
+            motion_id="motion_a",
+            segment_id="segment_a",
+            start_frame=1,
+            end_frame=2,
+            source="manual",
+            metadata={"contact_transition": {"stale": True}},
+        )
+
+        bound = bind_segment_to_contact_graph(segment, graph)
+
+        self.assertEqual(bound.metadata["contact_transition"]["transition_id"], graph.transitions[0].transition_id)
+        self.assertEqual(bound.metadata["contact_binding"]["transition_id"], graph.transitions[0].transition_id)
+        self.assertEqual(bound.metadata["active_body"], "LF")
 
 
 if __name__ == "__main__":

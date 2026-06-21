@@ -8,7 +8,7 @@ from pathlib import Path
 from motion_edit.io import read_jsonl, segment_from_dict, write_jsonl
 from motion_edit.paths import LAYERS_ROOT, WORKBENCH_ROOT
 from motion_edit.schema import SegmentRecord
-from motion_edit.contact import read_contact_graph
+from motion_edit.contact import bind_segment_to_contact_graph, read_contact_graph
 from motion_edit.export import export_contact_overlay
 from motion_edit.workbench.state import load_workbench_segments, upsert_workbench_segments, write_workbench_segments
 
@@ -100,6 +100,18 @@ def _export_session_contact_overlay(
     return export_contact_overlay(out, graph)
 
 
+def _read_source_contact_graph(
+    *,
+    motion_id: str,
+    source_layer: str,
+    layers_root: Path,
+):
+    contact_layer = _source_contact_layer(source_layer, layers_root=layers_root)
+    if not contact_layer.exists():
+        return None
+    return read_contact_graph(contact_layer, motion_id)
+
+
 def export_cutter_session_file(
     *,
     motion_id: str,
@@ -174,6 +186,7 @@ def segments_from_cutter_file(
     records = read_jsonl(path)
     motion_id = path.name.removesuffix(".segments.jsonl")
     source_ids = _source_segment_ids(source_layer, motion_id=motion_id, layers_root=layers_root)
+    contact_graph = _read_source_contact_graph(motion_id=motion_id, source_layer=source_layer, layers_root=layers_root)
     segments: list[SegmentRecord] = []
     for item in records:
         parsed = segment_from_dict(item, default_source="viser_cutter", default_status="manual")
@@ -188,12 +201,14 @@ def segments_from_cutter_file(
             "original_segment_id": original_segment_id,
             "edit_source": "viser_cutter",
         }
+        parsed = replace(parsed, metadata=existing_meta)
+        if contact_graph is not None:
+            parsed = bind_segment_to_contact_graph(parsed, contact_graph)
         segments.append(
             replace(
                 parsed,
                 source="viser_cutter",
                 status="manual",
-                metadata=existing_meta,
             )
         )
     return sorted(segments, key=lambda segment: (segment.motion_id, segment.start_frame, segment.end_frame, segment.segment_id))

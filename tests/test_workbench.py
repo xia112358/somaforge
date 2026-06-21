@@ -187,6 +187,24 @@ class CutterSessionTests(unittest.TestCase):
             layers_root = root / "layers"
             workbench_root = root / "workbench"
             write_workbench_segments("candidates/source", [_segment(), _segment_b()], layers_root=layers_root)
+            contact = np.zeros((60, 2), dtype=bool)
+            contact[:, 1] = True
+            contact[12:28, 0] = True
+            active = np.zeros((60, 2), dtype=bool)
+            active[12:28, 0] = True
+            support = np.zeros((60, 2), dtype=bool)
+            support[:, 1] = True
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=contact,
+                active_mask=active,
+                support_mask=support,
+                proto_starts=[12],
+                proto_ends=[28],
+                body_names=["LF", "RF"],
+                source="source",
+            )
+            write_contact_layer(layers_root / "contact" / "source", graph)
             session = export_cutter_session_file(
                 motion_id="motion_a",
                 source_layer="candidates/source",
@@ -226,6 +244,9 @@ class CutterSessionTests(unittest.TestCase):
             self.assertEqual(first_meta["edit_source"], "viser_cutter")
             self.assertEqual(first_meta["original_segment_id"], "motion_a_force_0000")
             self.assertIsNone(new_meta["original_segment_id"])
+            self.assertEqual(synced[0].metadata["active_body"], "LF")
+            self.assertEqual(synced[0].metadata["support_bodies"], ["RF"])
+            self.assertEqual(synced[0].metadata["contact_binding"]["transition_id"], graph.transitions[0].transition_id)
             edit = synced[0].metadata["motion_edit_edits"][-1]
             self.assertEqual(edit["kind"], "import_from_cutter")
             self.assertEqual(edit["source"], "viser_cutter")
