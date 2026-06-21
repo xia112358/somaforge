@@ -30,7 +30,9 @@ data/
 ```bash
 ~/motion_edit/motion-edit import-force-proto --motion-dir /path/to/masked_motions --layer-name force_contact
 ~/motion_edit/motion-edit list-contact-layer --source contact/force_contact --motion-id climb_00_z_scale_1.0
-~/motion_edit/motion-edit move-contact-anchor --source contact/force_contact --motion-id climb_00_z_scale_1.0 --anchor-id climb_00_z_scale_1.0_anchor_LF_000100_000140 --delta-world 0.10 0.0 0.0 --output-source contact/force_contact_farther
+~/motion_edit/motion-edit move-contact-anchor --source contact/force_contact --motion-id climb_00_z_scale_1.0 --anchor-id climb_00_z_scale_1.0_anchor_LF_000100_000140 --delta-world 0.10 0.0 0.0 --output-source contact/force_contact_farther --edit-plan data/workbench/climb00_farther.json --source-motion /path/to/climb_00_z_scale_1.0.npz
+~/motion_edit/motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
+~/motion_edit/motion-edit generate-lte-augmentation --plan data/workbench/climb00_farther.json --output-motion data/exports/motions/climb00_farther.npz
 ~/motion_edit/motion-edit export-contact-overlay --source contact/force_contact --motion-id climb_00_z_scale_1.0 --output data/exports/contact_overlays/climb_00.json
 ~/motion_edit/motion-edit import-manual-cuts --segments-dir /path/to/data/motion_viewer/segments --layer-name current
 ~/motion_edit/motion-edit export-cutter-segments --source candidates/force_contact
@@ -54,6 +56,7 @@ data/
 - `ContactEventRecord`: a contact state change such as touchdown, liftoff, support switch, or active body change.
 - `ContactAnchorRecord`: a persistent body-part contact interval. This is the primary handle for later visual editing.
 - `ContactPatchRecord`: a concrete contact patch attached to an anchor, currently derived from anchor intervals.
+- `ContactEditPlan`: a staged set of contact-anchor edits. It is a plan for later augmentation, not an augmented motion.
 - `ContactTransitionRecord`: a transfer segment between contact states or anchors.
 - `ContactGraph`: the per-motion aggregate of events, anchors, patches, and transitions.
 - `SegmentRecord`: one motion interval with `source`, `status`, backward-compatible mask strings, structured contact metadata, and cutter export fields.
@@ -97,6 +100,35 @@ If proto boundaries are missing, initial segments can be derived from contact ev
 
 Contact anchors are editable first-class objects. When `body_pos_w` is available, anchor extraction estimates `world_position` from the mean body position over the contact interval and stores drift statistics. `move-contact-anchor` writes a new ContactLayer and records a `move_contact_anchor` edit without deforming the source motion. This is the persistent representation for edits such as "move this foot contact 10 cm farther."
 
+## Contact Anchor Edit Plans
+
+Contact-anchor editing is intentionally two-stage.
+
+Stage 1 stages edits only:
+
+```bash
+~/motion_edit/motion-edit move-contact-anchor \
+  --source contact/force_contact \
+  --motion-id climb_00_z_scale_1.0 \
+  --anchor-id <anchor_id> \
+  --delta-world 0.10 0.0 0.0 \
+  --output-source contact/climb00_anchor_farther \
+  --edit-plan data/workbench/climb00_farther.json \
+  --source-motion /path/to/climb_00_z_scale_1.0.npz \
+  --source-segments candidates/force_contact
+```
+
+This writes a moved ContactLayer and appends a `ContactAnchorEditRecord` to the plan. It does not modify the source `.npz` and does not run LTE/contact deformation.
+
+Stage 2 generates augmented motion explicitly:
+
+```bash
+~/motion_edit/motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
+~/motion_edit/motion-edit generate-lte-augmentation --plan data/workbench/climb00_farther.json --output-motion data/exports/motions/climb00_farther.npz
+```
+
+Generation requires a `validated` or `locked` plan by default. The generation backend is currently a stub that raises a clear `NotImplementedError`; this keeps anchor dragging from accidentally producing augmented motions before the LTE/contact deformation backend is implemented.
+
 ## OmniRetarget Compatibility
 
 `detect-motion` resolves common OmniRetarget/Holosoma paths:
@@ -127,7 +159,8 @@ The cutter is still the visual frontend. `motion_edit` owns the durable session,
 ~/motion_edit/motion-edit import-force-proto --motion-dir /path/to/masked_motions --layer-name force_contact
 ~/motion_edit/motion-edit list-layer --source candidates/force_contact --motion-id climb_00_z_scale_1.0
 ~/motion_edit/motion-edit list-contact-layer --source contact/force_contact --motion-id climb_00_z_scale_1.0
-~/motion_edit/motion-edit move-contact-anchor --source contact/force_contact --motion-id climb_00_z_scale_1.0 --anchor-id <anchor_id> --delta-world 0.10 0.0 0.0 --output-source contact/climb00_anchor_farther
+~/motion_edit/motion-edit move-contact-anchor --source contact/force_contact --motion-id climb_00_z_scale_1.0 --anchor-id <anchor_id> --delta-world 0.10 0.0 0.0 --output-source contact/climb00_anchor_farther --edit-plan data/workbench/climb00_farther.json --source-motion /path/to/climb_00_z_scale_1.0.npz --source-segments candidates/force_contact
+~/motion_edit/motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
 ~/motion_edit/motion-edit cutter /path/to/climb_00_z_scale_1.0.npz --source candidates/force_contact --session-name climb00_check --with-terrain
 ~/motion_edit/motion-edit accept --source candidates/force_contact --layer-name climb00_checked --motion-id climb_00_z_scale_1.0 --index 0 --index 1
 ~/motion_edit/motion-edit export-split-npz --source accepted/climb00_checked
