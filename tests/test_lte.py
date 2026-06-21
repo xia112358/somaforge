@@ -78,9 +78,14 @@ class LteContactImportTests(unittest.TestCase):
         self.assertEqual(imported[0].metadata["source_anchor_id"], "anchor_old")
         self.assertEqual(imported[0].metadata["target_anchor_id"], "anchor_new")
         self.assertEqual(imported[0].metadata["active_body"], "LF")
+        self.assertEqual(imported[0].metadata["contact_anchor_edit"]["edit_type"], "move_contact_anchor")
+        self.assertEqual(imported[0].metadata["contact_anchor_edit"]["old_world_position"], [0.0, 0.0, 0.0])
+        self.assertEqual(imported[0].metadata["contact_anchor_edit"]["new_world_position"], [0.2, 0.0, 0.0])
+        self.assertEqual(imported[0].metadata["contact_anchor_edit"]["delta_world"], [0.2, 0.0, 0.0])
+        self.assertEqual(imported[0].metadata["contact_anchor_edit"]["affected_frames"], [1, 4])
+        self.assertEqual(imported[0].metadata["contact_lte"]["anchor_edit"]["edit_type"], "move_contact_anchor")
         self.assertEqual(edits["kind"], "contact_lte")
 
 
 if __name__ == "__main__":
     unittest.main()
-
