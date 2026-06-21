@@ -9,6 +9,7 @@ from .io import (
     read_contact_transitions,
     write_contact_jsonl,
 )
+from .layers import read_contact_graph, write_contact_layer
 from .schema import (
     ContactAnchorRecord,
     ContactEventRecord,
@@ -39,8 +40,10 @@ __all__ = [
     "read_contact_jsonl",
     "read_contact_patches",
     "read_contact_transitions",
+    "read_contact_graph",
     "segment_from_contact_transition",
     "transitions_from_event_pairs",
     "transitions_from_proto_indices",
     "write_contact_jsonl",
+    "write_contact_layer",
 ]

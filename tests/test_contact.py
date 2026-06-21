@@ -12,10 +12,12 @@ from motion_edit.contact import (
     detect_contact_events,
     read_contact_anchors,
     read_contact_events,
+    read_contact_graph,
     read_contact_transitions,
     segment_from_contact_transition,
     transitions_from_proto_indices,
     write_contact_jsonl,
+    write_contact_layer,
 )
 
 
@@ -199,6 +201,26 @@ class ContactEventTests(unittest.TestCase):
         self.assertEqual(len(graph.anchors), 2)
         self.assertEqual(graph.transitions[0].active_body, "LF")
         self.assertEqual(graph.to_dict()["motion_id"], "motion_a")
+
+    def test_contact_layer_roundtrips_graph_components(self) -> None:
+        graph = contact_graph_from_masks(
+            motion_id="motion_a",
+            contact_mask=np.asarray([[True, False], [False, False], [True, False]]),
+            body_names=["LF", "RF"],
+            source="test",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "contact_layer"
+            write_contact_layer(root, graph)
+            loaded = read_contact_graph(root, "motion_a")
+
+        self.assertEqual([event.event_id for event in loaded.events], [event.event_id for event in graph.events])
+        self.assertEqual([anchor.anchor_id for anchor in loaded.anchors], [anchor.anchor_id for anchor in graph.anchors])
+        self.assertEqual(
+            [transition.transition_id for transition in loaded.transitions],
+            [transition.transition_id for transition in graph.transitions],
+        )
 
 
 if __name__ == "__main__":
