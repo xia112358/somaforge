@@ -11,6 +11,22 @@ from motion_edit.schema import EditRecord, MotionRef, SegmentRecord
 from motion_edit.layers import write_layer
 
 
+CONTACT_LTE_FIELDS = (
+    "contact_edits",
+    "source_anchor_id",
+    "target_anchor_id",
+    "old_anchor_world",
+    "new_anchor_world",
+    "affected_frames",
+    "body",
+    "patch_id",
+)
+
+
+def _contact_lte_metadata(sample: dict) -> dict:
+    return {key: sample.get(key) for key in CONTACT_LTE_FIELDS if key in sample}
+
+
 def import_lte_catalog(catalog_path: str | Path, *, layer_name: str = "lte") -> tuple[int, int]:
     path = Path(catalog_path).expanduser().resolve()
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -35,11 +51,27 @@ def import_lte_catalog(catalog_path: str | Path, *, layer_name: str = "lte") -> 
             "max_offset_acceleration": sample.get("max_offset_acceleration"),
             "catalog": str(path),
         }
+        contact_lte = _contact_lte_metadata(sample)
+        if contact_lte:
+            metadata["contact_lte"] = {
+                "kind": "contact_lte",
+                "source_anchor_id": contact_lte.get("source_anchor_id"),
+                "target_anchor_id": contact_lte.get("target_anchor_id"),
+                "contact_edits": contact_lte.get("contact_edits"),
+                "old_anchor_world": contact_lte.get("old_anchor_world"),
+                "new_anchor_world": contact_lte.get("new_anchor_world"),
+                "affected_frames": contact_lte.get("affected_frames"),
+                "body": contact_lte.get("body"),
+                "patch_id": contact_lte.get("patch_id"),
+            }
+            metadata["source_anchor_id"] = contact_lte.get("source_anchor_id")
+            metadata["target_anchor_id"] = contact_lte.get("target_anchor_id")
+            metadata["active_body"] = contact_lte.get("body")
         motion_refs.append(MotionRef(motion_id=sample_name, path=motion_path, metadata=metadata))
         edits.append(
             EditRecord(
                 edit_id=f"{sample_name}_lte",
-                kind="lte",
+                kind="contact_lte" if contact_lte else "lte",
                 source="lte_catalog",
                 params=metadata,
                 output_motion_id=sample_name,

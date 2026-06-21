@@ -24,6 +24,20 @@ def export_motion_manifest(path: str | Path, segments: list[SegmentRecord]) -> P
                         "end_frame": item.end_frame,
                         "source": item.source,
                         "status": item.status,
+                        "active": item.active,
+                        "support": item.support,
+                        "contact_start": item.contact_start,
+                        "contact_end": item.contact_end,
+                        "transition_type": item.metadata.get("transition_type"),
+                        "source_anchor_id": item.metadata.get("source_anchor_id"),
+                        "target_anchor_id": item.metadata.get("target_anchor_id"),
+                        "active_body": item.metadata.get("active_body"),
+                        "support_bodies": item.metadata.get("support_bodies"),
+                        "contact_metadata": {
+                            "transition": item.metadata.get("contact_transition"),
+                            "event_count": len(item.metadata.get("contact_events") or []),
+                            "anchor_count": len(item.metadata.get("contact_anchors") or []),
+                        },
                     }
                     for item in items
                 ],

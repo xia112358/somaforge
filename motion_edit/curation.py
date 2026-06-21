@@ -8,14 +8,25 @@ from motion_edit.paths import LAYERS_ROOT
 from motion_edit.schema import SegmentRecord
 
 
+def _default_status_for(path: Path) -> str:
+    if "candidates" in path.parts:
+        return "candidate"
+    if "accepted" in path.parts:
+        return "accepted"
+    if "rejected" in path.parts:
+        return "rejected"
+    if "manual" in path.parts:
+        return "manual"
+    return "candidate"
+
+
 def load_layer_segments(source: str) -> list[SegmentRecord]:
     source_path = LAYERS_ROOT / source
     if source_path.is_file():
-        return read_layer(source_path, default_source=source_path.stem, default_status="candidate")
+        return read_layer(source_path, default_source=source_path.stem, default_status=_default_status_for(source_path))
     segments: list[SegmentRecord] = []
     for path in iter_layer_files(source_path):
-        default_status = "candidate" if "candidates" in source_path.parts else source_path.name
-        segments.extend(read_layer(path, default_source=source_path.name, default_status=default_status))
+        segments.extend(read_layer(path, default_source=source_path.name, default_status=_default_status_for(source_path)))
     return segments
 
 
@@ -44,6 +55,18 @@ def write_status_layer(status: str, layer_name: str, segments: list[SegmentRecor
     root = LAYERS_ROOT / status / layer_name
     root.mkdir(parents=True, exist_ok=True)
     changed = [replace(segment, status=status) for segment in segments]
-    for motion_id, items in group_by_motion(changed).items():
-        write_layer(root / f"{motion_id}.jsonl", items)
+    by_motion = group_by_motion(changed)
+    for motion_id, items in by_motion.items():
+        path = root / f"{motion_id}.jsonl"
+        existing = read_layer(path, default_source=layer_name, default_status=status) if path.exists() else []
+        merged = {segment.segment_id: segment for segment in existing}
+        for segment in items:
+            merged[segment.segment_id] = segment
+        write_layer(
+            path,
+            sorted(
+                merged.values(),
+                key=lambda segment: (segment.motion_id, segment.start_frame, segment.end_frame, segment.segment_id),
+            ),
+        )
     return root
