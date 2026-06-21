@@ -13,6 +13,7 @@ from motion_edit.contact import (
     detect_contact_events,
     make_anchor_move_edit,
     move_contact_anchor,
+    move_contact_anchor_on_surface,
     move_anchor_in_graph,
     move_anchor_in_contact_layer,
     read_contact_anchors,
@@ -118,6 +119,107 @@ class ContactEventTests(unittest.TestCase):
         self.assertEqual(edit.old_world_position, [1.0, 2.0, 0.0])
         self.assertEqual(edit.new_world_position, [1.1, 2.0, 0.0])
         self.assertEqual(edit.delta_world, [0.10000000000000009, 0.0, 0.0])
+
+    def test_move_contact_anchor_on_surface_projects_normal_delta(self) -> None:
+        anchor = ContactAnchorRecord(
+            motion_id="motion_a",
+            anchor_id="anchor_lf",
+            body="left_foot",
+            start_frame=0,
+            end_frame=10,
+            world_position=[0.0, 0.0, 0.0],
+            object_id="box",
+            surface_id="top",
+            surface_normal=[0.0, 0.0, 1.0],
+            surface_origin=[0.0, 0.0, 0.0],
+            surface_tangent_u=[1.0, 0.0, 0.0],
+            surface_tangent_v=[0.0, 1.0, 0.0],
+            surface_bounds={"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+            surface_coordinates={"u": 0.0, "v": 0.0},
+        )
+
+        moved, edit = move_contact_anchor_on_surface(anchor, requested_world_delta=[0.1, 0.0, 0.2])
+
+        self.assertEqual(moved.world_position, [0.1, 0.0, 0.0])
+        self.assertEqual(edit.requested_delta_world, [0.1, 0.0, 0.2])
+        self.assertEqual(edit.delta_world, [0.1, 0.0, 0.0])
+        self.assertEqual(edit.tangent_delta, [0.1, 0.0])
+        self.assertEqual(edit.surface_id, "top")
+        self.assertEqual(edit.constraint_mode, "reject")
+        self.assertFalse(edit.clamped)
+
+    def test_move_contact_anchor_on_surface_uses_tangent_basis(self) -> None:
+        anchor = ContactAnchorRecord(
+            motion_id="motion_a",
+            anchor_id="anchor_lf",
+            body="left_foot",
+            start_frame=0,
+            end_frame=10,
+            world_position=[1.0, 2.0, 0.0],
+            object_id="box",
+            surface_id="top",
+            surface_normal=[0.0, 0.0, 1.0],
+            surface_origin=[1.0, 2.0, 0.0],
+            surface_tangent_u=[0.0, 1.0, 0.0],
+            surface_tangent_v=[1.0, 0.0, 0.0],
+            surface_bounds={"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+            surface_coordinates={"u": 0.0, "v": 0.0},
+        )
+
+        moved, edit = move_contact_anchor_on_surface(anchor, tangent_delta=[0.2, 0.3])
+
+        self.assertEqual(moved.world_position, [1.3, 2.2, 0.0])
+        self.assertEqual(moved.surface_coordinates, {"u": 0.2, "v": 0.3})
+        self.assertEqual(edit.delta_world, [0.3, 0.2, 0.0])
+
+    def test_move_contact_anchor_on_surface_rejects_outside_bounds(self) -> None:
+        anchor = ContactAnchorRecord(
+            motion_id="motion_a",
+            anchor_id="anchor_lf",
+            body="left_foot",
+            start_frame=0,
+            end_frame=10,
+            world_position=[0.0, 0.0, 0.0],
+            surface_id="top",
+            surface_normal=[0.0, 0.0, 1.0],
+            surface_origin=[0.0, 0.0, 0.0],
+            surface_tangent_u=[1.0, 0.0, 0.0],
+            surface_tangent_v=[0.0, 1.0, 0.0],
+            surface_bounds={"u": [-0.1, 0.1], "v": [-0.1, 0.1]},
+            surface_coordinates={"u": 0.0, "v": 0.0},
+        )
+
+        with self.assertRaises(ValueError):
+            move_contact_anchor_on_surface(anchor, tangent_delta=[0.2, 0.0])
+
+    def test_move_contact_anchor_on_surface_clamps_outside_bounds(self) -> None:
+        anchor = ContactAnchorRecord(
+            motion_id="motion_a",
+            anchor_id="anchor_lf",
+            body="left_foot",
+            start_frame=0,
+            end_frame=10,
+            world_position=[0.0, 0.0, 0.0],
+            object_id="box",
+            surface_id="top",
+            surface_normal=[0.0, 0.0, 1.0],
+            surface_origin=[0.0, 0.0, 0.0],
+            surface_tangent_u=[1.0, 0.0, 0.0],
+            surface_tangent_v=[0.0, 1.0, 0.0],
+            surface_bounds={"u": [-0.1, 0.1], "v": [-0.1, 0.1]},
+            surface_coordinates={"u": 0.0, "v": 0.0},
+        )
+
+        moved, edit = move_contact_anchor_on_surface(anchor, tangent_delta=[0.2, 0.0], mode="clamp")
+
+        self.assertEqual(moved.world_position, [0.1, 0.0, 0.0])
+        self.assertEqual(moved.object_id, "box")
+        self.assertEqual(moved.surface_id, "top")
+        self.assertEqual(edit.delta_world, [0.1, 0.0, 0.0])
+        self.assertEqual(edit.tangent_delta, [0.1, 0.0])
+        self.assertEqual(edit.surface_id, "top")
+        self.assertEqual(edit.constraint_mode, "clamp")
+        self.assertTrue(edit.clamped)
 
     def test_move_anchor_in_graph_updates_anchor_patch_and_returns_edit(self) -> None:
         graph = contact_graph_from_masks(
