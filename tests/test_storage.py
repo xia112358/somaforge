@@ -9,6 +9,7 @@ import numpy as np
 
 from motion_edit import cli, paths
 from motion_edit.contact import contact_graph_from_masks, write_contact_layer
+from motion_edit.io import write_jsonl
 from motion_edit.layers import write_layer
 from motion_edit.schema import SegmentRecord
 from motion_edit.storage import io as storage_io
@@ -297,6 +298,66 @@ class StorageSchemaTests(unittest.TestCase):
         self.assertEqual(loaded[0].status, "accepted")
         self.assertEqual(loaded[0].metadata["status_history"][0]["old_status"], "candidate")
         self.assertEqual(loaded[0].metadata["status_history"][0]["new_status"], "accepted")
+
+    def test_cutter_update_canonical_writes_back_to_segment_index(self) -> None:
+        segment = SegmentRecord(
+            motion_id="motion_a",
+            segment_id="seg_0",
+            start_frame=0,
+            end_frame=4,
+            source="canonical",
+            status="candidate",
+            motion_path="motion_a.npz",
+            metadata={"motion_version_id": "motion_a_raw", "parent_transition_id": "transition_0"},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            motion = root / "motion_a.npz"
+            motion.write_bytes(b"npz")
+            process = mock.Mock(pid=1234)
+
+            def _save_edited() -> None:
+                session_file = root / "workbench" / "sessions" / "check" / "motion_a.segments.jsonl"
+                edited = segment.to_cutter_json()
+                edited["start_frame"] = 1
+                edited["end_frame"] = 3
+                write_jsonl(session_file, [edited])
+
+            process.wait.side_effect = _save_edited
+            with (
+                mock.patch.object(storage_io, "SEGMENTS_ROOT", root / "segments"),
+                mock.patch.object(cli, "WORKBENCH_ROOT", root / "workbench"),
+                mock.patch.object(cli, "launch_viewer", return_value=process) as launch_mock,
+            ):
+                write_canonical_segments("motion_a_raw", [segment])
+                cli._cmd_cutter(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "motion": str(motion),
+                            "source": None,
+                            "session_name": "check",
+                            "destination": None,
+                            "motion_version_id": "motion_a_raw",
+                            "update_canonical": True,
+                            "motion_id": "motion_a",
+                            "repo_root": None,
+                            "conda_env": "hsretargeting",
+                            "timeline_port": 8094,
+                            "fps": 50,
+                            "with_terrain": False,
+                        },
+                    )()
+                )
+                loaded = read_canonical_segments("motion_a_raw")
+
+        launch_mock.assert_called_once()
+        self.assertEqual((loaded[0].start_frame, loaded[0].end_frame), (1, 3))
+        self.assertEqual(loaded[0].source, "viser_cutter")
+        self.assertEqual(loaded[0].status, "manual")
+        self.assertEqual(loaded[0].metadata["cut_source"], "cutter_refined")
+        self.assertFalse((root / "layers" / "manual").exists())
 
 
 if __name__ == "__main__":

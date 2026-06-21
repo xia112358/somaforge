@@ -11,9 +11,9 @@ from .curation import filter_segments, load_layer_segments, write_status_layer
 from .editing import clip_motion, splice_motions
 from .export import export_contact_overlay, export_cutter_segments, export_motion_manifest, export_split_npz
 from .force_proto import contact_graph_from_masked_motion, segments_from_masked_motion
-from .io import read_jsonl, segment_from_dict
+from .io import read_jsonl, segment_from_dict, write_jsonl
 from .layers import iter_layer_files, read_layer, write_layer
-from .paths import BACKUPS_ROOT, EXPORTS_ROOT, LAYERS_ROOT, ensure_data_dirs, layer_dir
+from .paths import BACKUPS_ROOT, EXPORTS_ROOT, LAYERS_ROOT, WORKBENCH_ROOT, ensure_data_dirs, layer_dir
 from .contact import (
     append_anchor_edit_to_plan,
     move_anchor_in_contact_layer,
@@ -25,7 +25,7 @@ from .contact import (
 from .contact.generation import apply_contact_edit_plan_to_motion
 from .contact.layers import read_contact_graph
 from .storage.canonical import build_canonical_segments, mark_canonical_segment_status, write_motion_version_with_canonical_segments
-from .storage.io import read_canonical_segments, write_token_catalog
+from .storage.io import read_canonical_segments, write_canonical_segments, write_token_catalog
 from .storage.tokens import build_tokens_from_segments
 from .viewer import launch_viewer
 from .workbench import (
@@ -422,6 +422,51 @@ def _cmd_workbench_action(args: argparse.Namespace) -> None:
 def _cmd_cutter(args: argparse.Namespace) -> None:
     ensure_data_dirs()
     motion_id = args.motion_id or Path(args.motion).expanduser().stem
+    if args.update_canonical:
+        if not args.motion_version_id:
+            raise ValueError("--update-canonical requires --motion-version-id")
+        segments = read_canonical_segments(args.motion_version_id)
+        session_dir = WORKBENCH_ROOT / "sessions" / args.session_name
+        segment_path = session_dir / f"{motion_id}.segments.jsonl"
+        write_jsonl(segment_path, (segment.to_cutter_json() for segment in segments if segment.motion_id == motion_id))
+        print(f"cutter session file: {segment_path}")
+        process = launch_viewer(
+            args.motion,
+            repo_root=args.repo_root,
+            layer=None,
+            segment_path=segment_path,
+            conda_env=args.conda_env,
+            timeline_port=args.timeline_port,
+            fps=args.fps,
+            with_terrain=args.with_terrain,
+        )
+        print(f"viewer pid={process.pid}")
+        print(f"Open Motion Cutter: http://localhost:{args.timeline_port}")
+        process.wait()
+        edited_segments = []
+        for item in read_jsonl(segment_path):
+            parsed = segment_from_dict(item, default_source="viser_cutter", default_status="manual")
+            metadata = dict(parsed.metadata)
+            metadata["motion_version_id"] = args.motion_version_id
+            metadata["cut_source"] = "cutter_refined"
+            edits = list(metadata.get("motion_edit_edits") or [])
+            edits.append({"kind": "import_from_cutter", "source": "viser_cutter", "params": {"motion_version_id": args.motion_version_id}})
+            metadata["motion_edit_edits"] = edits
+            edited_segments.append(
+                replace(
+                    parsed,
+                    source="viser_cutter",
+                    status="manual",
+                    motion_path=parsed.motion_path or args.motion,
+                    clip_npz=parsed.clip_npz or args.motion,
+                    metadata=metadata,
+                )
+            )
+        out = write_canonical_segments(args.motion_version_id, edited_segments)
+        print(f"updated canonical segmentation from cutter {out}")
+        return
+    if not args.source:
+        raise ValueError("cutter requires --source unless --update-canonical is used")
     session = export_cutter_session_file(
         motion_id=motion_id,
         source_layer=args.source,
@@ -635,9 +680,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("cutter")
     p.add_argument("motion")
-    p.add_argument("--source", required=True, help="Source layer path relative to data/layers")
+    p.add_argument("--source", default=None, help="Source layer path relative to data/layers")
     p.add_argument("--session-name", required=True)
     p.add_argument("--destination", default=None, help="Destination layer path, default manual/<session-name>")
+    p.add_argument("--motion-version-id", default=None)
+    p.add_argument("--update-canonical", action="store_true")
     p.add_argument("--motion-id", default=None)
     p.add_argument("--repo-root", default=None)
     p.add_argument("--conda-env", default="hsretargeting")
