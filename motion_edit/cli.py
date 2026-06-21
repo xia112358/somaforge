@@ -272,7 +272,16 @@ def _cmd_export_manifest(args: argparse.Namespace) -> None:
 
 
 def _cmd_export_split_npz(args: argparse.Namespace) -> None:
-    segments = _load_source_segments(args.source)
+    if args.motion_version_id:
+        segments = read_canonical_segments(args.motion_version_id)
+        if args.status:
+            segments = [segment for segment in segments if segment.status == args.status]
+        default_output_name = args.motion_version_id if args.status is None else f"{args.motion_version_id}_{args.status}"
+    else:
+        if not args.source:
+            raise ValueError("export-split-npz requires --source or --motion-version-id")
+        segments = _load_source_segments(args.source)
+        default_output_name = args.source.replace("/", "_")
     if args.motion_id or args.segment_id or args.index is not None:
         segments = filter_segments(
             segments,
@@ -280,7 +289,7 @@ def _cmd_export_split_npz(args: argparse.Namespace) -> None:
             segment_ids=set(args.segment_id or []) if args.segment_id else None,
             indices=set(args.index or []) if args.index is not None else None,
         )
-    output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else EXPORTS_ROOT / "split_npz" / args.source.replace("/", "_")
+    output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else EXPORTS_ROOT / "split_npz" / default_output_name
     written = export_split_npz(output_dir, segments)
     print(f"wrote {len(written)} split npz files to {output_dir}")
 
@@ -568,7 +577,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=_cmd_export_manifest)
 
     p = sub.add_parser("export-split-npz")
-    p.add_argument("--source", required=True, help="Layer path relative to data/layers")
+    p.add_argument("--source", default=None, help="Layer path relative to data/layers")
+    p.add_argument("--motion-version-id", default=None)
+    p.add_argument("--status", choices=("candidate", "accepted", "rejected", "manual"), default=None)
     p.add_argument("--output-dir", default=None)
     p.add_argument("--motion-id", default=None)
     p.add_argument("--segment-id", action="append", default=None)

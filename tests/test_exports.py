@@ -7,10 +7,14 @@ from pathlib import Path
 
 import numpy as np
 
+from motion_edit import cli
 from motion_edit.contact import contact_graph_from_masks
 from motion_edit.export import export_contact_overlay, export_cutter_segments, export_motion_manifest, export_split_npz
 from motion_edit.io import read_jsonl
 from motion_edit.schema import SegmentRecord
+from motion_edit.storage import io as storage_io
+from motion_edit.storage import write_canonical_segments
+from unittest import mock
 
 
 def _contact_segment(motion_path: str) -> SegmentRecord:
@@ -116,6 +120,52 @@ class ExportContactMetadataTests(unittest.TestCase):
         self.assertFalse(bool(data["motion_edit_clamped"]))
         self.assertEqual(json.loads(str(data["motion_edit_affected_frames"])), [1, 4])
         self.assertEqual(json.loads(str(data["motion_edit_contact_patches"]))[0]["patch_type"], "foot")
+
+    def test_export_split_npz_from_canonical_accepted_segments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            motion = root / "motion_a.npz"
+            np.savez(motion, qpos=np.zeros((6, 2)))
+            accepted = _contact_segment(str(motion))
+            accepted = SegmentRecord(
+                **{
+                    **accepted.__dict__,
+                    "status": "accepted",
+                    "metadata": {**accepted.metadata, "motion_version_id": "motion_a_raw"},
+                }
+            )
+            rejected = SegmentRecord(
+                motion_id="motion_a",
+                segment_id="rejected_seg",
+                start_frame=0,
+                end_frame=2,
+                source="canonical",
+                status="rejected",
+                motion_path=str(motion),
+            )
+            output_dir = root / "split"
+            with mock.patch.object(storage_io, "SEGMENTS_ROOT", root / "segments"):
+                write_canonical_segments("motion_a_raw", [accepted, rejected])
+                cli._cmd_export_split_npz(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "source": None,
+                            "motion_version_id": "motion_a_raw",
+                            "status": "accepted",
+                            "output_dir": str(output_dir),
+                            "motion_id": None,
+                            "segment_id": None,
+                            "index": None,
+                        },
+                    )()
+                )
+
+            written = sorted(output_dir.glob("*.npz"))
+
+        self.assertEqual(len(written), 1)
+        self.assertIn("motion_a_force_0000", written[0].name)
 
     def test_manifest_includes_contact_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
