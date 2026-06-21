@@ -22,6 +22,7 @@ from motion_edit.storage import (
     write_motion_version,
     write_token_catalog,
 )
+from motion_edit.storage.tokens import build_tokens_from_segments
 
 
 class StorageSchemaTests(unittest.TestCase):
@@ -82,6 +83,59 @@ class StorageSchemaTests(unittest.TestCase):
         self.assertEqual(loaded[0].segment_id, "seg_0")
         self.assertNotIn("qpos", loaded[0].metadata)
         self.assertNotIn("motion", loaded[0].continuous_params)
+
+    def test_build_token_catalog_from_canonical_segments(self) -> None:
+        segment = SegmentRecord(
+            motion_id="motion_a",
+            segment_id="seg_0",
+            start_frame=2,
+            end_frame=8,
+            source="canonical",
+            status="accepted",
+            metadata={
+                "motion_version_id": "motion_a_raw",
+                "active_body": "LF",
+                "support_bodies": ["RF"],
+                "transition_type": "support_transfer",
+                "source_anchor_id": "anchor_src",
+                "target_anchor_id": "anchor_dst",
+                "parent_transition_id": "transition_0",
+                "contact_anchor_edit": {"tangent_delta": [0.1, 0.0]},
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (
+                mock.patch.object(storage_io, "SEGMENTS_ROOT", root / "segments"),
+                mock.patch.object(storage_io, "TOKENS_ROOT", root / "tokens"),
+            ):
+                write_canonical_segments("motion_a_raw", [segment])
+                cli._cmd_build_token_catalog(type("Args", (), {"motion_version_id": "motion_a_raw", "output": None})())
+                tokens = read_token_catalog("motion_a_raw")
+
+        self.assertEqual(len(tokens), 1)
+        self.assertEqual(tokens[0].motion_version_id, "motion_a_raw")
+        self.assertEqual(tokens[0].segment_id, "seg_0")
+        self.assertEqual(tokens[0].token_family, "LF__RF__support_transfer")
+        self.assertEqual(tokens[0].continuous_params["duration"], 6)
+        self.assertEqual(tokens[0].continuous_params["tangent_delta"], [0.1, 0.0])
+        self.assertNotIn("qpos", tokens[0].metadata)
+
+    def test_build_tokens_from_segments_does_not_copy_motion_arrays(self) -> None:
+        segment = SegmentRecord(
+            motion_id="motion_a",
+            segment_id="seg_0",
+            start_frame=0,
+            end_frame=2,
+            source="canonical",
+            motion_path="/motions/motion_a.npz",
+            metadata={"active_body": "LF", "support_bodies": ["RF"]},
+        )
+
+        tokens = build_tokens_from_segments("motion_a_raw", [segment])
+
+        self.assertEqual(tokens[0].segment_id, "seg_0")
+        self.assertNotIn("motion_path", tokens[0].to_dict())
 
     def test_ensure_data_dirs_includes_canonical_storage_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

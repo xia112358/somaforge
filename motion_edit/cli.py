@@ -25,6 +25,8 @@ from .contact import (
 from .contact.generation import apply_contact_edit_plan_to_motion
 from .contact.layers import read_contact_graph
 from .storage.canonical import build_canonical_segments, mark_canonical_segment_status, write_motion_version_with_canonical_segments
+from .storage.io import read_canonical_segments, write_token_catalog
+from .storage.tokens import build_tokens_from_segments
 from .viewer import launch_viewer
 from .workbench import (
     WorkbenchSession,
@@ -209,6 +211,13 @@ def _cmd_mark_segment_status(args: argparse.Namespace) -> None:
     )
     print(f"updated canonical segment status motion_version={args.motion_version_id} segment={args.segment_id} status={args.status}")
     print(f"canonical segments={len(segments)}")
+
+
+def _cmd_build_token_catalog(args: argparse.Namespace) -> None:
+    segments = read_canonical_segments(args.motion_version_id)
+    tokens = build_tokens_from_segments(args.motion_version_id, segments)
+    out = write_token_catalog(args.motion_version_id, tokens, args.output)
+    print(f"wrote token catalog motion_version={args.motion_version_id} tokens={len(tokens)} path={out}")
 
 
 def _cmd_summarize(_args: argparse.Namespace) -> None:
@@ -547,6 +556,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--segment-id", required=True)
     p.add_argument("--status", choices=("candidate", "accepted", "rejected", "manual"), required=True)
     p.set_defaults(func=_cmd_mark_segment_status)
+
+    p = sub.add_parser("build-token-catalog")
+    p.add_argument("--motion-version-id", required=True)
+    p.add_argument("--output", default=None)
+    p.set_defaults(func=_cmd_build_token_catalog)
 
     p = sub.add_parser("export-manifest")
     p.add_argument("--source", required=True, help="Layer path relative to data/layers")
