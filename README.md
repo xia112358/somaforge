@@ -30,6 +30,7 @@ data/
 ```bash
 ~/motion_edit/motion-edit import-force-proto --motion-dir /path/to/masked_motions --layer-name force_contact
 ~/motion_edit/motion-edit list-contact-layer --source contact/force_contact --motion-id climb_00_z_scale_1.0
+~/motion_edit/motion-edit move-contact-anchor --source contact/force_contact --motion-id climb_00_z_scale_1.0 --anchor-id climb_00_z_scale_1.0_anchor_LF_000100_000140 --delta-world 0.10 0.0 0.0 --output-source contact/force_contact_farther
 ~/motion_edit/motion-edit export-contact-overlay --source contact/force_contact --motion-id climb_00_z_scale_1.0 --output data/exports/contact_overlays/climb_00.json
 ~/motion_edit/motion-edit import-manual-cuts --segments-dir /path/to/data/motion_viewer/segments --layer-name current
 ~/motion_edit/motion-edit export-cutter-segments --source candidates/force_contact
@@ -94,6 +95,8 @@ data/layers/contact/<layer>/transitions/<motion>.jsonl
 
 If proto boundaries are missing, initial segments can be derived from contact event pairs, for example liftoff to touchdown for the same active body. Existing exports remain segment-compatible, but include structured contact metadata when available.
 
+Contact anchors are editable first-class objects. When `body_pos_w` is available, anchor extraction estimates `world_position` from the mean body position over the contact interval and stores drift statistics. `move-contact-anchor` writes a new ContactLayer and records a `move_contact_anchor` edit without deforming the source motion. This is the persistent representation for edits such as "move this foot contact 10 cm farther."
+
 ## OmniRetarget Compatibility
 
 `detect-motion` resolves common OmniRetarget/Holosoma paths:
@@ -124,6 +127,7 @@ The cutter is still the visual frontend. `motion_edit` owns the durable session,
 ~/motion_edit/motion-edit import-force-proto --motion-dir /path/to/masked_motions --layer-name force_contact
 ~/motion_edit/motion-edit list-layer --source candidates/force_contact --motion-id climb_00_z_scale_1.0
 ~/motion_edit/motion-edit list-contact-layer --source contact/force_contact --motion-id climb_00_z_scale_1.0
+~/motion_edit/motion-edit move-contact-anchor --source contact/force_contact --motion-id climb_00_z_scale_1.0 --anchor-id <anchor_id> --delta-world 0.10 0.0 0.0 --output-source contact/climb00_anchor_farther
 ~/motion_edit/motion-edit cutter /path/to/climb_00_z_scale_1.0.npz --source candidates/force_contact --session-name climb00_check --with-terrain
 ~/motion_edit/motion-edit accept --source candidates/force_contact --layer-name climb00_checked --motion-id climb_00_z_scale_1.0 --index 0 --index 1
 ~/motion_edit/motion-edit export-split-npz --source accepted/climb00_checked
