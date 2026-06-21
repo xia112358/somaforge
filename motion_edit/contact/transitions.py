@@ -68,6 +68,7 @@ def transitions_from_proto_indices(
     contact_mask: np.ndarray | None,
     active_mask: np.ndarray | None = None,
     support_mask: np.ndarray | None = None,
+    body_pos_w: np.ndarray | None = None,
     body_names: Iterable[str] | None = None,
     source: str = "force_contact",
 ) -> tuple[list[ContactEventRecord], list[ContactAnchorRecord], list[ContactTransitionRecord]]:
@@ -94,6 +95,7 @@ def transitions_from_proto_indices(
             contact_mask=contact,
             active_mask=active,
             support_mask=support,
+            body_pos_w=body_pos_w,
             body_names=names,
             source=source,
         )

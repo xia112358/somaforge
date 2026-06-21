@@ -52,6 +52,22 @@ def _write_proto_motion(path: Path) -> None:
     )
 
 
+def _write_proto_motion_with_positions(path: Path) -> None:
+    _write_proto_motion(path)
+    with np.load(path, allow_pickle=True) as data:
+        payload = {key: data[key] for key in data.files}
+    payload["body_pos_w"] = np.asarray(
+        [
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            [[0.2, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            [[0.4, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            [[0.6, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            [[0.8, 0.0, 0.0], [1.0, 0.0, 0.0]],
+        ]
+    )
+    np.savez(path, **payload)
+
+
 class ForceProtoContactTests(unittest.TestCase):
     def test_contact_graph_accepts_multi_proto_numpy_indices(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -118,6 +134,18 @@ class ForceProtoContactTests(unittest.TestCase):
         self.assertIn("contact_anchors", segment.metadata)
         self.assertIn("contact_patches", segment.metadata)
         self.assertGreaterEqual(len(segment.metadata["contact_patches"]), 1)
+
+    def test_force_proto_anchor_positions_are_estimated_when_body_pos_w_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "motion_a.npz"
+            _write_proto_motion_with_positions(path)
+
+            graph = contact_graph_from_masked_motion(path)
+
+        lf_anchor = next(anchor for anchor in graph.anchors if anchor.body == "LF")
+        self.assertEqual(lf_anchor.world_position, [0.30000000000000004, 0.0, 0.0])
+        self.assertEqual(lf_anchor.position_source, "body_pos_w_mean")
+        self.assertIn("mean_drift_xy", lf_anchor.metadata)
 
     def test_contact_graph_from_masked_motion_uses_same_contact_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

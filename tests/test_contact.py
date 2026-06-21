@@ -152,6 +152,29 @@ class ContactEventTests(unittest.TestCase):
         self.assertIn(("RF", 0, 2, "support"), spans)
         self.assertIn(("RF", 4, 5, "support"), spans)
 
+    def test_anchor_position_estimated_from_body_pos_w_interval(self) -> None:
+        contact = np.asarray([[True, False], [True, False], [False, False]])
+        body_pos_w = np.asarray(
+            [
+                [[1.0, 2.0, 0.0], [0.0, 0.0, 0.0]],
+                [[1.2, 2.0, 0.0], [0.0, 0.0, 0.0]],
+                [[9.0, 9.0, 9.0], [0.0, 0.0, 0.0]],
+            ]
+        )
+
+        anchors = anchors_from_contact_mask(
+            motion_id="motion_a",
+            contact_mask=contact,
+            body_pos_w=body_pos_w,
+            body_names=["LF", "RF"],
+        )
+
+        self.assertEqual(anchors[0].world_position, [1.1, 2.0, 0.0])
+        self.assertEqual(anchors[0].position_source, "body_pos_w_mean")
+        self.assertEqual(anchors[0].metadata["first_world_position"], [1.0, 2.0, 0.0])
+        self.assertEqual(anchors[0].metadata["last_world_position"], [1.2, 2.0, 0.0])
+        self.assertAlmostEqual(anchors[0].metadata["max_drift_xy"], 0.2)
+
     def test_transition_converts_to_segment_with_contact_metadata(self) -> None:
         contact = np.asarray(
             [

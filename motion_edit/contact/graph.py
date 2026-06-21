@@ -34,6 +34,7 @@ def contact_graph_from_masks(
     contact_mask: np.ndarray | None,
     active_mask: np.ndarray | None = None,
     support_mask: np.ndarray | None = None,
+    body_pos_w: np.ndarray | None = None,
     proto_starts: Iterable[int] | None = None,
     proto_ends: Iterable[int] | None = None,
     body_names: Iterable[str] | None = None,
@@ -48,6 +49,7 @@ def contact_graph_from_masks(
         contact_mask=contact_mask,
         active_mask=active_mask,
         support_mask=support_mask,
+        body_pos_w=body_pos_w,
         body_names=body_names,
         source=source,
     )

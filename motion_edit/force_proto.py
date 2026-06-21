@@ -33,6 +33,7 @@ class _MaskedMotion(NamedTuple):
     contact: np.ndarray | None
     active: np.ndarray | None
     support: np.ndarray | None
+    body_pos_w: np.ndarray | None
     body_names: list[str] | None
 
 
@@ -44,6 +45,7 @@ def _load_masked_motion(path: Path) -> _MaskedMotion:
             contact=_optional_mask(data, "contact_part_mask"),
             active=_optional_mask(data, "active_part_mask"),
             support=_optional_mask(data, "support_part_mask"),
+            body_pos_w=np.asarray(data["body_pos_w"], dtype=float) if "body_pos_w" in data else None,
             body_names=_body_names(data),
         )
 
@@ -57,6 +59,7 @@ def contact_graph_from_masked_motion(path: Path, *, source: str = "force_contact
         contact_mask=inputs.contact,
         active_mask=inputs.active,
         support_mask=inputs.support,
+        body_pos_w=inputs.body_pos_w,
         body_names=inputs.body_names,
         source=source,
     )
@@ -72,6 +75,7 @@ def segments_from_masked_motion(path: Path, *, source: str = "force_contact", st
         contact_mask=inputs.contact,
         active_mask=inputs.active,
         support_mask=inputs.support,
+        body_pos_w=inputs.body_pos_w,
         body_names=inputs.body_names,
         source=source,
     )
