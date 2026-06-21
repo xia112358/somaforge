@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import argparse
+import contextlib
+import io
 import tempfile
 import unittest
-import argparse
 from pathlib import Path
 from unittest import mock
 
@@ -99,6 +101,10 @@ class ForceProtoContactTests(unittest.TestCase):
                 mock.patch.object(cli, "layer_dir", lambda status, name: layers_root / "candidates" / name),
             ):
                 cli._cmd_import_force_proto(args)
+                list_args = argparse.Namespace(source="contact/force_contact", motion_id="motion_a", limit=1)
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    cli._cmd_list_contact_layer(list_args)
 
             segments = read_layer(
                 layers_root / "candidates" / "force_contact" / "motion_a.jsonl",
@@ -110,6 +116,8 @@ class ForceProtoContactTests(unittest.TestCase):
         self.assertEqual(len(segments), 1)
         self.assertEqual(len(graph.transitions), 1)
         self.assertGreaterEqual(len(graph.anchors), 1)
+        self.assertIn("motion_a: events=", out.getvalue())
+        self.assertIn("transitions=1", out.getvalue())
 
 
 if __name__ == "__main__":

@@ -385,10 +385,12 @@ class WorkbenchCliTests(unittest.TestCase):
                 "--dry-run",
             ]
         )
+        contact_args = parser.parse_args(["list-contact-layer", "--source", "contact/force_contact", "--motion-id", "motion_a"])
 
         self.assertEqual(view_args.cmd, "view")
         self.assertEqual(workbench_server_args.cmd, "workbench")
         self.assertEqual(workbench_args.cmd, "workbench-action")
+        self.assertEqual(contact_args.cmd, "list-contact-layer")
         self.assertTrue(workbench_args.dry_run)
 
     def test_existing_view_command_still_calls_launch_viewer(self) -> None:

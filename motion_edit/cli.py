@@ -14,6 +14,7 @@ from .io import read_jsonl, segment_from_dict
 from .layers import iter_layer_files, read_layer, write_layer
 from .paths import BACKUPS_ROOT, EXPORTS_ROOT, LAYERS_ROOT, ensure_data_dirs, layer_dir
 from .contact import write_contact_layer
+from .contact.io import read_contact_anchors, read_contact_events, read_contact_transitions
 from .viewer import launch_viewer
 from .workbench import (
     WorkbenchSession,
@@ -190,6 +191,39 @@ def _cmd_list_layer(args: argparse.Namespace) -> None:
     print(f"total={total}")
 
 
+def _cmd_list_contact_layer(args: argparse.Namespace) -> None:
+    root = LAYERS_ROOT / args.source
+    if not root.exists():
+        raise FileNotFoundError(f"contact layer not found: {root}")
+    event_files = sorted((root / "events").glob("*.jsonl"))
+    if args.motion_id:
+        event_files = [path for path in event_files if path.stem == args.motion_id]
+    total_events = 0
+    total_anchors = 0
+    total_transitions = 0
+    for event_path in event_files:
+        motion_id = event_path.stem
+        events = read_contact_events(event_path)
+        anchors = read_contact_anchors(root / "anchors" / f"{motion_id}.jsonl")
+        transitions = read_contact_transitions(root / "transitions" / f"{motion_id}.jsonl")
+        total_events += len(events)
+        total_anchors += len(anchors)
+        total_transitions += len(transitions)
+        print(f"{motion_id}: events={len(events)} anchors={len(anchors)} transitions={len(transitions)}")
+        for anchor in anchors[: args.limit]:
+            print(
+                f"  anchor {anchor.start_frame:5d}->{anchor.end_frame:<5d} "
+                f"{anchor.anchor_id} body={anchor.body} role={anchor.role}"
+            )
+        for transition in transitions[: args.limit]:
+            print(
+                f"  transition {transition.start_frame:5d}->{transition.end_frame:<5d} "
+                f"{transition.transition_id} active={transition.active_body} "
+                f"support={','.join(transition.support_bodies)}"
+            )
+    print(f"total_events={total_events} total_anchors={total_anchors} total_transitions={total_transitions}")
+
+
 def _cmd_workbench_action(args: argparse.Namespace) -> None:
     ensure_data_dirs()
     segments = load_workbench_segments(args.source)
@@ -360,6 +394,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--motion-id", default=None)
     p.add_argument("--limit", type=int, default=20)
     p.set_defaults(func=_cmd_list_layer)
+
+    p = sub.add_parser("list-contact-layer")
+    p.add_argument("--source", required=True, help="Contact layer path relative to data/layers, e.g. contact/force_contact")
+    p.add_argument("--motion-id", default=None)
+    p.add_argument("--limit", type=int, default=5)
+    p.set_defaults(func=_cmd_list_contact_layer)
 
     p = sub.add_parser("workbench-action")
     p.add_argument("--source", required=True, help="Layer path relative to data/layers")
