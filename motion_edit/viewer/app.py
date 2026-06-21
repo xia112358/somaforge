@@ -44,6 +44,7 @@ def launch_viewer(
     *,
     repo_root: str | Path | None = None,
     layer: str | None = None,
+    segment_path: str | Path | None = None,
     conda_env: str = "hsretargeting",
     timeline_port: int = 8094,
     fps: int = 50,
@@ -55,10 +56,10 @@ def launch_viewer(
     paths = detect_omniretarget_paths(motion, repo_root=repo)
     viewer = repo / "src/holosoma_retargeting/holosoma_retargeting/viser_player.py"
     robot_urdf = repo / "OmniRetarget_Dataset/models/g1/g1_29dof_spherehand.urdf"
-    segment_path = None
+    resolved_segment_path = Path(segment_path).expanduser().resolve() if segment_path is not None else None
     layer_root = _resolve_layer(layer)
-    if layer_root is not None:
-        segment_path = _export_layer_for_motion(layer_root, paths.motion_path.stem)
+    if resolved_segment_path is None and layer_root is not None:
+        resolved_segment_path = _export_layer_for_motion(layer_root, paths.motion_path.stem)
 
     cmd = [
         "conda",
@@ -81,8 +82,8 @@ def launch_viewer(
         "--loop",
         "--no-open-browser",
     ]
-    if segment_path is not None:
-        cmd.extend(["--segment-export-path", str(segment_path)])
+    if resolved_segment_path is not None:
+        cmd.extend(["--segment-export-path", str(resolved_segment_path)])
     if paths.contact_force_npz is not None:
         cmd.extend(["--contact-force-npz", str(paths.contact_force_npz)])
     if with_terrain and paths.terrain_urdf is not None:

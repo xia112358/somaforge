@@ -23,20 +23,34 @@ def _with_provenance(segment: SegmentRecord, kind: str, params: dict[str, Any]) 
     return metadata
 
 
-def trim_segment(segment: SegmentRecord, *, start_frame: int, end_frame: int) -> SegmentRecord:
+def trim_segment(
+    segment: SegmentRecord,
+    *,
+    start_frame: int,
+    end_frame: int,
+    allow_extend: bool = False,
+) -> SegmentRecord:
     """Return a segment with edited bounds while preserving its identity."""
+    start_frame = int(start_frame)
+    end_frame = int(end_frame)
+    if not allow_extend and not (segment.start_frame <= start_frame < end_frame <= segment.end_frame):
+        raise ValueError(
+            f"{segment.segment_id}: trim must stay inside "
+            f"[{segment.start_frame}, {segment.end_frame}], got [{start_frame}, {end_frame}]"
+        )
     trimmed = replace(
         segment,
-        start_frame=int(start_frame),
-        end_frame=int(end_frame),
+        start_frame=start_frame,
+        end_frame=end_frame,
         metadata=_with_provenance(
             segment,
             "trim",
             {
                 "old_start_frame": segment.start_frame,
                 "old_end_frame": segment.end_frame,
-                "new_start_frame": int(start_frame),
-                "new_end_frame": int(end_frame),
+                "new_start_frame": start_frame,
+                "new_end_frame": end_frame,
+                "allow_extend": bool(allow_extend),
             },
         ),
     )

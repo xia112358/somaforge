@@ -11,6 +11,7 @@ dist/
 # Generated binary motion exports can be reproduced from layers.
 data/exports/motions/
 data/exports/split_npz/
+data/workbench/
 
 # Local logs or scratch files.
 *.log

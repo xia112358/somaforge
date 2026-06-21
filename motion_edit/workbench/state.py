@@ -89,14 +89,61 @@ def replace_segment(
     return updated
 
 
+def validate_workbench_segments(segments: list[SegmentRecord], *, destination: str | Path | None = None) -> list[str]:
+    warnings: list[str] = []
+    seen_ids: set[str] = set()
+    for segment in segments:
+        segment.validate()
+        if segment.segment_id in seen_ids:
+            warnings.append(f"duplicate segment_id: {segment.segment_id}")
+        seen_ids.add(segment.segment_id)
+        if not segment.motion_path and not segment.clip_npz:
+            warnings.append(f"{segment.segment_id}: missing motion_path/clip_npz")
+
+    destination_text = str(destination or "")
+    if destination_text.startswith("accepted/") or "/accepted/" in destination_text:
+        by_motion = group_by_motion(sorted(segments, key=lambda item: (item.motion_id, item.start_frame, item.end_frame)))
+        for motion_id, items in by_motion.items():
+            previous: SegmentRecord | None = None
+            for segment in items:
+                if previous is not None and segment.start_frame < previous.end_frame:
+                    warnings.append(
+                        f"{motion_id}: accepted overlap {previous.segment_id} "
+                        f"[{previous.start_frame}, {previous.end_frame}] and "
+                        f"{segment.segment_id} [{segment.start_frame}, {segment.end_frame}]"
+                    )
+                previous = segment
+    return warnings
+
+
 def write_workbench_segments(
     destination: str | Path,
     segments: list[SegmentRecord],
     *,
     layers_root: Path = LAYERS_ROOT,
 ) -> Path:
+    validate_workbench_segments(segments, destination=destination)
     root = _source_path(destination, layers_root=layers_root)
     root.mkdir(parents=True, exist_ok=True)
     for motion_id, items in group_by_motion(segments).items():
         write_layer(root / f"{motion_id}.jsonl", items)
     return root
+
+
+def upsert_workbench_segments(
+    destination: str | Path,
+    segments: list[SegmentRecord],
+    *,
+    layers_root: Path = LAYERS_ROOT,
+) -> Path:
+    root = _source_path(destination, layers_root=layers_root)
+    existing = load_workbench_segments(root, layers_root=layers_root) if root.exists() else []
+    by_id = {segment.segment_id: segment for segment in existing}
+    for segment in segments:
+        by_id[segment.segment_id] = segment
+    merged = sorted(
+        by_id.values(),
+        key=lambda segment: (segment.motion_id, segment.start_frame, segment.end_frame, segment.segment_id),
+    )
+    validate_workbench_segments(merged, destination=destination)
+    return write_workbench_segments(root, merged, layers_root=layers_root)

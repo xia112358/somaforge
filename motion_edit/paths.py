@@ -8,6 +8,7 @@ LAYERS_ROOT = DATA_ROOT / "layers"
 EXPORTS_ROOT = DATA_ROOT / "exports"
 CATALOGS_ROOT = DATA_ROOT / "catalogs"
 BACKUPS_ROOT = DATA_ROOT / "backups"
+WORKBENCH_ROOT = DATA_ROOT / "workbench"
 
 
 def ensure_data_dirs() -> None:
@@ -19,6 +20,7 @@ def ensure_data_dirs() -> None:
         LAYERS_ROOT / "rejected",
         EXPORTS_ROOT / "cutter_segments",
         EXPORTS_ROOT / "manifests",
+        WORKBENCH_ROOT / "sessions",
         BACKUPS_ROOT,
     ]:
         path.mkdir(parents=True, exist_ok=True)

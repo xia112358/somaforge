@@ -17,12 +17,15 @@ from .viewer import launch_viewer
 from .workbench import (
     WorkbenchSession,
     curate_segment,
+    export_cutter_session_file,
     load_workbench_segments,
     make_workbench_server,
     replace_segment,
     select_segment,
     split_segment,
+    sync_cutter_session_file,
     trim_segment,
+    upsert_workbench_segments,
     write_workbench_segments,
 )
 
@@ -222,8 +225,45 @@ def _cmd_workbench_action(args: argparse.Namespace) -> None:
     if args.dry_run:
         print("dry-run: no files written")
         return
-    out = write_workbench_segments(destination, output_segments)
+    if args.action in {"accept", "reject"}:
+        out = upsert_workbench_segments(destination, output_segments)
+    else:
+        out = write_workbench_segments(destination, output_segments)
     print(f"wrote {len(output_segments)} workbench segments to {out}")
+
+
+def _cmd_cutter(args: argparse.Namespace) -> None:
+    ensure_data_dirs()
+    motion_id = args.motion_id or Path(args.motion).expanduser().stem
+    session = export_cutter_session_file(
+        motion_id=motion_id,
+        source_layer=args.source,
+        session_name=args.session_name,
+        destination_layer=args.destination,
+        motion_path=args.motion,
+        viewer_port=args.timeline_port,
+    )
+    print(f"cutter session file: {session.segment_path}")
+    process = launch_viewer(
+        args.motion,
+        repo_root=args.repo_root,
+        layer=None,
+        segment_path=session.segment_path,
+        conda_env=args.conda_env,
+        timeline_port=args.timeline_port,
+        fps=args.fps,
+        with_terrain=args.with_terrain,
+    )
+    print(f"viewer pid={process.pid}")
+    print(f"Open Motion Cutter: http://localhost:{args.timeline_port}")
+    process.wait()
+    out = sync_cutter_session_file(
+        session.segment_path,
+        source_layer=args.source,
+        session_name=args.session_name,
+        destination_layer=args.destination,
+    )
+    print(f"synced cutter session to {out}")
 
 
 def _cmd_workbench(args: argparse.Namespace) -> None:
@@ -331,6 +371,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--layer-name", default="workbench_tmp", help="Layer name for accept/reject defaults")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=_cmd_workbench_action)
+
+    p = sub.add_parser("cutter")
+    p.add_argument("motion")
+    p.add_argument("--source", required=True, help="Source layer path relative to data/layers")
+    p.add_argument("--session-name", required=True)
+    p.add_argument("--destination", default=None, help="Destination layer path, default manual/<session-name>")
+    p.add_argument("--motion-id", default=None)
+    p.add_argument("--repo-root", default=None)
+    p.add_argument("--conda-env", default="hsretargeting")
+    p.add_argument("--timeline-port", type=int, default=8094)
+    p.add_argument("--fps", type=int, default=50)
+    p.add_argument("--with-terrain", action="store_true")
+    p.set_defaults(func=_cmd_cutter)
 
     p = sub.add_parser("workbench")
     p.add_argument("motion", nargs="?", default=None, help="Optional .npz motion path for state metadata")
