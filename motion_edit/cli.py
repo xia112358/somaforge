@@ -13,7 +13,7 @@ from .force_proto import contact_graph_from_masked_motion, segments_from_masked_
 from .io import read_jsonl, segment_from_dict
 from .layers import iter_layer_files, read_layer, write_layer
 from .paths import BACKUPS_ROOT, EXPORTS_ROOT, LAYERS_ROOT, ensure_data_dirs, layer_dir
-from .contact import move_anchor_in_contact_layer, write_contact_layer
+from .contact import append_anchor_edit_to_plan, move_anchor_in_contact_layer, write_contact_layer
 from .contact.layers import read_contact_graph
 from .viewer import launch_viewer
 from .workbench import (
@@ -117,6 +117,23 @@ def _cmd_move_contact_anchor(args: argparse.Namespace) -> None:
         f"moved anchor {args.anchor_id} motion={args.motion_id} "
         f"world_position={moved_anchor.world_position} edit={edit.edit_id} output={LAYERS_ROOT / destination}"
     )
+    if args.edit_plan:
+        if not args.source_motion:
+            raise ValueError("--edit-plan requires --source-motion")
+        edit_plan_path = Path(args.edit_plan).expanduser()
+        if edit_plan_path.exists() and not args.append_to_plan:
+            raise ValueError("--edit-plan exists; pass --append-to-plan to append")
+        plan = append_anchor_edit_to_plan(
+            edit_plan_path,
+            edit,
+            plan_id=args.plan_id or Path(args.edit_plan).expanduser().stem,
+            source_motion_path=args.source_motion,
+            source_motion_id=args.motion_id,
+            source_contact_layer=args.source,
+            source_segment_layer=args.source_segments,
+        )
+        action = "appended" if args.append_to_plan else "wrote"
+        print(f"{action} edit plan {args.edit_plan} edits={len(plan.edits)} status={plan.status}")
 
 
 def _cmd_summarize(_args: argparse.Namespace) -> None:
@@ -412,6 +429,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--allow-free-3d", action="store_true")
     p.add_argument("--output-source", default=None, help="Destination contact layer path, default <source>_edited")
     p.add_argument("--edit-source", default="manual")
+    p.add_argument("--edit-plan", default=None)
+    p.add_argument("--append-to-plan", action="store_true")
+    p.add_argument("--plan-id", default=None)
+    p.add_argument("--source-motion", default=None)
+    p.add_argument("--source-segments", default=None)
     p.set_defaults(func=_cmd_move_contact_anchor)
 
     p = sub.add_parser("export-manifest")

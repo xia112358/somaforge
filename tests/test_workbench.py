@@ -441,6 +441,12 @@ class WorkbenchCliTests(unittest.TestCase):
                 "0.1",
                 "0",
                 "0",
+                "--edit-plan",
+                "plan.json",
+                "--source-motion",
+                "motion_a.npz",
+                "--source-segments",
+                "candidates/force_contact",
             ]
         )
 
@@ -454,6 +460,9 @@ class WorkbenchCliTests(unittest.TestCase):
         self.assertIsNone(move_anchor_args.tangent_delta)
         self.assertEqual(move_anchor_args.mode, "reject")
         self.assertFalse(move_anchor_args.allow_free_3d)
+        self.assertEqual(move_anchor_args.edit_plan, "plan.json")
+        self.assertEqual(move_anchor_args.source_motion, "motion_a.npz")
+        self.assertEqual(move_anchor_args.source_segments, "candidates/force_contact")
         self.assertTrue(workbench_args.dry_run)
 
     def test_existing_view_command_still_calls_launch_viewer(self) -> None:

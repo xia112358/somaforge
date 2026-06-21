@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -164,7 +165,9 @@ class ForceProtoContactTests(unittest.TestCase):
             root = Path(tmp)
             motion_dir = root / "motions"
             motion_dir.mkdir()
-            _write_proto_motion_with_positions(motion_dir / "motion_a.npz")
+            motion_path = motion_dir / "motion_a.npz"
+            _write_proto_motion_with_positions(motion_path)
+            original_motion_bytes = motion_path.read_bytes()
             layers_root = root / "layers"
             args = argparse.Namespace(
                 motion_dir=str(motion_dir),
@@ -201,9 +204,15 @@ class ForceProtoContactTests(unittest.TestCase):
                     allow_free_3d=False,
                     output_source="contact/force_contact_moved",
                     edit_source="manual",
+                    edit_plan=None,
+                    append_to_plan=False,
+                    plan_id=None,
+                    source_motion=None,
+                    source_segments=None,
                 )
                 with self.assertRaises(ValueError):
                     cli._cmd_move_contact_anchor(unsafe_default_args)
+                plan_path = root / "contact_edit_plan.json"
                 move_args = argparse.Namespace(
                     source="contact/force_contact",
                     motion_id="motion_a",
@@ -215,8 +224,15 @@ class ForceProtoContactTests(unittest.TestCase):
                     allow_free_3d=True,
                     output_source="contact/force_contact_moved",
                     edit_source="manual",
+                    edit_plan=str(plan_path),
+                    append_to_plan=False,
+                    plan_id="plan_a",
+                    source_motion=str(motion_path),
+                    source_segments="candidates/force_contact",
                 )
                 cli._cmd_move_contact_anchor(move_args)
+                plan = json.loads(plan_path.read_text(encoding="utf-8"))
+                motion_bytes_after_move = motion_path.read_bytes()
 
             segments = read_layer(
                 layers_root / "candidates" / "force_contact" / "motion_a.jsonl",
@@ -226,6 +242,11 @@ class ForceProtoContactTests(unittest.TestCase):
             graph = read_contact_graph(layers_root / "contact" / "force_contact", "motion_a")
             moved_graph = read_contact_graph(layers_root / "contact" / "force_contact_moved", "motion_a")
 
+        self.assertEqual(motion_bytes_after_move, original_motion_bytes)
+        self.assertEqual(plan["plan_id"], "plan_a")
+        self.assertEqual(plan["source_motion_path"], str(motion_path))
+        self.assertEqual(plan["source_segment_layer"], "candidates/force_contact")
+        self.assertEqual(len(plan["edits"]), 1)
         self.assertEqual(len(segments), 1)
         self.assertEqual(len(graph.transitions), 1)
         self.assertGreaterEqual(len(graph.anchors), 1)
