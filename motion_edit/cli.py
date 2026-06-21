@@ -8,12 +8,13 @@ from .adapters.omniretarget import detect_omniretarget_paths
 from .adapters.lte import import_lte_catalog
 from .curation import filter_segments, load_layer_segments, write_status_layer
 from .editing import clip_motion, splice_motions
-from .export import export_cutter_segments, export_motion_manifest, export_split_npz
+from .export import export_contact_overlay, export_cutter_segments, export_motion_manifest, export_split_npz
 from .force_proto import contact_graph_from_masked_motion, segments_from_masked_motion
 from .io import read_jsonl, segment_from_dict
 from .layers import iter_layer_files, read_layer, write_layer
 from .paths import BACKUPS_ROOT, EXPORTS_ROOT, LAYERS_ROOT, ensure_data_dirs, layer_dir
 from .contact import write_contact_layer
+from .contact.layers import read_contact_graph
 from .contact.io import read_contact_anchors, read_contact_events, read_contact_transitions
 from .viewer import launch_viewer
 from .workbench import (
@@ -88,6 +89,12 @@ def _cmd_export_cutter_segments(args: argparse.Namespace) -> None:
         print(f"installed {len(written)} cutter segment files to {install_dir}; backups in {backup_dir}")
     else:
         print(f"exported {len(written)} cutter segment files to {output_dir}")
+
+
+def _cmd_export_contact_overlay(args: argparse.Namespace) -> None:
+    graph = read_contact_graph(LAYERS_ROOT / args.source, args.motion_id)
+    output = export_contact_overlay(args.output, graph)
+    print(f"wrote contact overlay {output}")
 
 
 def _cmd_summarize(_args: argparse.Namespace) -> None:
@@ -354,6 +361,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output-dir", default=None)
     p.add_argument("--install-to", default=None)
     p.set_defaults(func=_cmd_export_cutter_segments)
+
+    p = sub.add_parser("export-contact-overlay")
+    p.add_argument("--source", required=True, help="Contact layer path relative to data/layers, e.g. contact/force_contact")
+    p.add_argument("--motion-id", required=True)
+    p.add_argument("--output", required=True)
+    p.set_defaults(func=_cmd_export_contact_overlay)
 
     p = sub.add_parser("export-manifest")
     p.add_argument("--source", required=True, help="Layer path relative to data/layers")

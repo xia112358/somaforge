@@ -105,6 +105,14 @@ class ForceProtoContactTests(unittest.TestCase):
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out):
                     cli._cmd_list_contact_layer(list_args)
+                overlay_path = root / "overlay.json"
+                export_args = argparse.Namespace(
+                    source="contact/force_contact",
+                    motion_id="motion_a",
+                    output=str(overlay_path),
+                )
+                cli._cmd_export_contact_overlay(export_args)
+                overlay_text = overlay_path.read_text(encoding="utf-8")
 
             segments = read_layer(
                 layers_root / "candidates" / "force_contact" / "motion_a.jsonl",
@@ -118,6 +126,7 @@ class ForceProtoContactTests(unittest.TestCase):
         self.assertGreaterEqual(len(graph.anchors), 1)
         self.assertIn("motion_a: events=", out.getvalue())
         self.assertIn("transitions=1", out.getvalue())
+        self.assertIn('"contact_graph"', overlay_text)
 
 
 if __name__ == "__main__":

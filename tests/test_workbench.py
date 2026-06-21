@@ -425,11 +425,15 @@ class WorkbenchCliTests(unittest.TestCase):
             ]
         )
         contact_args = parser.parse_args(["list-contact-layer", "--source", "contact/force_contact", "--motion-id", "motion_a"])
+        overlay_args = parser.parse_args(
+            ["export-contact-overlay", "--source", "contact/force_contact", "--motion-id", "motion_a", "--output", "overlay.json"]
+        )
 
         self.assertEqual(view_args.cmd, "view")
         self.assertEqual(workbench_server_args.cmd, "workbench")
         self.assertEqual(workbench_args.cmd, "workbench-action")
         self.assertEqual(contact_args.cmd, "list-contact-layer")
+        self.assertEqual(overlay_args.cmd, "export-contact-overlay")
         self.assertTrue(workbench_args.dry_run)
 
     def test_existing_view_command_still_calls_launch_viewer(self) -> None:
