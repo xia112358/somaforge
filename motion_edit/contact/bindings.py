@@ -45,12 +45,26 @@ def _anchor_ids(anchors: list[ContactAnchorRecord]) -> tuple[str | None, str | N
 
 def contact_metadata_for_bounds(graph: ContactGraph, *, start_frame: int, end_frame: int) -> dict:
     events = [event for event in graph.events if start_frame <= event.frame < end_frame]
+    transition = _transition_for_bounds(graph, start_frame, end_frame)
+    transition_anchor_ids = {
+        anchor_id
+        for anchor_id in (
+            transition.source_anchor_id if transition else None,
+            transition.target_anchor_id if transition else None,
+        )
+        if anchor_id
+    }
     anchors = [
         anchor
         for anchor in graph.anchors
-        if _overlaps(start_frame, end_frame, anchor.start_frame, anchor.end_frame)
+        if _overlaps(start_frame, end_frame, anchor.start_frame, anchor.end_frame) or anchor.anchor_id in transition_anchor_ids
     ]
-    transition = _transition_for_bounds(graph, start_frame, end_frame)
+    anchor_ids = {anchor.anchor_id for anchor in anchors}
+    patches = [
+        patch
+        for patch in graph.patches
+        if (patch.anchor_id in anchor_ids if patch.anchor_id else _overlaps(start_frame, end_frame, patch.start_frame, patch.end_frame))
+    ]
     source_anchor_id, target_anchor_id = _anchor_ids(anchors)
     support_bodies = sorted({anchor.body for anchor in anchors if anchor.role in {"support", "transition"}})
     active_body = transition.active_body if transition else next((anchor.body for anchor in anchors if anchor.role == "active"), None)
@@ -58,6 +72,7 @@ def contact_metadata_for_bounds(graph: ContactGraph, *, start_frame: int, end_fr
         "contact_transition": transition.to_dict() if transition else None,
         "contact_events": [event.to_dict() for event in events],
         "contact_anchors": [anchor.to_dict() for anchor in anchors],
+        "contact_patches": [patch.to_dict() for patch in patches],
         "source_anchor_id": transition.source_anchor_id if transition and transition.source_anchor_id else source_anchor_id,
         "target_anchor_id": transition.target_anchor_id if transition and transition.target_anchor_id else target_anchor_id,
         "active_body": active_body,
@@ -70,6 +85,7 @@ def contact_metadata_for_bounds(graph: ContactGraph, *, start_frame: int, end_fr
             "end_frame": int(end_frame),
             "event_count": len(events),
             "anchor_count": len(anchors),
+            "patch_count": len(patches),
             "transition_id": transition.transition_id if transition else None,
         },
     }
@@ -79,4 +95,3 @@ def bind_segment_to_contact_graph(segment: SegmentRecord, graph: ContactGraph) -
     metadata = dict(segment.metadata)
     metadata.update(contact_metadata_for_bounds(graph, start_frame=segment.start_frame, end_frame=segment.end_frame))
     return replace(segment, metadata=metadata)
-

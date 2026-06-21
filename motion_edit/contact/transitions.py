@@ -6,6 +6,7 @@ import numpy as np
 
 from motion_edit.contact.anchors import anchors_from_contact_mask
 from motion_edit.contact.events import bodies_from_mask, body_names_for_mask, detect_contact_events
+from motion_edit.contact.patches import patches_from_anchors
 from motion_edit.contact.schema import ContactAnchorRecord, ContactEventRecord, ContactTransitionRecord
 from motion_edit.schema import SegmentRecord
 
@@ -204,7 +205,7 @@ def segment_from_contact_transition(
         if transition.start_frame <= event.frame < transition.end_frame
     ]
     overlapping_anchors = [
-        anchor.to_dict()
+        anchor
         for anchor in anchors
         if anchor.start_frame < transition.end_frame and anchor.end_frame > transition.start_frame
     ]
@@ -213,7 +214,8 @@ def segment_from_contact_transition(
         {
             "contact_transition": transition.to_dict(),
             "contact_events": transition_events,
-            "contact_anchors": overlapping_anchors,
+            "contact_anchors": [anchor.to_dict() for anchor in overlapping_anchors],
+            "contact_patches": [patch.to_dict() for patch in patches_from_anchors(overlapping_anchors)],
             "source_anchor_id": transition.source_anchor_id,
             "target_anchor_id": transition.target_anchor_id,
             "active_body": transition.active_body,

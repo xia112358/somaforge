@@ -11,6 +11,7 @@ from .io import (
     write_contact_jsonl,
 )
 from .layers import read_contact_graph, write_contact_layer
+from .patches import patches_from_anchors
 from .schema import (
     ContactAnchorRecord,
     ContactEventRecord,
@@ -38,6 +39,7 @@ __all__ = [
     "contact_metadata_for_bounds",
     "detect_contact_events",
     "mask_string",
+    "patches_from_anchors",
     "read_contact_anchors",
     "read_contact_events",
     "read_contact_jsonl",

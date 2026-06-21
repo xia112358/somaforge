@@ -116,6 +116,8 @@ class ForceProtoContactTests(unittest.TestCase):
         self.assertIn("contact_transition", segment.metadata)
         self.assertIn("contact_events", segment.metadata)
         self.assertIn("contact_anchors", segment.metadata)
+        self.assertIn("contact_patches", segment.metadata)
+        self.assertGreaterEqual(len(segment.metadata["contact_patches"]), 1)
 
     def test_contact_graph_from_masked_motion_uses_same_contact_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

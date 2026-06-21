@@ -37,6 +37,7 @@ def export_motion_manifest(path: str | Path, segments: list[SegmentRecord]) -> P
                             "transition": item.metadata.get("contact_transition"),
                             "event_count": len(item.metadata.get("contact_events") or []),
                             "anchor_count": len(item.metadata.get("contact_anchors") or []),
+                            "patch_count": len(item.metadata.get("contact_patches") or []),
                         },
                     }
                     for item in items

@@ -5,7 +5,8 @@ from typing import Iterable
 
 import numpy as np
 
-from motion_edit.contact.schema import ContactAnchorRecord, ContactEventRecord, ContactTransitionRecord
+from motion_edit.contact.patches import patches_from_anchors
+from motion_edit.contact.schema import ContactAnchorRecord, ContactEventRecord, ContactPatchRecord, ContactTransitionRecord
 from motion_edit.contact.transitions import transitions_from_event_pairs, transitions_from_proto_indices
 
 
@@ -14,6 +15,7 @@ class ContactGraph:
     motion_id: str
     events: list[ContactEventRecord] = field(default_factory=list)
     anchors: list[ContactAnchorRecord] = field(default_factory=list)
+    patches: list[ContactPatchRecord] = field(default_factory=list)
     transitions: list[ContactTransitionRecord] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -21,6 +23,7 @@ class ContactGraph:
             "motion_id": self.motion_id,
             "events": [event.to_dict() for event in self.events],
             "anchors": [anchor.to_dict() for anchor in self.anchors],
+            "patches": [patch.to_dict() for patch in self.patches],
             "transitions": [transition.to_dict() for transition in self.transitions],
         }
 
@@ -55,4 +58,4 @@ def contact_graph_from_masks(
             anchors=anchors,
             source=source,
         )
-    return ContactGraph(motion_id=motion_id, events=events, anchors=anchors, transitions=transitions)
+    return ContactGraph(motion_id=motion_id, events=events, anchors=anchors, patches=patches_from_anchors(anchors), transitions=transitions)

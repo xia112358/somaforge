@@ -41,6 +41,7 @@ def _contact_segment(motion_path: str) -> SegmentRecord:
             "transition_type": "support_transfer",
             "contact_events": [{"event_id": "event_0"}],
             "contact_anchors": [{"anchor_id": "anchor_src"}, {"anchor_id": "anchor_dst"}],
+            "contact_patches": [{"patch_id": "patch_src"}],
         },
     )
 
@@ -104,6 +105,7 @@ class ExportContactMetadataTests(unittest.TestCase):
         self.assertEqual(item["transition_type"], "support_transfer")
         self.assertEqual(item["contact_metadata"]["event_count"], 1)
         self.assertEqual(item["contact_metadata"]["anchor_count"], 2)
+        self.assertEqual(item["contact_metadata"]["patch_count"], 1)
 
 
 if __name__ == "__main__":

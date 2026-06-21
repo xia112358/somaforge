@@ -14,6 +14,7 @@ from motion_edit.contact import (
     read_contact_anchors,
     read_contact_events,
     read_contact_graph,
+    read_contact_patches,
     read_contact_transitions,
     segment_from_contact_transition,
     transitions_from_proto_indices,
@@ -177,14 +178,17 @@ class ContactEventTests(unittest.TestCase):
             root = Path(tmp)
             write_contact_jsonl(root / "events.jsonl", events)
             write_contact_jsonl(root / "anchors.jsonl", anchors)
+            write_contact_jsonl(root / "patches.jsonl", contact_graph_from_masks(motion_id="motion_a", contact_mask=contact, body_names=["LF", "RF"]).patches)
             write_contact_jsonl(root / "transitions.jsonl", transitions)
 
             loaded_events = read_contact_events(root / "events.jsonl")
             loaded_anchors = read_contact_anchors(root / "anchors.jsonl")
+            loaded_patches = read_contact_patches(root / "patches.jsonl")
             loaded_transitions = read_contact_transitions(root / "transitions.jsonl")
 
         self.assertEqual(loaded_events[0].event_id, events[0].event_id)
         self.assertEqual(loaded_anchors[0].anchor_id, anchors[0].anchor_id)
+        self.assertEqual(loaded_patches[0].anchor_id, loaded_anchors[0].anchor_id)
         self.assertEqual(loaded_transitions[0].transition_id, transitions[0].transition_id)
 
     def test_contact_graph_groups_events_anchors_and_transitions(self) -> None:
@@ -201,8 +205,10 @@ class ContactEventTests(unittest.TestCase):
         self.assertTrue(any(event.event_type == "liftoff" for event in graph.events))
         self.assertTrue(any(event.event_type == "touchdown" for event in graph.events))
         self.assertEqual(len(graph.anchors), 2)
+        self.assertEqual(len(graph.patches), 2)
         self.assertEqual(graph.transitions[0].active_body, "LF")
         self.assertEqual(graph.to_dict()["motion_id"], "motion_a")
+        self.assertEqual(len(graph.to_dict()["patches"]), 2)
 
     def test_contact_layer_roundtrips_graph_components(self) -> None:
         graph = contact_graph_from_masks(
@@ -219,10 +225,28 @@ class ContactEventTests(unittest.TestCase):
 
         self.assertEqual([event.event_id for event in loaded.events], [event.event_id for event in graph.events])
         self.assertEqual([anchor.anchor_id for anchor in loaded.anchors], [anchor.anchor_id for anchor in graph.anchors])
+        self.assertEqual([patch.patch_id for patch in loaded.patches], [patch.patch_id for patch in graph.patches])
         self.assertEqual(
             [transition.transition_id for transition in loaded.transitions],
             [transition.transition_id for transition in graph.transitions],
         )
+
+    def test_contact_layer_read_derives_missing_patches_for_legacy_layers(self) -> None:
+        graph = contact_graph_from_masks(
+            motion_id="motion_a",
+            contact_mask=np.asarray([[True, False], [False, False], [True, False]]),
+            body_names=["LF", "RF"],
+            source="test",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "contact_layer"
+            write_contact_jsonl(root / "events" / "motion_a.jsonl", graph.events)
+            write_contact_jsonl(root / "anchors" / "motion_a.jsonl", graph.anchors)
+            write_contact_jsonl(root / "transitions" / "motion_a.jsonl", graph.transitions)
+            loaded = read_contact_graph(root, "motion_a")
+
+        self.assertEqual(len(loaded.patches), len(graph.anchors))
 
     def test_bind_segment_to_contact_graph_refreshes_metadata_for_bounds(self) -> None:
         graph = contact_graph_from_masks(
@@ -244,6 +268,8 @@ class ContactEventTests(unittest.TestCase):
 
         self.assertEqual(bound.metadata["contact_transition"]["transition_id"], graph.transitions[0].transition_id)
         self.assertEqual(bound.metadata["contact_binding"]["transition_id"], graph.transitions[0].transition_id)
+        self.assertEqual(bound.metadata["contact_binding"]["patch_count"], 2)
+        self.assertEqual(len(bound.metadata["contact_patches"]), 2)
         self.assertEqual(bound.metadata["active_body"], "LF")
 
 
