@@ -5,8 +5,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from motion_edit import paths
+import numpy as np
+
+from motion_edit import cli, paths
+from motion_edit.contact import contact_graph_from_masks, write_contact_layer
+from motion_edit.layers import write_layer
 from motion_edit.schema import SegmentRecord
+from motion_edit.storage import io as storage_io
 from motion_edit.storage import (
     MotionVersionRecord,
     TokenRecord,
@@ -100,6 +105,112 @@ class StorageSchemaTests(unittest.TestCase):
             self.assertTrue((root / "segments").is_dir())
             self.assertTrue((root / "tokens").is_dir())
             self.assertTrue((root / "exports" / "split_npz").is_dir())
+
+    def test_build_canonical_segmentation_from_contact_transitions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            layers_root = root / "layers"
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True, False], [False, False], [True, False]]),
+                body_names=["LF", "RF"],
+            )
+            write_contact_layer(layers_root / "contact" / "force_contact", graph)
+            motion = root / "motion_a.npz"
+            motion.write_bytes(b"npz")
+            args = type(
+                "Args",
+                (),
+                {
+                    "motion_version_id": "motion_a_raw",
+                    "motion": str(motion),
+                    "motion_id": "motion_a",
+                    "contact_layer": "contact/force_contact",
+                    "source": None,
+                    "cut_source": "contact_auto",
+                },
+            )()
+            with (
+                mock.patch.object(cli, "LAYERS_ROOT", layers_root),
+                mock.patch.object(paths, "LAYERS_ROOT", layers_root),
+                mock.patch.object(paths, "MOTION_VERSIONS_ROOT", root / "motion_versions"),
+                mock.patch.object(paths, "SEGMENTS_ROOT", root / "segments"),
+                mock.patch.object(paths, "MOTIONS_ROOT", root / "motions"),
+                mock.patch.object(paths, "TOKENS_ROOT", root / "tokens"),
+                mock.patch.object(paths, "EXPORTS_ROOT", root / "exports"),
+                mock.patch.object(paths, "CATALOGS_ROOT", root / "catalogs"),
+                mock.patch.object(paths, "WORKBENCH_ROOT", root / "workbench"),
+                mock.patch.object(paths, "BACKUPS_ROOT", root / "backups"),
+                mock.patch.object(storage_io, "MOTION_VERSIONS_ROOT", root / "motion_versions"),
+                mock.patch.object(storage_io, "SEGMENTS_ROOT", root / "segments"),
+            ):
+                cli._cmd_build_canonical_segmentation(args)
+                segments = read_canonical_segments("motion_a_raw")
+                version = read_motion_version("motion_a_raw")
+
+            self.assertEqual(version.motion_version_id, "motion_a_raw")
+            self.assertEqual(version.contact_layer, "contact/force_contact")
+            self.assertEqual(len(segments), 1)
+            self.assertEqual(segments[0].metadata["motion_version_id"], "motion_a_raw")
+            self.assertEqual(segments[0].metadata["cut_source"], "contact_auto")
+            self.assertIn("parent_transition_id", segments[0].metadata)
+            self.assertEqual(len(list((root / "segments").glob("motion_a_raw*.jsonl"))), 1)
+
+    def test_migrate_layer_to_canonical_rebinds_contact_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            layers_root = root / "layers"
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True, False], [False, False], [True, False]]),
+                body_names=["LF", "RF"],
+            )
+            write_contact_layer(layers_root / "contact" / "force_contact", graph)
+            motion = root / "motion_a.npz"
+            motion.write_bytes(b"npz")
+            legacy = SegmentRecord(
+                motion_id="motion_a",
+                segment_id="legacy_seg",
+                start_frame=0,
+                end_frame=2,
+                source="force_contact",
+                motion_path=str(motion),
+            )
+            write_layer(layers_root / "candidates" / "force_contact" / "motion_a.jsonl", [legacy])
+            args = type(
+                "Args",
+                (),
+                {
+                    "motion_version_id": "motion_a_raw",
+                    "motion": str(motion),
+                    "motion_id": "motion_a",
+                    "contact_layer": "contact/force_contact",
+                    "source": "candidates/force_contact",
+                    "cut_source": "migrated",
+                },
+            )()
+            with (
+                mock.patch.object(cli, "LAYERS_ROOT", layers_root),
+                mock.patch.object(paths, "LAYERS_ROOT", layers_root),
+                mock.patch.object(paths, "MOTION_VERSIONS_ROOT", root / "motion_versions"),
+                mock.patch.object(paths, "SEGMENTS_ROOT", root / "segments"),
+                mock.patch.object(paths, "MOTIONS_ROOT", root / "motions"),
+                mock.patch.object(paths, "TOKENS_ROOT", root / "tokens"),
+                mock.patch.object(paths, "EXPORTS_ROOT", root / "exports"),
+                mock.patch.object(paths, "CATALOGS_ROOT", root / "catalogs"),
+                mock.patch.object(paths, "WORKBENCH_ROOT", root / "workbench"),
+                mock.patch.object(paths, "BACKUPS_ROOT", root / "backups"),
+                mock.patch.object(storage_io, "MOTION_VERSIONS_ROOT", root / "motion_versions"),
+                mock.patch.object(storage_io, "SEGMENTS_ROOT", root / "segments"),
+            ):
+                cli._cmd_build_canonical_segmentation(args)
+                segments = read_canonical_segments("motion_a_raw")
+
+            self.assertEqual(len(segments), 1)
+            self.assertEqual(segments[0].segment_id, "legacy_seg")
+            self.assertEqual(segments[0].metadata["cut_source"], "migrated")
+            self.assertEqual(segments[0].metadata["motion_version_id"], "motion_a_raw")
+            self.assertIn("contact_transition", segments[0].metadata)
 
 
 if __name__ == "__main__":

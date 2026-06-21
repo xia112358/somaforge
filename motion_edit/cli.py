@@ -24,6 +24,7 @@ from .contact import (
 )
 from .contact.generation import apply_contact_edit_plan_to_motion
 from .contact.layers import read_contact_graph
+from .storage.canonical import build_canonical_segments, write_motion_version_with_canonical_segments
 from .viewer import launch_viewer
 from .workbench import (
     WorkbenchSession,
@@ -162,6 +163,42 @@ def _cmd_generate_lte_augmentation(args: argparse.Namespace) -> None:
         raise ValueError("contact edit plan must be validated or locked; pass --allow-draft to override")
     output = apply_contact_edit_plan_to_motion(plan, output_motion_path=args.output_motion, mode=args.mode)
     print(f"generated LTE augmentation {output}")
+
+
+def _source_segments_for_motion(source: str | None, motion_id: str) -> list:
+    if not source:
+        return []
+    path = LAYERS_ROOT / source / f"{motion_id}.jsonl"
+    if not path.exists():
+        return []
+    default_status = "candidate" if source.startswith("candidates/") else "manual"
+    return read_layer(path, default_source=source.split("/", 1)[-1], default_status=default_status)
+
+
+def _cmd_build_canonical_segmentation(args: argparse.Namespace) -> None:
+    ensure_data_dirs()
+    motion_path = str(Path(args.motion).expanduser())
+    motion_id = args.motion_id or Path(motion_path).stem
+    graph = read_contact_graph(LAYERS_ROOT / args.contact_layer, motion_id)
+    source_segments = _source_segments_for_motion(args.source, motion_id)
+    segments = build_canonical_segments(
+        motion_version_id=args.motion_version_id,
+        motion_path=motion_path,
+        graph=graph,
+        source_segments=source_segments,
+        cut_source=args.cut_source,
+    )
+    record, segment_path = write_motion_version_with_canonical_segments(
+        motion_version_id=args.motion_version_id,
+        motion_path=motion_path,
+        contact_layer=args.contact_layer,
+        segments=segments,
+        base_motion_id=motion_id,
+    )
+    print(
+        f"wrote canonical segmentation motion_version={record.motion_version_id} "
+        f"segments={len(segments)} path={segment_path}"
+    )
 
 
 def _cmd_summarize(_args: argparse.Namespace) -> None:
@@ -476,6 +513,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--allow-draft", action="store_true")
     p.add_argument("--mode", default="stub")
     p.set_defaults(func=_cmd_generate_lte_augmentation)
+
+    p = sub.add_parser("build-canonical-segmentation")
+    p.add_argument("--motion-version-id", required=True)
+    p.add_argument("--motion", required=True)
+    p.add_argument("--motion-id", default=None)
+    p.add_argument("--contact-layer", required=True)
+    p.add_argument("--source", default=None)
+    p.add_argument("--cut-source", default="contact_auto")
+    p.set_defaults(func=_cmd_build_canonical_segmentation)
+
+    p = sub.add_parser("migrate-layer-to-canonical")
+    p.add_argument("--motion-version-id", required=True)
+    p.add_argument("--motion", required=True)
+    p.add_argument("--motion-id", default=None)
+    p.add_argument("--contact-layer", required=True)
+    p.add_argument("--source", required=True)
+    p.add_argument("--cut-source", default="migrated")
+    p.set_defaults(func=_cmd_build_canonical_segmentation)
 
     p = sub.add_parser("export-manifest")
     p.add_argument("--source", required=True, help="Layer path relative to data/layers")
