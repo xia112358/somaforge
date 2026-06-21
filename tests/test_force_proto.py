@@ -173,6 +173,7 @@ class ForceProtoContactTests(unittest.TestCase):
         self.assertEqual(len(graph.transitions), 1)
         self.assertGreaterEqual(len(graph.anchors), 1)
         self.assertIn("motion_a: events=", out.getvalue())
+        self.assertIn("patches=", out.getvalue())
         self.assertIn("transitions=1", out.getvalue())
         self.assertIn('"contact_graph"', overlay_text)
 

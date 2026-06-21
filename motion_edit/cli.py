@@ -16,6 +16,7 @@ from .paths import BACKUPS_ROOT, EXPORTS_ROOT, LAYERS_ROOT, ensure_data_dirs, la
 from .contact import write_contact_layer
 from .contact.layers import read_contact_graph
 from .contact.io import read_contact_anchors, read_contact_events, read_contact_transitions
+from .contact.io import read_contact_patches
 from .viewer import launch_viewer
 from .workbench import (
     WorkbenchSession,
@@ -207,20 +208,29 @@ def _cmd_list_contact_layer(args: argparse.Namespace) -> None:
         event_files = [path for path in event_files if path.stem == args.motion_id]
     total_events = 0
     total_anchors = 0
+    total_patches = 0
     total_transitions = 0
     for event_path in event_files:
         motion_id = event_path.stem
         events = read_contact_events(event_path)
         anchors = read_contact_anchors(root / "anchors" / f"{motion_id}.jsonl")
+        patch_path = root / "patches" / f"{motion_id}.jsonl"
+        patches = read_contact_patches(patch_path) if patch_path.exists() else []
         transitions = read_contact_transitions(root / "transitions" / f"{motion_id}.jsonl")
         total_events += len(events)
         total_anchors += len(anchors)
+        total_patches += len(patches)
         total_transitions += len(transitions)
-        print(f"{motion_id}: events={len(events)} anchors={len(anchors)} transitions={len(transitions)}")
+        print(f"{motion_id}: events={len(events)} anchors={len(anchors)} patches={len(patches)} transitions={len(transitions)}")
         for anchor in anchors[: args.limit]:
             print(
                 f"  anchor {anchor.start_frame:5d}->{anchor.end_frame:<5d} "
                 f"{anchor.anchor_id} body={anchor.body} role={anchor.role}"
+            )
+        for patch in patches[: args.limit]:
+            print(
+                f"  patch  {patch.start_frame:5d}->{patch.end_frame:<5d} "
+                f"{patch.patch_id} body={patch.body} anchor={patch.anchor_id}"
             )
         for transition in transitions[: args.limit]:
             print(
@@ -228,7 +238,10 @@ def _cmd_list_contact_layer(args: argparse.Namespace) -> None:
                 f"{transition.transition_id} active={transition.active_body} "
                 f"support={','.join(transition.support_bodies)}"
             )
-    print(f"total_events={total_events} total_anchors={total_anchors} total_transitions={total_transitions}")
+    print(
+        f"total_events={total_events} total_anchors={total_anchors} "
+        f"total_patches={total_patches} total_transitions={total_transitions}"
+    )
 
 
 def _cmd_workbench_action(args: argparse.Namespace) -> None:
