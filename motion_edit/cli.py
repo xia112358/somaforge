@@ -14,6 +14,17 @@ from .io import read_jsonl, segment_from_dict
 from .layers import iter_layer_files, read_layer, write_layer
 from .paths import BACKUPS_ROOT, EXPORTS_ROOT, LAYERS_ROOT, ensure_data_dirs, layer_dir
 from .viewer import launch_viewer
+from .workbench import (
+    WorkbenchSession,
+    curate_segment,
+    load_workbench_segments,
+    make_workbench_server,
+    replace_segment,
+    select_segment,
+    split_segment,
+    trim_segment,
+    write_workbench_segments,
+)
 
 
 def _cmd_init(_args: argparse.Namespace) -> None:
@@ -173,6 +184,75 @@ def _cmd_list_layer(args: argparse.Namespace) -> None:
     print(f"total={total}")
 
 
+def _cmd_workbench_action(args: argparse.Namespace) -> None:
+    ensure_data_dirs()
+    segments = load_workbench_segments(args.source)
+    selected = select_segment(
+        segments,
+        motion_id=args.motion_id,
+        segment_id=args.segment_id,
+        index=args.index,
+    )
+
+    if args.action == "trim":
+        if args.start_frame is None or args.end_frame is None:
+            raise ValueError("trim requires --start-frame and --end-frame")
+        replacements = [trim_segment(selected, start_frame=args.start_frame, end_frame=args.end_frame)]
+        destination = args.output_source or "manual/workbench_tmp"
+        output_segments = replace_segment(segments, selected.segment_id, replacements)
+    elif args.action == "split":
+        if args.frame is None:
+            raise ValueError("split requires --frame")
+        replacements = list(split_segment(selected, frame=args.frame))
+        destination = args.output_source or "manual/workbench_tmp"
+        output_segments = replace_segment(segments, selected.segment_id, replacements)
+    elif args.action in {"accept", "reject"}:
+        status = "accepted" if args.action == "accept" else "rejected"
+        replacements = [curate_segment(selected, status=status)]  # type: ignore[arg-type]
+        destination = args.output_source or f"{status}/{args.layer_name}"
+        output_segments = replacements
+    else:
+        raise ValueError(f"unsupported workbench action: {args.action}")
+
+    print(
+        f"{args.action}: selected={selected.segment_id} "
+        f"replacements={','.join(segment.segment_id for segment in replacements)} "
+        f"destination={destination}"
+    )
+    if args.dry_run:
+        print("dry-run: no files written")
+        return
+    out = write_workbench_segments(destination, output_segments)
+    print(f"wrote {len(output_segments)} workbench segments to {out}")
+
+
+def _cmd_workbench(args: argparse.Namespace) -> None:
+    ensure_data_dirs()
+    session = WorkbenchSession(
+        source=args.source,
+        motion_path=args.motion,
+        motion_id=args.motion_id,
+        selected_segment_id=args.segment_id,
+        selected_index=args.index,
+        current_frame=args.current_frame,
+        output_source=args.output_source,
+        layer_name=args.layer_name,
+        dry_run=args.dry_run,
+    )
+    print(f"source={args.source} motion_id={session.selected().motion_id} selected={session.selected().segment_id}")
+    if args.once:
+        print(session.state())
+        return
+    server = make_workbench_server(session, host=args.host, port=args.port)
+    print(f"workbench api: http://{args.host}:{args.port}/api/state")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="motion-edit")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -237,6 +317,35 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--motion-id", default=None)
     p.add_argument("--limit", type=int, default=20)
     p.set_defaults(func=_cmd_list_layer)
+
+    p = sub.add_parser("workbench-action")
+    p.add_argument("--source", required=True, help="Layer path relative to data/layers")
+    p.add_argument("--motion-id", default=None)
+    p.add_argument("--segment-id", default=None)
+    p.add_argument("--index", type=int, default=None)
+    p.add_argument("--action", required=True, choices=["trim", "split", "accept", "reject"])
+    p.add_argument("--start-frame", type=int, default=None)
+    p.add_argument("--end-frame", type=int, default=None)
+    p.add_argument("--frame", type=int, default=None)
+    p.add_argument("--output-source", default=None, help="Destination layer path relative to data/layers")
+    p.add_argument("--layer-name", default="workbench_tmp", help="Layer name for accept/reject defaults")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=_cmd_workbench_action)
+
+    p = sub.add_parser("workbench")
+    p.add_argument("motion", nargs="?", default=None, help="Optional .npz motion path for state metadata")
+    p.add_argument("--source", required=True, help="Layer path relative to data/layers")
+    p.add_argument("--motion-id", default=None)
+    p.add_argument("--segment-id", default=None)
+    p.add_argument("--index", type=int, default=0)
+    p.add_argument("--current-frame", type=int, default=-1)
+    p.add_argument("--output-source", default="manual/workbench_tmp")
+    p.add_argument("--layer-name", default="workbench_tmp")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8095)
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--once", action="store_true", help="Build session, print state, and exit without serving")
+    p.set_defaults(func=_cmd_workbench)
 
     p = sub.add_parser("detect-motion")
     p.add_argument("motion")
