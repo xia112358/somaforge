@@ -232,6 +232,9 @@ def _cmd_build_canonical_segmentation(args: argparse.Namespace) -> None:
         contact_layer=args.contact_layer,
         segments=segments,
         base_motion_id=motion_id,
+        reset_canonical=args.reset_canonical or args.overwrite,
+        reason=args.reason,
+        source=args.cut_source,
     )
     print(
         f"wrote canonical segmentation motion_version={record.motion_version_id} "
@@ -717,6 +720,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--contact-layer", required=True)
     p.add_argument("--source", default=None)
     p.add_argument("--cut-source", default="contact_auto")
+    p.add_argument("--reset-canonical", action="store_true")
+    p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--reason", default=None)
     p.set_defaults(func=_cmd_build_canonical_segmentation)
 
     p = sub.add_parser("migrate-layer-to-canonical")
@@ -726,6 +732,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--contact-layer", required=True)
     p.add_argument("--source", required=True)
     p.add_argument("--cut-source", default="migrated")
+    p.add_argument("--reset-canonical", action="store_true")
+    p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--reason", default=None)
     p.set_defaults(func=_cmd_build_canonical_segmentation)
 
     p = sub.add_parser("mark-segment-status")

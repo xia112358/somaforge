@@ -9,7 +9,14 @@ from motion_edit.contact.transitions import segment_from_contact_transition
 from motion_edit.layers import read_layer
 from motion_edit.paths import LAYERS_ROOT
 from motion_edit.schema import SegmentRecord
-from motion_edit.storage.io import canonical_segment_path, read_canonical_segments, write_canonical_segments, write_motion_version
+from motion_edit.storage.io import (
+    canonical_segment_path,
+    read_canonical_segments,
+    replace_canonical_segments,
+    upsert_motion_version_canonical_path,
+    write_canonical_segments,
+    write_motion_version,
+)
 from motion_edit.storage.segments import canonical_segment_id, with_segment_motion_version_id
 from motion_edit.storage.schema import MotionVersionRecord
 
@@ -115,17 +122,53 @@ def write_motion_version_with_canonical_segments(
     segments: list[SegmentRecord],
     kind: str = "raw",
     base_motion_id: str | None = None,
+    reset_canonical: bool = False,
+    reason: str | None = None,
+    source: str = "contact_auto",
 ) -> tuple[MotionVersionRecord, Path]:
-    segment_path = write_canonical_segments(motion_version_id, segments)
-    record = MotionVersionRecord(
-        motion_version_id=motion_version_id,
-        base_motion_id=base_motion_id,
-        kind=kind,  # type: ignore[arg-type]
-        motion_path=motion_path,
+    active_path = canonical_segment_path(motion_version_id)
+    if active_path.exists() and not reset_canonical:
+        raise ValueError(
+            f"canonical segmentation already exists for {motion_version_id}; "
+            "use cutter/update/mark-status to refine it or pass --reset-canonical"
+        )
+    if reset_canonical:
+        segment_path = replace_canonical_segments(
+            motion_version_id,
+            segments,
+            reason=reason or "reset canonical segmentation",
+            source=source,
+            kind="reset_canonical_segmentation",
+            backup_existing=True,
+        )
+    else:
+        segment_path = write_canonical_segments(
+            motion_version_id,
+            segments,
+            reason=reason or "build canonical segmentation",
+            source=source,
+        )
+    record = upsert_motion_version_canonical_path(
+        motion_version_id,
+        segment_path,
         contact_layer=contact_layer,
-        canonical_segment_path=str(canonical_segment_path(motion_version_id)),
+        motion_path=motion_path,
     )
-    write_motion_version(record)
+    if record.base_motion_id is None and base_motion_id is not None:
+        record = MotionVersionRecord(
+            motion_version_id=record.motion_version_id,
+            motion_path=record.motion_path,
+            kind=record.kind,
+            base_motion_id=base_motion_id,
+            motion_asset_id=record.motion_asset_id,
+            parent_motion_version_id=record.parent_motion_version_id,
+            contact_layer=record.contact_layer,
+            canonical_segment_path=record.canonical_segment_path,
+            token_catalog_path=record.token_catalog_path,
+            edit_plan_id=record.edit_plan_id,
+            metadata=dict(record.metadata),
+        )
+        write_motion_version(record)
     return record, segment_path
 
 

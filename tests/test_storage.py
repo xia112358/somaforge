@@ -411,6 +411,9 @@ class StorageSchemaTests(unittest.TestCase):
                     "contact_layer": "contact/force_contact",
                     "source": None,
                     "cut_source": "contact_auto",
+                    "reset_canonical": False,
+                    "overwrite": False,
+                    "reason": None,
                 },
             )()
             with (
@@ -438,6 +441,56 @@ class StorageSchemaTests(unittest.TestCase):
             self.assertEqual(segments[0].metadata["cut_source"], "contact_auto")
             self.assertIn("parent_transition_id", segments[0].metadata)
             self.assertEqual(len(list((root / "segments").glob("motion_a_raw*.jsonl"))), 1)
+
+    def test_build_canonical_segmentation_refuses_existing_without_reset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            layers_root = root / "layers"
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True, False], [False, False], [True, False]]),
+                body_names=["LF", "RF"],
+            )
+            write_contact_layer(layers_root / "contact" / "force_contact", graph)
+            motion = root / "motion_a.npz"
+            motion.write_bytes(b"npz")
+            base_args = {
+                "motion_version_id": "motion_a_raw",
+                "motion": str(motion),
+                "motion_id": "motion_a",
+                "contact_layer": "contact/force_contact",
+                "source": None,
+                "cut_source": "contact_auto",
+                "reset_canonical": False,
+                "overwrite": False,
+                "reason": None,
+            }
+            with (
+                mock.patch.object(cli, "LAYERS_ROOT", layers_root),
+                mock.patch.object(paths, "LAYERS_ROOT", layers_root),
+                mock.patch.object(paths, "MOTION_VERSIONS_ROOT", root / "motion_versions"),
+                mock.patch.object(paths, "SEGMENTS_ROOT", root / "segments"),
+                mock.patch.object(paths, "MOTIONS_ROOT", root / "motions"),
+                mock.patch.object(paths, "TOKENS_ROOT", root / "tokens"),
+                mock.patch.object(paths, "EXPORTS_ROOT", root / "exports"),
+                mock.patch.object(paths, "CATALOGS_ROOT", root / "catalogs"),
+                mock.patch.object(paths, "WORKBENCH_ROOT", root / "workbench"),
+                mock.patch.object(paths, "BACKUPS_ROOT", root / "backups"),
+                mock.patch.object(storage_io, "MOTION_VERSIONS_ROOT", root / "motion_versions"),
+                mock.patch.object(storage_io, "SEGMENTS_ROOT", root / "segments"),
+            ):
+                cli._cmd_build_canonical_segmentation(type("Args", (), base_args)())
+                with self.assertRaises(ValueError):
+                    cli._cmd_build_canonical_segmentation(type("Args", (), base_args)())
+                reset_args = {**base_args, "reset_canonical": True, "reason": "reset test"}
+                cli._cmd_build_canonical_segmentation(type("Args", (), reset_args)())
+                active_files = sorted(path.name for path in (root / "segments").glob("motion_a_raw*.jsonl"))
+                backup_files = sorted(path.name for path in (root / "segments" / "history" / "motion_a_raw").glob("*.jsonl"))
+                history_events = read_jsonl(canonical_history_event_path("motion_a_raw"))
+
+        self.assertEqual(active_files, ["motion_a_raw.jsonl"])
+        self.assertGreaterEqual(len(backup_files), 1)
+        self.assertIn("reset_canonical_segmentation", [event["kind"] for event in history_events])
 
     def test_migrate_layer_to_canonical_rebinds_contact_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -470,6 +523,9 @@ class StorageSchemaTests(unittest.TestCase):
                     "contact_layer": "contact/force_contact",
                     "source": "candidates/force_contact",
                     "cut_source": "migrated",
+                    "reset_canonical": False,
+                    "overwrite": False,
+                    "reason": None,
                 },
             )()
             with (
