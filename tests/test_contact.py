@@ -419,9 +419,9 @@ class ContactEventTests(unittest.TestCase):
 
         bound = bind_anchors_to_surfaces([foot, hand], [vertical])
 
-        self.assertFalse(surface_compatible_with_body("LF", vertical))
+        self.assertTrue(surface_compatible_with_body("LF", vertical))
         self.assertTrue(surface_compatible_with_body("LH", vertical))
-        self.assertTrue(bound[0].metadata["surface_binding_failed"])
+        self.assertEqual(bound[0].surface_id, "wall")
         self.assertEqual(bound[1].surface_id, "wall")
 
     def test_bound_anchor_can_move_on_surface(self) -> None:

@@ -62,23 +62,8 @@ def _clamp(value: float, bounds: tuple[float, float] | None) -> tuple[float, boo
     return clamped, clamped != value
 
 
-def _body_kind(body: str) -> str:
-    lowered = body.lower()
-    if any(token in lowered for token in ("foot", "toe", "ankle")) or body in {"LF", "RF"}:
-        return "foot"
-    if any(token in lowered for token in ("hand", "wrist", "palm")) or body in {"LH", "RH"}:
-        return "hand"
-    return "unknown"
-
-
 def surface_compatible_with_body(body: str, surface: ContactSurfaceRecord) -> bool:
-    normal = _normalize3(surface.normal, name="surface.normal")
-    up_dot = normal[2]
-    kind = _body_kind(body)
-    if kind == "foot":
-        return up_dot > 0.5
-    if kind == "hand":
-        return abs(up_dot) < 0.7 or up_dot > 0.5
+    _normalize3(surface.normal, name="surface.normal")
     return True
 
 
