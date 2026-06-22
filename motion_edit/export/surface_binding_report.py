@@ -60,6 +60,10 @@ def _anchor_status(anchor: ContactAnchorRecord) -> str:
         return "unbound"
     if binding is not None and binding.get("clamped"):
         return "clamped"
+    if anchor.metadata.get("surface_editor_status") == "edited":
+        return "edited"
+    if anchor.metadata.get("surface_editor_status") == "selected":
+        return "selected"
     warnings = _anchor_warnings(anchor, binding)
     if warnings:
         return "suspicious"

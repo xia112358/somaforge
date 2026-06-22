@@ -13,7 +13,14 @@ import numpy as np
 
 from motion_edit import cli
 from motion_edit.cli import build_parser
-from motion_edit.contact import contact_graph_from_masks, write_contact_layer
+from motion_edit.contact import (
+    ContactSurfaceRecord,
+    contact_graph_from_masks,
+    read_contact_edit_plan,
+    read_contact_graph,
+    write_contact_layer,
+    write_contact_surfaces,
+)
 from motion_edit.io import read_jsonl, write_jsonl
 from motion_edit.schema import SegmentRecord
 from motion_edit.workbench import (
@@ -22,8 +29,11 @@ from motion_edit.workbench import (
     export_cutter_session_file,
     load_workbench_segments,
     make_workbench_server,
+    move_surface_editor_anchor,
+    prepare_surface_editor_session,
     replace_segment,
     select_segment,
+    save_surface_editor_session,
     sync_cutter_session_file,
     split_segment,
     trim_segment,
@@ -57,6 +67,137 @@ def _segment_b() -> SegmentRecord:
         motion_path="/tmp/motion_a.npz",
         clip_npz="/tmp/motion_a.npz",
     )
+
+
+class SurfaceEditorSessionTests(unittest.TestCase):
+    def test_surface_editor_session_moves_anchor_and_saves_layer_and_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            motion = root / "motion_a.npz"
+            motion.write_bytes(b"original")
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True], [True], [False]]),
+                body_pos_w=np.asarray([[[0.0, 0.0, 0.0]], [[0.0, 0.0, 0.0]], [[0.0, 0.0, 0.0]]]),
+                body_names=["LF"],
+            )
+            surface = ContactSurfaceRecord(
+                motion_id="motion_a",
+                surface_id="top",
+                object_id="box",
+                surface_type="box_face",
+                origin=[0.0, 0.0, 0.0],
+                normal=[0.0, 0.0, 1.0],
+                tangent_u=[1.0, 0.0, 0.0],
+                tangent_v=[0.0, 1.0, 0.0],
+                bounds={"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+            )
+            # Bind the generated anchor enough for surface-constrained editor moves.
+            anchor = graph.anchors[0]
+            graph = type(graph)(
+                motion_id=graph.motion_id,
+                events=graph.events,
+                anchors=[
+                    type(anchor)(
+                        **{
+                            **anchor.__dict__,
+                            "surface_id": "top",
+                            "surface_normal": [0.0, 0.0, 1.0],
+                            "surface_origin": [0.0, 0.0, 0.0],
+                            "surface_tangent_u": [1.0, 0.0, 0.0],
+                            "surface_tangent_v": [0.0, 1.0, 0.0],
+                            "surface_bounds": {"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+                            "surface_coordinates": {"u": 0.0, "v": 0.0},
+                        }
+                    )
+                ],
+                patches=graph.patches,
+                transitions=graph.transitions,
+            )
+            write_contact_layer(root / "layers" / "contact" / "bound", graph)
+            write_contact_surfaces(root / "surfaces.jsonl", [surface])
+            plan_path = root / "surface_plan.json"
+            session = prepare_surface_editor_session(
+                motion_path=str(motion),
+                motion_id="motion_a",
+                contact_layer="contact/bound",
+                surface_catalog=str(root / "surfaces.jsonl"),
+                session_name="session_a",
+                edit_plan_path=str(plan_path),
+                output_contact_layer="contact/edited",
+                layers_root=root / "layers",
+                workbench_root=root / "workbench",
+            )
+            moved_graph, edit = move_surface_editor_anchor(
+                session,
+                anchor_id=graph.anchors[0].anchor_id,
+                tangent_delta=[0.1, 0.0],
+            )
+            out_layer = save_surface_editor_session(session, layers_root=root / "layers")
+            edited = read_contact_graph(root / "layers" / "contact" / "edited", "motion_a")
+            plan = read_contact_edit_plan(plan_path)
+            overlay = json.loads(session.overlay_path.read_text(encoding="utf-8"))
+            motion_bytes = motion.read_bytes()
+            report_exists = session.report_path.exists()
+            contact_overlay_exists = session.contact_overlay_path.exists()
+            state_exists = session.state_path.exists()
+
+        self.assertEqual(motion_bytes, b"original")
+        self.assertTrue(report_exists)
+        self.assertTrue(contact_overlay_exists)
+        self.assertTrue(state_exists)
+        self.assertEqual(moved_graph.anchors[0].world_position, [0.1, 0.0, 0.0])
+        self.assertEqual(edit.delta_world, [0.1, 0.0, 0.0])
+        self.assertEqual(edited.anchors[0].world_position, [0.1, 0.0, 0.0])
+        self.assertEqual(out_layer, root / "layers" / "contact" / "edited")
+        self.assertEqual(plan.status, "draft")
+        self.assertEqual(plan.edits[0]["source"], "viser_surface_editor")
+        self.assertEqual(plan.edits[0]["metadata"]["binding_granularity"], "anchor_point")
+        anchor_point = next(item for item in overlay["objects"] if item["type"] == "anchor_point")
+        self.assertEqual(anchor_point["status"], "edited")
+
+    def test_surface_editor_move_rejects_outside_bounds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            anchor_graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True], [True], [False]]),
+                body_pos_w=np.asarray([[[0.0, 0.0, 0.0]], [[0.0, 0.0, 0.0]], [[0.0, 0.0, 0.0]]]),
+                body_names=["LF"],
+            )
+            anchor = anchor_graph.anchors[0]
+            bound_anchor = type(anchor)(
+                **{
+                    **anchor.__dict__,
+                    "surface_id": "top",
+                    "surface_normal": [0.0, 0.0, 1.0],
+                    "surface_origin": [0.0, 0.0, 0.0],
+                    "surface_tangent_u": [1.0, 0.0, 0.0],
+                    "surface_tangent_v": [0.0, 1.0, 0.0],
+                    "surface_bounds": {"u": [-0.05, 0.05], "v": [-0.05, 0.05]},
+                    "surface_coordinates": {"u": 0.0, "v": 0.0},
+                }
+            )
+            graph = type(anchor_graph)(
+                motion_id="motion_a",
+                events=anchor_graph.events,
+                anchors=[bound_anchor],
+                patches=anchor_graph.patches,
+                transitions=anchor_graph.transitions,
+            )
+            write_contact_layer(root / "layers" / "contact" / "bound", graph)
+            session = prepare_surface_editor_session(
+                motion_path=str(root / "motion_a.npz"),
+                motion_id="motion_a",
+                contact_layer="contact/bound",
+                surface_catalog=None,
+                session_name="session_bounds",
+                layers_root=root / "layers",
+                workbench_root=root / "workbench",
+            )
+
+            with self.assertRaisesRegex(ValueError, "bounds"):
+                move_surface_editor_anchor(session, anchor_id=bound_anchor.anchor_id, tangent_delta=[0.1, 0.0])
 
 
 class WorkbenchActionTests(unittest.TestCase):

@@ -7,6 +7,13 @@ from .cutter_session import (
 )
 from .server import make_workbench_server
 from .session import WorkbenchSession
+from .surface_editor_session import (
+    SurfaceEditorSession,
+    move_surface_editor_anchor,
+    prepare_surface_editor_session,
+    read_surface_editor_session,
+    save_surface_editor_session,
+)
 from .state import (
     load_workbench_segments,
     replace_segment,
@@ -19,11 +26,16 @@ from .state import (
 __all__ = [
     "WorkbenchSession",
     "CutterSession",
+    "SurfaceEditorSession",
     "curate_segment",
     "export_cutter_session_file",
     "load_workbench_segments",
     "make_workbench_server",
+    "move_surface_editor_anchor",
+    "prepare_surface_editor_session",
     "replace_segment",
+    "read_surface_editor_session",
+    "save_surface_editor_session",
     "select_segment",
     "segments_from_cutter_file",
     "split_segment",
