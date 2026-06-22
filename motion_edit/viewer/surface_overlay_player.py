@@ -508,6 +508,27 @@ def _selected_handle_lines(record: ContactAnchorRecord) -> tuple[list[list[list[
     return lines, colors
 
 
+def _anchor_patch_mesh(record: ContactAnchorRecord, *, half_extent: float = 0.045, normal_offset: float = 0.002) -> tuple[np.ndarray, np.ndarray] | None:
+    if record.world_position is None or record.surface_tangent_u is None or record.surface_tangent_v is None:
+        return None
+    center = np.asarray(record.world_position, dtype=float)
+    tangent_u = np.asarray(record.surface_tangent_u, dtype=float)
+    tangent_v = np.asarray(record.surface_tangent_v, dtype=float)
+    if record.surface_normal is not None:
+        center = center + np.asarray(record.surface_normal, dtype=float) * normal_offset
+    vertices = np.asarray(
+        [
+            center - tangent_u * half_extent - tangent_v * half_extent,
+            center + tangent_u * half_extent - tangent_v * half_extent,
+            center + tangent_u * half_extent + tangent_v * half_extent,
+            center - tangent_u * half_extent + tangent_v * half_extent,
+        ],
+        dtype=np.float32,
+    )
+    faces = np.asarray([[0, 1, 2], [0, 2, 3]], dtype=np.uint32)
+    return vertices, faces
+
+
 def _render_overlay(
     server: Any,
     overlay: dict[str, Any],
@@ -551,21 +572,40 @@ def _render_overlay(
             line_colors.append([color, color])
         elif obj_type == "anchor_point":
             color = _anchor_color(obj)
-            anchor_name = _safe_name(str(obj.get("anchor_id", "anchor")))
-            marker = server.scene.add_frame(
-                f"{namespace}/anchors/{anchor_name}",
-                show_axes=False,
-                origin_radius=0.045,
-                origin_color=color,
-                position=np.asarray(obj["position"], dtype=np.float32),
-            )
-            handles.append(marker)
+            anchor_id = str(obj.get("anchor_id", ""))
+            anchor_name = _safe_name(anchor_id or "anchor")
+            record = controller._anchor_record(anchor_id) if controller is not None else None
+            marker = None
+            mesh = _anchor_patch_mesh(record) if record is not None else None
+            if mesh is not None and hasattr(server.scene, "add_mesh_simple"):
+                vertices, faces = mesh
+                marker = server.scene.add_mesh_simple(
+                    f"{namespace}/anchors/{anchor_name}_patch",
+                    vertices=vertices,
+                    faces=faces,
+                    color=color,
+                    opacity=0.9,
+                    side="double",
+                )
+                handles.append(marker)
+                patch_lines, patch_colors = _selected_handle_lines(record)
+                if patch_lines:
+                    line_points.extend(patch_lines[:3])
+                    line_colors.extend(patch_colors[:3])
+            else:
+                marker = server.scene.add_frame(
+                    f"{namespace}/anchors/{anchor_name}",
+                    show_axes=False,
+                    origin_radius=0.045,
+                    origin_color=color,
+                    position=np.asarray(obj["position"], dtype=np.float32),
+                )
+                handles.append(marker)
             if controller is not None:
-                anchor_id = str(obj.get("anchor_id", ""))
-
                 @marker.on_click
                 def _(_, anchor_id: str = anchor_id) -> None:
                     controller.select_anchor(anchor_id)
+                    print(f"[surface editor] selected anchor={anchor_id}")
 
                 @marker.on_drag
                 def _(event: Any, anchor_id: str = anchor_id) -> None:
@@ -583,7 +623,8 @@ def _render_overlay(
                             return
                         if event.phase == "end":
                             mode = str(controller.drag_mode_getter()) if callable(controller.drag_mode_getter) else "reject"
-                            controller.drag_selected_to_world(event.end_position, mode=mode)
+                            result = controller.drag_selected_to_world(event.end_position, mode=mode)
+                            print(f"[surface editor] dragged anchor={anchor_id} result={result}")
                             if callable(controller.on_change):
                                 controller.on_change()
                     except Exception as exc:
@@ -629,14 +670,27 @@ def _render_overlay(
         if controller is not None:
             record = controller._anchor_record(selected_anchor_id)
             if record is not None and record.world_position is not None:
-                selected_frame = server.scene.add_frame(
-                    f"{namespace}/selected_anchor_handle",
-                    show_axes=False,
-                    origin_radius=0.09,
-                    origin_color=STATUS_COLORS["selected"],
-                    position=np.asarray(record.world_position, dtype=np.float32),
-                )
-                handles.append(selected_frame)
+                selected_mesh = _anchor_patch_mesh(record, half_extent=0.075, normal_offset=0.004)
+                if selected_mesh is not None and hasattr(server.scene, "add_mesh_simple"):
+                    vertices, faces = selected_mesh
+                    selected_frame = server.scene.add_mesh_simple(
+                        f"{namespace}/selected_anchor_handle_patch",
+                        vertices=vertices,
+                        faces=faces,
+                        color=STATUS_COLORS["selected"],
+                        opacity=0.95,
+                        side="double",
+                    )
+                    handles.append(selected_frame)
+                else:
+                    selected_frame = server.scene.add_frame(
+                        f"{namespace}/selected_anchor_handle",
+                        show_axes=False,
+                        origin_radius=0.09,
+                        origin_color=STATUS_COLORS["selected"],
+                        position=np.asarray(record.world_position, dtype=np.float32),
+                    )
+                    handles.append(selected_frame)
 
                 @selected_frame.on_drag
                 def _(event: Any) -> None:
@@ -653,7 +707,8 @@ def _render_overlay(
                             return
                         if event.phase == "end":
                             mode = str(controller.drag_mode_getter()) if callable(controller.drag_mode_getter) else "reject"
-                            controller.drag_selected_to_world(event.end_position, mode=mode)
+                            result = controller.drag_selected_to_world(event.end_position, mode=mode)
+                            print(f"[surface editor] dragged selected_anchor result={result}")
                             if callable(controller.on_change):
                                 controller.on_change()
                     except Exception as exc:

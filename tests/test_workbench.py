@@ -47,6 +47,7 @@ from motion_edit.workbench import (
 )
 from motion_edit.viewer.surface_overlay_player import (
     _anchor_color,
+    _anchor_patch_mesh,
     _render_overlay,
     append_move_request,
     apply_direct_anchor_move,
@@ -1079,6 +1080,28 @@ class SurfaceEditorSessionTests(unittest.TestCase):
 
         self.assertEqual(corners[0], [0.0, 0.0, 0.0])
         self.assertEqual(corners[2], [2.0, 4.0, 0.0])
+
+    def test_anchor_patch_mesh_lies_on_surface_tangent_plane(self) -> None:
+        anchor = ContactAnchorRecord(
+            motion_id="motion_a",
+            anchor_id="anchor",
+            body="left_foot",
+            start_frame=0,
+            end_frame=10,
+            world_position=[1.0, 2.0, 0.5],
+            surface_normal=[0.0, 0.0, 1.0],
+            surface_tangent_u=[1.0, 0.0, 0.0],
+            surface_tangent_v=[0.0, 1.0, 0.0],
+        )
+
+        mesh = _anchor_patch_mesh(anchor, half_extent=0.1, normal_offset=0.002)
+
+        self.assertIsNotNone(mesh)
+        vertices, faces = mesh
+        self.assertEqual(vertices.shape, (4, 3))
+        self.assertEqual(faces.shape, (2, 3))
+        np.testing.assert_allclose(vertices[:, 2], np.full(4, 0.502))
+        np.testing.assert_allclose(vertices.mean(axis=0), [1.0, 2.0, 0.502])
 
     def test_launch_viewer_uses_local_surface_adapter_direct_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
