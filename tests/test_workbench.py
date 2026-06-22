@@ -25,6 +25,7 @@ from motion_edit.contact import (
 from motion_edit.io import read_jsonl, write_jsonl
 from motion_edit.schema import SegmentRecord
 from motion_edit.viewer.app import launch_viewer
+from motion_edit.viewer.contact_timeline import _timeline_html, contact_timeline_state
 from motion_edit.workbench import (
     WorkbenchSession,
     curate_segment,
@@ -89,6 +90,19 @@ class _FakeSceneHandle:
 
     def remove(self) -> None:
         self.removed = True
+
+
+class _FakePlayback:
+    def __init__(self, n_frames: int = 8, frame: int = 0) -> None:
+        self.n_frames = n_frames
+        self._frame = frame
+        self.playing = {"value": False}
+
+    def frame(self) -> int:
+        return self._frame
+
+    def set_frame(self, frame: int) -> None:
+        self._frame = int(frame)
 
 
 class _FakeScene:
@@ -801,6 +815,77 @@ class SurfaceEditorSessionTests(unittest.TestCase):
 
         self.assertEqual(len(matches), 1)
         self.assertIn("RH", matches[0]["anchor_id"])
+
+    def test_contact_timeline_state_exports_anchor_lanes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray(
+                    [
+                        [True, False],
+                        [True, False],
+                        [False, True],
+                        [False, True],
+                    ]
+                ),
+                body_pos_w=np.zeros((4, 2, 3), dtype=np.float32),
+                body_names=["LF", "RH"],
+            )
+            graph = type(graph)(
+                motion_id=graph.motion_id,
+                events=graph.events,
+                anchors=[
+                    type(anchor)(
+                        **{
+                            **anchor.__dict__,
+                            "surface_id": "top",
+                            "surface_normal": [0.0, 0.0, 1.0],
+                            "surface_origin": [0.0, 0.0, 0.0],
+                            "surface_tangent_u": [1.0, 0.0, 0.0],
+                            "surface_tangent_v": [0.0, 1.0, 0.0],
+                            "surface_bounds": {"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+                            "surface_coordinates": {"u": 0.0, "v": 0.0},
+                        }
+                    )
+                    for anchor in graph.anchors
+                ],
+                patches=graph.patches,
+                transitions=graph.transitions,
+            )
+            write_contact_layer(root / "layers" / "contact" / "bound", graph)
+            session = prepare_surface_editor_session(
+                motion_path=str(root / "motion_a.npz"),
+                motion_id="motion_a",
+                contact_layer="contact/bound",
+                surface_catalog=None,
+                session_name="timeline_state",
+                layers_root=root / "layers",
+                workbench_root=root / "workbench",
+            )
+            state = load_editor_state(session.session_dir / "session.json")
+            controller = SurfaceEditorController.create(_FakeServer(), state)
+            controller.select_anchor(graph.anchors[0].anchor_id)
+            payload = contact_timeline_state(
+                controller=controller,
+                playback=_FakePlayback(n_frames=4, frame=2),
+                motion_name="motion_a.npz",
+                fps=50,
+            )
+
+        self.assertEqual(payload["motion_name"], "motion_a.npz")
+        self.assertEqual(payload["current_frame"], 2)
+        self.assertEqual(payload["bodies"], ["LF", "RH"])
+        self.assertEqual(len(payload["anchors"]), 2)
+        self.assertEqual(payload["anchors"][0]["status"], "selected")
+
+    def test_contact_timeline_html_embeds_viser_iframe_and_anchor_api(self) -> None:
+        html = _timeline_html(viser_url="http://localhost:8084")
+
+        self.assertIn("<iframe id=\"viewer\"", html)
+        self.assertIn("http://localhost:8084", html)
+        self.assertIn("/api/select_anchor", html)
+        self.assertIn("anchorBlock", html)
 
     def test_surface_overlay_direct_move_records_error_for_reject(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

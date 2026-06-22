@@ -17,6 +17,7 @@ from motion_edit.contact.graph import ContactGraph
 from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord
 from motion_edit.paths import LAYERS_ROOT, MOTIONS_ROOT, WORKBENCH_ROOT
 from motion_edit.storage.io import read_motion_asset
+from motion_edit.viewer.contact_timeline import start_contact_timeline_wrapper
 from motion_edit.workbench import (
     move_surface_editor_anchor,
     read_pending_surface_edits,
@@ -1280,7 +1281,8 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
 
     state = load_editor_state(args.surface_editor_session)
     overlay = load_surface_overlay(args.surface_binding_overlay)
-    server = viser.ViserServer(port=args.viser_port or args.timeline_port)
+    viewer_port = int(args.viser_port or (args.timeline_port + 1))
+    server = viser.ViserServer(port=viewer_port)
     server.gui.configure_theme(control_layout="fixed", control_width="large", dark_mode=True, show_logo=False, show_share_button=False)
     server.scene.add_grid("/grid", width=8.0, height=8.0, position=(0.0, 0.0, 0.0))
 
@@ -1502,6 +1504,14 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
 
     controller.reload_overlay()
     _sync_selected_fields()
+    start_contact_timeline_wrapper(
+        controller=controller,
+        playback=playback,
+        timeline_port=int(args.timeline_port),
+        viser_port=viewer_port,
+        motion_name=Path(args.qpos_npz).name,
+        fps=int(args.fps or motion_fps),
+    )
 
     print(f"[surface editor] overlay={args.surface_binding_overlay}")
     print(f"[surface editor] session={args.surface_editor_session}")
@@ -1509,6 +1519,8 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
     print(f"[surface editor] edit_mode={args.edit_mode}")
     print(f"[surface editor] robot_urdf={args.robot_urdf or 'none'}")
     print(f"[surface editor] object_urdf={args.object_urdf if args.with_terrain else 'none'}")
+    print(f"[surface editor] timeline=http://localhost:{args.timeline_port}")
+    print(f"[surface editor] viser=http://localhost:{viewer_port}")
     if anchor_ids:
         print(f"[surface editor] anchors={', '.join(anchor_ids[:20])}{' ...' if len(anchor_ids) > 20 else ''}")
     print("Close this process with Ctrl+C.")
