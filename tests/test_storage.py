@@ -223,6 +223,49 @@ class StorageSchemaTests(unittest.TestCase):
         self.assertEqual(loaded.motion_path, str(motion))
         self.assertEqual(loaded.source, "local")
 
+    def test_register_motion_version_cli_writes_metadata_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            motion = root / "motion_a.npz"
+            motion.write_bytes(b"source-motion")
+            with (
+                mock.patch.object(paths, "CATALOGS_ROOT", root / "catalogs"),
+                mock.patch.object(paths, "LAYERS_ROOT", root / "layers"),
+                mock.patch.object(paths, "MOTIONS_ROOT", root / "motions"),
+                mock.patch.object(paths, "MOTION_ASSETS_ROOT", root / "motion_assets"),
+                mock.patch.object(paths, "MOTION_VERSIONS_ROOT", root / "motion_versions"),
+                mock.patch.object(paths, "SEGMENTS_ROOT", root / "segments"),
+                mock.patch.object(paths, "TOKENS_ROOT", root / "tokens"),
+                mock.patch.object(paths, "EXPORTS_ROOT", root / "exports"),
+                mock.patch.object(paths, "WORKBENCH_ROOT", root / "workbench"),
+                mock.patch.object(paths, "BACKUPS_ROOT", root / "backups"),
+                mock.patch.object(storage_io, "MOTION_VERSIONS_ROOT", root / "motion_versions"),
+            ):
+                cli._cmd_register_motion_version(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "motion_version_id": "motion_a_raw",
+                            "motion": str(motion),
+                            "kind": "raw",
+                            "base_motion_id": "motion_a",
+                            "motion_asset_id": "motion_a",
+                            "parent_motion_version_id": None,
+                            "edit_plan_id": None,
+                            "contact_layer": "contact/force_contact",
+                        },
+                    )()
+                )
+                loaded = read_motion_version("motion_a_raw")
+
+            self.assertEqual(motion.read_bytes(), b"source-motion")
+            self.assertFalse((root / "motions" / "generated" / "motion_a_raw.npz").exists())
+
+        self.assertEqual(loaded.motion_version_id, "motion_a_raw")
+        self.assertEqual(loaded.motion_asset_id, "motion_a")
+        self.assertEqual(loaded.contact_layer, "contact/force_contact")
+
     def test_build_canonical_segmentation_from_contact_transitions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

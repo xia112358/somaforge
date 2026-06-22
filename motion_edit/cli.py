@@ -25,8 +25,8 @@ from .contact import (
 from .contact.generation import apply_contact_edit_plan_to_motion
 from .contact.layers import read_contact_graph
 from .storage.canonical import build_canonical_segments, mark_canonical_segment_status, write_motion_version_with_canonical_segments
-from .storage.io import read_canonical_segments, write_canonical_segments, write_motion_asset, write_token_catalog
-from .storage.schema import MotionAssetRecord
+from .storage.io import read_canonical_segments, write_canonical_segments, write_motion_asset, write_motion_version, write_token_catalog
+from .storage.schema import MotionAssetRecord, MotionVersionRecord
 from .storage.tokens import build_tokens_from_segments
 from .viewer import launch_viewer
 from .workbench import (
@@ -178,6 +178,22 @@ def _cmd_register_motion_asset(args: argparse.Namespace) -> None:
     )
     out = write_motion_asset(record)
     print(f"registered motion asset {record.motion_asset_id} path={out}")
+
+
+def _cmd_register_motion_version(args: argparse.Namespace) -> None:
+    ensure_data_dirs()
+    record = MotionVersionRecord(
+        motion_version_id=args.motion_version_id,
+        motion_path=str(Path(args.motion).expanduser()),
+        kind=args.kind,
+        base_motion_id=args.base_motion_id,
+        motion_asset_id=args.motion_asset_id,
+        parent_motion_version_id=args.parent_motion_version_id,
+        contact_layer=args.contact_layer,
+        edit_plan_id=args.edit_plan_id,
+    )
+    out = write_motion_version(record)
+    print(f"registered motion version {record.motion_version_id} path={out}")
 
 
 def _source_segments_for_motion(source: str | None, motion_id: str) -> list:
@@ -606,6 +622,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fps", type=float, default=None)
     p.add_argument("--source", default="local")
     p.set_defaults(func=_cmd_register_motion_asset)
+
+    p = sub.add_parser("register-motion-version")
+    p.add_argument("--motion-version-id", required=True)
+    p.add_argument("--motion", required=True)
+    p.add_argument("--kind", choices=("raw", "augmented"), default="raw")
+    p.add_argument("--base-motion-id", default=None)
+    p.add_argument("--motion-asset-id", default=None)
+    p.add_argument("--parent-motion-version-id", default=None)
+    p.add_argument("--edit-plan-id", default=None)
+    p.add_argument("--contact-layer", default=None)
+    p.set_defaults(func=_cmd_register_motion_version)
 
     p = sub.add_parser("build-canonical-segmentation")
     p.add_argument("--motion-version-id", required=True)
