@@ -52,8 +52,11 @@ from motion_edit.viewer.surface_overlay_player import (
     _anchor_positions_differ,
     _render_overlay,
     _selected_tangent_arrows,
+    _directory_contains_loadable_file,
+    _filtered_picker_entries,
     _setup_load_dialog_config,
     _setup_save_dialog_config,
+    _setup_load_suffixes,
     append_move_request,
     apply_direct_anchor_move,
     load_editor_state,
@@ -1296,6 +1299,31 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertEqual(surface_config["filetypes"], [("Surface catalog jsonl", "*.jsonl")])
         self.assertEqual(output_config["filetypes"], [("Contact layer jsonl", "*.jsonl")])
         self.assertEqual(plan_config["filetypes"], [("Contact edit plan", "*.json")])
+
+    def test_filtered_picker_hides_directories_without_loadable_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            empty_dir = root / "empty"
+            useful_dir = root / "useful"
+            nested_dir = useful_dir / "nested"
+            empty_dir.mkdir()
+            nested_dir.mkdir(parents=True)
+            (empty_dir / "notes.txt").write_text("nope", encoding="utf-8")
+            (root / "motion_a.npz").write_bytes(b"npz")
+            (nested_dir / "motion_b.npz").write_bytes(b"npz")
+            (root / "surface.jsonl").write_text("{}", encoding="utf-8")
+
+            entries = _filtered_picker_entries(root, _setup_load_suffixes("Motion NPZ"))
+            labels = [label for label, _path in entries]
+            useful_contains_npz = _directory_contains_loadable_file(useful_dir, (".npz",))
+            empty_contains_npz = _directory_contains_loadable_file(empty_dir, (".npz",))
+
+        self.assertIn("[file] motion_a.npz", labels)
+        self.assertIn("[dir] useful", labels)
+        self.assertNotIn("[dir] empty", labels)
+        self.assertNotIn("[file] surface.jsonl", labels)
+        self.assertTrue(useful_contains_npz)
+        self.assertFalse(empty_contains_npz)
 
 
 class WorkbenchActionTests(unittest.TestCase):

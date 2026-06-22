@@ -541,6 +541,7 @@ def _save_file_dialog(*, title: str, defaultextension: str = "", filetypes: list
 
 SETUP_LOAD_TYPES = ("Motion NPZ", "Contact Layer", "Terrain URDF", "Surface Catalog")
 SETUP_SAVE_TYPES = ("Output Contact Layer", "Edit Plan")
+PICKER_NONE = "<none>"
 
 
 def _setup_load_dialog_config(load_type: str) -> dict[str, Any]:
@@ -569,6 +570,86 @@ def _setup_load_dialog_config(load_type: str) -> dict[str, Any]:
             "initialdir": Path("data/surfaces"),
         }
     raise ValueError(f"unknown load type: {load_type}")
+
+
+def _setup_load_suffixes(load_type: str) -> tuple[str, ...]:
+    if load_type == "Motion NPZ":
+        return (".npz",)
+    if load_type == "Contact Layer":
+        return (".jsonl",)
+    if load_type == "Terrain URDF":
+        return (".urdf",)
+    if load_type == "Surface Catalog":
+        return (".jsonl",)
+    raise ValueError(f"unknown load type: {load_type}")
+
+
+def _setup_load_roots(load_type: str) -> list[Path]:
+    repo = Path.cwd()
+    candidates: list[Path]
+    if load_type == "Motion NPZ":
+        candidates = [
+            repo,
+            repo / "data",
+            Path("/home/xiaz/holosoma_isaaclab3_newton/tmp"),
+            Path("/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/data"),
+        ]
+    elif load_type == "Contact Layer":
+        candidates = [LAYERS_ROOT / "contact"]
+    elif load_type == "Terrain URDF":
+        candidates = [
+            repo,
+            Path("/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain"),
+        ]
+    elif load_type == "Surface Catalog":
+        candidates = [repo / "data" / "surfaces"]
+    else:
+        raise ValueError(f"unknown load type: {load_type}")
+    seen: set[Path] = set()
+    roots: list[Path] = []
+    for path in candidates:
+        try:
+            resolved = path.expanduser().resolve()
+        except OSError:
+            continue
+        if resolved in seen or not resolved.exists() or not resolved.is_dir():
+            continue
+        seen.add(resolved)
+        roots.append(resolved)
+    return roots
+
+
+def _matches_suffix(path: Path, suffixes: tuple[str, ...]) -> bool:
+    return path.is_file() and path.suffix.lower() in suffixes
+
+
+def _directory_contains_loadable_file(path: Path, suffixes: tuple[str, ...]) -> bool:
+    try:
+        for root, dirs, files in os.walk(path):
+            dirs[:] = [item for item in dirs if not item.startswith(".") and item != "__pycache__"]
+            if any(Path(name).suffix.lower() in suffixes for name in files):
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _filtered_picker_entries(current_dir: str | Path, suffixes: tuple[str, ...]) -> list[tuple[str, Path]]:
+    directory = Path(current_dir).expanduser()
+    try:
+        children = sorted(directory.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+    except OSError:
+        return []
+    entries: list[tuple[str, Path]] = []
+    for child in children:
+        if child.name.startswith("."):
+            continue
+        if child.is_dir():
+            if _directory_contains_loadable_file(child, suffixes):
+                entries.append((f"[dir] {child.name}", child))
+        elif _matches_suffix(child, suffixes):
+            entries.append((f"[file] {child.name}", child))
+    return entries
 
 
 def _setup_save_dialog_config(save_type: str) -> dict[str, Any]:
@@ -1130,10 +1211,24 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
     server.gui.configure_theme(control_layout="fixed", control_width="large", dark_mode=True, show_logo=False, show_share_button=False)
     server.scene.add_grid("/grid", width=8.0, height=8.0, position=(0.0, 0.0, 0.0))
     pending_exec: dict[str, list[str] | None] = {"cmd": None}
+    initial_load_type = SETUP_LOAD_TYPES[0]
+    initial_suffixes = _setup_load_suffixes(initial_load_type)
+    initial_roots = [
+        root for root in _setup_load_roots(initial_load_type)
+        if _directory_contains_loadable_file(root, initial_suffixes)
+    ]
+    initial_root_options = tuple(str(root) for root in initial_roots) or (PICKER_NONE,)
+    initial_dir = initial_root_options[0] if initial_root_options[0] != PICKER_NONE else ""
+    picker_entry_paths: dict[str, Path] = {}
 
     with server.gui.add_folder("Contact Editor Setup"):
         load_type = server.gui.add_dropdown("load_type", options=SETUP_LOAD_TYPES, initial_value=SETUP_LOAD_TYPES[0])
-        browse_btn = server.gui.add_button("Browse...")
+        picker_root = server.gui.add_dropdown("root", options=initial_root_options, initial_value=initial_root_options[0])
+        current_dir = server.gui.add_text("current_dir", initial_value=initial_dir)
+        picker_entry = server.gui.add_dropdown("entry", options=(PICKER_NONE,), initial_value=PICKER_NONE)
+        open_selected_btn = server.gui.add_button("Open selected")
+        up_btn = server.gui.add_button("Up")
+        refresh_picker_btn = server.gui.add_button("Refresh files")
         save_type = server.gui.add_dropdown("save_type", options=SETUP_SAVE_TYPES, initial_value=SETUP_SAVE_TYPES[0])
         save_as_btn = server.gui.add_button("Save As...")
         motion = server.gui.add_text("motion_npz", initial_value="")
@@ -1160,39 +1255,98 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
         status.value = text
         print(f"[contact editor setup] {text}")
 
-    @browse_btn.on_click
+    def _apply_selected_load_file(selected_type: str, selected_path: Path) -> None:
+        selected = str(selected_path)
+        if selected_type == "Motion NPZ":
+            motion.value = selected
+            if not str(motion_id.value).strip():
+                motion_id.value = selected_path.stem
+            if not str(session_name.value).strip() or str(session_name.value) == "contact_editor":
+                session_name.value = f"{selected_path.stem}_contact_editor"
+            _set_status(f"selected motion: {selected}")
+        elif selected_type == "Contact Layer":
+            source_contact_layer.value = _layer_name_from_path(selected_path)
+            _set_status(f"selected contact layer: {source_contact_layer.value}")
+        elif selected_type == "Terrain URDF":
+            terrain_urdf.value = selected
+            with_terrain.value = True
+            _set_status(f"selected terrain URDF: {selected}")
+        elif selected_type == "Surface Catalog":
+            surface_catalog.value = selected
+            _set_status(f"selected surface catalog: {selected}")
+        else:
+            raise ValueError(f"unknown load type: {selected_type}")
+
+    def _refresh_picker_entries() -> None:
+        picker_entry_paths.clear()
+        selected_type = str(load_type.value)
+        suffixes = _setup_load_suffixes(selected_type)
+        directory_text = str(current_dir.value).strip()
+        entries = _filtered_picker_entries(directory_text, suffixes) if directory_text else []
+        for label, path in entries:
+            picker_entry_paths[label] = path
+        options = tuple(picker_entry_paths) or (PICKER_NONE,)
+        picker_entry.options = options
+        if picker_entry.value not in options:
+            picker_entry.value = options[0]
+        _set_status(f"{selected_type}: {len(entries)} loadable entries in {directory_text or '<none>'}")
+
+    def _refresh_picker_roots() -> None:
+        selected_type = str(load_type.value)
+        suffixes = _setup_load_suffixes(selected_type)
+        roots = [
+            root for root in _setup_load_roots(selected_type)
+            if _directory_contains_loadable_file(root, suffixes)
+        ]
+        options = tuple(str(root) for root in roots) or (PICKER_NONE,)
+        picker_root.options = options
+        if picker_root.value not in options:
+            picker_root.value = options[0]
+        current_dir.value = "" if picker_root.value == PICKER_NONE else str(picker_root.value)
+        _refresh_picker_entries()
+
+    @load_type.on_update
+    def _(_) -> None:
+        _refresh_picker_roots()
+
+    @picker_root.on_update
+    def _(_) -> None:
+        current_dir.value = "" if picker_root.value == PICKER_NONE else str(picker_root.value)
+        _refresh_picker_entries()
+
+    @refresh_picker_btn.on_click
+    def _(_) -> None:
+        _refresh_picker_roots()
+
+    @up_btn.on_click
+    def _(_) -> None:
+        directory_text = str(current_dir.value).strip()
+        if not directory_text:
+            _set_status("no directory selected")
+            return
+        parent = Path(directory_text).expanduser().resolve().parent
+        suffixes = _setup_load_suffixes(str(load_type.value))
+        if not _directory_contains_loadable_file(parent, suffixes):
+            _set_status(f"parent has no loadable {load_type.value} files: {parent}")
+            return
+        current_dir.value = str(parent)
+        _refresh_picker_entries()
+
+    @open_selected_btn.on_click
     def _(_) -> None:
         try:
-            selected_type = str(load_type.value)
-            config = _setup_load_dialog_config(selected_type)
-            selected = _open_file_dialog(
-                title=config["title"],
-                filetypes=config["filetypes"],
-                initialdir=config["initialdir"],
-            )
-            if not selected:
+            selected_label = str(picker_entry.value)
+            selected_path = picker_entry_paths.get(selected_label)
+            if selected_path is None:
+                _set_status(f"no selectable {load_type.value} file or directory")
                 return
-            if selected_type == "Motion NPZ":
-                motion.value = selected
-                if not str(motion_id.value).strip():
-                    motion_id.value = Path(selected).stem
-                if not str(session_name.value).strip() or str(session_name.value) == "contact_editor":
-                    session_name.value = f"{Path(selected).stem}_contact_editor"
-                _set_status(f"selected motion: {selected}")
-            elif selected_type == "Contact Layer":
-                source_contact_layer.value = _layer_name_from_path(selected)
-                _set_status(f"selected contact layer: {source_contact_layer.value}")
-            elif selected_type == "Terrain URDF":
-                terrain_urdf.value = selected
-                with_terrain.value = True
-                _set_status(f"selected terrain URDF: {selected}")
-            elif selected_type == "Surface Catalog":
-                surface_catalog.value = selected
-                _set_status(f"selected surface catalog: {selected}")
-            else:
-                raise ValueError(f"unknown load type: {selected_type}")
+            if selected_path.is_dir():
+                current_dir.value = str(selected_path)
+                _refresh_picker_entries()
+                return
+            _apply_selected_load_file(str(load_type.value), selected_path)
         except Exception as exc:
-            _set_status(f"browse failed: {exc}")
+            _set_status(f"open selected failed: {exc}")
 
     @save_as_btn.on_click
     def _(_) -> None:
@@ -1217,6 +1371,8 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
                 raise ValueError(f"unknown save type: {selected_type}")
         except Exception as exc:
             _set_status(f"save picker failed: {exc}")
+
+    _refresh_picker_entries()
 
     @load_btn.on_click
     def _(_) -> None:
