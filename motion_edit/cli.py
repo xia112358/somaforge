@@ -16,6 +16,7 @@ from .layers import iter_layer_files, read_layer, write_layer
 from .paths import BACKUPS_ROOT, EXPORTS_ROOT, LAYERS_ROOT, WORKBENCH_ROOT, ensure_data_dirs, layer_dir
 from .contact import (
     append_anchor_edit_to_plan,
+    bind_segment_to_contact_graph,
     move_anchor_in_contact_layer,
     read_contact_edit_plan,
     validate_contact_edit_plan,
@@ -463,6 +464,13 @@ def _cmd_cutter(args: argparse.Namespace) -> None:
     if args.update_canonical:
         if not args.motion_version_id:
             raise ValueError("--update-canonical requires --motion-version-id")
+        version = read_motion_version(args.motion_version_id)
+        contact_graph = None
+        if version.contact_layer:
+            try:
+                contact_graph = read_contact_graph(LAYERS_ROOT / version.contact_layer, motion_id)
+            except FileNotFoundError:
+                print(f"warning: contact graph not found for {version.contact_layer}; canonical cutter edits will not be rebound")
         segments = read_canonical_segments(args.motion_version_id)
         session_dir = WORKBENCH_ROOT / "sessions" / args.session_name
         segment_path = session_dir / f"{motion_id}.segments.jsonl"
@@ -490,16 +498,25 @@ def _cmd_cutter(args: argparse.Namespace) -> None:
             edits = list(metadata.get("motion_edit_edits") or [])
             edits.append({"kind": "import_from_cutter", "source": "viser_cutter", "params": {"motion_version_id": args.motion_version_id}})
             metadata["motion_edit_edits"] = edits
-            edited_segments.append(
-                replace(
-                    parsed,
-                    source="viser_cutter",
-                    status="manual",
-                    motion_path=parsed.motion_path or args.motion,
-                    clip_npz=parsed.clip_npz or args.motion,
-                    metadata=metadata,
-                )
+            updated = replace(
+                parsed,
+                source="viser_cutter",
+                status="manual",
+                motion_path=parsed.motion_path or version.motion_path or args.motion,
+                clip_npz=parsed.clip_npz or version.motion_path or args.motion,
+                metadata=metadata,
             )
+            if contact_graph is not None:
+                updated = bind_segment_to_contact_graph(updated, contact_graph)
+                rebound_meta = dict(updated.metadata)
+                rebound_meta["motion_version_id"] = args.motion_version_id
+                rebound_meta["cut_source"] = "cutter_refined"
+                rebound_meta["motion_edit_edits"] = edits
+                transition = rebound_meta.get("contact_transition")
+                if isinstance(transition, dict) and transition.get("transition_id"):
+                    rebound_meta["parent_transition_id"] = transition["transition_id"]
+                updated = replace(updated, metadata=rebound_meta)
+            edited_segments.append(updated)
         out = write_canonical_segments(args.motion_version_id, edited_segments)
         print(f"updated canonical segmentation from cutter {out}")
         return

@@ -434,8 +434,20 @@ class StorageSchemaTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            layers_root = root / "layers"
             motion = root / "motion_a.npz"
             motion.write_bytes(b"npz")
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True, False], [False, False], [True, False], [True, False]]),
+                body_names=["LF", "RF"],
+            )
+            write_contact_layer(layers_root / "contact" / "force_contact", graph)
+            version = MotionVersionRecord(
+                motion_version_id="motion_a_raw",
+                motion_path=str(motion),
+                contact_layer="contact/force_contact",
+            )
             process = mock.Mock(pid=1234)
 
             def _save_edited() -> None:
@@ -447,10 +459,13 @@ class StorageSchemaTests(unittest.TestCase):
 
             process.wait.side_effect = _save_edited
             with (
+                mock.patch.object(cli, "LAYERS_ROOT", layers_root),
                 mock.patch.object(storage_io, "SEGMENTS_ROOT", root / "segments"),
+                mock.patch.object(storage_io, "MOTION_VERSIONS_ROOT", root / "motion_versions"),
                 mock.patch.object(cli, "WORKBENCH_ROOT", root / "workbench"),
                 mock.patch.object(cli, "launch_viewer", return_value=process) as launch_mock,
             ):
+                write_motion_version(version)
                 write_canonical_segments("motion_a_raw", [segment])
                 cli._cmd_cutter(
                     type(
@@ -479,6 +494,9 @@ class StorageSchemaTests(unittest.TestCase):
         self.assertEqual(loaded[0].source, "viser_cutter")
         self.assertEqual(loaded[0].status, "manual")
         self.assertEqual(loaded[0].metadata["cut_source"], "cutter_refined")
+        self.assertIn("contact_transition", loaded[0].metadata)
+        self.assertIn("parent_transition_id", loaded[0].metadata)
+        self.assertEqual(loaded[0].metadata["active_body"], "LF")
         self.assertFalse((root / "layers" / "manual").exists())
 
 
