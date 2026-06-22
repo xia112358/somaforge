@@ -485,22 +485,6 @@ def _selected_handle_lines(record: ContactAnchorRecord) -> tuple[list[list[list[
         v = np.asarray(record.surface_tangent_v, dtype=float)
         lines.append([(base - v * 0.18).tolist(), (base + v * 0.18).tolist()])
         colors.append([(90, 255, 120), (90, 255, 120)])
-    if record.surface_origin is not None and record.surface_tangent_u is not None and record.surface_tangent_v is not None and record.surface_bounds:
-        origin = np.asarray(record.surface_origin, dtype=float)
-        tangent_u = np.asarray(record.surface_tangent_u, dtype=float)
-        tangent_v = np.asarray(record.surface_tangent_v, dtype=float)
-        bounds = record.surface_bounds
-        u0, u1 = [float(v) for v in bounds.get("u", [0.0, 0.0])]
-        v0, v1 = [float(v) for v in bounds.get("v", [0.0, 0.0])]
-        corners = [
-            origin + tangent_u * u0 + tangent_v * v0,
-            origin + tangent_u * u1 + tangent_v * v0,
-            origin + tangent_u * u1 + tangent_v * v1,
-            origin + tangent_u * u0 + tangent_v * v1,
-        ]
-        for index in range(4):
-            lines.append([corners[index].tolist(), corners[(index + 1) % 4].tolist()])
-            colors.append([(255, 220, 90), (255, 220, 90)])
     return lines, colors
 
 
@@ -543,20 +527,7 @@ def _render_overlay(
         status = str(obj.get("status", "bound"))
         color = _color(status)
         if obj_type == "surface_quad":
-            corners = surface_quad_corners(obj)
-            edges = [(index, (index + 1) % len(corners)) for index in range(len(corners))]
-            for a, b in edges:
-                line_points.append([corners[a], corners[b]])
-                line_colors.append([color, color])
-            if hasattr(server.scene, "add_mesh_simple"):
-                name = f"{namespace}/surfaces/{_safe_name(str(obj.get('surface_id', 'surface')))}"
-                vertices = np.asarray(corners, dtype=np.float32)
-                faces = np.asarray([[0, index, index + 1] for index in range(1, len(corners) - 1)], dtype=np.uint32)
-                try:
-                    handle = server.scene.add_mesh_simple(name, vertices, faces, color=tuple(c / 255.0 for c in color), opacity=0.22)
-                    handles.append(handle)
-                except TypeError:
-                    pass
+            continue
         elif obj_type == "normal_axis":
             continue
         elif obj_type == "projection_line":
