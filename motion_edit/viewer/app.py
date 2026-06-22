@@ -63,6 +63,14 @@ def launch_viewer(
     if surface_binding_overlay is not None and prefer_local_surface_editor:
         if surface_editor_session is None or surface_editor_requests is None:
             raise ValueError("surface editor launch requires session and request paths")
+        repo = Path(repo_root).expanduser().resolve() if repo_root else _default_repo_root()
+        robot_urdf: Path | None = None
+        object_urdf: Path | None = None
+        if repo is not None:
+            paths = detect_omniretarget_paths(motion, repo_root=repo)
+            robot_urdf = repo / "OmniRetarget_Dataset/models/g1/g1_29dof_spherehand.urdf"
+            if with_terrain and paths.terrain_urdf is not None:
+                object_urdf = paths.terrain_urdf
         cmd = [
             sys.executable,
             "-m",
@@ -88,6 +96,10 @@ def launch_viewer(
             "--fps",
             str(fps),
         ]
+        if robot_urdf is not None and robot_urdf.exists():
+            cmd.extend(["--robot-urdf", str(robot_urdf)])
+        if object_urdf is not None and object_urdf.exists():
+            cmd.extend(["--object-urdf", str(object_urdf)])
         if with_terrain:
             cmd.append("--with-terrain")
         if surface_editor_select_anchor:

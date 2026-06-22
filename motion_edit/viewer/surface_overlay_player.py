@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -459,16 +460,125 @@ def _render_overlay(server: Any, overlay: dict[str, Any], *, namespace: str = "/
 
 
 def _load_motion_points(path: str | Path) -> np.ndarray:
+    qpos, _fps = load_motion_sequence(path)
+    if qpos.ndim != 2 or qpos.shape[1] < 3:
+        return np.zeros((0, 3), dtype=np.float32)
+    return np.asarray(qpos[:, :3], dtype=np.float32)
+
+
+def load_motion_sequence(path: str | Path) -> tuple[np.ndarray, int]:
     data = np.load(path, allow_pickle=True)
+    fps = int(np.asarray(data["fps"]).reshape(-1)[0]) if "fps" in data else 50
     if "qpos" in data:
         qpos = np.asarray(data["qpos"])
     elif "joint_pos" in data:
         qpos = np.asarray(data["joint_pos"])
     else:
-        return np.zeros((0, 3), dtype=np.float32)
-    if qpos.ndim != 2 or qpos.shape[1] < 3:
-        return np.zeros((0, 3), dtype=np.float32)
-    return np.asarray(qpos[:, :3], dtype=np.float32)
+        raise KeyError(f"{path} has neither qpos nor joint_pos")
+    if qpos.ndim != 2:
+        raise ValueError(f"{path} motion array must be [T,D], got {qpos.shape}")
+    return np.asarray(qpos, dtype=np.float32), fps
+
+
+def _add_static_urdf(server: Any, *, root_name: str, urdf_path: str | Path) -> list[Any]:
+    try:
+        import yourdfpy  # type: ignore[import-untyped]
+        from viser.extras import ViserUrdf  # type: ignore[import-not-found]
+    except ImportError:
+        return []
+    root = server.scene.add_frame(root_name, show_axes=False)
+    urdf = yourdfpy.URDF.load(str(urdf_path), load_meshes=True, build_scene_graph=True)
+    viser_urdf = ViserUrdf(server, urdf_or_path=urdf, root_node_name=root_name)
+    return [root, viser_urdf]
+
+
+def _add_motion_playback(
+    server: Any,
+    *,
+    qpos: np.ndarray,
+    fps: int,
+    robot_urdf: str | Path | None,
+    object_urdf: str | Path | None = None,
+) -> list[Any]:
+    handles: list[Any] = []
+    if object_urdf:
+        object_path = Path(object_urdf)
+        if object_path.exists():
+            handles.extend(_add_static_urdf(server, root_name="/object", urdf_path=object_path))
+    if robot_urdf is None or not Path(robot_urdf).exists():
+        print("[surface editor] robot_urdf missing; showing root trace only")
+        return handles
+    try:
+        import yourdfpy  # type: ignore[import-untyped]
+        from viser.extras import ViserUrdf  # type: ignore[import-not-found]
+    except ImportError as exc:
+        print(f"[surface editor] robot playback unavailable: {exc}")
+        return handles
+
+    robot_root = server.scene.add_frame("/robot", show_axes=False)
+    robot = yourdfpy.URDF.load(str(robot_urdf), load_meshes=True, build_scene_graph=True)
+    viser_robot = ViserUrdf(server, urdf_or_path=robot, root_node_name="/robot")
+    robot_dof = len(viser_robot.get_actuated_joint_limits())
+    handles.extend([robot_root, viser_robot])
+    n_frames = int(qpos.shape[0])
+    playing = {"value": False}
+    current_frame = {"value": 0.0}
+    stop_flag = {"value": False}
+
+    def _apply_frame(index: int) -> None:
+        if n_frames == 0:
+            return
+        frame = int(np.clip(index, 0, n_frames - 1))
+        q = qpos[frame]
+        if q.shape[0] >= 3:
+            robot_root.position = tuple(float(v) for v in q[:3])
+        if q.shape[0] >= 7:
+            robot_root.wxyz = tuple(float(v) for v in q[3:7])
+        if q.shape[0] >= 7 + robot_dof:
+            viser_robot.update_cfg(q[7 : 7 + robot_dof])
+
+    with server.gui.add_folder("Motion Playback"):
+        frame_slider = server.gui.add_slider("frame", min=0, max=max(0, n_frames - 1), step=1, initial_value=0)
+        play_btn = server.gui.add_button("Play / Pause")
+        fps_in = server.gui.add_number("fps", initial_value=int(fps), min=1, max=240, step=1)
+        loop_cb = server.gui.add_checkbox("loop", initial_value=True)
+
+    @frame_slider.on_update
+    def _(_) -> None:
+        frame = int(np.clip(int(frame_slider.value), 0, max(0, n_frames - 1)))
+        current_frame["value"] = float(frame)
+        _apply_frame(frame)
+
+    @play_btn.on_click
+    def _(_) -> None:
+        playing["value"] = not playing["value"]
+
+    def _play_loop() -> None:
+        tick = time.perf_counter()
+        while not stop_flag["value"]:
+            if not playing["value"] or n_frames <= 1:
+                time.sleep(0.03)
+                tick = time.perf_counter()
+                continue
+            now = time.perf_counter()
+            dt = max(0.0, now - tick)
+            tick = now
+            current_frame["value"] += dt * float(fps_in.value)
+            if current_frame["value"] >= n_frames:
+                if bool(loop_cb.value):
+                    current_frame["value"] %= n_frames
+                else:
+                    current_frame["value"] = float(n_frames - 1)
+                    playing["value"] = False
+            frame = int(np.clip(round(current_frame["value"]), 0, n_frames - 1))
+            frame_slider.value = frame
+            _apply_frame(frame)
+            time.sleep(0.01)
+
+    _apply_frame(0)
+    thread = threading.Thread(target=_play_loop, daemon=True)
+    thread.start()
+    return handles
 
 
 def run_surface_overlay_player(args: argparse.Namespace) -> None:
@@ -479,11 +589,19 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
 
     state = load_editor_state(args.surface_editor_session)
     overlay = load_surface_overlay(args.surface_binding_overlay)
-    server = viser.ViserServer(port=args.viser_port)
+    server = viser.ViserServer(port=args.viser_port or args.timeline_port)
     server.gui.configure_theme(control_layout="fixed", control_width="large", dark_mode=True, show_logo=False, show_share_button=False)
     server.scene.add_grid("/grid", width=8.0, height=8.0, position=(0.0, 0.0, 0.0))
 
-    motion_points = _load_motion_points(args.qpos_npz)
+    qpos, motion_fps = load_motion_sequence(args.qpos_npz)
+    _add_motion_playback(
+        server,
+        qpos=qpos,
+        fps=int(args.fps or motion_fps),
+        robot_urdf=args.robot_urdf,
+        object_urdf=args.object_urdf if args.with_terrain else None,
+    )
+    motion_points = qpos[:, :3] if qpos.shape[1] >= 3 else np.zeros((0, 3), dtype=np.float32)
     if motion_points.shape[0] > 1:
         server.scene.add_line_segments(
             "/motion/root_path",
@@ -740,6 +858,8 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
     print(f"[surface editor] session={args.surface_editor_session}")
     print(f"[surface editor] requests={args.surface_editor_requests}")
     print(f"[surface editor] edit_mode={args.edit_mode}")
+    print(f"[surface editor] robot_urdf={args.robot_urdf or 'none'}")
+    print(f"[surface editor] object_urdf={args.object_urdf if args.with_terrain else 'none'}")
     if anchor_ids:
         print(f"[surface editor] anchors={', '.join(anchor_ids[:20])}{' ...' if len(anchor_ids) > 20 else ''}")
     print("Close this process with Ctrl+C.")
@@ -761,6 +881,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--viser-port", type=int, default=None)
     parser.add_argument("--timeline-port", type=int, default=8094)
     parser.add_argument("--fps", type=int, default=50)
+    parser.add_argument("--robot-urdf", default=None)
+    parser.add_argument("--object-urdf", default=None)
     parser.add_argument("--with-terrain", action="store_true")
     return parser
 

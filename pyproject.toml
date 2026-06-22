@@ -12,6 +12,13 @@ dependencies = [
   "numpy",
 ]
 
+[project.optional-dependencies]
+viewer = [
+  "viser",
+  "yourdfpy",
+  "trimesh",
+]
+
 [project.scripts]
 motion-edit = "motion_edit.cli:main"
 

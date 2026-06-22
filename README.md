@@ -35,6 +35,12 @@ data/
 
 ## CLI
 
+Install viewer dependencies into the project environment before launching the local Viser editor:
+
+```bash
+uv pip install --python .venv/bin/python -e ".[viewer]"
+```
+
 ```bash
 ~/motion_edit/motion-edit import-force-proto --motion-dir /path/to/masked_motions --layer-name force_contact
 ~/motion_edit/motion-edit register-motion-asset --motion-asset-id climb00 --motion /path/to/climb_00_z_scale_1.0.npz --fps 50 --source local
@@ -211,7 +217,7 @@ The overlay export is a lightweight frontend-agnostic JSON file. It contains `su
 
 `surface-editor` is the Viser-connected entry point for anchor-level contact editing. It prepares a surface binding report, surface binding overlay, contact overlay, session state, request file, and pending edit file under `data/workbench/surface_sessions/<session_name>/`, then launches the local `motion_edit` Viser surface overlay adapter by default.
 
-The local adapter reads the existing overlay JSON and renders `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects in Viser. Its GUI supports anchor filtering, previous/next selection, first suspicious/unbound/edited selection, selected-anchor metadata, relative `du`/`dv` moves, step buttons, absolute target `u/v`, reject/clamp modes, undo/redo, reset/discard, reload, and explicit save.
+The local adapter reads the existing overlay JSON and renders the motion root trace, robot playback, optional terrain/object URDF, `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects in Viser. Its GUI supports frame playback, anchor filtering, previous/next selection, first suspicious/unbound/edited selection, selected-anchor metadata, relative `du`/`dv` moves, step buttons, absolute target `u/v`, reject/clamp modes, undo/redo, reset/discard, reload, and explicit save.
 
 Interaction levels:
 
