@@ -91,6 +91,10 @@ class StorageSchemaTests(unittest.TestCase):
             record = MotionAssetRecord(
                 motion_asset_id="climb00",
                 motion_path="/motions/climb00.npz",
+                motion_id="climb_00_z_scale_1.0",
+                terrain_urdf="/terrain/climb_00.urdf",
+                surface_catalog_path="data/surfaces/climb_00.jsonl",
+                derived={"contact_layer": "contact/climb00_raw"},
                 source="local",
                 fps=50.0,
             )
@@ -100,6 +104,9 @@ class StorageSchemaTests(unittest.TestCase):
 
         self.assertEqual(loaded.motion_asset_id, "climb00")
         self.assertEqual(loaded.motion_path, "/motions/climb00.npz")
+        self.assertEqual(loaded.motion_id, "climb_00_z_scale_1.0")
+        self.assertEqual(loaded.terrain_urdf, "/terrain/climb_00.urdf")
+        self.assertEqual(loaded.derived["contact_layer"], "contact/climb00_raw")
         self.assertEqual(loaded.fps, 50.0)
         self.assertEqual([item.motion_asset_id for item in listed], ["climb00"])
 
@@ -361,6 +368,7 @@ class StorageSchemaTests(unittest.TestCase):
                 mock.patch.object(paths, "WORKBENCH_ROOT", root / "workbench"),
                 mock.patch.object(paths, "BACKUPS_ROOT", root / "backups"),
                 mock.patch.object(storage_io, "MOTION_ASSETS_ROOT", root / "motion_assets"),
+                mock.patch.object(storage_io, "MOTIONS_ROOT", root / "motions"),
             ):
                 cli._cmd_register_motion_asset(
                     type(
@@ -377,10 +385,113 @@ class StorageSchemaTests(unittest.TestCase):
                 loaded = read_motion_asset("motion_a")
 
             self.assertEqual(motion.read_bytes(), b"source-motion")
+            self.assertTrue((root / "motions" / "motion_a.json").exists())
             self.assertFalse((root / "motions" / "raw" / "motion_a.npz").exists())
 
+    def test_register_motion_cli_writes_rollout_motion_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            motion = root / "motion_a.npz"
+            terrain = root / "terrain.urdf"
+            surface = root / "surface.jsonl"
+            motion.write_bytes(b"source-motion")
+            terrain.write_text("<robot/>", encoding="utf-8")
+            surface.write_text("", encoding="utf-8")
+            with (
+                mock.patch.object(paths, "CATALOGS_ROOT", root / "catalogs"),
+                mock.patch.object(paths, "LAYERS_ROOT", root / "layers"),
+                mock.patch.object(paths, "MOTIONS_ROOT", root / "motions"),
+                mock.patch.object(paths, "MOTION_ASSETS_ROOT", root / "motion_assets"),
+                mock.patch.object(paths, "MOTION_VERSIONS_ROOT", root / "motion_versions"),
+                mock.patch.object(paths, "SEGMENTS_ROOT", root / "segments"),
+                mock.patch.object(paths, "TOKENS_ROOT", root / "tokens"),
+                mock.patch.object(paths, "EXPORTS_ROOT", root / "exports"),
+                mock.patch.object(paths, "WORKBENCH_ROOT", root / "workbench"),
+                mock.patch.object(paths, "BACKUPS_ROOT", root / "backups"),
+                mock.patch.object(storage_io, "MOTIONS_ROOT", root / "motions"),
+            ):
+                args = cli.build_parser().parse_args(
+                    [
+                        "register-motion",
+                        "--motion-id",
+                        "motion_a",
+                        "--motion",
+                        str(motion),
+                        "--rollout-motion-id",
+                        "climb_00_z_scale_1.0",
+                        "--terrain-urdf",
+                        str(terrain),
+                        "--surface-catalog",
+                        str(surface),
+                        "--contact-layer",
+                        "contact/motion_a_raw",
+                        "--bound-contact-layer",
+                        "contact/motion_a_bound",
+                        "--edit-plan",
+                        "data/workbench/motion_a_edits.json",
+                        "--output-contact-layer",
+                        "contact/motion_a_edited",
+                        "--raw-contact",
+                        "--raw-contact-source",
+                        "newton_raw_rigid_contacts",
+                    ]
+                )
+                args.func(args)
+                loaded = read_motion_asset("motion_a")
+
         self.assertEqual(loaded.motion_path, str(motion))
-        self.assertEqual(loaded.source, "local")
+        self.assertEqual(loaded.motion_id, "climb_00_z_scale_1.0")
+        self.assertEqual(loaded.terrain_urdf, str(terrain))
+        self.assertEqual(loaded.surface_catalog_path, str(surface))
+        self.assertTrue(loaded.raw_contact["available"])
+        self.assertEqual(loaded.derived["contact_layer"], "contact/motion_a_raw")
+        self.assertEqual(loaded.derived["bound_contact_layer"], "contact/motion_a_bound")
+
+    def test_contact_editor_args_load_registered_motion_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            record = MotionAssetRecord(
+                motion_asset_id="motion_a",
+                motion_id="climb_00_z_scale_1.0",
+                motion_path="/motions/motion_a.npz",
+                terrain_urdf="/terrain/climb_00.urdf",
+                surface_catalog_path="data/surfaces/climb_00.jsonl",
+                fps=60.0,
+                derived={
+                    "bound_contact_layer": "contact/motion_a_bound",
+                    "edit_plan_path": "data/workbench/motion_a_edits.json",
+                    "output_contact_layer": "contact/motion_a_edited",
+                },
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "motion_asset_id": "motion_a",
+                    "motion_id": None,
+                    "motion": None,
+                    "terrain_urdf": None,
+                    "surface_catalog": None,
+                    "source_contact_layer": None,
+                    "session_name": "contact_editor",
+                    "edit_plan": None,
+                    "output_contact_layer": None,
+                    "output_prefix": None,
+                    "with_terrain": False,
+                    "fps": 50,
+                },
+            )()
+            with mock.patch.object(storage_io, "MOTIONS_ROOT", root / "motions"):
+                write_motion_asset(record)
+                loaded = cli._apply_motion_asset_defaults_to_contact_editor_args(args)
+
+        self.assertTrue(loaded)
+        self.assertEqual(args.motion, "/motions/motion_a.npz")
+        self.assertEqual(args.motion_id, "climb_00_z_scale_1.0")
+        self.assertEqual(args.terrain_urdf, "/terrain/climb_00.urdf")
+        self.assertEqual(args.source_contact_layer, "contact/motion_a_bound")
+        self.assertTrue(args.with_terrain)
+        self.assertEqual(args.fps, 60)
 
     def test_register_motion_version_cli_writes_metadata_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

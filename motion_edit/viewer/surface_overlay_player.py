@@ -15,7 +15,8 @@ import numpy as np
 
 from motion_edit.contact.graph import ContactGraph
 from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord
-from motion_edit.paths import LAYERS_ROOT, WORKBENCH_ROOT
+from motion_edit.paths import LAYERS_ROOT, MOTIONS_ROOT, WORKBENCH_ROOT
+from motion_edit.storage.io import read_motion_asset
 from motion_edit.workbench import (
     move_surface_editor_anchor,
     read_pending_surface_edits,
@@ -539,12 +540,18 @@ def _save_file_dialog(*, title: str, defaultextension: str = "", filetypes: list
         root.destroy()
 
 
-SETUP_LOAD_TYPES = ("Motion NPZ", "Contact Layer", "Terrain URDF", "Surface Catalog")
+SETUP_LOAD_TYPES = ("Motion", "Motion NPZ", "Contact Layer", "Terrain URDF", "Surface Catalog")
 SETUP_SAVE_TYPES = ("Output Contact Layer", "Edit Plan")
 PICKER_NONE = "<none>"
 
 
 def _setup_load_dialog_config(load_type: str) -> dict[str, Any]:
+    if load_type == "Motion":
+        return {
+            "title": "Load registered motion",
+            "filetypes": [("Motion asset", "*.json")],
+            "initialdir": MOTIONS_ROOT,
+        }
     if load_type == "Motion NPZ":
         return {
             "title": "Load motion npz",
@@ -573,6 +580,8 @@ def _setup_load_dialog_config(load_type: str) -> dict[str, Any]:
 
 
 def _setup_load_suffixes(load_type: str) -> tuple[str, ...]:
+    if load_type == "Motion":
+        return (".json",)
     if load_type == "Motion NPZ":
         return (".npz",)
     if load_type == "Contact Layer":
@@ -587,7 +596,9 @@ def _setup_load_suffixes(load_type: str) -> tuple[str, ...]:
 def _setup_load_roots(load_type: str) -> list[Path]:
     repo = Path.cwd()
     candidates: list[Path]
-    if load_type == "Motion NPZ":
+    if load_type == "Motion":
+        candidates = [MOTIONS_ROOT]
+    elif load_type == "Motion NPZ":
         candidates = [
             repo,
             repo / "data",
@@ -1349,7 +1360,28 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
 
     def _apply_selected_load_file(selected_type: str, selected_path: Path) -> None:
         selected = str(selected_path)
-        if selected_type == "Motion NPZ":
+        if selected_type == "Motion":
+            record = read_motion_asset(selected_path.stem, selected_path)
+            motion.value = record.motion_path
+            motion_id.value = record.motion_id or record.motion_asset_id
+            if record.terrain_urdf:
+                terrain_urdf.value = record.terrain_urdf
+                with_terrain.value = True
+            if record.surface_catalog_path:
+                surface_catalog.value = record.surface_catalog_path
+            derived = record.derived or {}
+            if derived.get("bound_contact_layer") or derived.get("contact_layer"):
+                source_contact_layer.value = derived.get("bound_contact_layer") or derived.get("contact_layer")
+            if derived.get("edit_plan_path"):
+                edit_plan.value = derived.get("edit_plan_path")
+            if derived.get("output_contact_layer"):
+                output_contact_layer.value = derived.get("output_contact_layer")
+            if not str(session_name.value).strip() or str(session_name.value) == "contact_editor":
+                session_name.value = f"{record.motion_asset_id}_contact_editor"
+            if not str(output_prefix.value).strip():
+                output_prefix.value = f"contact/{record.motion_asset_id}_contact_editor"
+            _set_status(f"loaded motion: {record.motion_asset_id}")
+        elif selected_type == "Motion NPZ":
             motion.value = selected
             if not str(motion_id.value).strip():
                 motion_id.value = selected_path.stem

@@ -6,13 +6,17 @@ from typing import Iterable
 from uuid import uuid4
 
 from motion_edit.io import read_jsonl, segment_from_dict, segment_to_dict, write_jsonl
-from motion_edit.paths import MOTION_ASSETS_ROOT, MOTION_VERSIONS_ROOT, SEGMENTS_ROOT, TOKENS_ROOT
+from motion_edit.paths import MOTION_ASSETS_ROOT, MOTION_VERSIONS_ROOT, MOTIONS_ROOT, SEGMENTS_ROOT, TOKENS_ROOT
 from motion_edit.schema import SegmentRecord
 from motion_edit.storage.segments import with_segment_motion_version_id
 from motion_edit.storage.schema import MotionAssetRecord, MotionVersionRecord, TokenRecord
 
 
 def motion_asset_path(motion_asset_id: str) -> Path:
+    return MOTIONS_ROOT / f"{motion_asset_id}.json"
+
+
+def legacy_motion_asset_path(motion_asset_id: str) -> Path:
     return MOTION_ASSETS_ROOT / f"{motion_asset_id}.json"
 
 
@@ -48,16 +52,30 @@ def write_motion_asset(record: MotionAssetRecord, path: str | Path | None = None
 
 
 def read_motion_asset(motion_asset_id: str, path: str | Path | None = None) -> MotionAssetRecord:
-    source = Path(path).expanduser() if path is not None else motion_asset_path(motion_asset_id)
+    if path is not None:
+        source = Path(path).expanduser()
+    else:
+        source = motion_asset_path(motion_asset_id)
+        if not source.exists():
+            source = legacy_motion_asset_path(motion_asset_id)
     data = json.loads(source.read_text(encoding="utf-8"))
     return MotionAssetRecord(**data)
 
 
 def list_motion_assets(root: str | Path | None = None) -> list[MotionAssetRecord]:
-    source = Path(root).expanduser() if root is not None else MOTION_ASSETS_ROOT
-    if not source.exists():
-        return []
-    return [read_motion_asset(path.stem, path) for path in sorted(source.glob("*.json"))]
+    if root is not None:
+        source = Path(root).expanduser()
+        if not source.exists():
+            return []
+        return [read_motion_asset(path.stem, path) for path in sorted(source.glob("*.json"))]
+    records: dict[str, MotionAssetRecord] = {}
+    for source in (legacy_motion_asset_path("__dummy__").parent, MOTIONS_ROOT):
+        if not source.exists():
+            continue
+        for path in sorted(source.glob("*.json")):
+            record = read_motion_asset(path.stem, path)
+            records[record.motion_asset_id] = record
+    return [records[key] for key in sorted(records)]
 
 
 def write_motion_version(record: MotionVersionRecord, path: str | Path | None = None) -> Path:

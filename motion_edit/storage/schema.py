@@ -13,6 +13,12 @@ class MotionAssetRecord:
     motion_path: str
     source: str = "local"
     fps: float | None = None
+    motion_id: str | None = None
+    terrain_id: str | None = None
+    terrain_urdf: str | None = None
+    surface_catalog_path: str | None = None
+    raw_contact: dict[str, Any] = field(default_factory=dict)
+    derived: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:

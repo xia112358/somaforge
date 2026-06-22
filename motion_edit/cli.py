@@ -44,7 +44,9 @@ from .contact.patches import patches_from_anchors
 from .contact.surface_catalog import box_surfaces, parse_box_descriptor, surfaces_from_urdf_meshes
 from .storage.canonical import build_canonical_segments, mark_canonical_segment_statuses, write_motion_version_with_canonical_segments
 from .storage.io import (
+    list_motion_assets,
     read_canonical_segments,
+    read_motion_asset,
     read_motion_version,
     read_token_catalog,
     replace_canonical_segments,
@@ -500,8 +502,34 @@ def _launch_surface_editor_for_args(args: argparse.Namespace, *, contact_layer: 
         print("surface editor session prepared; no ContactLayer was saved because --save-on-exit was not set")
 
 
+def _apply_motion_asset_defaults_to_contact_editor_args(args: argparse.Namespace) -> bool:
+    motion_key = getattr(args, "motion_asset_id", None) or getattr(args, "motion_id", None)
+    if not motion_key:
+        return False
+    try:
+        record = read_motion_asset(motion_key)
+    except FileNotFoundError:
+        return False
+    args.motion = args.motion or record.motion_path
+    args.motion_id = args.motion_id or record.motion_id or record.motion_asset_id
+    args.terrain_urdf = args.terrain_urdf or record.terrain_urdf
+    args.surface_catalog = args.surface_catalog or record.surface_catalog_path
+    derived = record.derived or {}
+    args.source_contact_layer = args.source_contact_layer or derived.get("bound_contact_layer") or derived.get("contact_layer")
+    args.edit_plan = args.edit_plan or derived.get("edit_plan_path")
+    args.output_contact_layer = args.output_contact_layer or derived.get("output_contact_layer")
+    if not args.output_prefix:
+        args.output_prefix = f"contact/{args.session_name}"
+    if record.terrain_urdf and not args.with_terrain:
+        args.with_terrain = True
+    if record.fps and args.fps == 50:
+        args.fps = int(record.fps)
+    return True
+
+
 def _cmd_contact_editor(args: argparse.Namespace) -> None:
     ensure_data_dirs()
+    loaded_registered_motion = _apply_motion_asset_defaults_to_contact_editor_args(args)
     if args.motion is None:
         process = launch_viewer(
             "",
@@ -519,6 +547,8 @@ def _cmd_contact_editor(args: argparse.Namespace) -> None:
         print(f"Open Motion Contact Editor: http://localhost:{args.timeline_port}")
         process.wait()
         return
+    if loaded_registered_motion:
+        print(f"loaded registered motion {args.motion_asset_id or args.motion_id}")
     if not args.motion_id:
         raise ValueError("--motion-id is required when motion is provided")
     if not args.source_contact_layer:
@@ -736,9 +766,59 @@ def _cmd_register_motion_asset(args: argparse.Namespace) -> None:
         motion_path=str(Path(args.motion).expanduser()),
         source=args.source,
         fps=args.fps,
+        motion_id=getattr(args, "motion_id", None),
+        terrain_id=getattr(args, "terrain_id", None),
+        terrain_urdf=str(Path(args.terrain_urdf).expanduser()) if getattr(args, "terrain_urdf", None) else None,
+        surface_catalog_path=str(Path(args.surface_catalog).expanduser()) if getattr(args, "surface_catalog", None) else None,
+        raw_contact={
+            "available": bool(getattr(args, "raw_contact", False)),
+            "source": getattr(args, "raw_contact_source", None),
+        },
+        derived={
+            key: value
+            for key, value in {
+                "contact_layer": getattr(args, "contact_layer", None),
+                "bound_contact_layer": getattr(args, "bound_contact_layer", None),
+                "edit_plan_path": getattr(args, "edit_plan", None),
+                "output_contact_layer": getattr(args, "output_contact_layer", None),
+            }.items()
+            if value
+        },
     )
     out = write_motion_asset(record)
-    print(f"registered motion asset {record.motion_asset_id} path={out}")
+    print(f"registered motion {record.motion_asset_id} path={out}")
+
+
+def _add_register_motion_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--motion-asset-id", "--motion-id", dest="motion_asset_id", required=True)
+    parser.add_argument("--motion", required=True)
+    parser.add_argument("--rollout-motion-id", dest="motion_id", default=None)
+    parser.add_argument("--terrain-id", default=None)
+    parser.add_argument("--terrain-urdf", default=None)
+    parser.add_argument("--surface-catalog", default=None)
+    parser.add_argument("--contact-layer", default=None)
+    parser.add_argument("--bound-contact-layer", default=None)
+    parser.add_argument("--edit-plan", default=None)
+    parser.add_argument("--output-contact-layer", default=None)
+    parser.add_argument("--raw-contact", action="store_true")
+    parser.add_argument("--raw-contact-source", default=None)
+    parser.add_argument("--fps", type=float, default=None)
+    parser.add_argument("--source", default="local")
+
+
+def _cmd_list_motions(_args: argparse.Namespace) -> None:
+    ensure_data_dirs()
+    for record in list_motion_assets():
+        print(
+            f"{record.motion_asset_id}\tmotion_id={record.motion_id or record.motion_asset_id}"
+            f"\tmotion={record.motion_path}\tterrain={record.terrain_urdf or '-'}"
+        )
+
+
+def _cmd_show_motion(args: argparse.Namespace) -> None:
+    ensure_data_dirs()
+    record = read_motion_asset(args.motion_id)
+    print(record.to_dict())
 
 
 def _cmd_register_motion_version(args: argparse.Namespace) -> None:
@@ -1444,9 +1524,30 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("register-motion-asset")
     p.add_argument("--motion-asset-id", required=True)
     p.add_argument("--motion", required=True)
+    p.add_argument("--motion-id", default=None)
+    p.add_argument("--terrain-id", default=None)
+    p.add_argument("--terrain-urdf", default=None)
+    p.add_argument("--surface-catalog", default=None)
+    p.add_argument("--contact-layer", default=None)
+    p.add_argument("--bound-contact-layer", default=None)
+    p.add_argument("--edit-plan", default=None)
+    p.add_argument("--output-contact-layer", default=None)
+    p.add_argument("--raw-contact", action="store_true")
+    p.add_argument("--raw-contact-source", default=None)
     p.add_argument("--fps", type=float, default=None)
     p.add_argument("--source", default="local")
     p.set_defaults(func=_cmd_register_motion_asset)
+
+    p = sub.add_parser("register-motion")
+    _add_register_motion_args(p)
+    p.set_defaults(func=_cmd_register_motion_asset)
+
+    p = sub.add_parser("list-motions")
+    p.set_defaults(func=_cmd_list_motions)
+
+    p = sub.add_parser("show-motion")
+    p.add_argument("--motion-id", required=True)
+    p.set_defaults(func=_cmd_show_motion)
 
     p = sub.add_parser("register-motion-version")
     p.add_argument("--motion-version-id", required=True)
@@ -1591,6 +1692,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("contact-editor")
     p.add_argument("motion", nargs="?", default=None)
     p.add_argument("--motion-id", default=None)
+    p.add_argument("--motion-asset-id", default=None)
     p.add_argument("--source-contact-layer", default=None)
     p.add_argument("--surface-catalog", default=None)
     p.add_argument("--terrain-urdf", default=None)

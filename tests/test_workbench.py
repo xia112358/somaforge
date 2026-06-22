@@ -1286,6 +1286,7 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertEqual(name, "contact/example")
 
     def test_setup_picker_configs_filter_by_selected_file_type(self) -> None:
+        registered_motion_config = _setup_load_dialog_config("Motion")
         motion_config = _setup_load_dialog_config("Motion NPZ")
         contact_config = _setup_load_dialog_config("Contact Layer")
         terrain_config = _setup_load_dialog_config("Terrain URDF")
@@ -1293,6 +1294,7 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         output_config = _setup_save_dialog_config("Output Contact Layer")
         plan_config = _setup_save_dialog_config("Edit Plan")
 
+        self.assertEqual(registered_motion_config["filetypes"], [("Motion asset", "*.json")])
         self.assertEqual(motion_config["filetypes"], [("Motion npz", "*.npz")])
         self.assertEqual(contact_config["filetypes"], [("Contact layer jsonl", "*.jsonl")])
         self.assertEqual(terrain_config["filetypes"], [("URDF", "*.urdf")])
