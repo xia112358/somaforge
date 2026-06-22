@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from motion_edit.schema import SegmentRecord
+from motion_edit.storage.segments import get_segment_motion_version_id
 from motion_edit.storage.schema import TokenRecord
 
 
@@ -45,13 +46,14 @@ def continuous_params_for_segment(segment: SegmentRecord) -> dict:
 
 
 def token_from_segment(segment: SegmentRecord, *, motion_version_id: str) -> TokenRecord:
+    segment_motion_version_id = get_segment_motion_version_id(segment) or motion_version_id
     transition = segment.metadata.get("contact_transition")
     parent_transition_id = segment.metadata.get("parent_transition_id")
     if parent_transition_id is None and isinstance(transition, dict):
         parent_transition_id = transition.get("transition_id")
     token = TokenRecord(
-        token_id=f"{motion_version_id}_{segment.segment_id}",
-        motion_version_id=motion_version_id,
+        token_id=f"{segment_motion_version_id}_{segment.segment_id}",
+        motion_version_id=segment_motion_version_id,
         segment_id=segment.segment_id,
         token_family=token_family_for_segment(segment),
         active_body=segment.metadata.get("active_body") or segment.active,

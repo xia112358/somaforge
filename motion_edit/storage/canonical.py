@@ -10,6 +10,7 @@ from motion_edit.layers import read_layer
 from motion_edit.paths import LAYERS_ROOT
 from motion_edit.schema import SegmentRecord
 from motion_edit.storage.io import canonical_segment_path, read_canonical_segments, write_canonical_segments, write_motion_version
+from motion_edit.storage.segments import canonical_segment_id, with_segment_motion_version_id
 from motion_edit.storage.schema import MotionVersionRecord
 
 
@@ -28,13 +29,15 @@ def canonicalize_segment(
     cut_source: str,
 ) -> SegmentRecord:
     metadata = dict(segment.metadata)
-    metadata["motion_version_id"] = motion_version_id
     metadata.setdefault("base_motion_id", segment.motion_id)
     metadata["cut_source"] = cut_source
     parent_transition_id = _parent_transition_id(segment)
     if parent_transition_id:
         metadata["parent_transition_id"] = parent_transition_id
-    return replace(segment, motion_path=segment.motion_path or motion_path, clip_npz=segment.clip_npz or motion_path, metadata=metadata)
+    return with_segment_motion_version_id(
+        replace(segment, motion_path=segment.motion_path or motion_path, clip_npz=segment.clip_npz or motion_path, metadata=metadata),
+        motion_version_id,
+    )
 
 
 def segments_from_contact_transitions(
@@ -50,7 +53,7 @@ def segments_from_contact_transitions(
     for index, transition in enumerate(graph.transitions):
         segment = segment_from_contact_transition(
             transition=transition,
-            segment_id=f"{motion_version_id}_seg_{index:04d}",
+            segment_id=canonical_segment_id(motion_version_id, index=index),
             source=source,
             status=status,
             track="contact",

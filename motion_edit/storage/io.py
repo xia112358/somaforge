@@ -7,6 +7,7 @@ from typing import Iterable
 from motion_edit.io import read_jsonl, segment_from_dict, segment_to_dict, write_jsonl
 from motion_edit.paths import MOTION_ASSETS_ROOT, MOTION_VERSIONS_ROOT, SEGMENTS_ROOT, TOKENS_ROOT
 from motion_edit.schema import SegmentRecord
+from motion_edit.storage.segments import with_segment_motion_version_id
 from motion_edit.storage.schema import MotionAssetRecord, MotionVersionRecord, TokenRecord
 
 
@@ -63,28 +64,7 @@ def write_canonical_segments(motion_version_id: str, segments: Iterable[SegmentR
     out = Path(path).expanduser() if path is not None else canonical_segment_path(motion_version_id)
     records = []
     for segment in segments:
-        metadata = dict(segment.metadata)
-        metadata["motion_version_id"] = motion_version_id
-        updated = SegmentRecord(
-            motion_id=segment.motion_id,
-            segment_id=segment.segment_id,
-            start_frame=segment.start_frame,
-            end_frame=segment.end_frame,
-            source=segment.source,
-            status=segment.status,
-            track=segment.track,
-            motion_path=segment.motion_path,
-            clip_npz=segment.clip_npz,
-            clip_output_dir=segment.clip_output_dir,
-            clip_file_name=segment.clip_file_name,
-            atom_label=segment.atom_label,
-            score=segment.score,
-            contact_start=segment.contact_start,
-            contact_end=segment.contact_end,
-            active=segment.active,
-            support=segment.support,
-            metadata=metadata,
-        )
+        updated = with_segment_motion_version_id(segment, motion_version_id)
         updated.validate()
         records.append(segment_to_dict(updated))
     write_jsonl(out, records)

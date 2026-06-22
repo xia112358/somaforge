@@ -27,6 +27,7 @@ from motion_edit.storage import (
     write_motion_version,
     write_token_catalog,
 )
+from motion_edit.storage.segments import canonical_segment_id, get_segment_motion_version_id, with_segment_motion_version_id
 from motion_edit.storage.tokens import build_tokens_from_segments
 
 
@@ -86,6 +87,22 @@ class StorageSchemaTests(unittest.TestCase):
         self.assertEqual(len(loaded), 1)
         self.assertEqual(loaded[0].segment_id, "seg_0")
         self.assertEqual(loaded[0].metadata["motion_version_id"], "climb00_raw")
+
+    def test_segment_motion_version_helpers(self) -> None:
+        segment = SegmentRecord(
+            motion_id="motion_a",
+            segment_id="seg_0",
+            start_frame=0,
+            end_frame=2,
+            source="canonical",
+        )
+
+        updated = with_segment_motion_version_id(segment, "motion_a_raw")
+
+        self.assertIsNone(get_segment_motion_version_id(segment))
+        self.assertEqual(get_segment_motion_version_id(updated), "motion_a_raw")
+        self.assertEqual(canonical_segment_id("motion_a_raw", index=3), "motion_a_raw_seg_0003")
+        self.assertEqual(canonical_segment_id("motion_a_raw", transition_id="transition_0"), "motion_a_raw_transition_0")
 
     def test_token_catalog_references_segments_without_motion_arrays(self) -> None:
         token = TokenRecord(
