@@ -569,6 +569,64 @@ class StorageSchemaTests(unittest.TestCase):
         self.assertEqual(graph.motion_id, "climb_01_z_scale_1.0")
         self.assertEqual(updated.derived["contact_layer"], "contact/raw_contact_29")
 
+    def test_import_force_proto_reads_contact_force_part_mask_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            motion_dir = root / "motions_src"
+            motion_dir.mkdir()
+            motion = motion_dir / "climb_02_rollout_ref_contact_force.npz"
+            np.savez(
+                motion,
+                contact_force_part_order=np.asarray(["left_foot", "right_foot", "left_hand", "right_hand", "left_knee", "right_knee"]),
+                contact_force_part_mask=np.asarray(
+                    [
+                        [True, False, False, False, False, False],
+                        [True, False, False, False, False, False],
+                        [False, False, False, False, False, False],
+                    ],
+                    dtype=bool,
+                ),
+                contact_force_part_position_w=np.asarray(
+                    [
+                        [[0.0, 0.0, 0.0]] * 6,
+                        [[0.1, 0.0, 0.0]] * 6,
+                        [[0.0, 0.0, 0.0]] * 6,
+                    ],
+                    dtype=np.float32,
+                ),
+            )
+            with (
+                mock.patch.object(paths, "CATALOGS_ROOT", root / "catalogs"),
+                mock.patch.object(paths, "LAYERS_ROOT", root / "layers"),
+                mock.patch.object(paths, "MOTIONS_ROOT", root / "motions"),
+                mock.patch.object(paths, "MOTION_ASSETS_ROOT", root / "motion_assets"),
+                mock.patch.object(paths, "MOTION_VERSIONS_ROOT", root / "motion_versions"),
+                mock.patch.object(paths, "SEGMENTS_ROOT", root / "segments"),
+                mock.patch.object(paths, "TOKENS_ROOT", root / "tokens"),
+                mock.patch.object(paths, "EXPORTS_ROOT", root / "exports"),
+                mock.patch.object(paths, "WORKBENCH_ROOT", root / "workbench"),
+                mock.patch.object(paths, "BACKUPS_ROOT", root / "backups"),
+                mock.patch.object(cli, "LAYERS_ROOT", root / "layers"),
+            ):
+                cli._cmd_import_force_proto(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "motion_dir": str(motion_dir),
+                            "pattern": "*.npz",
+                            "layer_name": "raw_contact_alias",
+                            "source": "force_contact",
+                            "use_registered_motion_ids": False,
+                            "update_motions": False,
+                        },
+                    )()
+                )
+                graph = read_contact_graph(root / "layers" / "contact" / "raw_contact_alias", "climb_02_rollout_ref_contact_force")
+
+        self.assertGreater(len(graph.anchors), 0)
+        self.assertEqual(graph.anchors[0].body, "left_foot")
+
     def test_register_motion_version_cli_writes_metadata_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

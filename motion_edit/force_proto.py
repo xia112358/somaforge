@@ -46,6 +46,14 @@ def _optional_mask(data: np.lib.npyio.NpzFile, key: str) -> np.ndarray | None:
     return np.asarray(data[key], dtype=bool) if key in data else None
 
 
+def _optional_mask_any(data: np.lib.npyio.NpzFile, keys: tuple[str, ...]) -> np.ndarray | None:
+    for key in keys:
+        mask = _optional_mask(data, key)
+        if mask is not None:
+            return mask
+    return None
+
+
 def _optional_indices(data: np.lib.npyio.NpzFile, key: str) -> np.ndarray:
     return np.asarray(data[key], dtype=np.int64) if key in data else np.asarray([], dtype=np.int64)
 
@@ -64,7 +72,7 @@ def _normalize_contact_part(name: str) -> str:
 
 
 def _contact_part_indices(data: np.lib.npyio.NpzFile, width: int | None) -> list[int]:
-    raw_names = _string_array(data, ("contact_part_names", "part_order", "part_names", "contact_body_names"))
+    raw_names = _string_array(data, ("contact_part_names", "contact_force_part_order", "part_order", "part_names", "contact_body_names"))
     if raw_names is None:
         if width is not None and width < len(CONTACT_PART_ORDER):
             raise ValueError(f"contact mask has {width} columns; expected fixed 6 contact parts")
@@ -93,7 +101,12 @@ def _contact_part_positions(
     *,
     data: np.lib.npyio.NpzFile,
     body_pos_w: np.ndarray | None,
+    part_indices: list[int],
 ) -> np.ndarray | None:
+    if "contact_force_part_position_w" in data:
+        arr = np.asarray(data["contact_force_part_position_w"], dtype=float)
+        if arr.ndim == 3 and arr.shape[1] >= max(part_indices, default=-1) + 1:
+            return arr[:, part_indices, :3]
     if body_pos_w is None:
         return None
     body_names = _string_array(data, ("body_names",))
@@ -122,17 +135,17 @@ class _MaskedMotion(NamedTuple):
 
 def _load_masked_motion(path: Path) -> _MaskedMotion:
     with np.load(path, allow_pickle=True) as data:
-        raw_contact = _optional_mask(data, "contact_part_mask")
+        raw_contact = _optional_mask_any(data, ("contact_part_mask", "contact_force_part_mask"))
         width = raw_contact.shape[1] if raw_contact is not None and raw_contact.ndim == 2 else None
         part_indices = _contact_part_indices(data, width)
         raw_body_pos_w = np.asarray(data["body_pos_w"], dtype=float) if "body_pos_w" in data else None
-        part_body_pos_w = _contact_part_positions(data=data, body_pos_w=raw_body_pos_w)
+        part_body_pos_w = _contact_part_positions(data=data, body_pos_w=raw_body_pos_w, part_indices=part_indices)
         return _MaskedMotion(
             starts=_optional_indices(data, "proto_start_idx"),
             ends=_optional_indices(data, "proto_end_idx"),
             contact=_select_contact_parts(raw_contact, part_indices),
-            active=_select_contact_parts(_optional_mask(data, "active_part_mask"), part_indices),
-            support=_select_contact_parts(_optional_mask(data, "support_part_mask"), part_indices),
+            active=_select_contact_parts(_optional_mask_any(data, ("active_part_mask", "active_force_part_mask")), part_indices),
+            support=_select_contact_parts(_optional_mask_any(data, ("support_part_mask", "support_force_part_mask")), part_indices),
             body_pos_w=part_body_pos_w,
             body_names=list(CONTACT_PART_ORDER),
         )
