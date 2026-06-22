@@ -502,6 +502,31 @@ class ContactEventTests(unittest.TestCase):
         self.assertEqual(bound.patches[0].patch_center_world, bound.anchors[0].world_position)
         self.assertEqual(written_surfaces[0].surface_id, "box_0_top")
 
+    def test_create_box_surface_catalog_cli_emits_top_and_side_faces(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "surfaces.jsonl"
+            cli._cmd_create_box_surface_catalog(
+                type(
+                    "Args",
+                    (),
+                    {
+                        "motion_id": "motion_a",
+                        "box": ["box_0:1.0,0.0,0.4:0.5,0.5,0.8"],
+                        "top_only": False,
+                        "output": str(output),
+                    },
+                )()
+            )
+            surfaces = read_contact_surfaces(output)
+
+        by_id = {surface.surface_id: surface for surface in surfaces}
+        self.assertEqual(len(surfaces), 5)
+        self.assertEqual(by_id["box_0_top"].origin, [1.0, 0.0, 0.8])
+        self.assertEqual(by_id["box_0_top"].normal, [0.0, 0.0, 1.0])
+        self.assertEqual(by_id["box_0_top"].bounds, {"u": [-0.25, 0.25], "v": [-0.25, 0.25]})
+        self.assertEqual(by_id["box_0_pos_x"].normal, [1.0, 0.0, 0.0])
+        self.assertEqual(by_id["box_0_neg_y"].normal, [0.0, -1.0, 0.0])
+
     def test_move_anchor_in_graph_updates_anchor_patch_and_returns_edit(self) -> None:
         graph = contact_graph_from_masks(
             motion_id="motion_a",

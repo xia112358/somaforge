@@ -30,6 +30,7 @@ from .contact.graph import ContactGraph
 from .contact.generation import apply_contact_edit_plan_to_motion
 from .contact.layers import read_contact_graph
 from .contact.patches import patches_from_anchors
+from .contact.surface_catalog import box_surfaces, parse_box_descriptor
 from .storage.canonical import build_canonical_segments, mark_canonical_segment_statuses, write_motion_version_with_canonical_segments
 from .storage.io import (
     read_canonical_segments,
@@ -188,6 +189,24 @@ def _cmd_bind_contact_surfaces(args: argparse.Namespace) -> None:
         f"bound={bound_count} unbound={len(bound_anchors) - bound_count} clamped={clamped_count} failed={failed_count}"
     )
     print(f"wrote contact layer {out_layer}")
+
+
+def _cmd_create_box_surface_catalog(args: argparse.Namespace) -> None:
+    ensure_data_dirs()
+    surfaces = []
+    for descriptor in args.box:
+        object_id, center, size = parse_box_descriptor(descriptor)
+        surfaces.extend(
+            box_surfaces(
+                motion_id=args.motion_id,
+                object_id=object_id,
+                center=center,
+                size=size,
+                include_sides=not args.top_only,
+            )
+        )
+    write_contact_surfaces(args.output, surfaces)
+    print(f"wrote {len(surfaces)} contact surfaces to {Path(args.output).expanduser()}")
 
 
 def _cmd_move_contact_anchor(args: argparse.Namespace) -> None:
@@ -796,6 +815,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--update-motion-version", action="store_true")
     p.add_argument("--rebind-canonical-segments", action="store_true")
     p.set_defaults(func=_cmd_bind_contact_surfaces)
+
+    p = sub.add_parser("create-box-surface-catalog")
+    p.add_argument("--motion-id", required=True)
+    p.add_argument("--box", action="append", required=True, help="object_id:cx,cy,cz:sx,sy,sz")
+    p.add_argument("--top-only", action="store_true")
+    p.add_argument("--output", required=True)
+    p.set_defaults(func=_cmd_create_box_surface_catalog)
 
     p = sub.add_parser("move-contact-anchor")
     p.add_argument("--source", required=True, help="Contact layer path relative to data/layers, e.g. contact/force_contact")
