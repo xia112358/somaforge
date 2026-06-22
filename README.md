@@ -243,6 +243,8 @@ The session includes a surface binding report, surface binding overlay, contact 
 
 The local adapter reads the existing overlay JSON and renders the motion root trace, robot playback, optional terrain/object URDF, `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects in Viser. Its GUI supports frame playback, anchor filtering, previous/next selection, first suspicious/unbound/edited selection, selected-anchor metadata, relative `du`/`dv` moves, step buttons, absolute target `u/v`, reject/clamp modes, undo/redo, reset/discard, reload, and explicit save.
 
+3D selection and handle editing are same-surface constrained. Anchor markers can be clicked in the 3D view when supported by the local Viser runtime. The selected anchor shows a handle with tangent axes, normal axis, and surface bounds. Dragging this handle is not a free 3D transform: the dragged world point is projected back into the anchor's original surface coordinates, any normal component is discarded, and the anchor keeps the same `surface_id` and `object_id`. Bounds are enforced by the current reject/clamp mode. A normal-only drag is ignored as a no-op.
+
 Interaction levels:
 
 - Level 1: local Viser direct editor. It renders the overlay, highlights the selected anchor, moves anchors from the Viser GUI, refreshes the overlay, supports undo/redo/reset, and saves from the Viser GUI.
@@ -270,7 +272,7 @@ Practical in-viewer workflow:
 
 1. Filter or select an anchor.
 2. Inspect the selected anchor metadata and surface binding.
-3. Move by `du`/`dv`, step buttons, or target `u/v`.
+3. Move by 3D same-surface drag, `du`/`dv`, step buttons, or target `u/v`.
 4. Use `Undo`, `Redo`, `Reset session`, or `Discard unsaved edits` if needed.
 5. Click `Save edits`.
 
