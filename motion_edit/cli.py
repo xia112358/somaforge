@@ -271,7 +271,10 @@ def _cmd_build_token_catalog(args: argparse.Namespace) -> None:
     out = write_token_catalog(args.motion_version_id, tokens, args.output)
     try:
         version = read_motion_version(args.motion_version_id)
-        updated = replace(version, token_catalog_path=str(out))
+        metadata = dict(version.metadata)
+        metadata["token_catalog_status"] = "current"
+        metadata.pop("token_catalog_stale_reason", None)
+        updated = replace(version, token_catalog_path=str(out), metadata=metadata)
         write_motion_version(updated)
     except FileNotFoundError:
         print(f"warning: motion version not found for {args.motion_version_id}; token catalog path was not linked")

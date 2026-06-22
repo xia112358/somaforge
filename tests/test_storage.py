@@ -266,6 +266,42 @@ class StorageSchemaTests(unittest.TestCase):
                 loaded = read_motion_version("motion_a_raw")
 
         self.assertEqual(loaded.token_catalog_path, str(root / "tokens" / "motion_a_raw.jsonl"))
+        self.assertEqual(loaded.metadata["token_catalog_status"], "current")
+        self.assertNotIn("token_catalog_stale_reason", loaded.metadata)
+
+    def test_canonical_change_marks_token_catalog_stale(self) -> None:
+        segment = SegmentRecord(
+            motion_id="motion_a",
+            segment_id="seg_0",
+            start_frame=0,
+            end_frame=2,
+            source="canonical",
+            metadata={"motion_version_id": "motion_a_raw"},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            version = MotionVersionRecord(
+                motion_version_id="motion_a_raw",
+                motion_path="/motions/motion_a.npz",
+                token_catalog_path=str(root / "tokens" / "motion_a_raw.jsonl"),
+                metadata={"token_catalog_status": "current"},
+            )
+            with (
+                mock.patch.object(storage_io, "SEGMENTS_ROOT", root / "segments"),
+                mock.patch.object(storage_io, "MOTION_VERSIONS_ROOT", root / "motion_versions"),
+            ):
+                write_motion_version(version)
+                replace_canonical_segments(
+                    "motion_a_raw",
+                    [segment],
+                    reason="manual edit",
+                    source="test",
+                    backup_existing=False,
+                )
+                loaded = read_motion_version("motion_a_raw")
+
+        self.assertEqual(loaded.metadata["token_catalog_status"], "stale")
+        self.assertEqual(loaded.metadata["token_catalog_stale_reason"], "canonical_segmentation_updated")
 
     def test_build_tokens_from_segments_does_not_copy_motion_arrays(self) -> None:
         segment = SegmentRecord(

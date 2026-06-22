@@ -73,6 +73,31 @@ def read_motion_version(motion_version_id: str, path: str | Path | None = None) 
     return MotionVersionRecord(**data)
 
 
+def _mark_token_catalog_stale(motion_version_id: str, *, reason: str) -> None:
+    try:
+        version = read_motion_version(motion_version_id)
+    except FileNotFoundError:
+        return
+    metadata = dict(version.metadata)
+    metadata["token_catalog_status"] = "stale"
+    metadata["token_catalog_stale_reason"] = reason
+    write_motion_version(
+        MotionVersionRecord(
+            motion_version_id=version.motion_version_id,
+            motion_path=version.motion_path,
+            kind=version.kind,
+            base_motion_id=version.base_motion_id,
+            motion_asset_id=version.motion_asset_id,
+            parent_motion_version_id=version.parent_motion_version_id,
+            contact_layer=version.contact_layer,
+            canonical_segment_path=version.canonical_segment_path,
+            token_catalog_path=version.token_catalog_path,
+            edit_plan_id=version.edit_plan_id,
+            metadata=metadata,
+        )
+    )
+
+
 def upsert_motion_version_canonical_path(
     motion_version_id: str,
     canonical_path: str | Path,
@@ -171,6 +196,7 @@ def write_canonical_segments(
             reason=reason,
             affected_segment_ids=[str(record["segment_id"]) for record in records],
         )
+        _mark_token_catalog_stale(motion_version_id, reason="canonical_segmentation_updated")
     return out
 
 
@@ -195,6 +221,7 @@ def replace_canonical_segments(
         reason=reason,
         affected_segment_ids=[str(record["segment_id"]) for record in records],
     )
+    _mark_token_catalog_stale(motion_version_id, reason="canonical_segmentation_updated")
     return out
 
 
