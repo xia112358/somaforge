@@ -54,7 +54,7 @@ uv pip install --python .venv/bin/python -e ".[viewer]"
 ~/motion_edit/motion-edit export-split-npz --motion-version-id climb00_raw --status accepted
 ~/motion_edit/motion-edit list-contact-layer --source contact/force_contact --motion-id climb_00_z_scale_1.0
 ~/motion_edit/motion-edit move-contact-anchor --source contact/force_contact --motion-id climb_00_z_scale_1.0 --anchor-id climb_00_z_scale_1.0_anchor_LF_000100_000140 --delta-world 0.10 0.0 0.0 --output-source contact/force_contact_farther --edit-plan data/workbench/climb00_farther.json --source-motion /path/to/climb_00_z_scale_1.0.npz
-~/motion_edit/motion-edit create-box-surface-catalog --motion-id climb_00_z_scale_1.0 --box box_0:1.0,0.0,0.4:0.5,0.5,0.8 --output data/surfaces/climb_00_surfaces.jsonl
+~/motion_edit/motion-edit create-urdf-surface-catalog --motion-id climb_00_z_scale_1.0 --terrain-urdf /path/to/multi_boxes_z_scale_1.0.urdf --output data/surfaces/climb_00_surfaces.jsonl
 ~/motion_edit/motion-edit bind-contact-surfaces --contact-layer contact/force_contact --motion-id climb_00_z_scale_1.0 --surface-catalog data/surfaces/climb_00_surfaces.jsonl --output-contact-layer contact/force_contact_bound
 ~/motion_edit/motion-edit export-surface-binding-report --contact-layer contact/force_contact_bound --motion-id climb_00_z_scale_1.0 --output data/exports/surface_binding_reports/climb_00.json
 ~/motion_edit/motion-edit export-surface-binding-overlay --contact-layer contact/force_contact_bound --motion-id climb_00_z_scale_1.0 --output data/exports/surface_binding_overlays/climb_00.overlay.json
@@ -157,9 +157,9 @@ Contact anchors are editable first-class objects. When `body_pos_w` is available
 Surface binding is explicit and does not generate augmented motion. It writes a new ContactLayer by default.
 
 ```bash
-~/motion_edit/motion-edit create-box-surface-catalog \
+~/motion_edit/motion-edit create-urdf-surface-catalog \
   --motion-id climb_00_z_scale_1.0 \
-  --box box_0:1.0,0.0,0.4:0.5,0.5,0.8 \
+  --terrain-urdf /path/to/multi_boxes_z_scale_1.0.urdf \
   --output data/surfaces/climb_00_surfaces.jsonl
 
 ~/motion_edit/motion-edit bind-contact-surfaces \
@@ -176,7 +176,7 @@ Surface binding is explicit and does not generate augmented motion. It writes a 
   --output-source contact/climb00_farther
 ```
 
-Manual surface catalogs are JSONL records with fields such as `surface_id`, `object_id`, `surface_type`, `origin`, `normal`, `tangent_u`, `tangent_v`, and bounds like `{"u": [-0.25, 0.25], "v": [-0.25, 0.25]}`. `create-box-surface-catalog` provides a simple bridge by emitting top and side faces for box/platform descriptors. URDF, OBJ, terrain metadata, and heightfield loaders are intentionally left as explicit future loaders.
+Surface catalogs are JSONL records with fields such as `surface_id`, `object_id`, `surface_type`, `origin`, `normal`, `tangent_u`, `tangent_v`, and bounds like `{"u": [-0.25, 0.25], "v": [-0.25, 0.25]}`. Prefer `create-urdf-surface-catalog` for terrain: it parses URDF OBJ meshes into real mesh face groups and adds an explicit `terrain_ground_z0` plane by default. `create-box-surface-catalog` remains only a manual/debug bridge and should not be used as a substitute for real terrain.
 
 ## Surface Binding Inspection
 
@@ -187,9 +187,9 @@ The report export summarizes known surfaces, bound anchors, failed/unbound ancho
 The overlay export is a lightweight frontend-agnostic JSON file. It contains `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects with status tags. Future Viser integration can render those objects and color them by status.
 
 ```bash
-~/motion_edit/motion-edit create-box-surface-catalog \
+~/motion_edit/motion-edit create-urdf-surface-catalog \
   --motion-id climb_00_z_scale_1.0 \
-  --box box_0:1.0,0.0,0.4:0.5,0.5,0.8 \
+  --terrain-urdf /path/to/multi_boxes_z_scale_1.0.urdf \
   --output data/surfaces/climb_00_surfaces.jsonl
 
 ~/motion_edit/motion-edit bind-contact-surfaces \
@@ -332,7 +332,7 @@ The cutter is still the visual frontend. `motion_edit` owns the durable session,
   --source candidates/force_contact \
   --contact-layer contact/force_contact
 ~/motion_edit/motion-edit list-contact-layer --source contact/force_contact --motion-id climb_00_z_scale_1.0
-~/motion_edit/motion-edit create-box-surface-catalog --motion-id climb_00_z_scale_1.0 --box box_0:1.0,0.0,0.4:0.5,0.5,0.8 --output data/surfaces/climb_00_surfaces.jsonl
+~/motion_edit/motion-edit create-urdf-surface-catalog --motion-id climb_00_z_scale_1.0 --terrain-urdf /path/to/multi_boxes_z_scale_1.0.urdf --output data/surfaces/climb_00_surfaces.jsonl
 ~/motion_edit/motion-edit bind-contact-surfaces --contact-layer contact/force_contact --motion-id climb_00_z_scale_1.0 --surface-catalog data/surfaces/climb_00_surfaces.jsonl --output-contact-layer contact/force_contact_bound
 ~/motion_edit/motion-edit export-surface-binding-report --contact-layer contact/force_contact_bound --motion-id climb_00_z_scale_1.0 --output data/exports/surface_binding_reports/climb_00.json
 ~/motion_edit/motion-edit export-surface-binding-overlay --contact-layer contact/force_contact_bound --motion-id climb_00_z_scale_1.0 --output data/exports/surface_binding_overlays/climb_00.overlay.json

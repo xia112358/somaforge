@@ -483,7 +483,12 @@ class ContactEventTests(unittest.TestCase):
                             "contact_layer": "contact/force_contact",
                             "motion_id": "motion_a",
                             "surface_catalog": str(surface_catalog),
-                            "output_contact_layer": "contact/force_contact_bound",
+                        "terrain_urdf": None,
+                        "top_only_surfaces": False,
+                        "no_ground": False,
+                        "ground_z": 0.0,
+                        "ground_half_extent": 10.0,
+                        "output_contact_layer": "contact/force_contact_bound",
                             "max_distance": 0.05,
                             "mode": "reject",
                             "motion_version_id": None,
@@ -526,6 +531,196 @@ class ContactEventTests(unittest.TestCase):
         self.assertEqual(by_id["box_0_top"].bounds, {"u": [-0.25, 0.25], "v": [-0.25, 0.25]})
         self.assertEqual(by_id["box_0_pos_x"].normal, [1.0, 0.0, 0.0])
         self.assertEqual(by_id["box_0_neg_y"].normal, [0.0, -1.0, 0.0])
+
+    def test_create_urdf_surface_catalog_uses_mesh_geometry_and_scale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mesh_dir = root / "meshes"
+            mesh_dir.mkdir()
+            obj = mesh_dir / "box.obj"
+            obj.write_text(
+                "\n".join(
+                    [
+                        "v 0 0 0",
+                        "v 2 0 0",
+                        "v 0 4 0",
+                        "v 2 4 0",
+                        "v 0 0 1",
+                        "v 2 0 1",
+                        "v 0 4 1",
+                        "v 2 4 1",
+                        "f 5 6 8",
+                        "f 5 8 7",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            urdf = root / "terrain.urdf"
+            urdf.write_text(
+                f"""<?xml version="1.0"?>
+<robot name="terrain">
+  <link name="box_link">
+    <collision>
+      <origin xyz="1 2 3" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="{obj}" scale="0.5 0.25 2.0"/>
+      </geometry>
+    </collision>
+  </link>
+</robot>
+""",
+                encoding="utf-8",
+            )
+            output = root / "surfaces.jsonl"
+
+            cli._cmd_create_urdf_surface_catalog(
+                type(
+                    "Args",
+                    (),
+                    {
+                        "motion_id": "motion_a",
+                        "terrain_urdf": str(urdf),
+                        "top_only": True,
+                        "no_ground": False,
+                        "ground_z": 0.0,
+                        "ground_half_extent": 10.0,
+                        "output": str(output),
+                    },
+                )()
+            )
+            surfaces = read_contact_surfaces(output)
+
+        self.assertEqual(len(surfaces), 2)
+        top = next(surface for surface in surfaces if surface.surface_id == "box_link_0_top")
+        ground = next(surface for surface in surfaces if surface.surface_id == "terrain_ground_z0")
+        self.assertEqual(top.surface_id, "box_link_0_top")
+        self.assertEqual(top.origin, [1.5, 2.5, 5.0])
+        self.assertEqual(top.bounds, {"u": [-0.5, 0.5], "v": [-0.5, 0.5]})
+        self.assertEqual(top.metadata["surface_extraction"], "obj_face_groups")
+        self.assertEqual(len(top.metadata["polygon_world"]), 4)
+        self.assertEqual(ground.surface_type, "plane")
+
+    def test_create_urdf_surface_catalog_emits_side_faces_and_ground(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            obj = root / "box.obj"
+            obj.write_text(
+                "\n".join(
+                    [
+                        "v 0 0 0",
+                        "v 1 0 0",
+                        "v 0 1 0",
+                        "v 1 1 0",
+                        "v 0 0 1",
+                        "v 1 0 1",
+                        "v 0 1 1",
+                        "v 1 1 1",
+                        "f 5 6 8",
+                        "f 5 8 7",
+                        "f 1 3 4",
+                        "f 1 4 2",
+                        "f 1 5 7",
+                        "f 1 7 3",
+                        "f 2 4 8",
+                        "f 2 8 6",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            urdf = root / "terrain.urdf"
+            urdf.write_text(
+                f"""<robot name="terrain"><link name="box"><collision><geometry><mesh filename="{obj}"/></geometry></collision></link></robot>""",
+                encoding="utf-8",
+            )
+            output = root / "surfaces.jsonl"
+
+            cli._cmd_create_urdf_surface_catalog(
+                type(
+                    "Args",
+                    (),
+                    {
+                        "motion_id": "motion_a",
+                        "terrain_urdf": str(urdf),
+                        "top_only": False,
+                        "no_ground": False,
+                        "ground_z": 0.0,
+                        "ground_half_extent": 10.0,
+                        "output": str(output),
+                    },
+                )()
+            )
+            surfaces = read_contact_surfaces(output)
+
+        ids = {surface.surface_id for surface in surfaces}
+        self.assertIn("box_0_top", ids)
+        self.assertIn("box_0_side_00", ids)
+        self.assertIn("box_0_side_01", ids)
+        self.assertIn("terrain_ground_z0", ids)
+
+    def test_bind_contact_surfaces_can_generate_catalog_from_terrain_urdf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            layers = root / "layers"
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True], [True], [False]]),
+                body_pos_w=np.asarray([[[0.5, 0.5, 1.0]], [[0.5, 0.5, 1.0]], [[0.0, 0.0, 0.0]]]),
+                body_names=["left_foot"],
+            )
+            write_contact_layer(layers / "contact" / "force_contact", graph)
+            obj = root / "box.obj"
+            obj.write_text(
+                "\n".join(
+                    [
+                        "v 0 0 0",
+                        "v 1 0 0",
+                        "v 0 1 0",
+                        "v 1 1 0",
+                        "v 0 0 1",
+                        "v 1 0 1",
+                        "v 0 1 1",
+                        "v 1 1 1",
+                        "f 5 6 8",
+                        "f 5 8 7",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            urdf = root / "terrain.urdf"
+            urdf.write_text(
+                f"""<robot name="terrain"><link name="box"><collision><geometry><mesh filename="{obj}"/></geometry></collision></link></robot>""",
+                encoding="utf-8",
+            )
+            with mock.patch.object(cli, "LAYERS_ROOT", layers), mock.patch.object(cli, "SURFACES_ROOT", root / "surfaces"):
+                cli._cmd_bind_contact_surfaces(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "contact_layer": "contact/force_contact",
+                            "motion_id": "motion_a",
+                            "surface_catalog": None,
+                            "terrain_urdf": str(urdf),
+                            "top_only_surfaces": True,
+                            "no_ground": False,
+                            "ground_z": 0.0,
+                            "ground_half_extent": 10.0,
+                            "output_contact_layer": "contact/force_contact_bound",
+                            "max_distance": 0.05,
+                            "mode": "reject",
+                            "motion_version_id": None,
+                            "update_motion_version": False,
+                            "rebind_canonical_segments": False,
+                        },
+                    )()
+                )
+                bound = read_contact_graph(layers / "contact" / "force_contact_bound", "motion_a")
+                generated = read_contact_surfaces(root / "surfaces" / "motion_a_terrain_surfaces.jsonl")
+
+        self.assertEqual(generated[0].surface_id, "box_0_top")
+        self.assertEqual(generated[1].surface_id, "terrain_ground_z0")
+        self.assertEqual(bound.anchors[0].surface_id, "box_0_top")
+        self.assertEqual(bound.anchors[0].world_position, [0.5, 0.5, 1.0])
 
     def test_move_anchor_in_graph_updates_anchor_patch_and_returns_edit(self) -> None:
         graph = contact_graph_from_masks(

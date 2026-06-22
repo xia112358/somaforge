@@ -21,7 +21,7 @@ from .export import (
 from .force_proto import contact_graph_from_masked_motion, segments_from_masked_motion
 from .io import read_jsonl, segment_from_dict, write_jsonl
 from .layers import iter_layer_files, read_layer, write_layer
-from .paths import BACKUPS_ROOT, EXPORTS_ROOT, LAYERS_ROOT, WORKBENCH_ROOT, ensure_data_dirs, layer_dir
+from .paths import BACKUPS_ROOT, EXPORTS_ROOT, LAYERS_ROOT, SURFACES_ROOT, WORKBENCH_ROOT, ensure_data_dirs, layer_dir
 from .contact import (
     append_anchor_edit_to_plan,
     bind_anchors_to_surfaces,
@@ -38,7 +38,7 @@ from .contact.graph import ContactGraph
 from .contact.generation import apply_contact_edit_plan_to_motion
 from .contact.layers import read_contact_graph
 from .contact.patches import patches_from_anchors
-from .contact.surface_catalog import box_surfaces, parse_box_descriptor
+from .contact.surface_catalog import box_surfaces, parse_box_descriptor, surfaces_from_urdf_meshes
 from .storage.canonical import build_canonical_segments, mark_canonical_segment_statuses, write_motion_version_with_canonical_segments
 from .storage.io import (
     read_canonical_segments,
@@ -236,7 +236,16 @@ def _cmd_bind_contact_surfaces(args: argparse.Namespace) -> None:
     if args.update_motion_version and not args.motion_version_id:
         raise ValueError("--update-motion-version requires --motion-version-id")
     graph = read_contact_graph(LAYERS_ROOT / contact_layer, args.motion_id)
-    surfaces = read_contact_surfaces(Path(args.surface_catalog).expanduser())
+    surface_catalog = _resolve_surface_catalog(
+        motion_id=args.motion_id,
+        surface_catalog=args.surface_catalog,
+        terrain_urdf=getattr(args, "terrain_urdf", None),
+        top_only=getattr(args, "top_only_surfaces", False),
+        include_ground=not getattr(args, "no_ground", False),
+        ground_z=getattr(args, "ground_z", 0.0),
+        ground_half_extent=getattr(args, "ground_half_extent", 10.0),
+    )
+    surfaces = read_contact_surfaces(surface_catalog)
     bound_anchors = bind_anchors_to_surfaces(
         graph.anchors,
         surfaces,
@@ -299,6 +308,78 @@ def _cmd_create_box_surface_catalog(args: argparse.Namespace) -> None:
         )
     write_contact_surfaces(args.output, surfaces)
     print(f"wrote {len(surfaces)} contact surfaces to {Path(args.output).expanduser()}")
+
+
+def _default_terrain_surface_catalog(motion_id: str) -> Path:
+    return SURFACES_ROOT / f"{motion_id}_terrain_surfaces.jsonl"
+
+
+def _write_urdf_surface_catalog(
+    *,
+    motion_id: str,
+    terrain_urdf: str | Path,
+    output: str | Path | None,
+    top_only: bool = False,
+    include_ground: bool = True,
+    ground_z: float = 0.0,
+    ground_half_extent: float = 10.0,
+) -> Path:
+    out = Path(output).expanduser() if output is not None else _default_terrain_surface_catalog(motion_id)
+    surfaces = surfaces_from_urdf_meshes(
+        motion_id=motion_id,
+        urdf_path=terrain_urdf,
+        include_sides=not top_only,
+        include_ground=include_ground,
+        ground_z=ground_z,
+        ground_half_extent=ground_half_extent,
+    )
+    write_contact_surfaces(out, surfaces)
+    return out
+
+
+def _resolve_surface_catalog(
+    *,
+    motion_id: str,
+    surface_catalog: str | None,
+    terrain_urdf: str | Path | None,
+    top_only: bool = False,
+    include_ground: bool = True,
+    ground_z: float = 0.0,
+    ground_half_extent: float = 10.0,
+) -> Path:
+    if surface_catalog:
+        path = Path(surface_catalog).expanduser()
+        if not path.exists():
+            raise FileNotFoundError(path)
+        return path
+    if terrain_urdf:
+        out = _write_urdf_surface_catalog(
+            motion_id=motion_id,
+            terrain_urdf=terrain_urdf,
+            output=None,
+            top_only=top_only,
+            include_ground=include_ground,
+            ground_z=ground_z,
+            ground_half_extent=ground_half_extent,
+        )
+        print(f"generated terrain surface catalog from URDF: {out}")
+        return out
+    raise ValueError("surface catalog is required; pass --surface-catalog or --terrain-urdf")
+
+
+def _cmd_create_urdf_surface_catalog(args: argparse.Namespace) -> None:
+    ensure_data_dirs()
+    out = _write_urdf_surface_catalog(
+        motion_id=args.motion_id,
+        terrain_urdf=args.terrain_urdf,
+        output=args.output,
+        top_only=args.top_only,
+        include_ground=not args.no_ground,
+        ground_z=args.ground_z,
+        ground_half_extent=args.ground_half_extent,
+    )
+    surfaces = read_contact_surfaces(out)
+    print(f"wrote {len(surfaces)} URDF contact surfaces to {out}")
 
 
 def _cmd_move_contact_anchor(args: argparse.Namespace) -> None:
@@ -840,11 +921,32 @@ def _cmd_cutter(args: argparse.Namespace) -> None:
 
 def _cmd_surface_editor(args: argparse.Namespace) -> None:
     ensure_data_dirs()
+    surface_catalog = args.surface_catalog
+    terrain_urdf_arg = getattr(args, "terrain_urdf", None)
+    if surface_catalog is None and (args.with_terrain or terrain_urdf_arg):
+        terrain_urdf = Path(terrain_urdf_arg).expanduser() if terrain_urdf_arg else None
+        if terrain_urdf is None:
+            paths = detect_omniretarget_paths(args.motion, repo_root=args.repo_root)
+            terrain_urdf = paths.terrain_urdf
+        if terrain_urdf is None:
+            raise ValueError("--with-terrain could not resolve a terrain URDF; pass --surface-catalog or --terrain-urdf")
+        surface_catalog = str(
+            _write_urdf_surface_catalog(
+                motion_id=args.motion_id,
+                terrain_urdf=terrain_urdf,
+                output=None,
+                top_only=getattr(args, "top_only_surfaces", False),
+                include_ground=not getattr(args, "no_ground", False),
+                ground_z=getattr(args, "ground_z", 0.0),
+                ground_half_extent=getattr(args, "ground_half_extent", 10.0),
+            )
+        )
+        print(f"generated terrain surface catalog from URDF: {surface_catalog}")
     session = prepare_surface_editor_session(
         motion_path=args.motion,
         motion_id=args.motion_id,
         contact_layer=args.contact_layer,
-        surface_catalog=args.surface_catalog,
+        surface_catalog=surface_catalog,
         session_name=args.session_name,
         edit_plan_path=args.edit_plan,
         output_contact_layer=args.output_contact_layer,
@@ -1003,7 +1105,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("bind-contact-surfaces")
     p.add_argument("--contact-layer", default=None, help="Contact layer path relative to data/layers, e.g. contact/force_contact")
     p.add_argument("--motion-id", required=True)
-    p.add_argument("--surface-catalog", required=True)
+    p.add_argument("--surface-catalog", default=None)
+    p.add_argument("--terrain-urdf", default=None)
+    p.add_argument("--top-only-surfaces", action="store_true")
+    p.add_argument("--no-ground", action="store_true")
+    p.add_argument("--ground-z", type=float, default=0.0)
+    p.add_argument("--ground-half-extent", type=float, default=10.0)
     p.add_argument("--output-contact-layer", required=True)
     p.add_argument("--max-distance", type=float, default=0.05)
     p.add_argument("--mode", choices=("reject", "clamp"), default="reject")
@@ -1018,6 +1125,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--top-only", action="store_true")
     p.add_argument("--output", required=True)
     p.set_defaults(func=_cmd_create_box_surface_catalog)
+
+    p = sub.add_parser("create-urdf-surface-catalog")
+    p.add_argument("--motion-id", required=True)
+    p.add_argument("--terrain-urdf", required=True)
+    p.add_argument("--top-only", action="store_true")
+    p.add_argument("--no-ground", action="store_true")
+    p.add_argument("--ground-z", type=float, default=0.0)
+    p.add_argument("--ground-half-extent", type=float, default=10.0)
+    p.add_argument("--output", required=True)
+    p.set_defaults(func=_cmd_create_urdf_surface_catalog)
 
     p = sub.add_parser("move-contact-anchor")
     p.add_argument("--source", required=True, help="Contact layer path relative to data/layers, e.g. contact/force_contact")
@@ -1202,6 +1319,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--motion-id", required=True)
     p.add_argument("--contact-layer", required=True)
     p.add_argument("--surface-catalog", default=None)
+    p.add_argument("--terrain-urdf", default=None)
+    p.add_argument("--top-only-surfaces", action="store_true")
+    p.add_argument("--no-ground", action="store_true")
+    p.add_argument("--ground-z", type=float, default=0.0)
+    p.add_argument("--ground-half-extent", type=float, default=10.0)
     p.add_argument("--session-name", required=True)
     p.add_argument("--edit-plan", default=None)
     p.add_argument("--output-contact-layer", default=None)

@@ -236,6 +236,28 @@ class ExportContactMetadataTests(unittest.TestCase):
         self.assertEqual(projection_line["from"], [0.1, 0.2, 0.02])
         self.assertEqual(projection_line["to"], [0.1, 0.2, 0.0])
 
+    def test_surface_binding_overlay_prefers_mesh_polygon_corners(self) -> None:
+        surface = ContactSurfaceRecord(
+            motion_id="motion_a",
+            surface_id="mesh_side",
+            object_id="box",
+            surface_type="mesh_face",
+            origin=[0.0, 0.0, 0.0],
+            normal=[0.0, 0.0, 1.0],
+            tangent_u=[1.0, 0.0, 0.0],
+            tangent_v=[0.0, 1.0, 0.0],
+            bounds={"u": [-10.0, 10.0], "v": [-10.0, 10.0]},
+            metadata={"polygon_world": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 0.5, 0.0]]},
+        )
+        graph = ContactGraph(motion_id="motion_a")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = export_surface_binding_overlay(Path(tmp) / "overlay.json", graph=graph, surfaces=[surface])
+            overlay = json.loads(out.read_text(encoding="utf-8"))
+
+        surface_quad = next(item for item in overlay["objects"] if item["type"] == "surface_quad")
+        self.assertEqual(surface_quad["corners"], [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 0.5, 0.0]])
+        self.assertEqual(surface_quad["surface_shape"], "polygon")
+
     def test_cli_exports_surface_binding_report_from_sidecar(self) -> None:
         surface = ContactSurfaceRecord(
             motion_id="motion_a",

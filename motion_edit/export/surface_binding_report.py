@@ -141,6 +141,9 @@ def _scale3(a: list[float], scale: float) -> list[float]:
 
 
 def _surface_quad_corners(surface: ContactSurfaceRecord) -> list[list[float]] | None:
+    polygon = surface.metadata.get("polygon_world")
+    if isinstance(polygon, list) and len(polygon) >= 3:
+        return [[float(value) for value in point] for point in polygon]
     u_bounds = _bounds_for_axis(surface.bounds, "u")
     v_bounds = _bounds_for_axis(surface.bounds, "v")
     if u_bounds is None or v_bounds is None:
@@ -171,6 +174,7 @@ def _surface_overlay_object(surface: ContactSurfaceRecord) -> dict[str, Any]:
     corners = _surface_quad_corners(surface)
     if corners is not None:
         item["corners"] = corners
+        item["surface_shape"] = "polygon" if surface.metadata.get("polygon_world") else "quad"
     return item
 
 

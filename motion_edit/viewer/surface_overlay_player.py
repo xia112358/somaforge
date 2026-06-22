@@ -401,14 +401,14 @@ def _render_overlay(server: Any, overlay: dict[str, Any], *, namespace: str = "/
         color = _color(status)
         if obj_type == "surface_quad":
             corners = surface_quad_corners(obj)
-            edges = [(0, 1), (1, 2), (2, 3), (3, 0)]
+            edges = [(index, (index + 1) % len(corners)) for index in range(len(corners))]
             for a, b in edges:
                 line_points.append([corners[a], corners[b]])
                 line_colors.append([color, color])
             if hasattr(server.scene, "add_mesh_simple"):
                 name = f"{namespace}/surfaces/{_safe_name(str(obj.get('surface_id', 'surface')))}"
                 vertices = np.asarray(corners, dtype=np.float32)
-                faces = np.asarray([[0, 1, 2], [0, 2, 3]], dtype=np.uint32)
+                faces = np.asarray([[0, index, index + 1] for index in range(1, len(corners) - 1)], dtype=np.uint32)
                 try:
                     handle = server.scene.add_mesh_simple(name, vertices, faces, color=tuple(c / 255.0 for c in color), opacity=0.22)
                     handles.append(handle)
