@@ -161,6 +161,30 @@ class StorageSchemaTests(unittest.TestCase):
         self.assertEqual(tokens[0].continuous_params["tangent_delta"], [0.1, 0.0])
         self.assertNotIn("qpos", tokens[0].metadata)
 
+    def test_build_token_catalog_updates_motion_version_record(self) -> None:
+        segment = SegmentRecord(
+            motion_id="motion_a",
+            segment_id="seg_0",
+            start_frame=0,
+            end_frame=2,
+            source="canonical",
+            metadata={"motion_version_id": "motion_a_raw"},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            version = MotionVersionRecord(motion_version_id="motion_a_raw", motion_path="/motions/motion_a.npz")
+            with (
+                mock.patch.object(storage_io, "SEGMENTS_ROOT", root / "segments"),
+                mock.patch.object(storage_io, "TOKENS_ROOT", root / "tokens"),
+                mock.patch.object(storage_io, "MOTION_VERSIONS_ROOT", root / "motion_versions"),
+            ):
+                write_motion_version(version)
+                write_canonical_segments("motion_a_raw", [segment])
+                cli._cmd_build_token_catalog(type("Args", (), {"motion_version_id": "motion_a_raw", "output": None})())
+                loaded = read_motion_version("motion_a_raw")
+
+        self.assertEqual(loaded.token_catalog_path, str(root / "tokens" / "motion_a_raw.jsonl"))
+
     def test_build_tokens_from_segments_does_not_copy_motion_arrays(self) -> None:
         segment = SegmentRecord(
             motion_id="motion_a",

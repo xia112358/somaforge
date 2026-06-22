@@ -266,6 +266,12 @@ def _cmd_build_token_catalog(args: argparse.Namespace) -> None:
     segments = read_canonical_segments(args.motion_version_id)
     tokens = build_tokens_from_segments(args.motion_version_id, segments)
     out = write_token_catalog(args.motion_version_id, tokens, args.output)
+    try:
+        version = read_motion_version(args.motion_version_id)
+        updated = replace(version, token_catalog_path=str(out))
+        write_motion_version(updated)
+    except FileNotFoundError:
+        print(f"warning: motion version not found for {args.motion_version_id}; token catalog path was not linked")
     print(f"wrote token catalog motion_version={args.motion_version_id} tokens={len(tokens)} path={out}")
 
 
