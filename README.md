@@ -41,6 +41,7 @@ data/
 ~/motion_edit/motion-edit register-motion-version --motion-version-id climb00_raw --motion /path/to/climb_00_z_scale_1.0.npz --kind raw --motion-asset-id climb00 --contact-layer contact/force_contact
 ~/motion_edit/motion-edit migrate-layer-to-canonical --motion-version-id climb00_raw --motion /path/to/climb_00_z_scale_1.0.npz --source candidates/force_contact --contact-layer contact/force_contact
 ~/motion_edit/motion-edit cutter /path/to/climb_00_z_scale_1.0.npz --motion-version-id climb00_raw --update-canonical --session-name climb00_check --with-terrain
+~/motion_edit/motion-edit canonical-action --motion-version-id climb00_raw --segment-id SEG_ID --action trim --start-frame 120 --end-frame 180
 ~/motion_edit/motion-edit mark-segment-status --motion-version-id climb00_raw --segment-id SEG_ID --status accepted
 ~/motion_edit/motion-edit build-token-catalog --motion-version-id climb00_raw
 ~/motion_edit/motion-edit export-manifest --motion-version-id climb00_raw --output data/exports/manifests/climb00_raw.json
@@ -92,6 +93,8 @@ MotionVersionRecord
   -> data/segments/<motion_version_id>.jsonl
   -> data/tokens/<motion_version_id>.jsonl
 ```
+
+The only active canonical segmentation path is `data/segments/<motion_version_id>.jsonl`. Commands that refine canonical storage update that same file. If a reset/refine/status operation needs history, history is written under `data/segments/history/`; those files are provenance/backups, not alternative active segmentations.
 
 Motion assets and motion versions are path references; registering them does not copy the `.npz`. Contact-first segmentation is the default canonical segmentation source. Cutter/manual refinement updates the canonical segmentation with `cut_source=cutter_refined` or related provenance. `accepted`, `rejected`, `manual`, and cutter-refined states are statuses or provenance fields on canonical `SegmentRecord`s. They should not become competing active segment layers for the same motion version.
 
@@ -188,7 +191,7 @@ data/workbench/sessions/<session_name>/
   <motion_id>.contact_overlay.json
 ```
 
-The cutter is still the visual frontend. `motion_edit` owns the durable session, layer sync, provenance, and exports. When the cutter exits, edited segment JSONL is synced back to `manual/<session_name>` by default. If a matching ContactLayer exists, synced segments are rebound to the current ContactGraph so edited boundaries get refreshed contact events, anchors, patches, and transition metadata.
+The cutter is still the visual frontend. `motion_edit` owns the durable session, layer sync, provenance, and exports. In the preferred canonical workflow, pass `--motion-version-id ... --update-canonical`; when the cutter exits, edited segment JSONL is rebound to the ContactGraph when available and written back to `data/segments/<motion_version_id>.jsonl`. Legacy cutter sessions without `--update-canonical` still sync to `manual/<session_name>` for compatibility.
 
 ## Curation Flow
 
@@ -214,6 +217,7 @@ The cutter is still the visual frontend. `motion_edit` owns the durable session,
 ~/motion_edit/motion-edit move-contact-anchor --source contact/force_contact --motion-id climb_00_z_scale_1.0 --anchor-id <anchor_id> --delta-world 0.10 0.0 0.0 --output-source contact/climb00_anchor_farther --edit-plan data/workbench/climb00_farther.json --source-motion /path/to/climb_00_z_scale_1.0.npz --source-segments candidates/force_contact
 ~/motion_edit/motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
 ~/motion_edit/motion-edit cutter /path/to/climb_00_z_scale_1.0.npz --motion-version-id climb00_raw --update-canonical --session-name climb00_check --with-terrain
+~/motion_edit/motion-edit canonical-action --motion-version-id climb00_raw --segment-id <segment_id> --action split --frame 150
 ~/motion_edit/motion-edit mark-segment-status --motion-version-id climb00_raw --segment-id <segment_id> --status accepted
 ~/motion_edit/motion-edit build-token-catalog --motion-version-id climb00_raw
 ~/motion_edit/motion-edit export-manifest --motion-version-id climb00_raw --output data/exports/manifests/climb00_raw.json
