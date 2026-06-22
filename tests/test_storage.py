@@ -8,7 +8,7 @@ from unittest import mock
 import numpy as np
 
 from motion_edit import cli, paths
-from motion_edit.contact import contact_graph_from_masks, write_contact_layer
+from motion_edit.contact import ContactSurfaceRecord, contact_graph_from_masks, write_contact_layer, write_contact_surfaces
 from motion_edit.io import read_jsonl, write_jsonl
 from motion_edit.layers import write_layer
 from motion_edit.schema import SegmentRecord
@@ -863,6 +863,79 @@ class StorageSchemaTests(unittest.TestCase):
                     },
                 )()
             )
+
+    def test_bind_contact_surfaces_can_rebind_canonical_and_mark_tokens_stale(self) -> None:
+        segment = SegmentRecord(
+            motion_id="motion_a",
+            segment_id="seg_0",
+            start_frame=0,
+            end_frame=2,
+            source="canonical",
+            status="candidate",
+            metadata={"motion_version_id": "motion_a_raw"},
+        )
+        surface = ContactSurfaceRecord(
+            motion_id="motion_a",
+            surface_id="box_0_top",
+            object_id="box_0",
+            surface_type="box_face",
+            origin=[0.0, 0.0, 0.0],
+            normal=[0.0, 0.0, 1.0],
+            tangent_u=[1.0, 0.0, 0.0],
+            tangent_v=[0.0, 1.0, 0.0],
+            bounds={"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            layers_root = root / "layers"
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True], [False], [True]]),
+                body_pos_w=np.asarray([[[0.1, 0.0, 0.0]], [[0.0, 0.0, 0.0]], [[0.2, 0.0, 0.0]]]),
+                body_names=["LF"],
+            )
+            write_contact_layer(layers_root / "contact" / "force_contact", graph)
+            surface_catalog = root / "surfaces.jsonl"
+            write_contact_surfaces(surface_catalog, [surface])
+            version = MotionVersionRecord(
+                motion_version_id="motion_a_raw",
+                motion_path="/motions/motion_a.npz",
+                contact_layer="contact/force_contact",
+                token_catalog_path=str(root / "tokens" / "motion_a_raw.jsonl"),
+                metadata={"token_catalog_status": "current"},
+            )
+            with (
+                mock.patch.object(cli, "LAYERS_ROOT", layers_root),
+                mock.patch.object(storage_io, "SEGMENTS_ROOT", root / "segments"),
+                mock.patch.object(storage_io, "MOTION_VERSIONS_ROOT", root / "motion_versions"),
+            ):
+                write_motion_version(version)
+                write_canonical_segments("motion_a_raw", [segment])
+                cli._cmd_bind_contact_surfaces(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "contact_layer": None,
+                            "motion_id": "motion_a",
+                            "surface_catalog": str(surface_catalog),
+                            "output_contact_layer": "contact/force_contact_bound",
+                            "max_distance": 0.05,
+                            "mode": "reject",
+                            "motion_version_id": "motion_a_raw",
+                            "update_motion_version": True,
+                            "rebind_canonical_segments": True,
+                        },
+                    )()
+                )
+                loaded = read_canonical_segments("motion_a_raw")
+                loaded_version = read_motion_version("motion_a_raw")
+                history_events = read_jsonl(canonical_history_event_path("motion_a_raw"))
+
+        self.assertEqual(loaded_version.contact_layer, "contact/force_contact_bound")
+        self.assertEqual(loaded_version.metadata["token_catalog_status"], "stale")
+        self.assertIn("surface_binding_rebind", [event["kind"] for event in history_events])
+        self.assertIn("contact_transition", loaded[0].metadata)
 
 
 if __name__ == "__main__":
