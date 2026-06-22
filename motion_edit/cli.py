@@ -240,12 +240,15 @@ def _cmd_bind_contact_surfaces(args: argparse.Namespace) -> None:
         motion_id=args.motion_id,
         surface_catalog=args.surface_catalog,
         terrain_urdf=getattr(args, "terrain_urdf", None),
-        top_only=getattr(args, "top_only_surfaces", False),
+        include_side_surfaces=getattr(args, "include_side_surfaces", False),
         include_ground=not getattr(args, "no_ground", False),
         ground_z=getattr(args, "ground_z", 0.0),
         ground_half_extent=getattr(args, "ground_half_extent", 10.0),
     )
-    surfaces = read_contact_surfaces(surface_catalog)
+    surfaces = _filter_surfaces_for_binding(
+        read_contact_surfaces(surface_catalog),
+        include_side_surfaces=getattr(args, "include_side_surfaces", False),
+    )
     bound_anchors = bind_anchors_to_surfaces(
         graph.anchors,
         surfaces,
@@ -319,7 +322,7 @@ def _write_urdf_surface_catalog(
     motion_id: str,
     terrain_urdf: str | Path,
     output: str | Path | None,
-    top_only: bool = False,
+    include_side_surfaces: bool = False,
     include_ground: bool = True,
     ground_z: float = 0.0,
     ground_half_extent: float = 10.0,
@@ -328,7 +331,7 @@ def _write_urdf_surface_catalog(
     surfaces = surfaces_from_urdf_meshes(
         motion_id=motion_id,
         urdf_path=terrain_urdf,
-        include_sides=not top_only,
+        include_sides=include_side_surfaces,
         include_ground=include_ground,
         ground_z=ground_z,
         ground_half_extent=ground_half_extent,
@@ -342,7 +345,7 @@ def _resolve_surface_catalog(
     motion_id: str,
     surface_catalog: str | None,
     terrain_urdf: str | Path | None,
-    top_only: bool = False,
+    include_side_surfaces: bool = False,
     include_ground: bool = True,
     ground_z: float = 0.0,
     ground_half_extent: float = 10.0,
@@ -357,7 +360,7 @@ def _resolve_surface_catalog(
             motion_id=motion_id,
             terrain_urdf=terrain_urdf,
             output=None,
-            top_only=top_only,
+            include_side_surfaces=include_side_surfaces,
             include_ground=include_ground,
             ground_z=ground_z,
             ground_half_extent=ground_half_extent,
@@ -367,13 +370,23 @@ def _resolve_surface_catalog(
     raise ValueError("surface catalog is required; pass --surface-catalog or --terrain-urdf")
 
 
+def _filter_surfaces_for_binding(surfaces, *, include_side_surfaces: bool):
+    if include_side_surfaces:
+        return list(surfaces)
+    return [
+        surface
+        for surface in surfaces
+        if surface.surface_id == "terrain_ground_z0" or float(surface.normal[2]) > 0.5
+    ]
+
+
 def _cmd_create_urdf_surface_catalog(args: argparse.Namespace) -> None:
     ensure_data_dirs()
     out = _write_urdf_surface_catalog(
         motion_id=args.motion_id,
         terrain_urdf=args.terrain_urdf,
         output=args.output,
-        top_only=args.top_only,
+        include_side_surfaces=args.include_side_surfaces,
         include_ground=not args.no_ground,
         ground_z=args.ground_z,
         ground_half_extent=args.ground_half_extent,
@@ -935,7 +948,7 @@ def _cmd_surface_editor(args: argparse.Namespace) -> None:
                 motion_id=args.motion_id,
                 terrain_urdf=terrain_urdf,
                 output=None,
-                top_only=getattr(args, "top_only_surfaces", False),
+                include_side_surfaces=getattr(args, "include_side_surfaces", False),
                 include_ground=not getattr(args, "no_ground", False),
                 ground_z=getattr(args, "ground_z", 0.0),
                 ground_half_extent=getattr(args, "ground_half_extent", 10.0),
@@ -1107,7 +1120,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--motion-id", required=True)
     p.add_argument("--surface-catalog", default=None)
     p.add_argument("--terrain-urdf", default=None)
-    p.add_argument("--top-only-surfaces", action="store_true")
+    p.add_argument("--include-side-surfaces", action="store_true")
     p.add_argument("--no-ground", action="store_true")
     p.add_argument("--ground-z", type=float, default=0.0)
     p.add_argument("--ground-half-extent", type=float, default=10.0)
@@ -1129,7 +1142,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("create-urdf-surface-catalog")
     p.add_argument("--motion-id", required=True)
     p.add_argument("--terrain-urdf", required=True)
-    p.add_argument("--top-only", action="store_true")
+    p.add_argument("--include-side-surfaces", action="store_true")
     p.add_argument("--no-ground", action="store_true")
     p.add_argument("--ground-z", type=float, default=0.0)
     p.add_argument("--ground-half-extent", type=float, default=10.0)
@@ -1320,7 +1333,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--contact-layer", required=True)
     p.add_argument("--surface-catalog", default=None)
     p.add_argument("--terrain-urdf", default=None)
-    p.add_argument("--top-only-surfaces", action="store_true")
+    p.add_argument("--include-side-surfaces", action="store_true")
     p.add_argument("--no-ground", action="store_true")
     p.add_argument("--ground-z", type=float, default=0.0)
     p.add_argument("--ground-half-extent", type=float, default=10.0)
