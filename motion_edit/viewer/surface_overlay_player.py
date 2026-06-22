@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
+import sys
 import threading
 import time
 from dataclasses import dataclass, field, replace
@@ -23,6 +25,7 @@ from motion_edit.workbench import (
     write_pending_surface_edits,
     write_surface_editor_graph,
 )
+from motion_edit.workbench.contact_editor_setup import ContactEditorConfig, infer_terrain_urdf, prepare_contact_editor_session as prepare_contact_editor_workbench_session
 from motion_edit.workbench.surface_editor_session import SurfaceEditorSession
 
 
@@ -832,6 +835,11 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
         import viser  # type: ignore[import-not-found]
     except ImportError as exc:
         raise SystemExit("viser is not installed in this environment; use surface-editor fallback/sync commands") from exc
+    if args.setup_mode:
+        run_contact_editor_setup_player(args, viser)
+        return
+    if args.qpos_npz is None or args.surface_binding_overlay is None or args.surface_editor_session is None or args.surface_editor_requests is None:
+        raise SystemExit("loaded surface editor requires --qpos-npz, --surface-binding-overlay, --surface-editor-session, and --surface-editor-requests")
 
     state = load_editor_state(args.surface_editor_session)
     overlay = load_surface_overlay(args.surface_binding_overlay)
@@ -1015,12 +1023,117 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
         time.sleep(1.0)
 
 
+def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> None:
+    server = viser.ViserServer(port=args.viser_port or args.timeline_port)
+    server.gui.configure_theme(control_layout="fixed", control_width="large", dark_mode=True, show_logo=False, show_share_button=False)
+    server.scene.add_grid("/grid", width=8.0, height=8.0, position=(0.0, 0.0, 0.0))
+    pending_exec: dict[str, list[str] | None] = {"cmd": None}
+
+    with server.gui.add_folder("Contact Editor Setup"):
+        motion = server.gui.add_text("motion_npz", initial_value="")
+        motion_id = server.gui.add_text("motion_id", initial_value="")
+        source_contact_layer = server.gui.add_text("source_contact_layer", initial_value="")
+        terrain_urdf = server.gui.add_text("terrain_urdf", initial_value="")
+        surface_catalog = server.gui.add_text("surface_catalog", initial_value="")
+        session_name = server.gui.add_text("session_name", initial_value="contact_editor")
+        output_prefix = server.gui.add_text("output_prefix", initial_value="")
+        output_contact_layer = server.gui.add_text("output_contact_layer", initial_value="")
+        edit_plan = server.gui.add_text("edit_plan", initial_value="")
+        repo_root = server.gui.add_text("repo_root", initial_value="")
+        with_terrain = server.gui.add_checkbox("with_terrain", initial_value=True)
+        default_mode = server.gui.add_dropdown("mode", options=("reject", "clamp"), initial_value=args.default_mode)
+        show_only = server.gui.add_dropdown(
+            "show_only",
+            options=("all", "bound", "edited", "clamped", "suspicious", "failed", "unbound"),
+            initial_value=args.show_only,
+        )
+        load_btn = server.gui.add_button("Load contact editor")
+        status = server.gui.add_text("status", initial_value="Fill paths, then Load contact editor.", multiline=True)
+
+    @load_btn.on_click
+    def _(_) -> None:
+        try:
+            if not str(motion.value).strip():
+                raise ValueError("motion_npz is required")
+            if not str(motion_id.value).strip():
+                raise ValueError("motion_id is required")
+            if not str(source_contact_layer.value).strip():
+                raise ValueError("source_contact_layer is required")
+            config = ContactEditorConfig(
+                motion=str(motion.value).strip(),
+                motion_id=str(motion_id.value).strip(),
+                source_contact_layer=str(source_contact_layer.value).strip(),
+                session_name=str(session_name.value).strip() or "contact_editor",
+                surface_catalog=str(surface_catalog.value).strip() or None,
+                terrain_urdf=str(terrain_urdf.value).strip() or None,
+                output_prefix=str(output_prefix.value).strip() or None,
+                edit_plan=str(edit_plan.value).strip() or None,
+                output_contact_layer=str(output_contact_layer.value).strip() or None,
+                repo_root=str(repo_root.value).strip() or None,
+                with_terrain=bool(with_terrain.value),
+                bind_mode=str(default_mode.value),
+                fps=int(args.fps),
+            )
+            prepared = prepare_contact_editor_workbench_session(config)
+            terrain_urdf_for_viewer = infer_terrain_urdf(config)
+            repo_path = Path(config.repo_root).expanduser() if config.repo_root else Path("/home/xiaz/holosoma_isaaclab3_newton")
+            robot_urdf = repo_path / "OmniRetarget_Dataset/models/g1/g1_29dof_spherehand.urdf"
+            status.value = (
+                f"Prepared {prepared.ready_anchor_count} anchors. Restarting loaded editor...\n"
+                f"session={prepared.session.session_dir}\n"
+                f"ready_layer={prepared.ready_layer}"
+            )
+            cmd = [
+                sys.executable,
+                "-m",
+                "motion_edit.viewer.surface_overlay_player",
+                "--qpos-npz",
+                str(Path(config.motion).expanduser().resolve()),
+                "--surface-binding-overlay",
+                str(prepared.session.overlay_path),
+                "--surface-editor-session",
+                str(prepared.session.session_dir / "session.json"),
+                "--surface-editor-requests",
+                str(prepared.session.request_path),
+                "--edit-mode",
+                str(args.edit_mode),
+                "--default-mode",
+                str(default_mode.value),
+                "--show-only",
+                str(show_only.value),
+                "--timeline-port",
+                str(args.timeline_port),
+                "--fps",
+                str(args.fps),
+            ]
+            if config.terrain_urdf and bool(with_terrain.value):
+                cmd.extend(["--object-urdf", config.terrain_urdf, "--with-terrain"])
+            elif terrain_urdf_for_viewer and bool(with_terrain.value):
+                cmd.extend(["--object-urdf", terrain_urdf_for_viewer, "--with-terrain"])
+            if robot_urdf.exists():
+                cmd.extend(["--robot-urdf", str(robot_urdf)])
+            pending_exec["cmd"] = cmd
+        except Exception as exc:
+            status.value = f"Load failed: {exc}"
+            print(f"[contact editor setup] load failed: {exc}")
+
+    print(f"[contact editor setup] Open: http://localhost:{args.timeline_port}")
+    print("Fill setup fields in the Viser UI and click Load contact editor.")
+    while True:
+        if pending_exec["cmd"] is not None:
+            cmd = pending_exec["cmd"]
+            print(f"[contact editor setup] exec: {' '.join(cmd)}")
+            os.execv(sys.executable, cmd)
+        time.sleep(0.2)
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Local Viser surface binding overlay player.")
-    parser.add_argument("--qpos-npz", required=True)
-    parser.add_argument("--surface-binding-overlay", required=True)
-    parser.add_argument("--surface-editor-session", required=True)
-    parser.add_argument("--surface-editor-requests", required=True)
+    parser.add_argument("--setup-mode", action="store_true")
+    parser.add_argument("--qpos-npz", default=None)
+    parser.add_argument("--surface-binding-overlay", default=None)
+    parser.add_argument("--surface-editor-session", default=None)
+    parser.add_argument("--surface-editor-requests", default=None)
     parser.add_argument("--edit-mode", choices=("direct", "request"), default="direct")
     parser.add_argument("--step-size", type=float, default=0.02)
     parser.add_argument("--default-mode", choices=("reject", "clamp"), default="reject")

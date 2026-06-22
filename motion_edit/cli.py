@@ -75,6 +75,10 @@ from .workbench import (
     upsert_workbench_segments,
     write_workbench_segments,
 )
+from .workbench.contact_editor_setup import (
+    ContactEditorConfig,
+    prepare_contact_editor_session as prepare_contact_editor_workbench_session,
+)
 
 
 def _cmd_init(_args: argparse.Namespace) -> None:
@@ -498,6 +502,27 @@ def _launch_surface_editor_for_args(args: argparse.Namespace, *, contact_layer: 
 
 def _cmd_contact_editor(args: argparse.Namespace) -> None:
     ensure_data_dirs()
+    if args.motion is None:
+        process = launch_viewer(
+            "",
+            timeline_port=args.timeline_port,
+            fps=args.fps,
+            surface_binding_overlay="__setup__",
+            surface_editor_session="__setup__",
+            surface_editor_requests="__setup__",
+            surface_editor_edit_mode=args.edit_mode,
+            surface_editor_default_mode=args.default_mode,
+            surface_editor_show_only=args.show_only,
+            prefer_local_surface_editor=True,
+        )
+        print(f"viewer pid={process.pid}")
+        print(f"Open Motion Contact Editor: http://localhost:{args.timeline_port}")
+        process.wait()
+        return
+    if not args.motion_id:
+        raise ValueError("--motion-id is required when motion is provided")
+    if not args.source_contact_layer:
+        raise ValueError("--source-contact-layer is required when motion is provided")
     if args.include_side_surfaces:
         raise ValueError("contact-editor does not allow side surfaces; use surface-editor only for debug")
     if args.no_ground:
@@ -507,10 +532,42 @@ def _cmd_contact_editor(args: argparse.Namespace) -> None:
         if paths.terrain_urdf is None:
             raise ValueError("--with-terrain could not resolve a terrain URDF; pass --surface-catalog or --terrain-urdf")
         args.terrain_urdf = str(paths.terrain_urdf)
-    ready_layer, surface_catalog = _prepare_contact_editor_layer(args)
     if args.output_contact_layer is None:
-        args.output_contact_layer = f"{ready_layer}_edited"
-    _launch_surface_editor_for_args(args, contact_layer=ready_layer, surface_catalog=surface_catalog)
+        args.output_contact_layer = f"contact/{args.session_name}_editor_ready_edited"
+    prepared = prepare_contact_editor_workbench_session(
+        ContactEditorConfig(
+            motion=args.motion,
+            motion_id=args.motion_id,
+            source_contact_layer=args.source_contact_layer,
+            session_name=args.session_name,
+            surface_catalog=args.surface_catalog,
+            terrain_urdf=args.terrain_urdf,
+            output_prefix=args.output_prefix,
+            edit_plan=args.edit_plan,
+            output_contact_layer=args.output_contact_layer,
+            repo_root=args.repo_root,
+            with_terrain=args.with_terrain,
+            ground_z=args.ground_z,
+            ground_half_extent=args.ground_half_extent,
+            merge_max_gap=args.merge_max_gap,
+            merge_max_distance=args.merge_max_distance,
+            max_surface_distance=args.max_surface_distance,
+            bind_mode=args.bind_mode,
+            fps=args.fps,
+        ),
+        layers_root=LAYERS_ROOT,
+        workbench_root=WORKBENCH_ROOT,
+    )
+    print(
+        "prepared contact editor layer "
+        f"source={args.source_contact_layer} ready={prepared.ready_layer}"
+    )
+    print(
+        f"contact-editor anchors source={prepared.source_anchor_count} merged={prepared.merged_anchor_count} "
+        f"visible={prepared.visible_anchor_count} ready={prepared.ready_anchor_count} "
+        f"filtered={prepared.filtered_count} bound={prepared.bound_count}"
+    )
+    _launch_surface_editor_for_args(args, contact_layer=prepared.ready_layer, surface_catalog=prepared.surface_catalog)
 
 
 def _cmd_create_box_surface_catalog(args: argparse.Namespace) -> None:
@@ -1532,9 +1589,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=_cmd_cutter)
 
     p = sub.add_parser("contact-editor")
-    p.add_argument("motion")
-    p.add_argument("--motion-id", required=True)
-    p.add_argument("--source-contact-layer", required=True)
+    p.add_argument("motion", nargs="?", default=None)
+    p.add_argument("--motion-id", default=None)
+    p.add_argument("--source-contact-layer", default=None)
     p.add_argument("--surface-catalog", default=None)
     p.add_argument("--terrain-urdf", default=None)
     p.add_argument("--include-side-surfaces", action="store_true", help=argparse.SUPPRESS)
@@ -1542,7 +1599,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ground-z", type=float, default=0.0)
     p.add_argument("--ground-half-extent", type=float, default=10.0)
     p.add_argument("--output-prefix", default=None, help="Contact layer prefix for generated *_merged, *_editor_visible, *_editor_ready layers")
-    p.add_argument("--session-name", required=True)
+    p.add_argument("--session-name", default="contact_editor")
     p.add_argument("--edit-plan", default=None)
     p.add_argument("--output-contact-layer", default=None)
     p.add_argument("--repo-root", default=None)

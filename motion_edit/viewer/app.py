@@ -61,12 +61,13 @@ def launch_viewer(
     prefer_local_surface_editor: bool = True,
 ) -> subprocess.Popen:
     if surface_binding_overlay is not None and prefer_local_surface_editor:
-        if surface_editor_session is None or surface_editor_requests is None:
+        setup_mode = str(surface_binding_overlay) == "__setup__"
+        if not setup_mode and (surface_editor_session is None or surface_editor_requests is None):
             raise ValueError("surface editor launch requires session and request paths")
         repo = Path(repo_root).expanduser().resolve() if repo_root else _default_repo_root()
         robot_urdf: Path | None = None
         object_urdf: Path | None = None
-        if repo is not None:
+        if repo is not None and not setup_mode:
             paths = detect_omniretarget_paths(motion, repo_root=repo)
             robot_urdf = repo / "OmniRetarget_Dataset/models/g1/g1_29dof_spherehand.urdf"
             if with_terrain and paths.terrain_urdf is not None:
@@ -75,14 +76,6 @@ def launch_viewer(
             sys.executable,
             "-m",
             "motion_edit.viewer.surface_overlay_player",
-            "--qpos-npz",
-            str(Path(motion).expanduser().resolve()),
-            "--surface-binding-overlay",
-            str(Path(surface_binding_overlay).expanduser().resolve()),
-            "--surface-editor-session",
-            str(Path(surface_editor_session).expanduser().resolve()),
-            "--surface-editor-requests",
-            str(Path(surface_editor_requests).expanduser().resolve()),
             "--edit-mode",
             surface_editor_edit_mode,
             "--step-size",
@@ -96,6 +89,21 @@ def launch_viewer(
             "--fps",
             str(fps),
         ]
+        if setup_mode:
+            cmd.append("--setup-mode")
+        else:
+            cmd.extend(
+                [
+                    "--qpos-npz",
+                    str(Path(motion).expanduser().resolve()),
+                    "--surface-binding-overlay",
+                    str(Path(surface_binding_overlay).expanduser().resolve()),
+                    "--surface-editor-session",
+                    str(Path(surface_editor_session).expanduser().resolve()),
+                    "--surface-editor-requests",
+                    str(Path(surface_editor_requests).expanduser().resolve()),
+                ]
+            )
         if robot_urdf is not None and robot_urdf.exists():
             cmd.extend(["--robot-urdf", str(robot_urdf)])
         if object_urdf is not None and object_urdf.exists():
