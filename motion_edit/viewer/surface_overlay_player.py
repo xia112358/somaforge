@@ -652,6 +652,112 @@ def _filtered_picker_entries(current_dir: str | Path, suffixes: tuple[str, ...])
     return entries
 
 
+def _filtered_open_file_dialog(*, title: str, load_type: str) -> str | None:
+    try:
+        import tkinter as tk
+        from tkinter import ttk
+    except Exception as exc:
+        raise RuntimeError(f"filtered file picker is unavailable: {exc}") from exc
+
+    suffixes = _setup_load_suffixes(load_type)
+    roots = [
+        root for root in _setup_load_roots(load_type)
+        if _directory_contains_loadable_file(root, suffixes)
+    ]
+    if not roots:
+        return None
+
+    state: dict[str, Any] = {
+        "current_dir": roots[0],
+        "entries": [],
+        "selected": None,
+    }
+
+    root = tk.Tk()
+    root.title(title)
+    root.attributes("-topmost", True)
+    root.geometry("760x520")
+
+    selected_root = tk.StringVar(value=str(roots[0]))
+    current_dir_text = tk.StringVar(value=str(roots[0]))
+    status_text = tk.StringVar(value=f"{load_type}: only folders containing loadable files are shown")
+
+    main = ttk.Frame(root, padding=8)
+    main.pack(fill=tk.BOTH, expand=True)
+    ttk.Label(main, text=load_type).pack(anchor=tk.W)
+    root_combo = ttk.Combobox(main, textvariable=selected_root, values=[str(path) for path in roots], state="readonly")
+    root_combo.pack(fill=tk.X, pady=(2, 8))
+    ttk.Label(main, textvariable=current_dir_text).pack(anchor=tk.W)
+    listbox = tk.Listbox(main, height=18)
+    scrollbar = ttk.Scrollbar(main, orient=tk.VERTICAL, command=listbox.yview)
+    listbox.configure(yscrollcommand=scrollbar.set)
+    listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, pady=8)
+    scrollbar.pack(side=tk.LEFT, fill=tk.Y, pady=8)
+
+    button_frame = ttk.Frame(root, padding=(8, 0, 8, 8))
+    button_frame.pack(fill=tk.X)
+    open_button = ttk.Button(button_frame, text="Open selected")
+    open_button.pack(side=tk.LEFT)
+    up_button = ttk.Button(button_frame, text="Up")
+    up_button.pack(side=tk.LEFT, padx=(8, 0))
+    cancel_button = ttk.Button(button_frame, text="Cancel")
+    cancel_button.pack(side=tk.RIGHT)
+    ttk.Label(root, textvariable=status_text, padding=(8, 0, 8, 8)).pack(anchor=tk.W)
+
+    def refresh_entries() -> None:
+        directory = Path(state["current_dir"]).expanduser().resolve()
+        state["entries"] = _filtered_picker_entries(directory, suffixes)
+        current_dir_text.set(str(directory))
+        listbox.delete(0, tk.END)
+        if not state["entries"]:
+            listbox.insert(tk.END, PICKER_NONE)
+            status_text.set(f"{load_type}: no loadable files in this branch")
+            return
+        for label, _path in state["entries"]:
+            listbox.insert(tk.END, label)
+        listbox.selection_set(0)
+        status_text.set(f"{load_type}: {len(state['entries'])} loadable entries")
+
+    def open_selected() -> None:
+        selection = listbox.curselection()
+        if not selection or not state["entries"]:
+            return
+        _label, path = state["entries"][selection[0]]
+        if path.is_dir():
+            state["current_dir"] = path
+            refresh_entries()
+            return
+        state["selected"] = str(path)
+        root.quit()
+
+    def move_up() -> None:
+        current = Path(state["current_dir"]).expanduser().resolve()
+        parent = current.parent
+        if parent == current or not _directory_contains_loadable_file(parent, suffixes):
+            status_text.set(f"Parent has no loadable {load_type} files")
+            return
+        state["current_dir"] = parent
+        refresh_entries()
+
+    def change_root(_event: Any = None) -> None:
+        state["current_dir"] = Path(selected_root.get())
+        refresh_entries()
+
+    root_combo.bind("<<ComboboxSelected>>", change_root)
+    listbox.bind("<Double-Button-1>", lambda _event: open_selected())
+    listbox.bind("<Return>", lambda _event: open_selected())
+    open_button.configure(command=open_selected)
+    up_button.configure(command=move_up)
+    cancel_button.configure(command=root.quit)
+
+    refresh_entries()
+    try:
+        root.mainloop()
+        return state["selected"]
+    finally:
+        root.destroy()
+
+
 def _setup_save_dialog_config(save_type: str) -> dict[str, Any]:
     if save_type == "Output Contact Layer":
         return {
@@ -1211,24 +1317,10 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
     server.gui.configure_theme(control_layout="fixed", control_width="large", dark_mode=True, show_logo=False, show_share_button=False)
     server.scene.add_grid("/grid", width=8.0, height=8.0, position=(0.0, 0.0, 0.0))
     pending_exec: dict[str, list[str] | None] = {"cmd": None}
-    initial_load_type = SETUP_LOAD_TYPES[0]
-    initial_suffixes = _setup_load_suffixes(initial_load_type)
-    initial_roots = [
-        root for root in _setup_load_roots(initial_load_type)
-        if _directory_contains_loadable_file(root, initial_suffixes)
-    ]
-    initial_root_options = tuple(str(root) for root in initial_roots) or (PICKER_NONE,)
-    initial_dir = initial_root_options[0] if initial_root_options[0] != PICKER_NONE else ""
-    picker_entry_paths: dict[str, Path] = {}
 
     with server.gui.add_folder("Contact Editor Setup"):
         load_type = server.gui.add_dropdown("load_type", options=SETUP_LOAD_TYPES, initial_value=SETUP_LOAD_TYPES[0])
-        picker_root = server.gui.add_dropdown("root", options=initial_root_options, initial_value=initial_root_options[0])
-        current_dir = server.gui.add_text("current_dir", initial_value=initial_dir)
-        picker_entry = server.gui.add_dropdown("entry", options=(PICKER_NONE,), initial_value=PICKER_NONE)
-        open_selected_btn = server.gui.add_button("Open selected")
-        up_btn = server.gui.add_button("Up")
-        refresh_picker_btn = server.gui.add_button("Refresh files")
+        browse_btn = server.gui.add_button("Browse...")
         save_type = server.gui.add_dropdown("save_type", options=SETUP_SAVE_TYPES, initial_value=SETUP_SAVE_TYPES[0])
         save_as_btn = server.gui.add_button("Save As...")
         motion = server.gui.add_text("motion_npz", initial_value="")
@@ -1277,76 +1369,20 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
         else:
             raise ValueError(f"unknown load type: {selected_type}")
 
-    def _refresh_picker_entries() -> None:
-        picker_entry_paths.clear()
-        selected_type = str(load_type.value)
-        suffixes = _setup_load_suffixes(selected_type)
-        directory_text = str(current_dir.value).strip()
-        entries = _filtered_picker_entries(directory_text, suffixes) if directory_text else []
-        for label, path in entries:
-            picker_entry_paths[label] = path
-        options = tuple(picker_entry_paths) or (PICKER_NONE,)
-        picker_entry.options = options
-        if picker_entry.value not in options:
-            picker_entry.value = options[0]
-        _set_status(f"{selected_type}: {len(entries)} loadable entries in {directory_text or '<none>'}")
-
-    def _refresh_picker_roots() -> None:
-        selected_type = str(load_type.value)
-        suffixes = _setup_load_suffixes(selected_type)
-        roots = [
-            root for root in _setup_load_roots(selected_type)
-            if _directory_contains_loadable_file(root, suffixes)
-        ]
-        options = tuple(str(root) for root in roots) or (PICKER_NONE,)
-        picker_root.options = options
-        if picker_root.value not in options:
-            picker_root.value = options[0]
-        current_dir.value = "" if picker_root.value == PICKER_NONE else str(picker_root.value)
-        _refresh_picker_entries()
-
-    @load_type.on_update
-    def _(_) -> None:
-        _refresh_picker_roots()
-
-    @picker_root.on_update
-    def _(_) -> None:
-        current_dir.value = "" if picker_root.value == PICKER_NONE else str(picker_root.value)
-        _refresh_picker_entries()
-
-    @refresh_picker_btn.on_click
-    def _(_) -> None:
-        _refresh_picker_roots()
-
-    @up_btn.on_click
-    def _(_) -> None:
-        directory_text = str(current_dir.value).strip()
-        if not directory_text:
-            _set_status("no directory selected")
-            return
-        parent = Path(directory_text).expanduser().resolve().parent
-        suffixes = _setup_load_suffixes(str(load_type.value))
-        if not _directory_contains_loadable_file(parent, suffixes):
-            _set_status(f"parent has no loadable {load_type.value} files: {parent}")
-            return
-        current_dir.value = str(parent)
-        _refresh_picker_entries()
-
-    @open_selected_btn.on_click
+    @browse_btn.on_click
     def _(_) -> None:
         try:
-            selected_label = str(picker_entry.value)
-            selected_path = picker_entry_paths.get(selected_label)
-            if selected_path is None:
-                _set_status(f"no selectable {load_type.value} file or directory")
+            selected_type = str(load_type.value)
+            selected = _filtered_open_file_dialog(
+                title=f"Load {selected_type}",
+                load_type=selected_type,
+            )
+            if not selected:
+                _set_status(f"no {selected_type} selected")
                 return
-            if selected_path.is_dir():
-                current_dir.value = str(selected_path)
-                _refresh_picker_entries()
-                return
-            _apply_selected_load_file(str(load_type.value), selected_path)
+            _apply_selected_load_file(selected_type, Path(selected))
         except Exception as exc:
-            _set_status(f"open selected failed: {exc}")
+            _set_status(f"browse failed: {exc}")
 
     @save_as_btn.on_click
     def _(_) -> None:
@@ -1371,8 +1407,6 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
                 raise ValueError(f"unknown save type: {selected_type}")
         except Exception as exc:
             _set_status(f"save picker failed: {exc}")
-
-    _refresh_picker_entries()
 
     @load_btn.on_click
     def _(_) -> None:
