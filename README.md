@@ -50,6 +50,8 @@ data/
 ~/motion_edit/motion-edit move-contact-anchor --source contact/force_contact --motion-id climb_00_z_scale_1.0 --anchor-id climb_00_z_scale_1.0_anchor_LF_000100_000140 --delta-world 0.10 0.0 0.0 --output-source contact/force_contact_farther --edit-plan data/workbench/climb00_farther.json --source-motion /path/to/climb_00_z_scale_1.0.npz
 ~/motion_edit/motion-edit create-box-surface-catalog --motion-id climb_00_z_scale_1.0 --box box_0:1.0,0.0,0.4:0.5,0.5,0.8 --output data/surfaces/climb_00_surfaces.jsonl
 ~/motion_edit/motion-edit bind-contact-surfaces --contact-layer contact/force_contact --motion-id climb_00_z_scale_1.0 --surface-catalog data/surfaces/climb_00_surfaces.jsonl --output-contact-layer contact/force_contact_bound
+~/motion_edit/motion-edit export-surface-binding-report --contact-layer contact/force_contact_bound --motion-id climb_00_z_scale_1.0 --output data/exports/surface_binding_reports/climb_00.json
+~/motion_edit/motion-edit export-surface-binding-overlay --contact-layer contact/force_contact_bound --motion-id climb_00_z_scale_1.0 --output data/exports/surface_binding_overlays/climb_00.overlay.json
 ~/motion_edit/motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
 ~/motion_edit/motion-edit generate-lte-augmentation --plan data/workbench/climb00_farther.json --output-motion data/exports/motions/climb00_farther.npz
 ~/motion_edit/motion-edit export-contact-overlay --source contact/force_contact --motion-id climb_00_z_scale_1.0 --output data/exports/contact_overlays/climb_00.json
@@ -170,6 +172,41 @@ Surface binding is explicit and does not generate augmented motion. It writes a 
 
 Manual surface catalogs are JSONL records with fields such as `surface_id`, `object_id`, `surface_type`, `origin`, `normal`, `tangent_u`, `tangent_v`, and bounds like `{"u": [-0.25, 0.25], "v": [-0.25, 0.25]}`. `create-box-surface-catalog` provides a simple bridge by emitting top and side faces for box/platform descriptors. URDF, OBJ, terrain metadata, and heightfield loaders are intentionally left as explicit future loaders.
 
+## Surface Binding Inspection
+
+Surface binding should be inspected before using bound anchors for ContactEditPlan work or future LTE/contact augmentation. The inspection exports are diagnostic artifacts only: they do not modify motion data, do not update canonical segmentation, and do not generate augmented `.npz` files.
+
+The report export summarizes known surfaces, bound anchors, failed/unbound anchors, clamped bindings, and suspicious bindings. It also records that the binding granularity is `anchor_point`, not a full foot sole contact model.
+
+The overlay export is a lightweight frontend-agnostic JSON file. It contains `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects with status tags. Future Viser integration can render those objects and color them by status.
+
+```bash
+~/motion_edit/motion-edit create-box-surface-catalog \
+  --motion-id climb_00_z_scale_1.0 \
+  --box box_0:1.0,0.0,0.4:0.5,0.5,0.8 \
+  --output data/surfaces/climb_00_surfaces.jsonl
+
+~/motion_edit/motion-edit bind-contact-surfaces \
+  --contact-layer contact/force_contact \
+  --motion-id climb_00_z_scale_1.0 \
+  --surface-catalog data/surfaces/climb_00_surfaces.jsonl \
+  --output-contact-layer contact/force_contact_bound
+
+~/motion_edit/motion-edit export-surface-binding-report \
+  --contact-layer contact/force_contact_bound \
+  --motion-id climb_00_z_scale_1.0 \
+  --output data/exports/surface_binding_reports/climb_00.json
+
+~/motion_edit/motion-edit export-surface-binding-overlay \
+  --contact-layer contact/force_contact_bound \
+  --motion-id climb_00_z_scale_1.0 \
+  --output data/exports/surface_binding_overlays/climb_00.overlay.json
+
+~/motion_edit/motion-edit summarize-surface-bindings \
+  --contact-layer contact/force_contact_bound \
+  --motion-id climb_00_z_scale_1.0
+```
+
 ## Contact Anchor Edit Plans
 
 Contact-anchor editing is intentionally two-stage.
@@ -246,6 +283,8 @@ The cutter is still the visual frontend. `motion_edit` owns the durable session,
 ~/motion_edit/motion-edit list-contact-layer --source contact/force_contact --motion-id climb_00_z_scale_1.0
 ~/motion_edit/motion-edit create-box-surface-catalog --motion-id climb_00_z_scale_1.0 --box box_0:1.0,0.0,0.4:0.5,0.5,0.8 --output data/surfaces/climb_00_surfaces.jsonl
 ~/motion_edit/motion-edit bind-contact-surfaces --contact-layer contact/force_contact --motion-id climb_00_z_scale_1.0 --surface-catalog data/surfaces/climb_00_surfaces.jsonl --output-contact-layer contact/force_contact_bound
+~/motion_edit/motion-edit export-surface-binding-report --contact-layer contact/force_contact_bound --motion-id climb_00_z_scale_1.0 --output data/exports/surface_binding_reports/climb_00.json
+~/motion_edit/motion-edit export-surface-binding-overlay --contact-layer contact/force_contact_bound --motion-id climb_00_z_scale_1.0 --output data/exports/surface_binding_overlays/climb_00.overlay.json
 ~/motion_edit/motion-edit move-contact-anchor --source contact/force_contact_bound --motion-id climb_00_z_scale_1.0 --anchor-id <anchor_id> --tangent-delta 0.10 0.00 --output-source contact/climb00_anchor_farther --edit-plan data/workbench/climb00_farther.json --source-motion /path/to/climb_00_z_scale_1.0.npz --source-segments candidates/force_contact
 ~/motion_edit/motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
 ~/motion_edit/motion-edit cutter /path/to/climb_00_z_scale_1.0.npz --motion-version-id climb00_raw --update-canonical --session-name climb00_check --with-terrain
