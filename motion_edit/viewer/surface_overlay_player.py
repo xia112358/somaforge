@@ -660,6 +660,32 @@ def _render_overlay(
                     controller.select_anchor(anchor_id)
                     print(f"[surface editor] selected anchor={anchor_id}")
 
+                @marker.on_drag
+                def _(event: Any, anchor_id: str = anchor_id) -> None:
+                    if edit_mode != "direct":
+                        controller.state.last_message = "drag disabled in request mode"
+                        return
+                    if event.phase == "start" and controller.selected_anchor_id != anchor_id:
+                        controller.select_anchor(anchor_id)
+                    record = controller._anchor_record(anchor_id)
+                    if record is None:
+                        return
+                    try:
+                        projected = controller.projected_world_request(record, event.end_position)
+                        if event.phase == "update":
+                            event.target.position = tuple(float(v) for v in projected)
+                            return
+                        if event.phase == "end":
+                            mode = str(controller.drag_mode_getter()) if callable(controller.drag_mode_getter) else "reject"
+                            result = controller.drag_selected_to_world(event.end_position, mode=mode)
+                            print(f"[surface editor] dragged anchor={anchor_id} result={result}")
+                            if callable(controller.on_change):
+                                controller.on_change()
+                    except Exception as exc:
+                        controller.state.last_error = str(exc)
+                        if event.phase == "end" and callable(controller.on_change):
+                            controller.on_change()
+
     if controller is not None and selected_anchor_id:
         record = controller._anchor_record(selected_anchor_id)
         if record is not None and record.world_position is not None:

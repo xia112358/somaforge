@@ -1029,7 +1029,7 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertTrue(pending_after_clamp[0].clamped)
         np.testing.assert_allclose(result["delta_world"], [0.1, 0.0, 0.0])
 
-    def test_surface_editor_render_click_selects_anchor_without_drag_callback(self) -> None:
+    def test_surface_editor_render_click_and_drag_callbacks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             graph = contact_graph_from_masks(
@@ -1070,14 +1070,14 @@ class SurfaceEditorSessionTests(unittest.TestCase):
             _render_overlay(server, overlay, selected_anchor_id=bound_anchor.anchor_id, controller=controller, edit_mode="direct")
             marker = next(handle for name, handle in server.scene.handles.items() if "/anchors/" in name)
             marker.click_cb(None)
+            marker.drag_cb(_FakeDragEvent(target=marker, phase="end", end_position=[0.2, 0.0, 0.4]))
             moved = read_contact_graph(session.contact_layer_snapshot, "motion_a").anchors[0]
             pending = read_pending_surface_edits(session)
 
         self.assertEqual(controller.selected_anchor_id, bound_anchor.anchor_id)
         self.assertIn("selected_anchor_tangent_arrows", "\n".join(server.scene.handles.keys()))
-        self.assertIsNone(marker.drag_cb)
-        np.testing.assert_allclose(moved.world_position, [0.0, 0.0, 0.0])
-        self.assertEqual(pending, [])
+        np.testing.assert_allclose(moved.world_position, [0.2, 0.0, 0.0])
+        self.assertEqual(len(pending), 1)
 
     def test_surface_editor_drag_update_does_not_commit_or_rerender(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1120,11 +1120,11 @@ class SurfaceEditorSessionTests(unittest.TestCase):
             _render_overlay(server, overlay, selected_anchor_id=bound_anchor.anchor_id, controller=controller, edit_mode="direct")
             marker = next(handle for name, handle in server.scene.handles.items() if "/anchors/" in name)
             render_generation = controller.state.render_generation
+            marker.drag_cb(_FakeDragEvent(target=marker, phase="update", end_position=[0.2, 0.0, 0.4]))
             moved = read_contact_graph(session.contact_layer_snapshot, "motion_a").anchors[0]
             pending = read_pending_surface_edits(session)
 
         self.assertEqual(controller.state.render_generation, render_generation)
-        self.assertIsNone(marker.drag_cb)
         np.testing.assert_allclose(moved.world_position, [0.0, 0.0, 0.0])
         self.assertEqual(pending, [])
 
