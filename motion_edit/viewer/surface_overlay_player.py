@@ -15,7 +15,7 @@ import numpy as np
 
 from motion_edit.contact.graph import ContactGraph
 from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord
-from motion_edit.paths import LAYERS_ROOT
+from motion_edit.paths import LAYERS_ROOT, WORKBENCH_ROOT
 from motion_edit.workbench import (
     move_surface_editor_anchor,
     read_pending_surface_edits,
@@ -496,6 +496,58 @@ def save_editor_state(state: SurfaceOverlayEditorState, *, layers_root: Path = L
     state.last_error = None
     state.last_message = f"saved output_contact_layer={out}"
     return out
+
+
+def _open_file_dialog(*, title: str, filetypes: list[tuple[str, str]], initialdir: str | Path | None = None) -> str | None:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        raise RuntimeError(f"system file picker is unavailable: {exc}") from exc
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        selected = filedialog.askopenfilename(
+            title=title,
+            filetypes=filetypes,
+            initialdir=str(Path(initialdir).expanduser()) if initialdir else None,
+        )
+        return selected or None
+    finally:
+        root.destroy()
+
+
+def _save_file_dialog(*, title: str, defaultextension: str = "", filetypes: list[tuple[str, str]] | None = None, initialdir: str | Path | None = None) -> str | None:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        raise RuntimeError(f"system file picker is unavailable: {exc}") from exc
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        selected = filedialog.asksaveasfilename(
+            title=title,
+            defaultextension=defaultextension,
+            filetypes=filetypes or [("All files", "*")],
+            initialdir=str(Path(initialdir).expanduser()) if initialdir else None,
+        )
+        return selected or None
+    finally:
+        root.destroy()
+
+
+def _layer_name_from_path(path: str | Path) -> str:
+    resolved = Path(path).expanduser()
+    try:
+        rel = resolved.resolve().relative_to(LAYERS_ROOT.resolve())
+    except ValueError:
+        return str(resolved)
+    if rel.suffix == ".jsonl":
+        rel = rel.parent
+    return rel.as_posix()
 
 
 def _safe_name(text: str) -> str:
@@ -1030,6 +1082,12 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
     pending_exec: dict[str, list[str] | None] = {"cmd": None}
 
     with server.gui.add_folder("Contact Editor Setup"):
+        open_motion_btn = server.gui.add_button("Load Motion...")
+        open_contact_layer_btn = server.gui.add_button("Load Contact Layer...")
+        open_terrain_btn = server.gui.add_button("Load Terrain URDF...")
+        open_surface_btn = server.gui.add_button("Load Surface Catalog...")
+        save_output_layer_btn = server.gui.add_button("Save Contact Layer As...")
+        save_edit_plan_btn = server.gui.add_button("Save Edit Plan As...")
         motion = server.gui.add_text("motion_npz", initial_value="")
         motion_id = server.gui.add_text("motion_id", initial_value="")
         source_contact_layer = server.gui.add_text("source_contact_layer", initial_value="")
@@ -1049,6 +1107,101 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
         )
         load_btn = server.gui.add_button("Load contact editor")
         status = server.gui.add_text("status", initial_value="Fill paths, then Load contact editor.", multiline=True)
+
+    def _set_status(text: str) -> None:
+        status.value = text
+        print(f"[contact editor setup] {text}")
+
+    @open_motion_btn.on_click
+    def _(_) -> None:
+        try:
+            selected = _open_file_dialog(
+                title="Load motion npz",
+                filetypes=[("Motion npz", "*.npz"), ("All files", "*")],
+                initialdir=Path.cwd(),
+            )
+            if selected:
+                motion.value = selected
+                if not str(motion_id.value).strip():
+                    motion_id.value = Path(selected).stem
+                if not str(session_name.value).strip() or str(session_name.value) == "contact_editor":
+                    session_name.value = f"{Path(selected).stem}_contact_editor"
+                _set_status(f"selected motion: {selected}")
+        except Exception as exc:
+            _set_status(f"motion picker failed: {exc}")
+
+    @open_contact_layer_btn.on_click
+    def _(_) -> None:
+        try:
+            selected = _open_file_dialog(
+                title="Load contact layer jsonl",
+                filetypes=[("Contact layer jsonl", "*.jsonl"), ("All files", "*")],
+                initialdir=LAYERS_ROOT / "contact",
+            )
+            if selected:
+                source_contact_layer.value = _layer_name_from_path(selected)
+                _set_status(f"selected contact layer: {source_contact_layer.value}")
+        except Exception as exc:
+            _set_status(f"contact layer picker failed: {exc}")
+
+    @open_terrain_btn.on_click
+    def _(_) -> None:
+        try:
+            selected = _open_file_dialog(
+                title="Load terrain URDF",
+                filetypes=[("URDF", "*.urdf"), ("All files", "*")],
+                initialdir=Path.cwd(),
+            )
+            if selected:
+                terrain_urdf.value = selected
+                with_terrain.value = True
+                _set_status(f"selected terrain URDF: {selected}")
+        except Exception as exc:
+            _set_status(f"terrain picker failed: {exc}")
+
+    @open_surface_btn.on_click
+    def _(_) -> None:
+        try:
+            selected = _open_file_dialog(
+                title="Load surface catalog",
+                filetypes=[("Surface catalog jsonl", "*.jsonl"), ("All files", "*")],
+                initialdir=Path("data/surfaces"),
+            )
+            if selected:
+                surface_catalog.value = selected
+                _set_status(f"selected surface catalog: {selected}")
+        except Exception as exc:
+            _set_status(f"surface catalog picker failed: {exc}")
+
+    @save_output_layer_btn.on_click
+    def _(_) -> None:
+        try:
+            selected = _save_file_dialog(
+                title="Save contact layer as jsonl",
+                defaultextension=".jsonl",
+                filetypes=[("Contact layer jsonl", "*.jsonl"), ("All files", "*")],
+                initialdir=LAYERS_ROOT / "contact",
+            )
+            if selected:
+                output_contact_layer.value = _layer_name_from_path(selected)
+                _set_status(f"output contact layer: {output_contact_layer.value}")
+        except Exception as exc:
+            _set_status(f"output layer picker failed: {exc}")
+
+    @save_edit_plan_btn.on_click
+    def _(_) -> None:
+        try:
+            selected = _save_file_dialog(
+                title="Save edit plan as JSON",
+                defaultextension=".json",
+                filetypes=[("Contact edit plan", "*.json"), ("All files", "*")],
+                initialdir=WORKBENCH_ROOT,
+            )
+            if selected:
+                edit_plan.value = selected
+                _set_status(f"edit plan: {selected}")
+        except Exception as exc:
+            _set_status(f"edit plan picker failed: {exc}")
 
     @load_btn.on_click
     def _(_) -> None:
@@ -1114,8 +1267,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
                 cmd.extend(["--robot-urdf", str(robot_urdf)])
             pending_exec["cmd"] = cmd
         except Exception as exc:
-            status.value = f"Load failed: {exc}"
-            print(f"[contact editor setup] load failed: {exc}")
+            _set_status(f"Load failed: {exc}")
 
     print(f"[contact editor setup] Open: http://localhost:{args.timeline_port}")
     print("Fill setup fields in the Viser UI and click Load contact editor.")

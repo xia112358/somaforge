@@ -48,6 +48,7 @@ from motion_edit.workbench import (
 from motion_edit.viewer.surface_overlay_player import (
     _anchor_color,
     _anchor_patch_mesh,
+    _layer_name_from_path,
     _anchor_positions_differ,
     _render_overlay,
     _selected_tangent_arrows,
@@ -1271,6 +1272,13 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertEqual(left, (60, 140, 255))
         self.assertEqual(right, (255, 120, 65))
         self.assertEqual(suspicious, (255, 120, 95))
+
+    def test_setup_layer_name_from_path_uses_layers_relative_name(self) -> None:
+        layer_file = Path("data/layers/contact/example/motion_a.jsonl")
+        with mock.patch("motion_edit.viewer.surface_overlay_player.LAYERS_ROOT", Path("data/layers")):
+            name = _layer_name_from_path(layer_file)
+
+        self.assertEqual(name, "contact/example")
 
 
 class WorkbenchActionTests(unittest.TestCase):
