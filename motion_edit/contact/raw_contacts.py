@@ -20,6 +20,9 @@ PART_ALIASES = {
     "rk": ("rk", "right_knee", "right_knee_link"),
 }
 
+UP_DOT_THRESHOLD = 0.5
+EDGE_DISTANCE_THRESHOLD = 0.05
+
 
 class RawContactMotion:
     def __init__(self, path: str | Path):
@@ -99,6 +102,75 @@ def _project_sample_to_surface(point: np.ndarray, surface: ContactSurfaceRecord,
     return projected, metadata
 
 
+def _sample_surface_relation(point: np.ndarray, surface: ContactSurfaceRecord) -> dict[str, Any] | None:
+    surface.validate()
+    origin = np.asarray(surface.origin, dtype=np.float64)
+    normal = np.asarray(surface.normal, dtype=np.float64)
+    tangent_u = np.asarray(surface.tangent_u, dtype=np.float64)
+    tangent_v = np.asarray(surface.tangent_v, dtype=np.float64)
+    signed_distance = float(np.dot(point - origin, normal))
+    projected = point - signed_distance * normal
+    local = projected - origin
+    u = float(np.dot(local, tangent_u))
+    v = float(np.dot(local, tangent_v))
+    polygon = surface_polygon_uv(
+        surface.metadata,
+        origin=surface.origin,
+        tangent_u=surface.tangent_u,
+        tangent_v=surface.tangent_v,
+    )
+    if polygon:
+        inside = point_in_polygon_uv((u, v), polygon)
+        distance_to_boundary = _distance_to_polygon_boundary((u, v), polygon)
+    else:
+        inside = _inside_bounds(u, v, surface.bounds)
+        distance_to_boundary = _distance_to_bounds_boundary(u, v, surface.bounds)
+    return {
+        "surface_id": surface.surface_id,
+        "surface_type": surface.surface_type,
+        "normal": surface.normal,
+        "normal_z": float(surface.normal[2]),
+        "signed_surface_distance": signed_distance,
+        "abs_surface_distance": abs(signed_distance),
+        "surface_coordinates": {"u": u, "v": v},
+        "inside": inside,
+        "distance_to_boundary": distance_to_boundary,
+    }
+
+
+def _distance_to_polygon_boundary(point: tuple[float, float], polygon: list[tuple[float, float]]) -> float | None:
+    if len(polygon) < 2:
+        return None
+    return min(_point_segment_distance(point, polygon[index], polygon[(index + 1) % len(polygon)]) for index in range(len(polygon)))
+
+
+def _point_segment_distance(point: tuple[float, float], a: tuple[float, float], b: tuple[float, float]) -> float:
+    closest = _closest_point_on_segment(point, a, b)
+    return float(np.hypot(point[0] - closest[0], point[1] - closest[1]))
+
+
+def _closest_point_on_segment(point: tuple[float, float], a: tuple[float, float], b: tuple[float, float]) -> tuple[float, float]:
+    ab = (b[0] - a[0], b[1] - a[1])
+    ap = (point[0] - a[0], point[1] - a[1])
+    denom = ab[0] * ab[0] + ab[1] * ab[1]
+    if denom == 0.0:
+        return a
+    t = max(0.0, min(1.0, (ap[0] * ab[0] + ap[1] * ab[1]) / denom))
+    return (a[0] + t * ab[0], a[1] + t * ab[1])
+
+
+def _distance_to_bounds_boundary(u: float, v: float, bounds: dict[str, Any] | None) -> float | None:
+    if bounds is None:
+        return None
+    u_bounds = bounds.get("u")
+    v_bounds = bounds.get("v")
+    if not isinstance(u_bounds, list) or len(u_bounds) != 2:
+        return None
+    if not isinstance(v_bounds, list) or len(v_bounds) != 2:
+        return None
+    return min(abs(u - float(u_bounds[0])), abs(u - float(u_bounds[1])), abs(v - float(v_bounds[0])), abs(v - float(v_bounds[1])))
+
+
 def _inside_bounds(u: float, v: float, bounds: dict[str, Any] | None) -> bool:
     if bounds is None:
         return True
@@ -109,6 +181,83 @@ def _inside_bounds(u: float, v: float, bounds: dict[str, Any] | None) -> bool:
     if not isinstance(v_bounds, list) or len(v_bounds) != 2:
         return False
     return float(u_bounds[0]) <= u <= float(u_bounds[1]) and float(v_bounds[0]) <= v <= float(v_bounds[1])
+
+
+def _classify_surface_candidates(
+    *,
+    assigned_points: list[np.ndarray],
+    accepted_count: int,
+    surfaces: list[ContactSurfaceRecord] | None,
+    max_surface_distance: float,
+) -> dict[str, Any]:
+    if accepted_count > 0:
+        accepted_relations = [
+            relation
+            for point in assigned_points
+            for surface in surfaces or []
+            if (relation := _sample_surface_relation(point, surface)) is not None
+            and bool(relation["inside"])
+            and float(relation["abs_surface_distance"]) <= max_surface_distance
+        ]
+        if accepted_relations:
+            hits = _count_by_surface(accepted_relations)
+            selected_surface_id = max(hits.items(), key=lambda item: item[1])[0]
+            selected = next(relation for relation in accepted_relations if relation["surface_id"] == selected_surface_id)
+            if selected_surface_id == "terrain_ground_z0":
+                return {"binding_candidate_class": "ground"}
+            if float(selected["normal_z"]) > UP_DOT_THRESHOLD:
+                return {"binding_candidate_class": "top"}
+            return {"binding_candidate_class": "side_filtered"}
+        return {"binding_candidate_class": "top"}
+    if not assigned_points:
+        return {"binding_candidate_class": "raw_missing"}
+    if not surfaces:
+        return {"binding_candidate_class": "outside_known_surfaces"}
+    relations = [
+        relation
+        for point in assigned_points
+        for surface in surfaces
+        if (relation := _sample_surface_relation(point, surface)) is not None
+    ]
+    near_relations = [relation for relation in relations if float(relation["abs_surface_distance"]) <= max_surface_distance]
+    if not near_relations:
+        return {"binding_candidate_class": "outside_known_surfaces"}
+    side_hits = [
+        relation
+        for relation in near_relations
+        if abs(float(relation["normal_z"])) <= UP_DOT_THRESHOLD and bool(relation["inside"])
+    ]
+    if side_hits:
+        return {
+            "binding_candidate_class": "side_filtered",
+            "side_filtered_surface_hits": _count_by_surface(side_hits),
+            "side_filtered_example": side_hits[0],
+        }
+    edge_hits = [
+        relation
+        for relation in near_relations
+        if float(relation["normal_z"]) > UP_DOT_THRESHOLD
+        and relation.get("distance_to_boundary") is not None
+        and float(relation["distance_to_boundary"]) <= EDGE_DISTANCE_THRESHOLD
+    ]
+    if edge_hits:
+        return {
+            "binding_candidate_class": "edge_candidate",
+            "edge_candidate_surface_hits": _count_by_surface(edge_hits),
+            "edge_candidate_example": edge_hits[0],
+        }
+    return {
+        "binding_candidate_class": "outside_known_surfaces",
+        "nearest_surface_examples": sorted(near_relations, key=lambda item: float(item["abs_surface_distance"]))[:5],
+    }
+
+
+def _count_by_surface(relations: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for relation in relations:
+        surface_id = str(relation["surface_id"])
+        counts[surface_id] = counts.get(surface_id, 0) + 1
+    return counts
 
 
 def estimate_anchor_position_from_raw_contacts(
@@ -142,6 +291,7 @@ def estimate_anchor_position_from_raw_contacts(
     nearest_distances: list[float] = []
     surface_hits: dict[str, int] = {}
     surface_sample_metadata: list[dict[str, Any]] = []
+    assigned_surface_points: list[np.ndarray] = []
     for frame in range(start, end):
         count = int(raw.raw_contact_count[frame])
         if count <= 0:
@@ -159,6 +309,7 @@ def estimate_anchor_position_from_raw_contacts(
             assigned_samples += 1
             nearest_distances.append(nearest_distance)
             surface_point = raw.raw_contact_point0_w[frame, contact_index]
+            assigned_surface_points.append(surface_point)
             if surfaces:
                 projected_candidates = [
                     candidate
@@ -187,6 +338,14 @@ def estimate_anchor_position_from_raw_contacts(
             "max_part_distance": max_part_distance,
             "max_surface_distance": max_surface_distance,
         }
+    )
+    metadata.update(
+        _classify_surface_candidates(
+            assigned_points=assigned_surface_points,
+            accepted_count=len(samples),
+            surfaces=surfaces,
+            max_surface_distance=max_surface_distance,
+        )
     )
     if nearest_distances:
         distances = np.asarray(nearest_distances, dtype=np.float64)

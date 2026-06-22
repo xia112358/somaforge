@@ -145,6 +145,20 @@ class ExportContactMetadataTests(unittest.TestCase):
                 ),
                 ContactAnchorRecord(
                     motion_id="motion_a",
+                    anchor_id="edge",
+                    body="LF",
+                    start_frame=0,
+                    end_frame=2,
+                    world_position=[1.1, 0.0, 0.0],
+                    metadata={
+                        "raw_contact_position_refinement": {
+                            "binding_candidate_class": "edge_candidate",
+                            "accepted_raw_contact_sample_count": 0,
+                        }
+                    },
+                ),
+                ContactAnchorRecord(
+                    motion_id="motion_a",
                     anchor_id="clamped",
                     body="LF",
                     start_frame=0,
@@ -174,17 +188,20 @@ class ExportContactMetadataTests(unittest.TestCase):
             report = json.loads(out.read_text(encoding="utf-8"))
 
         self.assertEqual(report["schema_version"], 1)
-        self.assertEqual(report["summary"]["anchor_count"], 4)
-        self.assertEqual(report["summary"]["bound_count"], 2)
+        self.assertEqual(report["summary"]["anchor_count"], 5)
+        self.assertEqual(report["summary"]["bound_count"], 3)
         self.assertEqual(report["summary"]["failed_count"], 1)
         self.assertEqual(report["summary"]["unbound_count"], 1)
         self.assertEqual(report["summary"]["clamped_count"], 1)
+        self.assertEqual(report["summary"]["low_confidence_count"], 1)
         by_id = {item["anchor_id"]: item for item in report["anchors"]}
         self.assertEqual(by_id["bound"]["surface_id"], "box_0_top")
         self.assertEqual(by_id["bound"]["surface_coordinates"], {"u": 0.1, "v": 0.2})
         self.assertEqual(by_id["bound"]["binding"]["projected_world_position"], [0.1, 0.2, 0.0])
         self.assertEqual(by_id["failed"]["status"], "failed")
         self.assertEqual(by_id["unbound"]["status"], "unbound")
+        self.assertEqual(by_id["edge"]["status"], "suspicious")
+        self.assertEqual(by_id["edge"]["binding_candidate_class"], "edge_candidate")
         self.assertEqual(by_id["clamped"]["status"], "clamped")
 
     def test_surface_binding_overlay_exports_quads_points_and_projection_lines(self) -> None:

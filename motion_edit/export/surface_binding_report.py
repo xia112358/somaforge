@@ -41,6 +41,9 @@ def _outside_bounds(coords: dict | None, bounds: dict | None) -> bool:
 
 def _anchor_warnings(anchor: ContactAnchorRecord, binding: dict[str, Any] | None) -> list[str]:
     warnings: list[str] = []
+    candidate_class = _binding_candidate_class(anchor)
+    if candidate_class in {"side_filtered", "edge_candidate", "raw_missing", "outside_known_surfaces"}:
+        warnings.append(f"binding candidate class: {candidate_class}")
     if anchor.metadata.get("surface_binding_failed"):
         warnings.append(str(anchor.metadata.get("surface_binding_failure_reason") or "surface binding failed"))
     if anchor.surface_id and binding is None:
@@ -52,8 +55,20 @@ def _anchor_warnings(anchor: ContactAnchorRecord, binding: dict[str, Any] | None
     return warnings
 
 
+def _binding_candidate_class(anchor: ContactAnchorRecord) -> str | None:
+    refinement = anchor.metadata.get("raw_contact_position_refinement")
+    if isinstance(refinement, dict):
+        value = refinement.get("binding_candidate_class")
+        if value:
+            return str(value)
+    return None
+
+
 def _anchor_status(anchor: ContactAnchorRecord) -> str:
     binding = _latest_binding(anchor)
+    candidate_class = _binding_candidate_class(anchor)
+    if candidate_class == "edge_candidate":
+        return "suspicious"
     if anchor.metadata.get("surface_binding_failed"):
         return "failed"
     if not anchor.surface_id:
@@ -87,7 +102,9 @@ def _anchor_report(anchor: ContactAnchorRecord) -> dict[str, Any]:
         "surface_bounds": anchor.surface_bounds,
         "binding": binding,
         "status": status,
+        "binding_candidate_class": _binding_candidate_class(anchor),
         "warnings": _anchor_warnings(anchor, binding),
+        "raw_contact_position_refinement": anchor.metadata.get("raw_contact_position_refinement"),
         "binding_granularity": "anchor_point",
         "binding_note": "surface binding is an anchor-level association, not a full foot sole contact model",
     }
@@ -199,6 +216,7 @@ def _anchor_overlay_objects(anchor: ContactAnchorRecord) -> list[dict[str, Any]]
             "position": position,
             "surface_id": anchor.surface_id,
             "status": status,
+            "binding_candidate_class": _binding_candidate_class(anchor),
         }
     ]
     if binding is not None and binding.get("original_world_position") is not None and binding.get("bound_world_position") is not None:

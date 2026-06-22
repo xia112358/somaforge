@@ -655,6 +655,7 @@ class ContactEventTests(unittest.TestCase):
             refined.anchors[0].metadata["raw_contact_position_refinement"]["accepted_raw_contact_sample_count"],
             2,
         )
+        self.assertEqual(refined.anchors[0].metadata["raw_contact_position_refinement"]["binding_candidate_class"], "top")
 
     def test_refine_anchor_position_cli_writes_contact_layer(self) -> None:
         graph = contact_graph_from_masks(
