@@ -229,7 +229,17 @@ The overlay export is a lightweight frontend-agnostic JSON file. It contains `su
 
 ## Interactive Surface Editor
 
-`surface-editor` is the Viser-connected entry point for anchor-level contact editing. It prepares a surface binding report, surface binding overlay, contact overlay, session state, request file, and pending edit file under `data/workbench/surface_sessions/<session_name>/`, then launches the local `motion_edit` Viser surface overlay adapter by default.
+`contact-editor` is the single main entry point for anchor-level contact editing. It prepares an editor-ready ContactLayer and then launches the local `motion_edit` Viser surface overlay adapter. The command always runs the fixed preparation line first: merge nearby reliable anchors, filter invalid binding candidates, bind to real ground/top surfaces, validate that all remaining anchors are bound, and only then open Viser.
+
+The editor preparation is intentionally strict:
+
+- `raw_missing`, `edge_candidate`, and `outside_known_surfaces` anchors are filtered before editing.
+- Side surfaces are not allowed in the main editor path.
+- Fallback planes are not created.
+- If any remaining anchor is unbound or failed, Viser is not opened.
+- `surface-editor` remains only as a debug/internal command for opening an already prepared layer.
+
+The session includes a surface binding report, surface binding overlay, contact overlay, session state, request file, and pending edit file under `data/workbench/surface_sessions/<session_name>/`.
 
 The local adapter reads the existing overlay JSON and renders the motion root trace, robot playback, optional terrain/object URDF, `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects in Viser. Its GUI supports frame playback, anchor filtering, previous/next selection, first suspicious/unbound/edited selection, selected-anchor metadata, relative `du`/`dv` moves, step buttons, absolute target `u/v`, reject/clamp modes, undo/redo, reset/discard, reload, and explicit save.
 
@@ -244,23 +254,17 @@ The older external Holosoma viewer can still be used with `--external-viewer`, b
 Edits remain anchor-level and surface-constrained. They use `move_contact_anchor_on_surface`, never allow normal displacement, never jump to another surface, and do not model full foot sole contact, toe/heel rolling, pressure, or physical sticking.
 
 ```bash
-~/motion_edit/motion-edit surface-editor /path/to/climb_00.npz \
+~/motion_edit/motion-edit contact-editor /path/to/climb_00.npz \
   --motion-id climb_00_z_scale_1.0 \
-  --contact-layer contact/force_contact_bound \
-  --surface-catalog data/surfaces/climb_00_surfaces.jsonl \
+  --source-contact-layer contact/force_contact_raw_point_merged_wide \
+  --terrain-urdf /path/to/multi_boxes_z_scale_1.0.urdf \
   --session-name climb00_surface \
   --edit-plan data/workbench/climb00_surface_edits.json \
   --output-contact-layer contact/climb00_surface_edited \
   --with-terrain
-
-~/motion_edit/motion-edit surface-editor-move-anchor \
-  --session data/workbench/surface_sessions/climb00_surface/session.json \
-  --anchor-id <anchor_id> \
-  --tangent-delta 0.10 0.00 \
-  --save
 ```
 
-In the Viser GUI, enter `anchor_id`, `du`, `dv`, and `mode`, click `Move anchor`, then click `Save edits`. No terminal sync is needed in default direct mode. `surface-editor-sync` remains available for request-mode fallback.
+In the Viser GUI, enter `anchor_id`, `du`, `dv`, and `mode`, click `Move anchor`, then click `Save edits`. No terminal sync is needed in default direct mode. `surface-editor-sync` remains available for request-mode fallback and debugging.
 
 Practical in-viewer workflow:
 

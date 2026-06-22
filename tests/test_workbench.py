@@ -14,6 +14,7 @@ import numpy as np
 from motion_edit import cli
 from motion_edit.cli import build_parser
 from motion_edit.contact import (
+    ContactAnchorRecord,
     ContactSurfaceRecord,
     contact_graph_from_masks,
     read_contact_edit_plan,
@@ -330,6 +331,188 @@ class SurfaceEditorSessionTests(unittest.TestCase):
                 saved = read_contact_graph(root / "layers" / "contact" / "edited", "motion_a")
 
         self.assertEqual(len(saved.anchors), 1)
+
+    def test_contact_editor_prepares_bound_editor_ready_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            motion = root / "motion_a.npz"
+            motion.write_bytes(b"original")
+            anchors = [
+                ContactAnchorRecord(
+                    motion_id="motion_a",
+                    anchor_id="top",
+                    body="left_foot",
+                    start_frame=0,
+                    end_frame=10,
+                    world_position=[0.0, 0.0, 0.0],
+                    metadata={"raw_contact_position_refinement": {"binding_candidate_class": "top"}},
+                ),
+                ContactAnchorRecord(
+                    motion_id="motion_a",
+                    anchor_id="raw",
+                    body="left_foot",
+                    start_frame=11,
+                    end_frame=12,
+                    world_position=[0.0, 0.0, 0.0],
+                    metadata={"raw_contact_position_refinement": {"binding_candidate_class": "raw_missing"}},
+                ),
+                ContactAnchorRecord(
+                    motion_id="motion_a",
+                    anchor_id="edge",
+                    body="left_foot",
+                    start_frame=13,
+                    end_frame=14,
+                    world_position=[0.0, 0.0, 0.0],
+                    metadata={"raw_contact_position_refinement": {"binding_candidate_class": "edge_candidate"}},
+                ),
+                ContactAnchorRecord(
+                    motion_id="motion_a",
+                    anchor_id="outside",
+                    body="left_foot",
+                    start_frame=15,
+                    end_frame=16,
+                    world_position=[0.0, 0.0, 0.0],
+                    metadata={"raw_contact_position_refinement": {"binding_candidate_class": "outside_known_surfaces"}},
+                ),
+            ]
+            write_contact_layer(root / "layers" / "contact" / "source", type(contact_graph_from_masks(motion_id="motion_a", contact_mask=None))(motion_id="motion_a", anchors=anchors))
+            surface = ContactSurfaceRecord(
+                motion_id="motion_a",
+                surface_id="terrain_ground_z0",
+                object_id=None,
+                surface_type="plane",
+                origin=[0.0, 0.0, 0.0],
+                normal=[0.0, 0.0, 1.0],
+                tangent_u=[1.0, 0.0, 0.0],
+                tangent_v=[0.0, 1.0, 0.0],
+                bounds={"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+            )
+            surface_catalog = root / "surfaces.jsonl"
+            write_contact_surfaces(surface_catalog, [surface])
+            process = mock.Mock(pid=1234)
+            process.wait.return_value = None
+            with (
+                mock.patch.object(cli, "LAYERS_ROOT", root / "layers"),
+                mock.patch.object(cli, "WORKBENCH_ROOT", root / "workbench"),
+                mock.patch.object(cli, "launch_viewer", return_value=process) as launch_mock,
+            ):
+                cli._cmd_contact_editor(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "motion": str(motion),
+                            "motion_id": "motion_a",
+                            "source_contact_layer": "contact/source",
+                            "surface_catalog": str(surface_catalog),
+                            "terrain_urdf": None,
+                            "include_side_surfaces": False,
+                            "no_ground": False,
+                            "ground_z": 0.0,
+                            "ground_half_extent": 10.0,
+                            "output_prefix": "contact/editor",
+                            "session_name": "contact_editor",
+                            "edit_plan": None,
+                            "output_contact_layer": None,
+                            "repo_root": None,
+                            "conda_env": "hsretargeting",
+                            "timeline_port": 8094,
+                            "fps": 50,
+                            "with_terrain": False,
+                            "save_on_exit": False,
+                            "edit_mode": "direct",
+                            "step_size": 0.02,
+                            "default_mode": "reject",
+                            "show_only": "all",
+                            "select_anchor": None,
+                            "external_viewer": False,
+                            "merge_max_gap": 3,
+                            "merge_max_distance": 0.06,
+                            "max_surface_distance": 0.08,
+                            "bind_mode": "reject",
+                        },
+                    )()
+                )
+                ready = read_contact_graph(root / "layers" / "contact" / "editor_editor_ready", "motion_a")
+
+        launch_mock.assert_called_once()
+        self.assertEqual([anchor.anchor_id for anchor in ready.anchors], ["top"])
+        self.assertEqual(ready.anchors[0].surface_id, "terrain_ground_z0")
+        self.assertEqual(launch_mock.call_args.kwargs["surface_editor_edit_mode"], "direct")
+
+    def test_contact_editor_refuses_unbound_editor_ready_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            motion = root / "motion_a.npz"
+            motion.write_bytes(b"original")
+            anchor = ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="top",
+                body="left_foot",
+                start_frame=0,
+                end_frame=10,
+                world_position=[10.0, 0.0, 0.0],
+                metadata={"raw_contact_position_refinement": {"binding_candidate_class": "top"}},
+            )
+            write_contact_layer(root / "layers" / "contact" / "source", type(contact_graph_from_masks(motion_id="motion_a", contact_mask=None))(motion_id="motion_a", anchors=[anchor]))
+            surface = ContactSurfaceRecord(
+                motion_id="motion_a",
+                surface_id="terrain_ground_z0",
+                object_id=None,
+                surface_type="plane",
+                origin=[0.0, 0.0, 0.0],
+                normal=[0.0, 0.0, 1.0],
+                tangent_u=[1.0, 0.0, 0.0],
+                tangent_v=[0.0, 1.0, 0.0],
+                bounds={"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+            )
+            surface_catalog = root / "surfaces.jsonl"
+            write_contact_surfaces(surface_catalog, [surface])
+            with (
+                mock.patch.object(cli, "LAYERS_ROOT", root / "layers"),
+                mock.patch.object(cli, "WORKBENCH_ROOT", root / "workbench"),
+                mock.patch.object(cli, "launch_viewer") as launch_mock,
+            ):
+                with self.assertRaisesRegex(ValueError, "not fully bound"):
+                    cli._cmd_contact_editor(
+                        type(
+                            "Args",
+                            (),
+                            {
+                                "motion": str(motion),
+                                "motion_id": "motion_a",
+                                "source_contact_layer": "contact/source",
+                                "surface_catalog": str(surface_catalog),
+                                "terrain_urdf": None,
+                                "include_side_surfaces": False,
+                                "no_ground": False,
+                                "ground_z": 0.0,
+                                "ground_half_extent": 10.0,
+                                "output_prefix": "contact/editor",
+                                "session_name": "contact_editor",
+                                "edit_plan": None,
+                                "output_contact_layer": None,
+                                "repo_root": None,
+                                "conda_env": "hsretargeting",
+                                "timeline_port": 8094,
+                                "fps": 50,
+                                "with_terrain": False,
+                                "save_on_exit": False,
+                                "edit_mode": "direct",
+                                "step_size": 0.02,
+                                "default_mode": "reject",
+                                "show_only": "all",
+                                "select_anchor": None,
+                                "external_viewer": False,
+                                "merge_max_gap": 3,
+                                "merge_max_distance": 0.06,
+                                "max_surface_distance": 0.08,
+                                "bind_mode": "reject",
+                            },
+                        )()
+                    )
+
+        launch_mock.assert_not_called()
 
     def test_surface_editor_move_anchor_cli_updates_session_and_can_save(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

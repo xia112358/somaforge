@@ -370,6 +370,149 @@ def _cmd_filter_contact_anchors(args: argparse.Namespace) -> None:
     print(f"wrote contact layer {out_layer}")
 
 
+def _prepare_contact_editor_layer(args: argparse.Namespace) -> tuple[str, str]:
+    source_layer = args.source_contact_layer
+    prefix = args.output_prefix or f"contact/{args.session_name}"
+    merged_layer = f"{prefix}_merged"
+    visible_layer = f"{prefix}_editor_visible"
+    ready_layer = f"{prefix}_editor_ready"
+
+    graph = read_contact_graph(LAYERS_ROOT / source_layer, args.motion_id)
+    merged_graph, merge_events = merge_nearby_contact_anchors(
+        graph,
+        max_gap=args.merge_max_gap,
+        max_distance=args.merge_max_distance,
+        merge_classes={"top", "ground"},
+        same_class_only=True,
+        source="contact_editor_merge",
+    )
+    merged_root = write_contact_layer(LAYERS_ROOT / merged_layer, merged_graph)
+    if merge_events:
+        write_jsonl(merged_root / "edits" / f"{args.motion_id}.merge_events.jsonl", merge_events)
+
+    visible_graph, filter_events = filter_short_raw_missing_anchors(
+        merged_graph,
+        drop_classes={"raw_missing", "edge_candidate", "outside_known_surfaces"},
+        source="contact_editor_filter",
+    )
+    visible_root = write_contact_layer(LAYERS_ROOT / visible_layer, visible_graph)
+    if filter_events:
+        write_jsonl(visible_root / "edits" / f"{args.motion_id}.filter_events.jsonl", filter_events)
+
+    surface_catalog = _resolve_surface_catalog(
+        motion_id=args.motion_id,
+        surface_catalog=args.surface_catalog,
+        terrain_urdf=args.terrain_urdf,
+        include_side_surfaces=False,
+        include_ground=True,
+        ground_z=args.ground_z,
+        ground_half_extent=args.ground_half_extent,
+    )
+    surfaces = _filter_surfaces_for_binding(read_contact_surfaces(surface_catalog), include_side_surfaces=False)
+    bound_anchors = bind_anchors_to_surfaces(
+        visible_graph.anchors,
+        surfaces,
+        max_distance=args.max_surface_distance,
+        mode=args.bind_mode,
+    )
+    ready_graph = ContactGraph(
+        motion_id=visible_graph.motion_id,
+        events=visible_graph.events,
+        anchors=bound_anchors,
+        patches=patches_from_anchors(bound_anchors),
+        transitions=visible_graph.transitions,
+    )
+    counts = _surface_binding_counts(ready_graph)
+    if counts["unbound_count"] or counts["failed_count"]:
+        raise ValueError(
+            "contact-editor refused to open because editor-ready contact layer is not fully bound: "
+            f"anchors={counts['anchor_count']} bound={counts['bound_count']} "
+            f"unbound={counts['unbound_count']} failed={counts['failed_count']}"
+        )
+    ready_root = write_contact_layer(LAYERS_ROOT / ready_layer, ready_graph)
+    write_contact_surfaces(ready_root / "surfaces" / f"{args.motion_id}.jsonl", surfaces)
+    print(
+        "prepared contact editor layer "
+        f"source={source_layer} merged={merged_layer} visible={visible_layer} ready={ready_layer}"
+    )
+    print(
+        f"contact-editor anchors source={len(graph.anchors)} merged={len(merged_graph.anchors)} "
+        f"visible={len(visible_graph.anchors)} ready={len(ready_graph.anchors)} "
+        f"filtered={len(filter_events)} bound={counts['bound_count']}"
+    )
+    return ready_layer, str(surface_catalog)
+
+
+def _launch_surface_editor_for_args(args: argparse.Namespace, *, contact_layer: str, surface_catalog: str | None) -> None:
+    session = prepare_surface_editor_session(
+        motion_path=args.motion,
+        motion_id=args.motion_id,
+        contact_layer=contact_layer,
+        surface_catalog=surface_catalog,
+        session_name=args.session_name,
+        edit_plan_path=args.edit_plan,
+        output_contact_layer=args.output_contact_layer,
+        layers_root=LAYERS_ROOT,
+        workbench_root=WORKBENCH_ROOT,
+    )
+    print(f"surface editor session: {session.session_dir}")
+    print(f"surface binding report: {session.report_path}")
+    print(f"surface binding overlay: {session.overlay_path}")
+    print(f"contact overlay: {session.contact_overlay_path}")
+    print(f"pending edits: {session.pending_edits_path}")
+    print(f"surface edit requests: {session.request_path}")
+    print(f"viewer overlay support: local motion_edit Viser adapter edit_mode={args.edit_mode}")
+    if args.edit_mode == "request":
+        print(f"sync pending viewer requests: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'}")
+        print(f"save after sync: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'} --save")
+    else:
+        print("direct edit mode: use Viser 'Move anchor' and 'Save edits'; no terminal sync is required")
+        print(f"request fallback remains available: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'}")
+    process = launch_viewer(
+        args.motion,
+        repo_root=args.repo_root,
+        layer=None,
+        conda_env=args.conda_env,
+        timeline_port=args.timeline_port,
+        fps=args.fps,
+        with_terrain=args.with_terrain,
+        surface_binding_overlay=session.overlay_path,
+        surface_editor_session=session.session_dir / "session.json",
+        surface_editor_requests=session.request_path,
+        surface_editor_edit_mode=args.edit_mode,
+        surface_editor_step_size=args.step_size,
+        surface_editor_default_mode=args.default_mode,
+        surface_editor_show_only=args.show_only,
+        surface_editor_select_anchor=args.select_anchor,
+        prefer_local_surface_editor=not args.external_viewer,
+    )
+    print(f"viewer pid={process.pid}")
+    print(f"Open Motion Cutter: http://localhost:{args.timeline_port}")
+    process.wait()
+    if args.save_on_exit:
+        out = save_surface_editor_session(session, layers_root=LAYERS_ROOT)
+        print(f"saved surface editor session output_contact_layer={out}")
+    else:
+        print("surface editor session prepared; no ContactLayer was saved because --save-on-exit was not set")
+
+
+def _cmd_contact_editor(args: argparse.Namespace) -> None:
+    ensure_data_dirs()
+    if args.include_side_surfaces:
+        raise ValueError("contact-editor does not allow side surfaces; use surface-editor only for debug")
+    if args.no_ground:
+        raise ValueError("contact-editor requires ground surface support")
+    if args.surface_catalog is None and args.terrain_urdf is None and args.with_terrain:
+        paths = detect_omniretarget_paths(args.motion, repo_root=args.repo_root)
+        if paths.terrain_urdf is None:
+            raise ValueError("--with-terrain could not resolve a terrain URDF; pass --surface-catalog or --terrain-urdf")
+        args.terrain_urdf = str(paths.terrain_urdf)
+    ready_layer, surface_catalog = _prepare_contact_editor_layer(args)
+    if args.output_contact_layer is None:
+        args.output_contact_layer = f"{ready_layer}_edited"
+    _launch_surface_editor_for_args(args, contact_layer=ready_layer, surface_catalog=surface_catalog)
+
+
 def _cmd_create_box_surface_catalog(args: argparse.Namespace) -> None:
     ensure_data_dirs()
     surfaces = []
@@ -1009,6 +1152,7 @@ def _cmd_cutter(args: argparse.Namespace) -> None:
 
 def _cmd_surface_editor(args: argparse.Namespace) -> None:
     ensure_data_dirs()
+    print("warning: surface-editor is a debug/internal entry; use contact-editor for the main curation workflow")
     surface_catalog = args.surface_catalog
     terrain_urdf_arg = getattr(args, "terrain_urdf", None)
     if surface_catalog is None and (args.with_terrain or terrain_urdf_arg):
@@ -1030,56 +1174,7 @@ def _cmd_surface_editor(args: argparse.Namespace) -> None:
             )
         )
         print(f"generated terrain surface catalog from URDF: {surface_catalog}")
-    session = prepare_surface_editor_session(
-        motion_path=args.motion,
-        motion_id=args.motion_id,
-        contact_layer=args.contact_layer,
-        surface_catalog=surface_catalog,
-        session_name=args.session_name,
-        edit_plan_path=args.edit_plan,
-        output_contact_layer=args.output_contact_layer,
-        layers_root=LAYERS_ROOT,
-        workbench_root=WORKBENCH_ROOT,
-    )
-    print(f"surface editor session: {session.session_dir}")
-    print(f"surface binding report: {session.report_path}")
-    print(f"surface binding overlay: {session.overlay_path}")
-    print(f"contact overlay: {session.contact_overlay_path}")
-    print(f"pending edits: {session.pending_edits_path}")
-    print(f"surface edit requests: {session.request_path}")
-    print(f"viewer overlay support: local motion_edit Viser adapter edit_mode={args.edit_mode}")
-    if args.edit_mode == "request":
-        print(f"sync pending viewer requests: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'}")
-        print(f"save after sync: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'} --save")
-    else:
-        print("direct edit mode: use Viser 'Move anchor' and 'Save edits'; no terminal sync is required")
-        print(f"request fallback remains available: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'}")
-    process = launch_viewer(
-        args.motion,
-        repo_root=args.repo_root,
-        layer=None,
-        conda_env=args.conda_env,
-        timeline_port=args.timeline_port,
-        fps=args.fps,
-        with_terrain=args.with_terrain,
-        surface_binding_overlay=session.overlay_path,
-        surface_editor_session=session.session_dir / "session.json",
-        surface_editor_requests=session.request_path,
-        surface_editor_edit_mode=args.edit_mode,
-        surface_editor_step_size=args.step_size,
-        surface_editor_default_mode=args.default_mode,
-        surface_editor_show_only=args.show_only,
-        surface_editor_select_anchor=args.select_anchor,
-        prefer_local_surface_editor=not args.external_viewer,
-    )
-    print(f"viewer pid={process.pid}")
-    print(f"Open Motion Cutter: http://localhost:{args.timeline_port}")
-    process.wait()
-    if args.save_on_exit:
-        out = save_surface_editor_session(session, layers_root=LAYERS_ROOT)
-        print(f"saved surface editor session output_contact_layer={out}")
-    else:
-        print("surface editor session prepared; no ContactLayer was saved because --save-on-exit was not set")
+    _launch_surface_editor_for_args(args, contact_layer=args.contact_layer, surface_catalog=surface_catalog)
 
 
 def _cmd_surface_editor_move_anchor(args: argparse.Namespace) -> None:
@@ -1435,6 +1530,38 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fps", type=int, default=50)
     p.add_argument("--with-terrain", action="store_true")
     p.set_defaults(func=_cmd_cutter)
+
+    p = sub.add_parser("contact-editor")
+    p.add_argument("motion")
+    p.add_argument("--motion-id", required=True)
+    p.add_argument("--source-contact-layer", required=True)
+    p.add_argument("--surface-catalog", default=None)
+    p.add_argument("--terrain-urdf", default=None)
+    p.add_argument("--include-side-surfaces", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--no-ground", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--ground-z", type=float, default=0.0)
+    p.add_argument("--ground-half-extent", type=float, default=10.0)
+    p.add_argument("--output-prefix", default=None, help="Contact layer prefix for generated *_merged, *_editor_visible, *_editor_ready layers")
+    p.add_argument("--session-name", required=True)
+    p.add_argument("--edit-plan", default=None)
+    p.add_argument("--output-contact-layer", default=None)
+    p.add_argument("--repo-root", default=None)
+    p.add_argument("--conda-env", default="hsretargeting")
+    p.add_argument("--timeline-port", type=int, default=8094)
+    p.add_argument("--fps", type=int, default=50)
+    p.add_argument("--with-terrain", action="store_true")
+    p.add_argument("--save-on-exit", action="store_true")
+    p.add_argument("--edit-mode", choices=("direct", "request"), default="direct")
+    p.add_argument("--step-size", type=float, default=0.02)
+    p.add_argument("--default-mode", choices=("reject", "clamp"), default="reject")
+    p.add_argument("--show-only", choices=("all", "bound", "edited", "clamped", "suspicious", "failed", "unbound"), default="all")
+    p.add_argument("--select-anchor", default=None)
+    p.add_argument("--external-viewer", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--merge-max-gap", type=int, default=3)
+    p.add_argument("--merge-max-distance", type=float, default=0.06)
+    p.add_argument("--max-surface-distance", type=float, default=0.08)
+    p.add_argument("--bind-mode", choices=("reject", "clamp"), default="reject")
+    p.set_defaults(func=_cmd_contact_editor)
 
     p = sub.add_parser("surface-editor")
     p.add_argument("motion")
