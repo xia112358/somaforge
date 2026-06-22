@@ -598,7 +598,17 @@ class StorageSchemaTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with mock.patch.object(storage_io, "SEGMENTS_ROOT", root / "segments"):
+            version = MotionVersionRecord(
+                motion_version_id="motion_a_raw",
+                motion_path="/motions/motion_a.npz",
+                token_catalog_path=str(root / "tokens" / "motion_a_raw.jsonl"),
+                metadata={"token_catalog_status": "current"},
+            )
+            with (
+                mock.patch.object(storage_io, "SEGMENTS_ROOT", root / "segments"),
+                mock.patch.object(storage_io, "MOTION_VERSIONS_ROOT", root / "motion_versions"),
+            ):
+                write_motion_version(version)
                 write_canonical_segments("motion_a_raw", [segment])
                 cli._cmd_mark_segment_status(
                     type(
@@ -615,9 +625,15 @@ class StorageSchemaTests(unittest.TestCase):
                     )()
                 )
                 loaded = read_canonical_segments("motion_a_raw")
+                active_files = sorted(path.name for path in (root / "segments").glob("motion_a_raw*.jsonl"))
+                history_events = read_jsonl(canonical_history_event_path("motion_a_raw"))
+                loaded_version = read_motion_version("motion_a_raw")
 
             self.assertFalse((root / "layers" / "accepted").exists())
 
+        self.assertEqual(active_files, ["motion_a_raw.jsonl"])
+        self.assertIn("mark_status", [event["kind"] for event in history_events])
+        self.assertEqual(loaded_version.metadata["token_catalog_status"], "stale")
         self.assertEqual(loaded[0].status, "accepted")
         self.assertEqual(loaded[0].metadata["status_history"][0]["old_status"], "candidate")
         self.assertEqual(loaded[0].metadata["status_history"][0]["new_status"], "accepted")

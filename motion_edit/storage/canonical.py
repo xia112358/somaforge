@@ -217,5 +217,15 @@ def mark_canonical_segment_statuses(
     missing = sorted(set(update_by_id) - found)
     if missing:
         raise ValueError(f"segments not found in canonical segmentation: {', '.join(missing)}")
-    write_canonical_segments(motion_version_id, updated)
+    sources = {str(update.get("source") or "mark_segment_status") for update in updates}
+    reasons = [str(update["reason"]) for update in updates if update.get("reason") is not None]
+    source = sources.pop() if len(sources) == 1 else "mark_segment_status"
+    reason = reasons[0] if len(reasons) == 1 else f"status update for {len(updates)} segment(s)"
+    replace_canonical_segments(
+        motion_version_id,
+        updated,
+        reason=reason,
+        source=source,
+        kind="mark_status",
+    )
     return updated
