@@ -485,10 +485,6 @@ def _selected_handle_lines(record: ContactAnchorRecord) -> tuple[list[list[list[
         v = np.asarray(record.surface_tangent_v, dtype=float)
         lines.append([(base - v * 0.18).tolist(), (base + v * 0.18).tolist()])
         colors.append([(90, 255, 120), (90, 255, 120)])
-    if record.surface_normal is not None:
-        n = np.asarray(record.surface_normal, dtype=float)
-        lines.append([base.tolist(), (base + n * 0.22).tolist()])
-        colors.append([(90, 160, 255), (90, 160, 255)])
     if record.surface_origin is not None and record.surface_tangent_u is not None and record.surface_tangent_v is not None and record.surface_bounds:
         origin = np.asarray(record.surface_origin, dtype=float)
         tangent_u = np.asarray(record.surface_tangent_u, dtype=float)
@@ -541,9 +537,6 @@ def _render_overlay(
     handles: list[Any] = []
     line_points: list[list[list[float]]] = []
     line_colors: list[list[tuple[int, int, int]]] = []
-    anchor_points: list[list[float]] = []
-    anchor_colors: list[tuple[int, int, int]] = []
-    selected_points: list[list[float]] = []
 
     for obj in overlay.get("objects", []):
         obj_type = obj.get("type")
@@ -565,8 +558,7 @@ def _render_overlay(
                 except TypeError:
                     pass
         elif obj_type == "normal_axis":
-            line_points.append([obj["from"], obj["to"]])
-            line_colors.append([color, color])
+            continue
         elif obj_type == "projection_line":
             line_points.append([obj["from"], obj["to"]])
             line_colors.append([color, color])
@@ -588,10 +580,6 @@ def _render_overlay(
                     side="double",
                 )
                 handles.append(marker)
-                patch_lines, patch_colors = _selected_handle_lines(record)
-                if patch_lines:
-                    line_points.extend(patch_lines[:3])
-                    line_colors.extend(patch_colors[:3])
             else:
                 marker = server.scene.add_frame(
                     f"{namespace}/anchors/{anchor_name}",
@@ -632,12 +620,6 @@ def _render_overlay(
                         if event.phase == "end" and callable(controller.on_change):
                             controller.on_change()
 
-            if selected_anchor_id and obj.get("anchor_id") == selected_anchor_id:
-                selected_points.append(obj["position"])
-            else:
-                anchor_points.append(obj["position"])
-                anchor_colors.append(color)
-
     if line_points:
         handle = server.scene.add_line_segments(
             f"{namespace}/overlay_lines",
@@ -647,85 +629,65 @@ def _render_overlay(
             visible=True,
         )
         handles.append(handle)
-    if anchor_points:
-        handle = server.scene.add_point_cloud(
-            f"{namespace}/anchor_points",
-            points=np.asarray(anchor_points, dtype=np.float32),
-            colors=np.asarray(anchor_colors, dtype=np.uint8),
-            point_size=0.06,
-            point_shape="circle",
-            visible=True,
-        )
-        handles.append(handle)
-    if selected_points:
-        handle = server.scene.add_point_cloud(
-            f"{namespace}/selected_anchor",
-            points=np.asarray(selected_points, dtype=np.float32),
-            colors=np.asarray([STATUS_COLORS["selected"] for _ in selected_points], dtype=np.uint8),
-            point_size=0.12,
-            point_shape="circle",
-            visible=True,
-        )
-        handles.append(handle)
-        if controller is not None:
-            record = controller._anchor_record(selected_anchor_id)
-            if record is not None and record.world_position is not None:
-                selected_mesh = _anchor_patch_mesh(record, half_extent=0.075, normal_offset=0.004)
-                if selected_mesh is not None and hasattr(server.scene, "add_mesh_simple"):
-                    vertices, faces = selected_mesh
-                    selected_frame = server.scene.add_mesh_simple(
-                        f"{namespace}/selected_anchor_handle_patch",
-                        vertices=vertices,
-                        faces=faces,
-                        color=STATUS_COLORS["selected"],
-                        opacity=0.95,
-                        side="double",
-                    )
-                    handles.append(selected_frame)
-                else:
-                    selected_frame = server.scene.add_frame(
-                        f"{namespace}/selected_anchor_handle",
-                        show_axes=False,
-                        origin_radius=0.09,
-                        origin_color=STATUS_COLORS["selected"],
-                        position=np.asarray(record.world_position, dtype=np.float32),
-                    )
-                    handles.append(selected_frame)
+    if controller is not None and selected_anchor_id:
+        record = controller._anchor_record(selected_anchor_id)
+        if record is not None and record.world_position is not None:
+            selected_mesh = _anchor_patch_mesh(record, half_extent=0.075, normal_offset=0.004)
+            if selected_mesh is not None and hasattr(server.scene, "add_mesh_simple"):
+                vertices, faces = selected_mesh
+                selected_frame = server.scene.add_mesh_simple(
+                    f"{namespace}/selected_anchor_handle_patch",
+                    vertices=vertices,
+                    faces=faces,
+                    color=STATUS_COLORS["selected"],
+                    opacity=0.95,
+                    side="double",
+                )
+                handles.append(selected_frame)
+            else:
+                selected_frame = server.scene.add_frame(
+                    f"{namespace}/selected_anchor_handle",
+                    show_axes=False,
+                    origin_radius=0.09,
+                    origin_color=STATUS_COLORS["selected"],
+                    position=np.asarray(record.world_position, dtype=np.float32),
+                )
+                handles.append(selected_frame)
 
-                @selected_frame.on_drag
-                def _(event: Any) -> None:
-                    if edit_mode != "direct":
-                        controller.state.last_message = "drag disabled in request mode"
+            @selected_frame.on_drag
+            def _(event: Any) -> None:
+                if edit_mode != "direct":
+                    controller.state.last_message = "drag disabled in request mode"
+                    return
+                current = controller._anchor_record()
+                if current is None:
+                    return
+                try:
+                    projected = controller.projected_world_request(current, event.end_position)
+                    if event.phase == "update":
+                        event.target.position = tuple(float(v) for v in projected)
                         return
-                    current = controller._anchor_record()
-                    if current is None:
-                        return
-                    try:
-                        projected = controller.projected_world_request(current, event.end_position)
-                        if event.phase == "update":
-                            event.target.position = tuple(float(v) for v in projected)
-                            return
-                        if event.phase == "end":
-                            mode = str(controller.drag_mode_getter()) if callable(controller.drag_mode_getter) else "reject"
-                            result = controller.drag_selected_to_world(event.end_position, mode=mode)
-                            print(f"[surface editor] dragged selected_anchor result={result}")
-                            if callable(controller.on_change):
-                                controller.on_change()
-                    except Exception as exc:
-                        controller.state.last_error = str(exc)
-                        if event.phase == "end" and callable(controller.on_change):
+                    if event.phase == "end":
+                        mode = str(controller.drag_mode_getter()) if callable(controller.drag_mode_getter) else "reject"
+                        result = controller.drag_selected_to_world(event.end_position, mode=mode)
+                        print(f"[surface editor] dragged selected_anchor result={result}")
+                        if callable(controller.on_change):
                             controller.on_change()
+                except Exception as exc:
+                    controller.state.last_error = str(exc)
+                    if event.phase == "end" and callable(controller.on_change):
+                        controller.on_change()
 
-                selected_lines, selected_colors = _selected_handle_lines(record)
-                if selected_lines:
-                    handle = server.scene.add_line_segments(
-                        f"{namespace}/selected_anchor_handle_axes",
-                        points=np.asarray(selected_lines, dtype=np.float32),
-                        colors=np.asarray(selected_colors, dtype=np.uint8),
-                        line_width=4.0,
-                        visible=True,
-                    )
-                    handles.append(handle)
+            selected_lines, selected_colors = _selected_handle_lines(record)
+            if selected_lines:
+                handle = server.scene.add_line_segments(
+                    f"{namespace}/selected_anchor_handle_axes",
+                    points=np.asarray(selected_lines, dtype=np.float32),
+                    colors=np.asarray(selected_colors, dtype=np.uint8),
+                    line_width=4.0,
+                    visible=True,
+                )
+                handles.append(handle)
     return handles
 
 
