@@ -5,6 +5,7 @@ from pathlib import Path
 
 from motion_edit.layers import group_by_motion
 from motion_edit.schema import SegmentRecord
+from motion_edit.storage.schema import MotionVersionRecord
 
 
 def _contact_edit_value(segment: SegmentRecord, key: str):
@@ -68,4 +69,48 @@ def export_motion_manifest(path: str | Path, segments: list[SegmentRecord]) -> P
             }
         )
     out.write_text(json.dumps({"schema_version": 1, "motions": motions}, indent=2), encoding="utf-8")
+    return out
+
+
+def export_motion_version_manifest(
+    path: str | Path,
+    *,
+    version: MotionVersionRecord,
+    segments: list[SegmentRecord],
+) -> Path:
+    out = Path(path).expanduser().resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 2,
+        "motion_version_id": version.motion_version_id,
+        "motion_path": version.motion_path,
+        "contact_layer": version.contact_layer,
+        "canonical_segment_path": version.canonical_segment_path,
+        "token_catalog_path": version.token_catalog_path,
+        "segments": [
+            {
+                "segment_id": item.segment_id,
+                "start_frame": item.start_frame,
+                "end_frame": item.end_frame,
+                "source": item.source,
+                "status": item.status,
+                "cut_source": item.metadata.get("cut_source"),
+                "motion_version_id": item.metadata.get("motion_version_id"),
+                "parent_transition_id": item.metadata.get("parent_transition_id"),
+                "source_anchor_id": item.metadata.get("source_anchor_id"),
+                "target_anchor_id": item.metadata.get("target_anchor_id"),
+                "active_body": item.metadata.get("active_body"),
+                "support_bodies": item.metadata.get("support_bodies"),
+                "transition_type": item.metadata.get("transition_type"),
+                "contact_metadata": {
+                    "transition": item.metadata.get("contact_transition"),
+                    "event_count": len(item.metadata.get("contact_events") or []),
+                    "anchor_count": len(item.metadata.get("contact_anchors") or []),
+                    "patch_count": len(item.metadata.get("contact_patches") or []),
+                },
+            }
+            for item in segments
+        ],
+    }
+    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return out

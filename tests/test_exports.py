@@ -13,7 +13,7 @@ from motion_edit.export import export_contact_overlay, export_cutter_segments, e
 from motion_edit.io import read_jsonl
 from motion_edit.schema import SegmentRecord
 from motion_edit.storage import io as storage_io
-from motion_edit.storage import write_canonical_segments
+from motion_edit.storage import MotionVersionRecord, write_canonical_segments, write_motion_version
 from unittest import mock
 
 
@@ -197,6 +197,43 @@ class ExportContactMetadataTests(unittest.TestCase):
         self.assertEqual(item["contact_metadata"]["patch_count"], 1)
         self.assertEqual(item["contact_metadata"]["patches"][0]["patch_type"], "foot")
         self.assertEqual(item["contact_metadata"]["anchor_edit"]["edit_type"], "move_contact_anchor")
+
+    def test_export_manifest_from_motion_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            motion = root / "motion_a.npz"
+            np.savez(motion, qpos=np.zeros((6, 2)))
+            version = MotionVersionRecord(
+                motion_version_id="motion_a_raw",
+                motion_path=str(motion),
+                contact_layer="contact/force_contact",
+                canonical_segment_path=str(root / "segments" / "motion_a_raw.jsonl"),
+                token_catalog_path=str(root / "tokens" / "motion_a_raw.jsonl"),
+            )
+            out = root / "manifest.json"
+            with (
+                mock.patch.object(storage_io, "MOTION_VERSIONS_ROOT", root / "motion_versions"),
+                mock.patch.object(storage_io, "SEGMENTS_ROOT", root / "segments"),
+            ):
+                write_motion_version(version)
+                write_canonical_segments("motion_a_raw", [_contact_segment(str(motion))])
+                cli._cmd_export_manifest(
+                    type("Args", (), {"source": None, "motion_version_id": "motion_a_raw", "output": str(out)})()
+                )
+            manifest = json.loads(out.read_text(encoding="utf-8"))
+
+        self.assertEqual(manifest["schema_version"], 2)
+        self.assertEqual(manifest["motion_version_id"], "motion_a_raw")
+        self.assertEqual(manifest["motion_path"], str(motion))
+        self.assertEqual(manifest["contact_layer"], "contact/force_contact")
+        self.assertEqual(manifest["token_catalog_path"], str(root / "tokens" / "motion_a_raw.jsonl"))
+        self.assertEqual(manifest["segments"][0]["motion_version_id"], "motion_a_raw")
+
+    def test_export_manifest_rejects_source_and_motion_version(self) -> None:
+        with self.assertRaises(ValueError):
+            cli._cmd_export_manifest(
+                type("Args", (), {"source": "candidates/force_contact", "motion_version_id": "motion_a_raw", "output": "out.json"})()
+            )
 
 
 if __name__ == "__main__":
