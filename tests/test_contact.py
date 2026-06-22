@@ -21,9 +21,11 @@ from motion_edit.contact import (
     move_contact_anchor_on_surface,
     move_anchor_in_graph,
     move_anchor_in_contact_layer,
+    merge_nearby_contact_anchors,
     read_contact_anchors,
     read_contact_events,
     read_contact_graph,
+    read_contact_jsonl,
     read_contact_patches,
     read_contact_surfaces,
     read_contact_transitions,
@@ -713,6 +715,102 @@ class ContactEventTests(unittest.TestCase):
 
         self.assertEqual(refined.anchors[0].position_source, "raw_contact_point0_w_polygon_median")
         self.assertEqual(refined.anchors[0].metadata["raw_contact_position_refinement_failed"], False)
+
+    def test_merge_nearby_contact_anchors_merges_short_same_class_gaps(self) -> None:
+        anchors = [
+            ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="a0",
+                body="left_foot",
+                start_frame=0,
+                end_frame=10,
+                world_position=[0.0, 0.0, 0.0],
+                metadata={"raw_contact_position_refinement": {"binding_candidate_class": "ground"}},
+            ),
+            ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="a1",
+                body="left_foot",
+                start_frame=12,
+                end_frame=20,
+                world_position=[0.02, 0.0, 0.0],
+                metadata={"raw_contact_position_refinement": {"binding_candidate_class": "ground"}},
+            ),
+            ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="a2",
+                body="left_foot",
+                start_frame=22,
+                end_frame=24,
+                world_position=[0.03, 0.0, 0.0],
+                metadata={"raw_contact_position_refinement": {"binding_candidate_class": "edge_candidate"}},
+            ),
+        ]
+        graph = contact_graph_from_masks(
+            motion_id="motion_a",
+            contact_mask=np.asarray([[False]]),
+            body_names=["left_foot"],
+        )
+        graph = graph.__class__(motion_id="motion_a", anchors=anchors)
+
+        merged, events = merge_nearby_contact_anchors(graph, max_gap=3, max_distance=0.06)
+
+        self.assertEqual(len(merged.anchors), 2)
+        self.assertEqual(merged.anchors[0].start_frame, 0)
+        self.assertEqual(merged.anchors[0].end_frame, 20)
+        self.assertEqual(merged.anchors[0].metadata["merged_anchor_ids"], ["a0", "a1"])
+        self.assertEqual(len(events), 1)
+        self.assertEqual(merged.anchors[1].anchor_id, "a2")
+
+    def test_merge_contact_anchors_cli_writes_layer_and_events(self) -> None:
+        anchors = [
+            ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="a0",
+                body="right_hand",
+                start_frame=0,
+                end_frame=10,
+                world_position=[0.0, 0.0, 0.0],
+                metadata={"raw_contact_position_refinement": {"binding_candidate_class": "top"}},
+            ),
+            ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="a1",
+                body="right_hand",
+                start_frame=11,
+                end_frame=20,
+                world_position=[0.01, 0.0, 0.0],
+                metadata={"raw_contact_position_refinement": {"binding_candidate_class": "top"}},
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_contact_layer(root / "layers" / "contact" / "source", contact_graph_from_masks(motion_id="motion_a", contact_mask=None))
+            write_contact_jsonl(root / "layers" / "contact" / "source" / "anchors" / "motion_a.jsonl", anchors)
+            with mock.patch.object(cli, "LAYERS_ROOT", root / "layers"):
+                cli._cmd_merge_contact_anchors(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "contact_layer": "contact/source",
+                            "motion_id": "motion_a",
+                            "output_contact_layer": "contact/merged",
+                            "max_gap": 3,
+                            "max_distance": 0.06,
+                            "merge_class": None,
+                            "allow_cross_class": False,
+                            "source": "test",
+                        },
+                    )()
+                )
+                merged = read_contact_graph(root / "layers" / "contact" / "merged", "motion_a")
+                events = read_contact_jsonl(root / "layers" / "contact" / "merged" / "edits" / "motion_a.merge_events.jsonl")
+
+        self.assertEqual(len(merged.anchors), 1)
+        self.assertEqual(merged.anchors[0].start_frame, 0)
+        self.assertEqual(merged.anchors[0].end_frame, 20)
+        self.assertEqual(len(events), 1)
 
     def test_create_box_surface_catalog_cli_emits_top_and_side_faces(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -26,6 +26,7 @@ from .contact import (
     append_anchor_edit_to_plan,
     bind_anchors_to_surfaces,
     bind_segment_to_contact_graph,
+    merge_nearby_contact_anchors,
     move_anchor_in_contact_layer,
     read_contact_edit_plan,
     read_contact_surfaces,
@@ -319,6 +320,28 @@ def _cmd_refine_contact_anchor_positions(args: argparse.Namespace) -> None:
     print(
         f"refined contact anchor positions motion={args.motion_id} total={len(refined_graph.anchors)} "
         f"refined={refined_count} failed={failed_count}"
+    )
+    print(f"wrote contact layer {out_layer}")
+
+
+def _cmd_merge_contact_anchors(args: argparse.Namespace) -> None:
+    ensure_data_dirs()
+    graph = read_contact_graph(LAYERS_ROOT / args.contact_layer, args.motion_id)
+    merge_classes = set(args.merge_class) if args.merge_class else None
+    merged_graph, events = merge_nearby_contact_anchors(
+        graph,
+        max_gap=args.max_gap,
+        max_distance=args.max_distance,
+        merge_classes=merge_classes,
+        same_class_only=not args.allow_cross_class,
+        source=args.source,
+    )
+    out_layer = write_contact_layer(LAYERS_ROOT / args.output_contact_layer, merged_graph)
+    if events:
+        write_jsonl(out_layer / "edits" / f"{args.motion_id}.merge_events.jsonl", events)
+    print(
+        f"merged contact anchors motion={args.motion_id} before={len(graph.anchors)} "
+        f"after={len(merged_graph.anchors)} merges={len(events)}"
     )
     print(f"wrote contact layer {out_layer}")
 
@@ -1169,6 +1192,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-part-distance", type=float, default=0.25)
     p.add_argument("--max-surface-distance", type=float, default=0.05)
     p.set_defaults(func=_cmd_refine_contact_anchor_positions)
+
+    p = sub.add_parser("merge-contact-anchors")
+    p.add_argument("--contact-layer", required=True, help="Contact layer path relative to data/layers")
+    p.add_argument("--motion-id", required=True)
+    p.add_argument("--output-contact-layer", required=True)
+    p.add_argument("--max-gap", type=int, default=3)
+    p.add_argument("--max-distance", type=float, default=0.06)
+    p.add_argument("--merge-class", action="append", choices=("top", "ground", "edge_candidate", "outside_known_surfaces", "raw_missing"))
+    p.add_argument("--allow-cross-class", action="store_true")
+    p.add_argument("--source", default="merge_contact_anchors")
+    p.set_defaults(func=_cmd_merge_contact_anchors)
 
     p = sub.add_parser("create-box-surface-catalog")
     p.add_argument("--motion-id", required=True)

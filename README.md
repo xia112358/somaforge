@@ -169,8 +169,15 @@ Surface binding is explicit and does not generate augmented motion. It writes a 
   --surface-catalog data/surfaces/climb_00_surfaces.jsonl \
   --output-contact-layer contact/force_contact_raw_point_refined
 
-~/motion_edit/motion-edit bind-contact-surfaces \
+~/motion_edit/motion-edit merge-contact-anchors \
   --contact-layer contact/force_contact_raw_point_refined \
+  --motion-id climb_00_z_scale_1.0 \
+  --output-contact-layer contact/force_contact_raw_point_merged \
+  --max-gap 3 \
+  --max-distance 0.06
+
+~/motion_edit/motion-edit bind-contact-surfaces \
+  --contact-layer contact/force_contact_raw_point_merged \
   --motion-id climb_00_z_scale_1.0 \
   --surface-catalog data/surfaces/climb_00_surfaces.jsonl \
   --output-contact-layer contact/force_contact_bound
