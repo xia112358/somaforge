@@ -5,6 +5,7 @@ from math import sqrt
 from typing import Iterable, Literal
 
 from motion_edit.contact.schema import ContactAnchorRecord, ContactSurfaceRecord
+from motion_edit.contact.surface_geometry import closest_point_on_polygon_uv, point_in_polygon_uv, surface_polygon_uv
 
 BindingMode = Literal["reject", "clamp"]
 
@@ -110,16 +111,38 @@ def bind_anchor_to_surface(
             f"{anchor.anchor_id}: surface {surface.surface_id} is farther than max_distance "
             f"({abs(float(projection['signed_distance'])):.6f} > {float(max_distance):.6f})"
         )
-    u_bounds = _axis_bounds(surface.bounds, "u")
-    v_bounds = _axis_bounds(surface.bounds, "v")
     raw_u = float(projection["u"])
     raw_v = float(projection["v"])
-    inside = _inside(raw_u, u_bounds) and _inside(raw_v, v_bounds)
+    polygon = surface_polygon_uv(
+        surface.metadata,
+        origin=projection["origin"],
+        tangent_u=projection["tangent_u"],
+        tangent_v=projection["tangent_v"],
+    )
+    if surface.surface_type == "mesh_face" and not polygon:
+        raise ValueError(f"{surface.surface_id}: mesh_face surfaces require polygon_world metadata")
+    if polygon:
+        inside = point_in_polygon_uv((raw_u, raw_v), polygon)
+        leave_message = "polygon"
+    else:
+        u_bounds = _axis_bounds(surface.bounds, "u")
+        v_bounds = _axis_bounds(surface.bounds, "v")
+        inside = _inside(raw_u, u_bounds) and _inside(raw_v, v_bounds)
+        leave_message = "bounds"
     if not inside and mode == "reject":
-        raise ValueError(f"{anchor.anchor_id}: projected point leaves surface bounds for {surface.surface_id}")
-    u, clamped_u = _clamp(raw_u, u_bounds)
-    v, clamped_v = _clamp(raw_v, v_bounds)
-    clamped = clamped_u or clamped_v
+        raise ValueError(f"{anchor.anchor_id}: projected point leaves surface {leave_message} for {surface.surface_id}")
+    if polygon and not inside:
+        u, v = closest_point_on_polygon_uv((raw_u, raw_v), polygon)
+        clamped = True
+    elif polygon:
+        u, v = raw_u, raw_v
+        clamped = False
+    else:
+        u_bounds = _axis_bounds(surface.bounds, "u")
+        v_bounds = _axis_bounds(surface.bounds, "v")
+        u, clamped_u = _clamp(raw_u, u_bounds)
+        v, clamped_v = _clamp(raw_v, v_bounds)
+        clamped = clamped_u or clamped_v
     projected = projection["projected"]
     bound_world = _add3(
         projection["origin"],
@@ -140,6 +163,10 @@ def bind_anchor_to_surface(
             "raw_surface_coordinates": {"u": raw_u, "v": raw_v},
             "surface_binding_source": surface.source,
             "clamped": clamped,
+            "polygon_surface_coordinates": [
+                {"u": point[0], "v": point[1]}
+                for point in polygon
+            ] if polygon else None,
         }
     )
     metadata["surface_bindings"] = bindings
@@ -183,9 +210,20 @@ def bind_anchors_to_surfaces(
                 continue
             try:
                 projection = _project(anchor, surface)
-                u_bounds = _axis_bounds(surface.bounds, "u")
-                v_bounds = _axis_bounds(surface.bounds, "v")
-                inside = _inside(float(projection["u"]), u_bounds) and _inside(float(projection["v"]), v_bounds)
+                polygon = surface_polygon_uv(
+                    surface.metadata,
+                    origin=projection["origin"],
+                    tangent_u=projection["tangent_u"],
+                    tangent_v=projection["tangent_v"],
+                )
+                if surface.surface_type == "mesh_face" and not polygon:
+                    raise ValueError(f"{surface.surface_id}: mesh_face surfaces require polygon_world metadata")
+                if polygon:
+                    inside = point_in_polygon_uv((float(projection["u"]), float(projection["v"])), polygon)
+                else:
+                    u_bounds = _axis_bounds(surface.bounds, "u")
+                    v_bounds = _axis_bounds(surface.bounds, "v")
+                    inside = _inside(float(projection["u"]), u_bounds) and _inside(float(projection["v"]), v_bounds)
                 candidate = bind_anchor_to_surface(
                     anchor,
                     surface,

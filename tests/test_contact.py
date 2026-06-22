@@ -268,6 +268,41 @@ class ContactEventTests(unittest.TestCase):
         self.assertEqual(edit.constraint_mode, "clamp")
         self.assertTrue(edit.clamped)
 
+    def test_move_contact_anchor_on_mesh_surface_uses_polygon_not_bounds(self) -> None:
+        anchor = ContactAnchorRecord(
+            motion_id="motion_a",
+            anchor_id="anchor_lf",
+            body="left_foot",
+            start_frame=0,
+            end_frame=10,
+            world_position=[0.25, 0.25, 0.0],
+            surface_id="mesh_tri",
+            surface_type="mesh_face",
+            surface_normal=[0.0, 0.0, 1.0],
+            surface_origin=[0.0, 0.0, 0.0],
+            surface_tangent_u=[1.0, 0.0, 0.0],
+            surface_tangent_v=[0.0, 1.0, 0.0],
+            surface_bounds={"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+            surface_coordinates={"u": 0.25, "v": 0.25},
+            metadata={
+                "surface_bindings": [
+                    {
+                        "polygon_surface_coordinates": [
+                            {"u": 0.0, "v": 0.0},
+                            {"u": 1.0, "v": 0.0},
+                            {"u": 0.0, "v": 1.0},
+                        ]
+                    }
+                ]
+            },
+        )
+
+        with self.assertRaisesRegex(ValueError, "polygon"):
+            move_contact_anchor_on_surface(anchor, tangent_delta=[0.5, 0.5])
+        moved, edit = move_contact_anchor_on_surface(anchor, tangent_delta=[0.5, 0.5], mode="clamp")
+        self.assertAlmostEqual(sum(moved.surface_coordinates.values()), 1.0)
+        self.assertTrue(edit.clamped)
+
     def test_bind_anchor_to_plane_creates_surface_binding_for_safe_moves(self) -> None:
         anchor = ContactAnchorRecord(
             motion_id="motion_a",
@@ -387,6 +422,58 @@ class ContactEventTests(unittest.TestCase):
         self.assertEqual(bound.world_position, [0.1, 0.0, 0.0])
         self.assertEqual(bound.surface_coordinates, {"u": 0.1, "v": 0.0})
         self.assertTrue(bound.metadata["surface_bindings"][-1]["clamped"])
+
+    def test_mesh_surface_binding_requires_polygon_not_bounds(self) -> None:
+        anchor = ContactAnchorRecord(
+            motion_id="motion_a",
+            anchor_id="anchor_lf",
+            body="left_foot",
+            start_frame=0,
+            end_frame=10,
+            world_position=[0.75, 0.75, 0.0],
+        )
+        surface = ContactSurfaceRecord(
+            motion_id="motion_a",
+            surface_id="mesh_top",
+            object_id="box",
+            surface_type="mesh_face",
+            origin=[0.0, 0.0, 0.0],
+            normal=[0.0, 0.0, 1.0],
+            tangent_u=[1.0, 0.0, 0.0],
+            tangent_v=[0.0, 1.0, 0.0],
+            bounds={"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+        )
+
+        with self.assertRaisesRegex(ValueError, "polygon_world"):
+            bind_anchor_to_surface(anchor, surface)
+
+    def test_mesh_surface_binding_uses_polygon_not_outer_bounds(self) -> None:
+        anchor = ContactAnchorRecord(
+            motion_id="motion_a",
+            anchor_id="anchor_lf",
+            body="left_foot",
+            start_frame=0,
+            end_frame=10,
+            world_position=[0.75, 0.75, 0.0],
+        )
+        surface = ContactSurfaceRecord(
+            motion_id="motion_a",
+            surface_id="mesh_tri",
+            object_id="box",
+            surface_type="mesh_face",
+            origin=[0.0, 0.0, 0.0],
+            normal=[0.0, 0.0, 1.0],
+            tangent_u=[1.0, 0.0, 0.0],
+            tangent_v=[0.0, 1.0, 0.0],
+            bounds={"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+            metadata={"polygon_world": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]},
+        )
+
+        with self.assertRaisesRegex(ValueError, "polygon"):
+            bind_anchor_to_surface(anchor, surface)
+        clamped = bind_anchor_to_surface(anchor, surface, mode="clamp")
+        self.assertAlmostEqual(sum(clamped.surface_coordinates.values()), 1.0)
+        self.assertTrue(clamped.metadata["surface_bindings"][-1]["clamped"])
 
     def test_bind_anchors_to_surfaces_applies_body_policy_and_failure_metadata(self) -> None:
         foot = ContactAnchorRecord(

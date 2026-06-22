@@ -4,6 +4,7 @@ from dataclasses import replace
 from typing import Iterable
 
 from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord
+from motion_edit.contact.surface_geometry import closest_point_on_polygon_uv, point_in_polygon_uv
 
 
 def _vector3(value: Iterable[float] | None, *, name: str) -> list[float] | None:
@@ -79,6 +80,21 @@ def _clamp(value: float, bounds: tuple[float, float] | None) -> tuple[float, boo
     lo, hi = bounds
     clamped = min(max(value, lo), hi)
     return clamped, clamped != value
+
+
+def _latest_surface_polygon(anchor: ContactAnchorRecord) -> list[tuple[float, float]]:
+    bindings = anchor.metadata.get("surface_bindings")
+    if not isinstance(bindings, list) or not bindings:
+        return []
+    raw = bindings[-1].get("polygon_surface_coordinates") if isinstance(bindings[-1], dict) else None
+    if not isinstance(raw, list) or len(raw) < 3:
+        return []
+    polygon: list[tuple[float, float]] = []
+    for item in raw:
+        if not isinstance(item, dict) or "u" not in item or "v" not in item:
+            return []
+        polygon.append((float(item["u"]), float(item["v"])))
+    return polygon
 
 
 def move_contact_anchor_free(
@@ -162,14 +178,25 @@ def move_contact_anchor_on_surface(
     else:
         raise ValueError("move_contact_anchor_on_surface requires tangent_delta, requested_world_delta, or new_surface_coordinates")
 
-    u_bounds = _bounds_for_axis(anchor.surface_bounds, "u")
-    v_bounds = _bounds_for_axis(anchor.surface_bounds, "v")
     raw_u, raw_v = target_u, target_v
-    target_u, clamped_u = _clamp(target_u, u_bounds)
-    target_v, clamped_v = _clamp(target_v, v_bounds)
-    clamped = clamped_u or clamped_v
-    if clamped and mode == "reject":
-        raise ValueError("requested contact anchor move leaves the original surface bounds")
+    polygon = _latest_surface_polygon(anchor)
+    if polygon:
+        inside = point_in_polygon_uv((target_u, target_v), polygon)
+        if not inside and mode == "reject":
+            raise ValueError("requested contact anchor move leaves the original surface polygon")
+        if inside:
+            clamped = False
+        else:
+            target_u, target_v = closest_point_on_polygon_uv((target_u, target_v), polygon)
+            clamped = True
+    else:
+        u_bounds = _bounds_for_axis(anchor.surface_bounds, "u")
+        v_bounds = _bounds_for_axis(anchor.surface_bounds, "v")
+        target_u, clamped_u = _clamp(target_u, u_bounds)
+        target_v, clamped_v = _clamp(target_v, v_bounds)
+        clamped = clamped_u or clamped_v
+        if clamped and mode == "reject":
+            raise ValueError("requested contact anchor move leaves the original surface bounds")
 
     after = {"u": target_u, "v": target_v}
     delta_u = target_u - start_u
