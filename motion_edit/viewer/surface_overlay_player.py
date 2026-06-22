@@ -1358,6 +1358,68 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
         status.value = text
         print(f"[contact editor setup] {text}")
 
+    def _start_loaded_editor() -> None:
+        if not str(motion.value).strip():
+            raise ValueError("motion_npz is required")
+        if not str(motion_id.value).strip():
+            raise ValueError("motion_id is required")
+        if not str(source_contact_layer.value).strip():
+            raise ValueError("source_contact_layer is required")
+        config = ContactEditorConfig(
+            motion=str(motion.value).strip(),
+            motion_id=str(motion_id.value).strip(),
+            source_contact_layer=str(source_contact_layer.value).strip(),
+            session_name=str(session_name.value).strip() or "contact_editor",
+            surface_catalog=str(surface_catalog.value).strip() or None,
+            terrain_urdf=str(terrain_urdf.value).strip() or None,
+            output_prefix=str(output_prefix.value).strip() or None,
+            edit_plan=str(edit_plan.value).strip() or None,
+            output_contact_layer=str(output_contact_layer.value).strip() or None,
+            repo_root=str(repo_root.value).strip() or None,
+            with_terrain=bool(with_terrain.value),
+            bind_mode=str(default_mode.value),
+            fps=int(args.fps),
+        )
+        prepared = prepare_contact_editor_workbench_session(config)
+        terrain_urdf_for_viewer = infer_terrain_urdf(config)
+        repo_path = Path(config.repo_root).expanduser() if config.repo_root else Path("/home/xiaz/holosoma_isaaclab3_newton")
+        robot_urdf = repo_path / "OmniRetarget_Dataset/models/g1/g1_29dof_spherehand.urdf"
+        status.value = (
+            f"Prepared {prepared.ready_anchor_count} anchors. Restarting loaded editor...\n"
+            f"session={prepared.session.session_dir}\n"
+            f"ready_layer={prepared.ready_layer}"
+        )
+        cmd = [
+            sys.executable,
+            "-m",
+            "motion_edit.viewer.surface_overlay_player",
+            "--qpos-npz",
+            str(Path(config.motion).expanduser().resolve()),
+            "--surface-binding-overlay",
+            str(prepared.session.overlay_path),
+            "--surface-editor-session",
+            str(prepared.session.session_dir / "session.json"),
+            "--surface-editor-requests",
+            str(prepared.session.request_path),
+            "--edit-mode",
+            str(args.edit_mode),
+            "--default-mode",
+            str(default_mode.value),
+            "--show-only",
+            str(show_only.value),
+            "--timeline-port",
+            str(args.timeline_port),
+            "--fps",
+            str(args.fps),
+        ]
+        if config.terrain_urdf and bool(with_terrain.value):
+            cmd.extend(["--object-urdf", config.terrain_urdf, "--with-terrain"])
+        elif terrain_urdf_for_viewer and bool(with_terrain.value):
+            cmd.extend(["--object-urdf", terrain_urdf_for_viewer, "--with-terrain"])
+        if robot_urdf.exists():
+            cmd.extend(["--robot-urdf", str(robot_urdf)])
+        pending_exec["cmd"] = cmd
+
     def _apply_selected_load_file(selected_type: str, selected_path: Path) -> None:
         selected = str(selected_path)
         if selected_type == "Motion":
@@ -1381,6 +1443,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
             if not str(output_prefix.value).strip():
                 output_prefix.value = f"contact/{record.motion_asset_id}_contact_editor"
             _set_status(f"loaded motion: {record.motion_asset_id}")
+            _start_loaded_editor()
         elif selected_type == "Motion NPZ":
             motion.value = selected
             if not str(motion_id.value).strip():
@@ -1443,66 +1506,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
     @load_btn.on_click
     def _(_) -> None:
         try:
-            if not str(motion.value).strip():
-                raise ValueError("motion_npz is required")
-            if not str(motion_id.value).strip():
-                raise ValueError("motion_id is required")
-            if not str(source_contact_layer.value).strip():
-                raise ValueError("source_contact_layer is required")
-            config = ContactEditorConfig(
-                motion=str(motion.value).strip(),
-                motion_id=str(motion_id.value).strip(),
-                source_contact_layer=str(source_contact_layer.value).strip(),
-                session_name=str(session_name.value).strip() or "contact_editor",
-                surface_catalog=str(surface_catalog.value).strip() or None,
-                terrain_urdf=str(terrain_urdf.value).strip() or None,
-                output_prefix=str(output_prefix.value).strip() or None,
-                edit_plan=str(edit_plan.value).strip() or None,
-                output_contact_layer=str(output_contact_layer.value).strip() or None,
-                repo_root=str(repo_root.value).strip() or None,
-                with_terrain=bool(with_terrain.value),
-                bind_mode=str(default_mode.value),
-                fps=int(args.fps),
-            )
-            prepared = prepare_contact_editor_workbench_session(config)
-            terrain_urdf_for_viewer = infer_terrain_urdf(config)
-            repo_path = Path(config.repo_root).expanduser() if config.repo_root else Path("/home/xiaz/holosoma_isaaclab3_newton")
-            robot_urdf = repo_path / "OmniRetarget_Dataset/models/g1/g1_29dof_spherehand.urdf"
-            status.value = (
-                f"Prepared {prepared.ready_anchor_count} anchors. Restarting loaded editor...\n"
-                f"session={prepared.session.session_dir}\n"
-                f"ready_layer={prepared.ready_layer}"
-            )
-            cmd = [
-                sys.executable,
-                "-m",
-                "motion_edit.viewer.surface_overlay_player",
-                "--qpos-npz",
-                str(Path(config.motion).expanduser().resolve()),
-                "--surface-binding-overlay",
-                str(prepared.session.overlay_path),
-                "--surface-editor-session",
-                str(prepared.session.session_dir / "session.json"),
-                "--surface-editor-requests",
-                str(prepared.session.request_path),
-                "--edit-mode",
-                str(args.edit_mode),
-                "--default-mode",
-                str(default_mode.value),
-                "--show-only",
-                str(show_only.value),
-                "--timeline-port",
-                str(args.timeline_port),
-                "--fps",
-                str(args.fps),
-            ]
-            if config.terrain_urdf and bool(with_terrain.value):
-                cmd.extend(["--object-urdf", config.terrain_urdf, "--with-terrain"])
-            elif terrain_urdf_for_viewer and bool(with_terrain.value):
-                cmd.extend(["--object-urdf", terrain_urdf_for_viewer, "--with-terrain"])
-            if robot_urdf.exists():
-                cmd.extend(["--robot-urdf", str(robot_urdf)])
-            pending_exec["cmd"] = cmd
+            _start_loaded_editor()
         except Exception as exc:
             _set_status(f"Load failed: {exc}")
 
