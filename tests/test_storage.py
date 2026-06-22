@@ -26,6 +26,7 @@ from motion_edit.storage import (
     read_token_catalog,
     replace_canonical_segments,
     update_canonical_segments,
+    upsert_motion_version_canonical_path,
     write_canonical_segments,
     write_motion_asset,
     write_motion_version,
@@ -53,6 +54,36 @@ class StorageSchemaTests(unittest.TestCase):
         self.assertEqual(loaded.motion_version_id, "climb00_raw")
         self.assertEqual(loaded.motion_path, "/motions/climb00.npz")
         self.assertEqual(loaded.contact_layer, "contact/force_contact")
+
+    def test_upsert_motion_version_canonical_path_preserves_existing_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            record = MotionVersionRecord(
+                motion_version_id="motion_a_aug",
+                motion_path="/motions/aug.npz",
+                kind="augmented",
+                motion_asset_id="motion_a",
+                parent_motion_version_id="motion_a_raw",
+                edit_plan_id="plan_a",
+                token_catalog_path="data/tokens/motion_a_aug.jsonl",
+                metadata={"quality": "draft"},
+            )
+            with mock.patch.object(storage_io, "MOTION_VERSIONS_ROOT", root / "motion_versions"):
+                write_motion_version(record)
+                updated = upsert_motion_version_canonical_path(
+                    "motion_a_aug",
+                    "data/segments/motion_a_aug.jsonl",
+                    contact_layer="contact/aug",
+                )
+
+        self.assertEqual(updated.kind, "augmented")
+        self.assertEqual(updated.motion_asset_id, "motion_a")
+        self.assertEqual(updated.parent_motion_version_id, "motion_a_raw")
+        self.assertEqual(updated.edit_plan_id, "plan_a")
+        self.assertEqual(updated.token_catalog_path, "data/tokens/motion_a_aug.jsonl")
+        self.assertEqual(updated.metadata, {"quality": "draft"})
+        self.assertEqual(updated.canonical_segment_path, "data/segments/motion_a_aug.jsonl")
+        self.assertEqual(updated.contact_layer, "contact/aug")
 
     def test_motion_asset_record_json_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

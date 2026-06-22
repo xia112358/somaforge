@@ -73,6 +73,36 @@ def read_motion_version(motion_version_id: str, path: str | Path | None = None) 
     return MotionVersionRecord(**data)
 
 
+def upsert_motion_version_canonical_path(
+    motion_version_id: str,
+    canonical_path: str | Path,
+    *,
+    contact_layer: str | None = None,
+    motion_path: str | None = None,
+) -> MotionVersionRecord:
+    try:
+        existing = read_motion_version(motion_version_id)
+    except FileNotFoundError:
+        if not motion_path:
+            raise ValueError(f"{motion_version_id}: motion_path is required to create a MotionVersionRecord")
+        existing = MotionVersionRecord(motion_version_id=motion_version_id, motion_path=motion_path)
+    record = MotionVersionRecord(
+        motion_version_id=existing.motion_version_id,
+        motion_path=motion_path or existing.motion_path,
+        kind=existing.kind,
+        base_motion_id=existing.base_motion_id,
+        motion_asset_id=existing.motion_asset_id,
+        parent_motion_version_id=existing.parent_motion_version_id,
+        contact_layer=contact_layer or existing.contact_layer,
+        canonical_segment_path=str(canonical_path),
+        token_catalog_path=existing.token_catalog_path,
+        edit_plan_id=existing.edit_plan_id,
+        metadata=dict(existing.metadata),
+    )
+    write_motion_version(record)
+    return record
+
+
 def _canonical_segment_records(motion_version_id: str, segments: Iterable[SegmentRecord]) -> list[dict]:
     records = []
     for segment in segments:
