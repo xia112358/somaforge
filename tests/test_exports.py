@@ -8,8 +8,15 @@ from pathlib import Path
 import numpy as np
 
 from motion_edit import cli
-from motion_edit.contact import contact_graph_from_masks
-from motion_edit.export import export_contact_overlay, export_cutter_segments, export_motion_manifest, export_split_npz
+from motion_edit.contact import ContactAnchorRecord, ContactGraph, ContactSurfaceRecord, contact_graph_from_masks
+from motion_edit.export import (
+    export_contact_overlay,
+    export_cutter_segments,
+    export_motion_manifest,
+    export_split_npz,
+    export_surface_binding_overlay,
+    export_surface_binding_report,
+)
 from motion_edit.io import read_jsonl
 from motion_edit.schema import SegmentRecord
 from motion_edit.storage import io as storage_io
@@ -67,6 +74,159 @@ def _contact_segment(motion_path: str) -> SegmentRecord:
 
 
 class ExportContactMetadataTests(unittest.TestCase):
+    def test_surface_binding_report_writes_summary_and_anchor_details(self) -> None:
+        surface = ContactSurfaceRecord(
+            motion_id="motion_a",
+            surface_id="box_0_top",
+            object_id="box_0",
+            surface_type="box_face",
+            origin=[0.0, 0.0, 0.0],
+            normal=[0.0, 0.0, 1.0],
+            tangent_u=[1.0, 0.0, 0.0],
+            tangent_v=[0.0, 1.0, 0.0],
+            bounds={"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+        )
+        graph = ContactGraph(
+            motion_id="motion_a",
+            anchors=[
+                ContactAnchorRecord(
+                    motion_id="motion_a",
+                    anchor_id="bound",
+                    body="LF",
+                    start_frame=0,
+                    end_frame=2,
+                    world_position=[0.1, 0.2, 0.0],
+                    object_id="box_0",
+                    surface_id="box_0_top",
+                    surface_type="box_face",
+                    surface_normal=[0.0, 0.0, 1.0],
+                    surface_bounds={"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+                    surface_coordinates={"u": 0.1, "v": 0.2},
+                    metadata={
+                        "surface_bindings": [
+                            {
+                                "original_world_position": [0.1, 0.2, 0.02],
+                                "projected_world_position": [0.1, 0.2, 0.0],
+                                "bound_world_position": [0.1, 0.2, 0.0],
+                                "signed_surface_distance": 0.02,
+                                "raw_surface_coordinates": {"u": 0.1, "v": 0.2},
+                                "surface_coordinates": {"u": 0.1, "v": 0.2},
+                                "clamped": False,
+                                "surface_binding_source": "test",
+                            }
+                        ]
+                    },
+                ),
+                ContactAnchorRecord(
+                    motion_id="motion_a",
+                    anchor_id="failed",
+                    body="LF",
+                    start_frame=0,
+                    end_frame=2,
+                    world_position=[2.0, 0.0, 0.0],
+                    metadata={"surface_binding_failed": True, "surface_binding_failure_reason": "no compatible surface"},
+                ),
+                ContactAnchorRecord(
+                    motion_id="motion_a",
+                    anchor_id="unbound",
+                    body="body_0",
+                    start_frame=0,
+                    end_frame=2,
+                    world_position=[0.0, 0.0, 0.0],
+                ),
+                ContactAnchorRecord(
+                    motion_id="motion_a",
+                    anchor_id="clamped",
+                    body="LF",
+                    start_frame=0,
+                    end_frame=2,
+                    world_position=[1.0, 0.0, 0.0],
+                    surface_id="box_0_top",
+                    surface_coordinates={"u": 1.0, "v": 0.0},
+                    metadata={
+                        "surface_bindings": [
+                            {
+                                "original_world_position": [2.0, 0.0, 0.0],
+                                "projected_world_position": [2.0, 0.0, 0.0],
+                                "bound_world_position": [1.0, 0.0, 0.0],
+                                "signed_surface_distance": 0.0,
+                                "raw_surface_coordinates": {"u": 2.0, "v": 0.0},
+                                "surface_coordinates": {"u": 1.0, "v": 0.0},
+                                "clamped": True,
+                                "surface_binding_source": "test",
+                            }
+                        ]
+                    },
+                ),
+            ],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            out = export_surface_binding_report(Path(tmp) / "report.json", graph=graph, surfaces=[surface])
+            report = json.loads(out.read_text(encoding="utf-8"))
+
+        self.assertEqual(report["schema_version"], 1)
+        self.assertEqual(report["summary"]["anchor_count"], 4)
+        self.assertEqual(report["summary"]["bound_count"], 2)
+        self.assertEqual(report["summary"]["failed_count"], 1)
+        self.assertEqual(report["summary"]["unbound_count"], 1)
+        self.assertEqual(report["summary"]["clamped_count"], 1)
+        by_id = {item["anchor_id"]: item for item in report["anchors"]}
+        self.assertEqual(by_id["bound"]["surface_id"], "box_0_top")
+        self.assertEqual(by_id["bound"]["surface_coordinates"], {"u": 0.1, "v": 0.2})
+        self.assertEqual(by_id["bound"]["binding"]["projected_world_position"], [0.1, 0.2, 0.0])
+        self.assertEqual(by_id["failed"]["status"], "failed")
+        self.assertEqual(by_id["unbound"]["status"], "unbound")
+        self.assertEqual(by_id["clamped"]["status"], "clamped")
+
+    def test_surface_binding_overlay_exports_quads_points_and_projection_lines(self) -> None:
+        surface = ContactSurfaceRecord(
+            motion_id="motion_a",
+            surface_id="box_0_top",
+            object_id="box_0",
+            surface_type="box_face",
+            origin=[0.0, 0.0, 0.0],
+            normal=[0.0, 0.0, 1.0],
+            tangent_u=[1.0, 0.0, 0.0],
+            tangent_v=[0.0, 1.0, 0.0],
+            bounds={"u": [-1.0, 1.0], "v": [-0.5, 0.5]},
+        )
+        graph = ContactGraph(
+            motion_id="motion_a",
+            anchors=[
+                ContactAnchorRecord(
+                    motion_id="motion_a",
+                    anchor_id="anchor_lf",
+                    body="LF",
+                    start_frame=0,
+                    end_frame=2,
+                    world_position=[0.1, 0.2, 0.0],
+                    surface_id="box_0_top",
+                    metadata={
+                        "surface_bindings": [
+                            {
+                                "original_world_position": [0.1, 0.2, 0.02],
+                                "bound_world_position": [0.1, 0.2, 0.0],
+                                "clamped": False,
+                            }
+                        ]
+                    },
+                )
+            ],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            out = export_surface_binding_overlay(Path(tmp) / "overlay.json", graph=graph, surfaces=[surface])
+            overlay = json.loads(out.read_text(encoding="utf-8"))
+
+        objects = overlay["objects"]
+        surface_quad = next(item for item in objects if item["type"] == "surface_quad")
+        anchor_point = next(item for item in objects if item["type"] == "anchor_point")
+        projection_line = next(item for item in objects if item["type"] == "projection_line")
+        self.assertEqual(surface_quad["corners"][0], [-1.0, -0.5, 0.0])
+        self.assertEqual(surface_quad["corners"][2], [1.0, 0.5, 0.0])
+        self.assertEqual(anchor_point["status"], "bound")
+        self.assertEqual(projection_line["from"], [0.1, 0.2, 0.02])
+        self.assertEqual(projection_line["to"], [0.1, 0.2, 0.0])
+
     def test_contact_overlay_export_writes_contact_graph(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
