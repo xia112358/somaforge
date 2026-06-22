@@ -876,6 +876,10 @@ def _cmd_surface_editor(args: argparse.Namespace) -> None:
         surface_editor_session=session.session_dir / "session.json",
         surface_editor_requests=session.request_path,
         surface_editor_edit_mode=args.edit_mode,
+        surface_editor_step_size=args.step_size,
+        surface_editor_default_mode=args.default_mode,
+        surface_editor_show_only=args.show_only,
+        surface_editor_select_anchor=args.select_anchor,
         prefer_local_surface_editor=not args.external_viewer,
     )
     print(f"viewer pid={process.pid}")
@@ -1208,6 +1212,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--with-terrain", action="store_true")
     p.add_argument("--save-on-exit", action="store_true")
     p.add_argument("--edit-mode", choices=("direct", "request"), default="direct")
+    p.add_argument("--step-size", type=float, default=0.02)
+    p.add_argument("--default-mode", choices=("reject", "clamp"), default="reject")
+    p.add_argument("--show-only", choices=("all", "bound", "edited", "clamped", "suspicious", "failed", "unbound"), default="all")
+    p.add_argument("--select-anchor", default=None)
     p.add_argument("--external-viewer", action="store_true", help="Use the legacy external Holosoma viewer instead of the local surface overlay adapter")
     p.set_defaults(func=_cmd_surface_editor)
 

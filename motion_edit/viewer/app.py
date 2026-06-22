@@ -54,6 +54,10 @@ def launch_viewer(
     surface_editor_session: str | Path | None = None,
     surface_editor_requests: str | Path | None = None,
     surface_editor_edit_mode: str = "direct",
+    surface_editor_step_size: float = 0.02,
+    surface_editor_default_mode: str = "reject",
+    surface_editor_show_only: str = "all",
+    surface_editor_select_anchor: str | None = None,
     prefer_local_surface_editor: bool = True,
 ) -> subprocess.Popen:
     if surface_binding_overlay is not None and prefer_local_surface_editor:
@@ -73,6 +77,12 @@ def launch_viewer(
             str(Path(surface_editor_requests).expanduser().resolve()),
             "--edit-mode",
             surface_editor_edit_mode,
+            "--step-size",
+            str(surface_editor_step_size),
+            "--default-mode",
+            surface_editor_default_mode,
+            "--show-only",
+            surface_editor_show_only,
             "--timeline-port",
             str(timeline_port),
             "--fps",
@@ -80,6 +90,8 @@ def launch_viewer(
         ]
         if with_terrain:
             cmd.append("--with-terrain")
+        if surface_editor_select_anchor:
+            cmd.extend(["--select-anchor", surface_editor_select_anchor])
         env = os.environ.copy()
         return subprocess.Popen(cmd, cwd=str(Path.cwd()), env=env)
 

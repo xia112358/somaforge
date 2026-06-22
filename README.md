@@ -211,11 +211,11 @@ The overlay export is a lightweight frontend-agnostic JSON file. It contains `su
 
 `surface-editor` is the Viser-connected entry point for anchor-level contact editing. It prepares a surface binding report, surface binding overlay, contact overlay, session state, request file, and pending edit file under `data/workbench/surface_sessions/<session_name>/`, then launches the local `motion_edit` Viser surface overlay adapter by default.
 
-The local adapter reads the existing overlay JSON and renders `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects in Viser. Its minimal GUI lets a user enter/select an anchor id, set `du`/`dv` surface-coordinate deltas, choose `reject` or `clamp`, click `Move anchor`, and refresh the overlay immediately. `Save edits` writes the moved ContactLayer and appends ContactEditPlan entries.
+The local adapter reads the existing overlay JSON and renders `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects in Viser. Its GUI supports anchor filtering, previous/next selection, first suspicious/unbound/edited selection, selected-anchor metadata, relative `du`/`dv` moves, step buttons, absolute target `u/v`, reject/clamp modes, undo/redo, reset/discard, reload, and explicit save.
 
 Interaction levels:
 
-- Level 1: local Viser direct editor. It renders the overlay, moves anchors from the Viser GUI, refreshes the overlay, and saves from the Viser GUI.
+- Level 1: local Viser direct editor. It renders the overlay, highlights the selected anchor, moves anchors from the Viser GUI, refreshes the overlay, supports undo/redo/reset, and saves from the Viser GUI.
 - Level 2: request bridge fallback. Run `surface-editor --edit-mode request`, click `Write move request`, then apply requests with `surface-editor-sync`.
 - Level 3: future true draggable 3D handles. Not implemented yet.
 
@@ -241,6 +241,14 @@ Edits remain anchor-level and surface-constrained. They use `move_contact_anchor
 ```
 
 In the Viser GUI, enter `anchor_id`, `du`, `dv`, and `mode`, click `Move anchor`, then click `Save edits`. No terminal sync is needed in default direct mode. `surface-editor-sync` remains available for request-mode fallback.
+
+Practical in-viewer workflow:
+
+1. Filter or select an anchor.
+2. Inspect the selected anchor metadata and surface binding.
+3. Move by `du`/`dv`, step buttons, or target `u/v`.
+4. Use `Undo`, `Redo`, `Reset session`, or `Discard unsaved edits` if needed.
+5. Click `Save edits`.
 
 Saving writes a moved ContactLayer and appends `ContactAnchorEditRecord` entries to the edit plan if configured. It does not modify the original motion `.npz`, does not generate LTE augmented motion, and does not mutate canonical segmentation.
 

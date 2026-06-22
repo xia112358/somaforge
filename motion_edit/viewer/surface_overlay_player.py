@@ -1,16 +1,27 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from motion_edit.contact.graph import ContactGraph
+from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord
 from motion_edit.paths import LAYERS_ROOT
-from motion_edit.workbench import move_surface_editor_anchor, read_surface_editor_session, save_surface_editor_session
+from motion_edit.workbench import (
+    move_surface_editor_anchor,
+    read_pending_surface_edits,
+    read_surface_editor_graph,
+    read_surface_editor_session,
+    save_surface_editor_session,
+    write_pending_surface_edits,
+    write_surface_editor_graph,
+)
 from motion_edit.workbench.surface_editor_session import SurfaceEditorSession
 
 
@@ -37,6 +48,230 @@ class SurfaceOverlayEditorState:
     last_message: str | None = None
     applied_edit_count: int = 0
     render_generation: int = 0
+
+
+@dataclass
+class SurfaceEditorController:
+    server: Any
+    state: SurfaceOverlayEditorState
+    render_handles: list[Any] = field(default_factory=list)
+    selected_anchor_id: str | None = None
+    undo_stack: list[tuple[ContactGraph, list[ContactAnchorEditRecord]]] = field(default_factory=list)
+    redo_stack: list[tuple[ContactGraph, list[ContactAnchorEditRecord]]] = field(default_factory=list)
+    last_overlay: dict[str, Any] = field(default_factory=dict)
+    original_graph: ContactGraph | None = None
+
+    @classmethod
+    def create(cls, server: Any, state: SurfaceOverlayEditorState) -> "SurfaceEditorController":
+        graph = read_surface_editor_graph(state.session)
+        overlay = load_surface_overlay(state.overlay_path)
+        controller = cls(server=server, state=state, last_overlay=overlay, original_graph=copy.deepcopy(graph))
+        controller.selected_anchor_id = controller.default_anchor_id()
+        controller.state.selected_anchor_id = controller.selected_anchor_id
+        return controller
+
+    def graph(self) -> ContactGraph:
+        return read_surface_editor_graph(self.state.session)
+
+    def pending_edits(self) -> list[ContactAnchorEditRecord]:
+        return read_pending_surface_edits(self.state.session)
+
+    def _snapshot(self) -> tuple[ContactGraph, list[ContactAnchorEditRecord]]:
+        return copy.deepcopy(self.graph()), copy.deepcopy(self.pending_edits())
+
+    def _restore(self, snapshot: tuple[ContactGraph, list[ContactAnchorEditRecord]]) -> None:
+        graph, edits = snapshot
+        write_surface_editor_graph(self.state.session, graph)
+        write_pending_surface_edits(self.state.session, edits)
+        self.reload_overlay()
+
+    def anchors(self) -> list[dict[str, Any]]:
+        overlay = load_surface_overlay(self.state.overlay_path)
+        return overlay_anchor_items(overlay)
+
+    def _anchor_obj(self, anchor_id: str | None = None) -> dict[str, Any] | None:
+        target = anchor_id or self.selected_anchor_id
+        if not target:
+            return None
+        for anchor in self.anchors():
+            if anchor.get("anchor_id") == target:
+                return anchor
+        return None
+
+    def _anchor_record(self, anchor_id: str | None = None) -> ContactAnchorRecord | None:
+        target = anchor_id or self.selected_anchor_id
+        if not target:
+            return None
+        for anchor in self.graph().anchors:
+            if anchor.anchor_id == target:
+                return anchor
+        return None
+
+    def default_anchor_id(self) -> str | None:
+        anchors = self.anchors()
+        for status in ("bound", "edited", "clamped", "suspicious"):
+            for anchor in anchors:
+                if anchor.get("status") == status:
+                    return str(anchor.get("anchor_id"))
+        return str(anchors[0].get("anchor_id")) if anchors else None
+
+    def filter_anchors(self, *, text: str = "", status: str = "all", surface: str = "") -> list[dict[str, Any]]:
+        text = text.strip().lower()
+        surface = surface.strip().lower()
+        out = []
+        for anchor in self.anchors():
+            haystack = " ".join(
+                str(anchor.get(key, ""))
+                for key in ("anchor_id", "body", "surface_id", "object_id")
+            ).lower()
+            if text and text not in haystack:
+                continue
+            if status != "all" and anchor.get("status") != status:
+                continue
+            if surface and surface not in str(anchor.get("surface_id", "")).lower():
+                continue
+            out.append(anchor)
+        return out
+
+    def select_anchor(self, anchor_id: str | None) -> str | None:
+        if not anchor_id:
+            return None
+        if self._anchor_obj(anchor_id) is None:
+            self.state.last_error = f"anchor not found: {anchor_id}"
+            return None
+        self.selected_anchor_id = anchor_id
+        self.state.selected_anchor_id = anchor_id
+        self.state.last_error = None
+        self.reload_overlay()
+        return anchor_id
+
+    def select_relative(self, offset: int, *, text: str = "", status: str = "all", surface: str = "") -> str | None:
+        anchors = self.filter_anchors(text=text, status=status, surface=surface)
+        if not anchors:
+            self.state.last_error = "no matching anchors"
+            return None
+        ids = [str(anchor.get("anchor_id")) for anchor in anchors]
+        current = self.selected_anchor_id if self.selected_anchor_id in ids else ids[0]
+        index = ids.index(current)
+        return self.select_anchor(ids[(index + offset) % len(ids)])
+
+    def select_first_status(self, status: str) -> str | None:
+        anchors = self.filter_anchors(status=status)
+        return self.select_anchor(str(anchors[0].get("anchor_id"))) if anchors else None
+
+    def selected_info_text(self) -> str:
+        anchor = self._anchor_obj()
+        record = self._anchor_record()
+        if anchor is None or record is None:
+            return "No anchor selected."
+        warnings = anchor.get("warnings") or []
+        coords = anchor.get("surface_coordinates") or record.surface_coordinates or {}
+        lines = [
+            f"anchor_id: {record.anchor_id}",
+            f"body: {record.body}",
+            f"frames: {record.start_frame} -> {record.end_frame}",
+            f"surface_id: {record.surface_id}",
+            f"object_id: {record.object_id}",
+            f"surface_type: {record.surface_type}",
+            f"world_position: {record.world_position}",
+            f"surface_coordinates: u={coords.get('u')} v={coords.get('v')}",
+            f"surface_bounds: {record.surface_bounds}",
+            f"status: {anchor.get('status')}",
+            f"warnings: {warnings}",
+            f"surface_binding_source: {record.surface_binding_source}",
+            "binding_granularity: anchor_point",
+            f"pending_edits: {len(self.pending_edits())}",
+            f"last_message: {self.state.last_message or ''}",
+            f"last_error: {self.state.last_error or ''}",
+        ]
+        return "\n".join(lines)
+
+    def current_surface_uv(self) -> tuple[float, float] | None:
+        record = self._anchor_record()
+        coords = record.surface_coordinates if record is not None else None
+        if not coords:
+            return None
+        return float(coords.get("u", 0.0)), float(coords.get("v", 0.0))
+
+    def move_selected(self, *, tangent_delta: list[float], mode: str) -> dict[str, Any]:
+        if not self.selected_anchor_id:
+            raise ValueError("no anchor selected")
+        before = self._snapshot()
+        try:
+            result = apply_direct_anchor_move(
+                self.state,
+                anchor_id=self.selected_anchor_id,
+                tangent_delta=tangent_delta,
+                mode=mode,
+            )
+        except Exception as exc:
+            self.state.last_error = str(exc)
+            self._restore(before)
+            raise
+        self.undo_stack.append(before)
+        self.redo_stack.clear()
+        self.reload_overlay()
+        return result
+
+    def move_selected_to_uv(self, *, target_u: float, target_v: float, mode: str) -> dict[str, Any]:
+        current = self.current_surface_uv()
+        if current is None:
+            raise ValueError("selected anchor has no surface coordinates")
+        du = float(target_u) - current[0]
+        dv = float(target_v) - current[1]
+        return self.move_selected(tangent_delta=[du, dv], mode=mode)
+
+    def undo(self) -> bool:
+        if not self.undo_stack:
+            self.state.last_message = "nothing to undo"
+            return False
+        current = self._snapshot()
+        previous = self.undo_stack.pop()
+        self.redo_stack.append(current)
+        self._restore(previous)
+        self.state.last_message = "undone"
+        return True
+
+    def redo(self) -> bool:
+        if not self.redo_stack:
+            self.state.last_message = "nothing to redo"
+            return False
+        current = self._snapshot()
+        next_snapshot = self.redo_stack.pop()
+        self.undo_stack.append(current)
+        self._restore(next_snapshot)
+        self.state.last_message = "redone"
+        return True
+
+    def reset(self) -> None:
+        if self.original_graph is None:
+            raise ValueError("original graph is unavailable")
+        self.undo_stack.append(self._snapshot())
+        self.redo_stack.clear()
+        write_surface_editor_graph(self.state.session, copy.deepcopy(self.original_graph))
+        write_pending_surface_edits(self.state.session, [])
+        self.state.last_message = "reset session"
+        self.reload_overlay()
+
+    def discard(self) -> None:
+        self.reset()
+        self.state.last_message = "discarded unsaved edits"
+
+    def save(self, *, layers_root: Path = LAYERS_ROOT) -> Path | None:
+        return save_editor_state(self.state, layers_root=layers_root)
+
+    def reload_overlay(self) -> dict[str, Any]:
+        self.state.render_generation += 1
+        self.last_overlay = load_surface_overlay(self.state.overlay_path)
+        if self.server is not None:
+            _remove_handles(self.render_handles)
+            self.render_handles = _render_overlay(
+                self.server,
+                self.last_overlay,
+                namespace=f"/surface_editor/render_{self.state.render_generation:06d}",
+                selected_anchor_id=self.selected_anchor_id,
+            )
+        return self.last_overlay
 
 
 def load_editor_state(session_path: str | Path) -> SurfaceOverlayEditorState:
@@ -151,12 +386,13 @@ def _remove_handles(handles: list[Any]) -> None:
             remove()
 
 
-def _render_overlay(server: Any, overlay: dict[str, Any], *, namespace: str = "/surface_editor") -> list[Any]:
+def _render_overlay(server: Any, overlay: dict[str, Any], *, namespace: str = "/surface_editor", selected_anchor_id: str | None = None) -> list[Any]:
     handles: list[Any] = []
     line_points: list[list[list[float]]] = []
     line_colors: list[list[tuple[int, int, int]]] = []
     anchor_points: list[list[float]] = []
     anchor_colors: list[tuple[int, int, int]] = []
+    selected_points: list[list[float]] = []
 
     for obj in overlay.get("objects", []):
         obj_type = obj.get("type")
@@ -184,8 +420,11 @@ def _render_overlay(server: Any, overlay: dict[str, Any], *, namespace: str = "/
             line_points.append([obj["from"], obj["to"]])
             line_colors.append([color, color])
         elif obj_type == "anchor_point":
-            anchor_points.append(obj["position"])
-            anchor_colors.append(color)
+            if selected_anchor_id and obj.get("anchor_id") == selected_anchor_id:
+                selected_points.append(obj["position"])
+            else:
+                anchor_points.append(obj["position"])
+                anchor_colors.append(color)
 
     if line_points:
         handle = server.scene.add_line_segments(
@@ -202,6 +441,16 @@ def _render_overlay(server: Any, overlay: dict[str, Any], *, namespace: str = "/
             points=np.asarray(anchor_points, dtype=np.float32),
             colors=np.asarray(anchor_colors, dtype=np.uint8),
             point_size=0.06,
+            point_shape="circle",
+            visible=True,
+        )
+        handles.append(handle)
+    if selected_points:
+        handle = server.scene.add_point_cloud(
+            f"{namespace}/selected_anchor",
+            points=np.asarray(selected_points, dtype=np.float32),
+            colors=np.asarray([STATUS_COLORS["selected"] for _ in selected_points], dtype=np.uint8),
+            point_size=0.12,
             point_shape="circle",
             visible=True,
         )
@@ -243,28 +492,99 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
             line_width=1.5,
             visible=True,
         )
-    render_handles = {"value": _render_overlay(server, overlay)}
+    controller = SurfaceEditorController.create(server, state)
+    if args.select_anchor:
+        controller.select_anchor(args.select_anchor)
+    controller.render_handles = _render_overlay(server, overlay, selected_anchor_id=controller.selected_anchor_id)
+    anchor_ids = [str(anchor.get("anchor_id", "")) for anchor in controller.anchors() if anchor.get("anchor_id")]
+    selected_default = controller.selected_anchor_id or (anchor_ids[0] if anchor_ids else "")
 
-    def _refresh_overlay() -> dict[str, Any]:
-        state.render_generation += 1
-        next_overlay = load_surface_overlay(state.overlay_path)
-        _remove_handles(render_handles["value"])
-        render_handles["value"] = _render_overlay(server, next_overlay, namespace=f"/surface_editor/render_{state.render_generation:06d}")
-        return next_overlay
-
-    anchors = overlay_anchor_items(overlay)
-    anchor_ids = [str(anchor.get("anchor_id", "")) for anchor in anchors if anchor.get("anchor_id")]
-    selected_default = anchor_ids[0] if anchor_ids else ""
     with server.gui.add_folder("Surface Anchor Editor"):
+        anchor_filter = server.gui.add_text("filter", initial_value="")
+        surface_filter = server.gui.add_text("surface_filter", initial_value="")
+        status_filter = server.gui.add_dropdown(
+            "status_filter",
+            options=("all", "bound", "edited", "clamped", "suspicious", "failed", "unbound"),
+            initial_value=args.show_only,
+        )
         anchor_id = server.gui.add_text("anchor_id", initial_value=selected_default)
         du = server.gui.add_number("du", initial_value=0.0, step=0.01)
         dv = server.gui.add_number("dv", initial_value=0.0, step=0.01)
-        mode = server.gui.add_dropdown("mode", options=("reject", "clamp"), initial_value="reject")
+        step_size = server.gui.add_number("step_size", initial_value=float(args.step_size), step=0.005)
+        target_u = server.gui.add_number("target_u", initial_value=0.0, step=0.01)
+        target_v = server.gui.add_number("target_v", initial_value=0.0, step=0.01)
+        mode = server.gui.add_dropdown("mode", options=("reject", "clamp"), initial_value=args.default_mode)
         move_btn = server.gui.add_button("Move anchor" if args.edit_mode == "direct" else "Write move request")
+        move_to_uv_btn = server.gui.add_button("Move to u/v")
+        plus_u_btn = server.gui.add_button("+u")
+        minus_u_btn = server.gui.add_button("-u")
+        plus_v_btn = server.gui.add_button("+v")
+        minus_v_btn = server.gui.add_button("-v")
+        prev_btn = server.gui.add_button("Select previous")
+        next_btn = server.gui.add_button("Select next")
+        find_btn = server.gui.add_button("Find anchors")
+        first_suspicious_btn = server.gui.add_button("First suspicious")
+        first_unbound_btn = server.gui.add_button("First unbound")
+        first_edited_btn = server.gui.add_button("First edited")
+        undo_btn = server.gui.add_button("Undo")
+        redo_btn = server.gui.add_button("Redo")
+        reset_btn = server.gui.add_button("Reset session")
+        discard_btn = server.gui.add_button("Discard unsaved edits")
         request_btn = server.gui.add_button("Write request only")
         reload_btn = server.gui.add_button("Reload overlay")
         save_btn = server.gui.add_button("Save edits")
         status_text = server.gui.add_text("status", initial_value="ready")
+        matches_text = server.gui.add_text("matches", initial_value="")
+        info_text = server.gui.add_text("selected_info", initial_value=controller.selected_info_text())
+
+    def _filters() -> dict[str, str]:
+        return {
+            "text": str(anchor_filter.value),
+            "status": str(status_filter.value),
+            "surface": str(surface_filter.value),
+        }
+
+    def _sync_selected_fields() -> None:
+        anchor_id.value = controller.selected_anchor_id or ""
+        current = controller.current_surface_uv()
+        if current is not None:
+            target_u.value = current[0]
+            target_v.value = current[1]
+        info_text.value = controller.selected_info_text()
+
+    def _set_status(text: str) -> None:
+        status_text.value = text
+        info_text.value = controller.selected_info_text()
+
+    def _refresh_and_sync() -> None:
+        controller.reload_overlay()
+        _sync_selected_fields()
+
+    def _move_delta(delta: list[float]) -> None:
+        if args.edit_mode == "request":
+            if not str(anchor_id.value).strip():
+                _set_status("error: no anchor_id selected")
+                return
+            request = append_move_request(
+                args.surface_editor_requests,
+                anchor_id=str(anchor_id.value).strip(),
+                tangent_delta=delta,
+                mode=str(mode.value),
+            )
+            _set_status(f"request written: {request['request_id']}")
+            print(f"[surface editor] wrote request {request['request_id']} anchor={request['anchor_id']}")
+            return
+        try:
+            if str(anchor_id.value).strip() != controller.selected_anchor_id:
+                controller.select_anchor(str(anchor_id.value).strip())
+            result = controller.move_selected(tangent_delta=delta, mode=str(mode.value))
+            _refresh_and_sync()
+            _set_status(f"moved {result['anchor_id']} delta={result['delta_world']}")
+            print(f"[surface editor] moved anchor={result['anchor_id']} edit={result['edit_id']}")
+        except Exception as exc:
+            state.last_error = str(exc)
+            _set_status(f"error: {exc}")
+            print(f"[surface editor] move failed anchor={anchor_id.value}: {exc}")
 
     @move_btn.on_click
     def _(_) -> None:
@@ -272,31 +592,118 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
             print("[surface editor] no anchor_id selected")
             status_text.value = "error: no anchor_id selected"
             return
-        if args.edit_mode == "request":
-            request = append_move_request(
-                args.surface_editor_requests,
-                anchor_id=str(anchor_id.value).strip(),
-                tangent_delta=[float(du.value), float(dv.value)],
-                mode=str(mode.value),
-            )
-            status_text.value = f"request written: {request['request_id']}"
-            print(f"[surface editor] wrote request {request['request_id']} anchor={request['anchor_id']}")
-            print(f"[surface editor] apply with: motion-edit surface-editor-sync --session {args.surface_editor_session}")
-            return
+        _move_delta([float(du.value), float(dv.value)])
+
+    @move_to_uv_btn.on_click
+    def _(_) -> None:
         try:
-            result = apply_direct_anchor_move(
-                state,
-                anchor_id=str(anchor_id.value).strip(),
-                tangent_delta=[float(du.value), float(dv.value)],
+            if str(anchor_id.value).strip() != controller.selected_anchor_id:
+                controller.select_anchor(str(anchor_id.value).strip())
+            if args.edit_mode == "request":
+                current = controller.current_surface_uv()
+                if current is None:
+                    raise ValueError("selected anchor has no surface coordinates")
+                _move_delta([float(target_u.value) - current[0], float(target_v.value) - current[1]])
+                return
+            result = controller.move_selected_to_uv(
+                target_u=float(target_u.value),
+                target_v=float(target_v.value),
                 mode=str(mode.value),
             )
-            _refresh_overlay()
-            status_text.value = f"moved {result['anchor_id']} delta={result['delta_world']}"
+            _refresh_and_sync()
+            _set_status(f"moved {result['anchor_id']} delta={result['delta_world']}")
             print(f"[surface editor] moved anchor={result['anchor_id']} edit={result['edit_id']}")
         except Exception as exc:
             state.last_error = str(exc)
-            status_text.value = f"error: {exc}"
+            _set_status(f"error: {exc}")
             print(f"[surface editor] move failed anchor={anchor_id.value}: {exc}")
+
+    @plus_u_btn.on_click
+    def _(_) -> None:
+        _move_delta([float(step_size.value), 0.0])
+
+    @minus_u_btn.on_click
+    def _(_) -> None:
+        _move_delta([-float(step_size.value), 0.0])
+
+    @plus_v_btn.on_click
+    def _(_) -> None:
+        _move_delta([0.0, float(step_size.value)])
+
+    @minus_v_btn.on_click
+    def _(_) -> None:
+        _move_delta([0.0, -float(step_size.value)])
+
+    @find_btn.on_click
+    def _(_) -> None:
+        matches = controller.filter_anchors(**_filters())
+        matches_text.value = "\n".join(str(item.get("anchor_id")) for item in matches[:20]) or "<none>"
+        if matches:
+            controller.select_anchor(str(matches[0].get("anchor_id")))
+            _refresh_and_sync()
+        _set_status(f"matches={len(matches)}")
+
+    @prev_btn.on_click
+    def _(_) -> None:
+        controller.select_relative(-1, **_filters())
+        _refresh_and_sync()
+        _set_status(f"selected {controller.selected_anchor_id}")
+
+    @next_btn.on_click
+    def _(_) -> None:
+        controller.select_relative(1, **_filters())
+        _refresh_and_sync()
+        _set_status(f"selected {controller.selected_anchor_id}")
+
+    @first_suspicious_btn.on_click
+    def _(_) -> None:
+        controller.select_first_status("suspicious")
+        _refresh_and_sync()
+        _set_status(f"selected {controller.selected_anchor_id}")
+
+    @first_unbound_btn.on_click
+    def _(_) -> None:
+        controller.select_first_status("unbound")
+        _refresh_and_sync()
+        _set_status(f"selected {controller.selected_anchor_id}")
+
+    @first_edited_btn.on_click
+    def _(_) -> None:
+        controller.select_first_status("edited")
+        _refresh_and_sync()
+        _set_status(f"selected {controller.selected_anchor_id}")
+
+    @undo_btn.on_click
+    def _(_) -> None:
+        controller.undo()
+        _refresh_and_sync()
+        _set_status(controller.state.last_message or "undo")
+
+    @redo_btn.on_click
+    def _(_) -> None:
+        controller.redo()
+        _refresh_and_sync()
+        _set_status(controller.state.last_message or "redo")
+
+    @reset_btn.on_click
+    def _(_) -> None:
+        try:
+            controller.reset()
+            _refresh_and_sync()
+            _set_status("reset session")
+        except Exception as exc:
+            state.last_error = str(exc)
+            _set_status(f"reset error: {exc}")
+
+    @discard_btn.on_click
+    def _(_) -> None:
+        try:
+            controller.discard()
+            _refresh_and_sync()
+            _set_status("discarded unsaved edits")
+        except Exception as exc:
+            state.last_error = str(exc)
+            _set_status(f"discard error: {exc}")
 
     @request_btn.on_click
     def _(_) -> None:
@@ -314,18 +721,19 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
 
     @reload_btn.on_click
     def _(_) -> None:
-        next_overlay = _refresh_overlay()
-        status_text.value = f"reloaded overlay objects={len(next_overlay.get('objects', []))}"
+        next_overlay = controller.reload_overlay()
+        _sync_selected_fields()
+        _set_status(f"reloaded overlay objects={len(next_overlay.get('objects', []))}")
 
     @save_btn.on_click
     def _(_) -> None:
         try:
-            out = save_editor_state(state)
-            status_text.value = f"saved: {out}"
+            out = controller.save()
+            _set_status(f"saved: {out}")
             print(f"[surface editor] saved output_contact_layer={out}")
         except Exception as exc:
             state.last_error = str(exc)
-            status_text.value = f"save error: {exc}"
+            _set_status(f"save error: {exc}")
             print(f"[surface editor] save failed: {exc}")
 
     print(f"[surface editor] overlay={args.surface_binding_overlay}")
@@ -346,6 +754,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--surface-editor-session", required=True)
     parser.add_argument("--surface-editor-requests", required=True)
     parser.add_argument("--edit-mode", choices=("direct", "request"), default="direct")
+    parser.add_argument("--step-size", type=float, default=0.02)
+    parser.add_argument("--default-mode", choices=("reject", "clamp"), default="reject")
+    parser.add_argument("--show-only", choices=("all", "bound", "edited", "clamped", "suspicious", "failed", "unbound"), default="all")
+    parser.add_argument("--select-anchor", default=None)
     parser.add_argument("--viser-port", type=int, default=None)
     parser.add_argument("--timeline-port", type=int, default=8094)
     parser.add_argument("--fps", type=int, default=50)

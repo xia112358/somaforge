@@ -50,8 +50,10 @@ from motion_edit.viewer.surface_overlay_player import (
     load_editor_state,
     load_surface_overlay,
     save_editor_state,
+    SurfaceEditorController,
     surface_quad_corners,
 )
+from motion_edit.workbench.surface_editor_session import read_pending_surface_edits
 
 
 def _segment() -> SegmentRecord:
@@ -248,6 +250,10 @@ class SurfaceEditorSessionTests(unittest.TestCase):
                             "with_terrain": False,
                             "save_on_exit": False,
                             "edit_mode": "direct",
+                            "step_size": 0.02,
+                            "default_mode": "reject",
+                            "show_only": "all",
+                            "select_anchor": None,
                             "external_viewer": False,
                         },
                     )()
@@ -264,6 +270,9 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertTrue(str(launch_kwargs["surface_binding_overlay"]).endswith("motion_a.surface_binding_overlay.json"))
         self.assertTrue(str(launch_kwargs["surface_editor_requests"]).endswith("motion_a.surface_editor_requests.jsonl"))
         self.assertEqual(launch_kwargs["surface_editor_edit_mode"], "direct")
+        self.assertEqual(launch_kwargs["surface_editor_step_size"], 0.02)
+        self.assertEqual(launch_kwargs["surface_editor_default_mode"], "reject")
+        self.assertEqual(launch_kwargs["surface_editor_show_only"], "all")
         self.assertFalse(launch_kwargs["prefer_local_surface_editor"] is False)
         self.assertEqual(motion_bytes, b"original")
         self.assertTrue(report_exists)
@@ -309,6 +318,10 @@ class SurfaceEditorSessionTests(unittest.TestCase):
                             "with_terrain": False,
                             "save_on_exit": True,
                             "edit_mode": "direct",
+                            "step_size": 0.02,
+                            "default_mode": "reject",
+                            "show_only": "all",
+                            "select_anchor": None,
                             "external_viewer": False,
                         },
                     )()
@@ -516,6 +529,155 @@ class SurfaceEditorSessionTests(unittest.TestCase):
                     tangent_delta=[0.3, 0.0],
                     mode="reject",
                 )
+            pending = read_pending_surface_edits(session)
+
+        self.assertEqual(pending, [])
+
+    def test_surface_overlay_direct_move_clamps_out_of_bounds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True], [True], [False]]),
+                body_pos_w=np.asarray([[[0.0, 0.0, 0.0]], [[0.0, 0.0, 0.0]], [[0.0, 0.0, 0.0]]]),
+                body_names=["LF"],
+            )
+            anchor = graph.anchors[0]
+            bound_anchor = type(anchor)(
+                **{
+                    **anchor.__dict__,
+                    "surface_id": "top",
+                    "surface_normal": [0.0, 0.0, 1.0],
+                    "surface_origin": [0.0, 0.0, 0.0],
+                    "surface_tangent_u": [1.0, 0.0, 0.0],
+                    "surface_tangent_v": [0.0, 1.0, 0.0],
+                    "surface_bounds": {"u": [-0.1, 0.1], "v": [-0.1, 0.1]},
+                    "surface_coordinates": {"u": 0.0, "v": 0.0},
+                }
+            )
+            graph = type(graph)(motion_id="motion_a", events=graph.events, anchors=[bound_anchor], patches=graph.patches, transitions=graph.transitions)
+            write_contact_layer(root / "layers" / "contact" / "bound", graph)
+            session = prepare_surface_editor_session(
+                motion_path=str(root / "motion_a.npz"),
+                motion_id="motion_a",
+                contact_layer="contact/bound",
+                surface_catalog=None,
+                session_name="surface_clamp",
+                layers_root=root / "layers",
+                workbench_root=root / "workbench",
+            )
+            state = load_editor_state(session.session_dir / "session.json")
+            result = apply_direct_anchor_move(
+                state,
+                anchor_id=bound_anchor.anchor_id,
+                tangent_delta=[0.3, 0.0],
+                mode="clamp",
+            )
+            moved = read_contact_graph(session.contact_layer_snapshot, "motion_a").anchors[0]
+            pending = read_pending_surface_edits(session)
+
+        np.testing.assert_allclose(moved.world_position, [0.1, 0.0, 0.0])
+        self.assertEqual(len(pending), 1)
+        self.assertTrue(pending[0].clamped)
+        np.testing.assert_allclose(result["delta_world"], [0.1, 0.0, 0.0])
+
+    def test_surface_editor_controller_select_filter_move_undo_redo_reset_save(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True, True], [True, True], [False, False]]),
+                body_pos_w=np.asarray(
+                    [
+                        [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]],
+                        [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]],
+                        [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]],
+                    ]
+                ),
+                body_names=["LF", "RF"],
+            )
+            first, second = graph.anchors
+            unbound_first = first
+            bound_second = type(second)(
+                **{
+                    **second.__dict__,
+                    "surface_id": "top",
+                    "surface_normal": [0.0, 0.0, 1.0],
+                    "surface_origin": [0.0, 0.0, 0.0],
+                    "surface_tangent_u": [1.0, 0.0, 0.0],
+                    "surface_tangent_v": [0.0, 1.0, 0.0],
+                    "surface_bounds": {"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+                    "surface_coordinates": {"u": 0.5, "v": 0.0},
+                    "metadata": {
+                        **second.metadata,
+                        "surface_bindings": [
+                            {
+                                "original_world_position": [0.5, 0.0, 0.0],
+                                "projected_world_position": [0.5, 0.0, 0.0],
+                                "bound_world_position": [0.5, 0.0, 0.0],
+                                "signed_surface_distance": 0.0,
+                                "raw_surface_coordinates": {"u": 0.5, "v": 0.0},
+                                "surface_coordinates": {"u": 0.5, "v": 0.0},
+                                "clamped": False,
+                            }
+                        ],
+                    },
+                }
+            )
+            graph = type(graph)(motion_id="motion_a", events=graph.events, anchors=[unbound_first, bound_second], patches=graph.patches, transitions=graph.transitions)
+            write_contact_layer(root / "layers" / "contact" / "bound", graph)
+            plan_path = root / "plan.json"
+            session = prepare_surface_editor_session(
+                motion_path=str(root / "motion_a.npz"),
+                motion_id="motion_a",
+                contact_layer="contact/bound",
+                surface_catalog=None,
+                session_name="surface_controller",
+                edit_plan_path=str(plan_path),
+                output_contact_layer="contact/edited",
+                layers_root=root / "layers",
+                workbench_root=root / "workbench",
+            )
+            state = load_editor_state(session.session_dir / "session.json")
+            controller = SurfaceEditorController.create(None, state)
+            initial_selected = controller.selected_anchor_id
+            bound_matches = controller.filter_anchors(status="bound")
+            unbound_matches = controller.filter_anchors(status="unbound")
+            info = controller.selected_info_text()
+            move_result = controller.move_selected(tangent_delta=[0.1, 0.0], mode="reject")
+            moved = read_contact_graph(session.contact_layer_snapshot, "motion_a").anchors[1]
+            pending_after_move = read_pending_surface_edits(session)
+            undo_ok = controller.undo()
+            undone = read_contact_graph(session.contact_layer_snapshot, "motion_a").anchors[1]
+            pending_after_undo = read_pending_surface_edits(session)
+            redo_ok = controller.redo()
+            redone = read_contact_graph(session.contact_layer_snapshot, "motion_a").anchors[1]
+            controller.reset()
+            reset = read_contact_graph(session.contact_layer_snapshot, "motion_a").anchors[1]
+            pending_after_reset = read_pending_surface_edits(session)
+            controller.move_selected(tangent_delta=[0.2, 0.0], mode="reject")
+            out = controller.save(layers_root=root / "layers")
+            saved = read_contact_graph(root / "layers" / "contact" / "edited", "motion_a").anchors[1]
+            plan = read_contact_edit_plan(plan_path)
+
+        self.assertEqual(initial_selected, bound_second.anchor_id)
+        self.assertEqual(len(bound_matches), 1)
+        self.assertEqual(len(unbound_matches), 1)
+        self.assertIn("surface_id: top", info)
+        np.testing.assert_allclose(move_result["delta_world"], [0.1, 0.0, 0.0])
+        np.testing.assert_allclose(moved.world_position, [0.6, 0.0, 0.0])
+        self.assertEqual(len(pending_after_move), 1)
+        self.assertTrue(undo_ok)
+        np.testing.assert_allclose(undone.world_position, [0.5, 0.0, 0.0])
+        self.assertEqual(len(pending_after_undo), 0)
+        self.assertTrue(redo_ok)
+        np.testing.assert_allclose(redone.world_position, [0.6, 0.0, 0.0])
+        np.testing.assert_allclose(reset.world_position, [0.5, 0.0, 0.0])
+        self.assertEqual(len(pending_after_reset), 0)
+        self.assertEqual(out, root / "layers" / "contact" / "edited")
+        np.testing.assert_allclose(saved.world_position, [0.7, 0.0, 0.0])
+        self.assertEqual(plan.status, "draft")
+        self.assertEqual(len(plan.edits), 1)
 
     def test_surface_overlay_helper_reuses_or_computes_corners(self) -> None:
         corners = surface_quad_corners(

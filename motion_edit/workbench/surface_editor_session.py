@@ -170,6 +170,22 @@ def _load_session_surfaces(session: SurfaceEditorSession) -> list[ContactSurface
     return []
 
 
+def read_surface_editor_graph(session: SurfaceEditorSession) -> ContactGraph:
+    return _load_session_graph(session)
+
+
+def write_surface_editor_graph(session: SurfaceEditorSession, graph: ContactGraph) -> None:
+    surfaces = _load_session_surfaces(session)
+    write_contact_layer(session.contact_layer_snapshot, graph)
+    export_surface_binding_report(session.report_path, graph=graph, surfaces=surfaces)
+    export_surface_binding_overlay(session.overlay_path, graph=graph, surfaces=surfaces)
+    export_contact_overlay(session.contact_overlay_path, graph)
+
+
+def write_pending_surface_edits(session: SurfaceEditorSession, edits: Iterable[ContactAnchorEditRecord]) -> None:
+    write_contact_jsonl(session.pending_edits_path, list(edits))
+
+
 def move_surface_editor_anchor(
     session: SurfaceEditorSession,
     *,
@@ -197,12 +213,8 @@ def move_surface_editor_anchor(
         else:
             edited_anchors.append(anchor)
     moved_graph = replace(moved_graph, anchors=edited_anchors, patches=patches_from_anchors(edited_anchors))
-    surfaces = _load_session_surfaces(session)
-    write_contact_layer(session.contact_layer_snapshot, moved_graph)
-    write_contact_jsonl(session.pending_edits_path, [*read_pending_surface_edits(session), edit])
-    export_surface_binding_report(session.report_path, graph=moved_graph, surfaces=surfaces)
-    export_surface_binding_overlay(session.overlay_path, graph=moved_graph, surfaces=surfaces)
-    export_contact_overlay(session.contact_overlay_path, moved_graph)
+    write_surface_editor_graph(session, moved_graph)
+    write_pending_surface_edits(session, [*read_pending_surface_edits(session), edit])
     return moved_graph, edit
 
 
