@@ -209,9 +209,11 @@ The overlay export is a lightweight frontend-agnostic JSON file. It contains `su
 
 ## Interactive Surface Editor
 
-`surface-editor` is the Viser-connected entry point for anchor-level contact editing. It prepares a surface binding report, surface binding overlay, contact overlay, session state, and pending edit file under `data/workbench/surface_sessions/<session_name>/`, then launches the existing Holosoma/Viser motion viewer.
+`surface-editor` is the Viser-connected entry point for anchor-level contact editing. It prepares a surface binding report, surface binding overlay, contact overlay, session state, request file, and pending edit file under `data/workbench/surface_sessions/<session_name>/`, then launches the local `motion_edit` Viser surface overlay adapter by default.
 
-Current external Holosoma `viser_player.py` supports the motion viewer, terrain/object display, contact force display, timeline wrapper, and cutter segment JSONL, but it does not yet accept a surface overlay argument or expose draggable 3D anchor handles. For this reason, `surface-editor` currently uses a fallback file bridge: it writes the overlay/report artifacts and launches the viewer without changing the external viewer. The prepared overlay can be rendered by a future Viser patch using `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects.
+The local adapter reads the existing overlay JSON and renders `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects in Viser. Its minimal GUI lets a user enter/select an anchor id, set `du`/`dv` surface-coordinate deltas, choose `reject` or `clamp`, and write a move request. Requests are applied by `surface-editor-sync`, which routes every move through the same surface-constrained backend as `move-contact-anchor`.
+
+The older external Holosoma viewer can still be used with `--external-viewer`, but it is no longer required for the surface overlay bridge. Direct draggable 3D handles are not claimed yet; this first in-viewer interaction is an explicit Viser control panel plus request/sync bridge.
 
 Edits remain anchor-level and surface-constrained. They use `move_contact_anchor_on_surface`, never allow normal displacement, never jump to another surface, and do not model full foot sole contact, toe/heel rolling, pressure, or physical sticking.
 
@@ -223,8 +225,14 @@ Edits remain anchor-level and surface-constrained. They use `move_contact_anchor
   --session-name climb00_surface \
   --edit-plan data/workbench/climb00_surface_edits.json \
   --output-contact-layer contact/climb00_surface_edited \
-  --repo-root /path/to/holosoma_repo \
   --with-terrain
+
+~/motion_edit/motion-edit surface-editor-sync \
+  --session data/workbench/surface_sessions/climb00_surface/session.json
+
+~/motion_edit/motion-edit surface-editor-sync \
+  --session data/workbench/surface_sessions/climb00_surface/session.json \
+  --save
 
 ~/motion_edit/motion-edit surface-editor-move-anchor \
   --session data/workbench/surface_sessions/climb00_surface/session.json \
