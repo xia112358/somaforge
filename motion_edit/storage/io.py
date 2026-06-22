@@ -5,9 +5,13 @@ from pathlib import Path
 from typing import Iterable
 
 from motion_edit.io import read_jsonl, segment_from_dict, segment_to_dict, write_jsonl
-from motion_edit.paths import MOTION_VERSIONS_ROOT, SEGMENTS_ROOT, TOKENS_ROOT
+from motion_edit.paths import MOTION_ASSETS_ROOT, MOTION_VERSIONS_ROOT, SEGMENTS_ROOT, TOKENS_ROOT
 from motion_edit.schema import SegmentRecord
-from motion_edit.storage.schema import MotionVersionRecord, TokenRecord
+from motion_edit.storage.schema import MotionAssetRecord, MotionVersionRecord, TokenRecord
+
+
+def motion_asset_path(motion_asset_id: str) -> Path:
+    return MOTION_ASSETS_ROOT / f"{motion_asset_id}.json"
 
 
 def motion_version_path(motion_version_id: str) -> Path:
@@ -20,6 +24,26 @@ def canonical_segment_path(motion_version_id: str) -> Path:
 
 def token_catalog_path(motion_version_id: str) -> Path:
     return TOKENS_ROOT / f"{motion_version_id}.jsonl"
+
+
+def write_motion_asset(record: MotionAssetRecord, path: str | Path | None = None) -> Path:
+    out = Path(path).expanduser() if path is not None else motion_asset_path(record.motion_asset_id)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(record.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+    return out
+
+
+def read_motion_asset(motion_asset_id: str, path: str | Path | None = None) -> MotionAssetRecord:
+    source = Path(path).expanduser() if path is not None else motion_asset_path(motion_asset_id)
+    data = json.loads(source.read_text(encoding="utf-8"))
+    return MotionAssetRecord(**data)
+
+
+def list_motion_assets(root: str | Path | None = None) -> list[MotionAssetRecord]:
+    source = Path(root).expanduser() if root is not None else MOTION_ASSETS_ROOT
+    if not source.exists():
+        return []
+    return [read_motion_asset(path.stem, path) for path in sorted(source.glob("*.json"))]
 
 
 def write_motion_version(record: MotionVersionRecord, path: str | Path | None = None) -> Path:

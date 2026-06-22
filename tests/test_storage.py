@@ -14,12 +14,16 @@ from motion_edit.layers import write_layer
 from motion_edit.schema import SegmentRecord
 from motion_edit.storage import io as storage_io
 from motion_edit.storage import (
+    MotionAssetRecord,
     MotionVersionRecord,
     TokenRecord,
+    list_motion_assets,
     read_canonical_segments,
+    read_motion_asset,
     read_motion_version,
     read_token_catalog,
     write_canonical_segments,
+    write_motion_asset,
     write_motion_version,
     write_token_catalog,
 )
@@ -44,6 +48,24 @@ class StorageSchemaTests(unittest.TestCase):
         self.assertEqual(loaded.motion_version_id, "climb00_raw")
         self.assertEqual(loaded.motion_path, "/motions/climb00.npz")
         self.assertEqual(loaded.contact_layer, "contact/force_contact")
+
+    def test_motion_asset_record_json_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "assets" / "climb00.json"
+            record = MotionAssetRecord(
+                motion_asset_id="climb00",
+                motion_path="/motions/climb00.npz",
+                source="local",
+                fps=50.0,
+            )
+            write_motion_asset(record, path)
+            loaded = read_motion_asset("climb00", path)
+            listed = list_motion_assets(path.parent)
+
+        self.assertEqual(loaded.motion_asset_id, "climb00")
+        self.assertEqual(loaded.motion_path, "/motions/climb00.npz")
+        self.assertEqual(loaded.fps, 50.0)
+        self.assertEqual([item.motion_asset_id for item in listed], ["climb00"])
 
     def test_canonical_segments_write_read_adds_motion_version_id(self) -> None:
         segment = SegmentRecord(
@@ -145,6 +167,7 @@ class StorageSchemaTests(unittest.TestCase):
                 mock.patch.object(paths, "CATALOGS_ROOT", root / "catalogs"),
                 mock.patch.object(paths, "LAYERS_ROOT", root / "layers"),
                 mock.patch.object(paths, "MOTIONS_ROOT", root / "motions"),
+                mock.patch.object(paths, "MOTION_ASSETS_ROOT", root / "motion_assets"),
                 mock.patch.object(paths, "MOTION_VERSIONS_ROOT", root / "motion_versions"),
                 mock.patch.object(paths, "SEGMENTS_ROOT", root / "segments"),
                 mock.patch.object(paths, "TOKENS_ROOT", root / "tokens"),
@@ -156,10 +179,49 @@ class StorageSchemaTests(unittest.TestCase):
 
             self.assertTrue((root / "motions" / "raw").is_dir())
             self.assertTrue((root / "motions" / "generated").is_dir())
+            self.assertTrue((root / "motion_assets").is_dir())
             self.assertTrue((root / "motion_versions").is_dir())
             self.assertTrue((root / "segments").is_dir())
             self.assertTrue((root / "tokens").is_dir())
             self.assertTrue((root / "exports" / "split_npz").is_dir())
+
+    def test_register_motion_asset_cli_writes_reference_without_copying_motion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            motion = root / "motion_a.npz"
+            motion.write_bytes(b"source-motion")
+            with (
+                mock.patch.object(paths, "CATALOGS_ROOT", root / "catalogs"),
+                mock.patch.object(paths, "LAYERS_ROOT", root / "layers"),
+                mock.patch.object(paths, "MOTIONS_ROOT", root / "motions"),
+                mock.patch.object(paths, "MOTION_ASSETS_ROOT", root / "motion_assets"),
+                mock.patch.object(paths, "MOTION_VERSIONS_ROOT", root / "motion_versions"),
+                mock.patch.object(paths, "SEGMENTS_ROOT", root / "segments"),
+                mock.patch.object(paths, "TOKENS_ROOT", root / "tokens"),
+                mock.patch.object(paths, "EXPORTS_ROOT", root / "exports"),
+                mock.patch.object(paths, "WORKBENCH_ROOT", root / "workbench"),
+                mock.patch.object(paths, "BACKUPS_ROOT", root / "backups"),
+                mock.patch.object(storage_io, "MOTION_ASSETS_ROOT", root / "motion_assets"),
+            ):
+                cli._cmd_register_motion_asset(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "motion_asset_id": "motion_a",
+                            "motion": str(motion),
+                            "fps": 50.0,
+                            "source": "local",
+                        },
+                    )()
+                )
+                loaded = read_motion_asset("motion_a")
+
+            self.assertEqual(motion.read_bytes(), b"source-motion")
+            self.assertFalse((root / "motions" / "raw" / "motion_a.npz").exists())
+
+        self.assertEqual(loaded.motion_path, str(motion))
+        self.assertEqual(loaded.source, "local")
 
     def test_build_canonical_segmentation_from_contact_transitions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

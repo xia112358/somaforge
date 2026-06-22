@@ -25,7 +25,8 @@ from .contact import (
 from .contact.generation import apply_contact_edit_plan_to_motion
 from .contact.layers import read_contact_graph
 from .storage.canonical import build_canonical_segments, mark_canonical_segment_status, write_motion_version_with_canonical_segments
-from .storage.io import read_canonical_segments, write_canonical_segments, write_token_catalog
+from .storage.io import read_canonical_segments, write_canonical_segments, write_motion_asset, write_token_catalog
+from .storage.schema import MotionAssetRecord
 from .storage.tokens import build_tokens_from_segments
 from .viewer import launch_viewer
 from .workbench import (
@@ -165,6 +166,18 @@ def _cmd_generate_lte_augmentation(args: argparse.Namespace) -> None:
         raise ValueError("contact edit plan must be validated or locked; pass --allow-draft to override")
     output = apply_contact_edit_plan_to_motion(plan, output_motion_path=args.output_motion, mode=args.mode)
     print(f"generated LTE augmentation {output}")
+
+
+def _cmd_register_motion_asset(args: argparse.Namespace) -> None:
+    ensure_data_dirs()
+    record = MotionAssetRecord(
+        motion_asset_id=args.motion_asset_id,
+        motion_path=str(Path(args.motion).expanduser()),
+        source=args.source,
+        fps=args.fps,
+    )
+    out = write_motion_asset(record)
+    print(f"registered motion asset {record.motion_asset_id} path={out}")
 
 
 def _source_segments_for_motion(source: str | None, motion_id: str) -> list:
@@ -586,6 +599,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--allow-draft", action="store_true")
     p.add_argument("--mode", default="stub")
     p.set_defaults(func=_cmd_generate_lte_augmentation)
+
+    p = sub.add_parser("register-motion-asset")
+    p.add_argument("--motion-asset-id", required=True)
+    p.add_argument("--motion", required=True)
+    p.add_argument("--fps", type=float, default=None)
+    p.add_argument("--source", default="local")
+    p.set_defaults(func=_cmd_register_motion_asset)
 
     p = sub.add_parser("build-canonical-segmentation")
     p.add_argument("--motion-version-id", required=True)
