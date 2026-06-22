@@ -357,6 +357,7 @@ def _cmd_filter_contact_anchors(args: argparse.Namespace) -> None:
         max_gap=args.max_gap,
         max_distance=args.max_distance,
         neighbor_classes=neighbor_classes,
+        drop_classes=set(args.drop_class or []),
         source=args.source,
     )
     out_layer = write_contact_layer(LAYERS_ROOT / args.output_contact_layer, filtered_graph)
@@ -1236,6 +1237,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-gap", type=int, default=2)
     p.add_argument("--max-distance", type=float, default=0.08)
     p.add_argument("--neighbor-class", action="append", choices=("top", "ground"))
+    p.add_argument("--drop-class", action="append", choices=("raw_missing", "edge_candidate", "outside_known_surfaces"))
     p.add_argument("--source", default="filter_short_raw_missing")
     p.set_defaults(func=_cmd_filter_contact_anchors)
 

@@ -851,6 +851,53 @@ class ContactEventTests(unittest.TestCase):
         self.assertEqual([anchor.anchor_id for anchor in filtered.anchors], ["top", "long_raw_missing"])
         self.assertEqual(events[0]["anchor_id"], "noise")
 
+    def test_filter_contact_anchors_can_drop_binding_classes(self) -> None:
+        anchors = [
+            ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="raw",
+                body="left_foot",
+                start_frame=0,
+                end_frame=20,
+                world_position=[0.0, 0.0, 0.0],
+                metadata={"raw_contact_position_refinement": {"binding_candidate_class": "raw_missing"}},
+            ),
+            ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="edge",
+                body="left_foot",
+                start_frame=30,
+                end_frame=35,
+                world_position=[0.0, 0.0, 0.0],
+                metadata={"raw_contact_position_refinement": {"binding_candidate_class": "edge_candidate"}},
+            ),
+            ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="top",
+                body="left_foot",
+                start_frame=40,
+                end_frame=80,
+                world_position=[0.0, 0.0, 0.0],
+                metadata={"raw_contact_position_refinement": {"binding_candidate_class": "top"}},
+            ),
+            ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="outside",
+                body="left_foot",
+                start_frame=90,
+                end_frame=100,
+                world_position=[0.0, 0.0, 0.0],
+                metadata={"raw_contact_position_refinement": {"binding_candidate_class": "outside_known_surfaces"}},
+            ),
+        ]
+        graph = contact_graph_from_masks(motion_id="motion_a", contact_mask=None)
+        graph = graph.__class__(motion_id="motion_a", anchors=anchors)
+
+        filtered, events = filter_short_raw_missing_anchors(graph, drop_classes={"raw_missing", "edge_candidate"})
+
+        self.assertEqual([anchor.anchor_id for anchor in filtered.anchors], ["top", "outside"])
+        self.assertEqual([event["binding_candidate_class"] for event in events], ["raw_missing", "edge_candidate"])
+
     def test_filter_contact_anchors_cli_writes_layer_and_events(self) -> None:
         anchors = [
             ContactAnchorRecord(
@@ -890,6 +937,7 @@ class ContactEventTests(unittest.TestCase):
                             "max_gap": 2,
                             "max_distance": 0.08,
                             "neighbor_class": None,
+                            "drop_class": None,
                             "source": "test",
                         },
                     )()

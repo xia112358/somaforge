@@ -139,9 +139,11 @@ def filter_short_raw_missing_anchors(
     max_gap: int = 2,
     max_distance: float = 0.08,
     neighbor_classes: set[str] | None = None,
+    drop_classes: set[str] | None = None,
     source: str = "filter_short_raw_missing",
 ) -> tuple[ContactGraph, list[dict]]:
     allowed_neighbors = DEFAULT_MERGE_CLASSES if neighbor_classes is None else set(neighbor_classes)
+    direct_drop_classes = set(drop_classes or [])
     anchors = sorted(graph.anchors, key=lambda anchor: (anchor.body, anchor.start_frame, anchor.end_frame, anchor.anchor_id))
     drop_ids: set[str] = set()
     events: list[dict] = []
@@ -150,7 +152,24 @@ def filter_short_raw_missing_anchors(
         by_body.setdefault(anchor.body, []).append(anchor)
     for body_anchors in by_body.values():
         for index, anchor in enumerate(body_anchors):
-            if _binding_candidate_class(anchor) != "raw_missing":
+            anchor_class = _binding_candidate_class(anchor)
+            if anchor_class in direct_drop_classes:
+                drop_ids.add(anchor.anchor_id)
+                events.append(
+                    {
+                        "kind": "filter_contact_anchor",
+                        "source": source,
+                        "anchor_id": anchor.anchor_id,
+                        "body": anchor.body,
+                        "start_frame": anchor.start_frame,
+                        "end_frame": anchor.end_frame,
+                        "duration": anchor.end_frame - anchor.start_frame,
+                        "binding_candidate_class": anchor_class,
+                        "reason": f"drop binding candidate class {anchor_class}",
+                    }
+                )
+                continue
+            if anchor_class != "raw_missing":
                 continue
             duration = anchor.end_frame - anchor.start_frame
             if duration > max_duration:
