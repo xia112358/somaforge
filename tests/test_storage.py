@@ -9,7 +9,7 @@ import numpy as np
 
 from motion_edit import cli, paths
 from motion_edit.contact import contact_graph_from_masks, write_contact_layer
-from motion_edit.io import write_jsonl
+from motion_edit.io import read_jsonl, write_jsonl
 from motion_edit.layers import write_layer
 from motion_edit.schema import SegmentRecord
 from motion_edit.storage import io as storage_io
@@ -17,11 +17,15 @@ from motion_edit.storage import (
     MotionAssetRecord,
     MotionVersionRecord,
     TokenRecord,
+    canonical_history_event_path,
+    canonical_segmentation_exists,
     list_motion_assets,
     read_canonical_segments,
     read_motion_asset,
     read_motion_version,
     read_token_catalog,
+    replace_canonical_segments,
+    update_canonical_segments,
     write_canonical_segments,
     write_motion_asset,
     write_motion_version,
@@ -87,6 +91,53 @@ class StorageSchemaTests(unittest.TestCase):
         self.assertEqual(len(loaded), 1)
         self.assertEqual(loaded[0].segment_id, "seg_0")
         self.assertEqual(loaded[0].metadata["motion_version_id"], "climb00_raw")
+
+    def test_replace_and_update_canonical_segments_use_single_active_file_and_history(self) -> None:
+        original = SegmentRecord(
+            motion_id="motion_a",
+            segment_id="seg_0",
+            start_frame=0,
+            end_frame=2,
+            source="canonical",
+        )
+        replacement = SegmentRecord(
+            motion_id="motion_a",
+            segment_id="seg_1",
+            start_frame=2,
+            end_frame=4,
+            source="canonical",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(storage_io, "SEGMENTS_ROOT", root / "segments"):
+                self.assertFalse(canonical_segmentation_exists("motion_a_raw"))
+                write_canonical_segments("motion_a_raw", [original])
+                self.assertTrue(canonical_segmentation_exists("motion_a_raw"))
+                replace_canonical_segments(
+                    "motion_a_raw",
+                    [replacement],
+                    reason="reset for test",
+                    source="test",
+                    kind="reset",
+                )
+                loaded = read_canonical_segments("motion_a_raw")
+                update_canonical_segments(
+                    "motion_a_raw",
+                    lambda segments: [SegmentRecord(**{**segments[0].__dict__, "status": "manual"})],
+                    reason="manual update",
+                    source="test",
+                    kind="manual_update",
+                )
+                updated = read_canonical_segments("motion_a_raw")
+                active_files = sorted(path.name for path in (root / "segments").glob("motion_a_raw*.jsonl"))
+                backup_files = sorted(path.name for path in (root / "segments" / "history" / "motion_a_raw").glob("*.jsonl"))
+                history_events = read_jsonl(canonical_history_event_path("motion_a_raw"))
+
+        self.assertEqual([segment.segment_id for segment in loaded], ["seg_1"])
+        self.assertEqual(updated[0].status, "manual")
+        self.assertEqual(active_files, ["motion_a_raw.jsonl"])
+        self.assertEqual(backup_files, ["000000.jsonl", "000002.jsonl"])
+        self.assertEqual([event["kind"] for event in history_events], ["backup_canonical_segmentation", "reset", "backup_canonical_segmentation", "manual_update"])
 
     def test_segment_motion_version_helpers(self) -> None:
         segment = SegmentRecord(
