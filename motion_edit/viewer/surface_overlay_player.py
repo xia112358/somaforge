@@ -60,6 +60,32 @@ BODY_COLORS: dict[str, tuple[int, int, int]] = {
 
 
 @dataclass
+class MotionPlaybackController:
+    n_frames: int
+    current_frame: dict[str, float]
+    playing: dict[str, bool]
+    apply_frame: Any
+    frame_slider: Any
+    frame_text: Any
+
+    def frame(self) -> int:
+        return int(np.clip(round(float(self.current_frame["value"])), 0, max(0, self.n_frames - 1)))
+
+    def set_frame(self, frame: int) -> None:
+        next_frame = int(np.clip(frame, 0, max(0, self.n_frames - 1)))
+        self.current_frame["value"] = float(next_frame)
+        self.frame_slider.value = next_frame
+        self.apply_frame(next_frame)
+        self.frame_text.value = f"{next_frame} / {max(0, self.n_frames - 1)}"
+
+    def step(self, amount: int) -> None:
+        self.set_frame(self.frame() + int(amount))
+
+    def toggle(self) -> None:
+        self.playing["value"] = not self.playing["value"]
+
+
+@dataclass
 class SurfaceOverlayEditorState:
     session_path: Path
     session: SurfaceEditorSession
@@ -85,6 +111,7 @@ class SurfaceEditorController:
     on_change: Any = None
     drag_mode_getter: Any = None
     edit_mode: str = "direct"
+    current_frame_getter: Any = None
 
     @classmethod
     def create(cls, server: Any, state: SurfaceOverlayEditorState) -> "SurfaceEditorController":
@@ -149,9 +176,17 @@ class SurfaceEditorController:
                     return str(anchor.get("anchor_id"))
         return str(anchors[0].get("anchor_id")) if anchors else None
 
-    def filter_anchors(self, *, text: str = "", status: str = "all", surface: str = "") -> list[dict[str, Any]]:
+    def filter_anchors(
+        self,
+        *,
+        text: str = "",
+        status: str = "all",
+        surface: str = "",
+        current_only: bool = False,
+    ) -> list[dict[str, Any]]:
         text = text.strip().lower()
         surface = surface.strip().lower()
+        current_frame = int(self.current_frame_getter()) if current_only and callable(self.current_frame_getter) else None
         out = []
         for anchor in self.anchors():
             haystack = " ".join(
@@ -164,6 +199,10 @@ class SurfaceEditorController:
                 continue
             if surface and surface not in str(anchor.get("surface_id", "")).lower():
                 continue
+            if current_frame is not None:
+                record = self._anchor_record(str(anchor.get("anchor_id")))
+                if record is None or not (record.start_frame <= current_frame <= record.end_frame):
+                    continue
             out.append(anchor)
         return out
 
@@ -184,8 +223,16 @@ class SurfaceEditorController:
             self.on_change()
         return anchor_id
 
-    def select_relative(self, offset: int, *, text: str = "", status: str = "all", surface: str = "") -> str | None:
-        anchors = self.filter_anchors(text=text, status=status, surface=surface)
+    def select_relative(
+        self,
+        offset: int,
+        *,
+        text: str = "",
+        status: str = "all",
+        surface: str = "",
+        current_only: bool = False,
+    ) -> str | None:
+        anchors = self.filter_anchors(text=text, status=status, surface=surface, current_only=current_only)
         if not anchors:
             self.state.last_error = "no matching anchors"
             return None
@@ -798,6 +845,74 @@ def _layer_name_from_path(path: str | Path) -> str:
     return rel.as_posix()
 
 
+def _contact_editor_config_from_motion_asset(path: str | Path) -> ContactEditorConfig:
+    selected_path = Path(path).expanduser()
+    record = read_motion_asset(selected_path.stem, selected_path)
+    derived = record.derived or {}
+    source_contact_layer = derived.get("bound_contact_layer") or derived.get("contact_layer")
+    if not source_contact_layer:
+        raise ValueError(f"motion has no derived contact layer: {record.motion_asset_id}")
+    return ContactEditorConfig(
+        motion=record.motion_path,
+        motion_id=record.motion_id or record.motion_asset_id,
+        source_contact_layer=source_contact_layer,
+        session_name=f"{record.motion_asset_id}_contact_editor",
+        surface_catalog=record.surface_catalog_path,
+        terrain_urdf=record.terrain_urdf,
+        output_prefix=f"contact/{record.motion_asset_id}_contact_editor",
+        edit_plan=derived.get("edit_plan_path"),
+        output_contact_layer=derived.get("output_contact_layer"),
+        repo_root=None,
+        with_terrain=bool(record.terrain_urdf),
+        fps=int(record.fps or 50),
+    )
+
+
+def _loaded_editor_command_from_config(
+    config: ContactEditorConfig,
+    *,
+    timeline_port: int,
+    edit_mode: str,
+    default_mode: str,
+    show_only: str,
+    fps: int,
+    robot_urdf: str | Path | None = None,
+) -> tuple[list[str], Any]:
+    prepared = prepare_contact_editor_workbench_session(config)
+    terrain_urdf_for_viewer = infer_terrain_urdf(config)
+    repo_path = Path(config.repo_root).expanduser() if config.repo_root else Path("/home/xiaz/holosoma_isaaclab3_newton")
+    resolved_robot_urdf = Path(robot_urdf).expanduser() if robot_urdf else repo_path / "OmniRetarget_Dataset/models/g1/g1_29dof_spherehand.urdf"
+    cmd = [
+        sys.executable,
+        "-m",
+        "motion_edit.viewer.surface_overlay_player",
+        "--qpos-npz",
+        str(Path(config.motion).expanduser().resolve()),
+        "--surface-binding-overlay",
+        str(prepared.session.overlay_path),
+        "--surface-editor-session",
+        str(prepared.session.session_dir / "session.json"),
+        "--surface-editor-requests",
+        str(prepared.session.request_path),
+        "--edit-mode",
+        str(edit_mode),
+        "--default-mode",
+        str(default_mode),
+        "--show-only",
+        str(show_only),
+        "--timeline-port",
+        str(timeline_port),
+        "--fps",
+        str(fps or config.fps),
+    ]
+    object_urdf = config.terrain_urdf or terrain_urdf_for_viewer
+    if object_urdf and config.with_terrain:
+        cmd.extend(["--object-urdf", str(object_urdf), "--with-terrain"])
+    if resolved_robot_urdf.exists():
+        cmd.extend(["--robot-urdf", str(resolved_robot_urdf)])
+    return cmd, prepared
+
+
 def _safe_name(text: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"_", "-", "."} else "_" for ch in text)
 
@@ -1048,7 +1163,7 @@ def _add_motion_playback(
     fps: int,
     robot_urdf: str | Path | None,
     object_urdf: str | Path | None = None,
-) -> list[Any]:
+) -> tuple[list[Any], MotionPlaybackController | None]:
     handles: list[Any] = []
     if object_urdf:
         object_path = Path(object_urdf)
@@ -1056,13 +1171,13 @@ def _add_motion_playback(
             handles.extend(_add_static_urdf(server, root_name="/object", urdf_path=object_path))
     if robot_urdf is None or not Path(robot_urdf).exists():
         print("[surface editor] robot_urdf missing; showing root trace only")
-        return handles
+        return handles, None
     try:
         import yourdfpy  # type: ignore[import-untyped]
         from viser.extras import ViserUrdf  # type: ignore[import-not-found]
     except ImportError as exc:
         print(f"[surface editor] robot playback unavailable: {exc}")
-        return handles
+        return handles, None
 
     robot_root = server.scene.add_frame("/robot", show_axes=False)
     robot = yourdfpy.URDF.load(str(robot_urdf), load_meshes=True, build_scene_graph=True)
@@ -1086,21 +1201,42 @@ def _add_motion_playback(
         if q.shape[0] >= 7 + robot_dof:
             viser_robot.update_cfg(q[7 : 7 + robot_dof])
 
-    with server.gui.add_folder("Motion Playback"):
+    with server.gui.add_folder("Timeline"):
         frame_slider = server.gui.add_slider("frame", min=0, max=max(0, n_frames - 1), step=1, initial_value=0)
+        frame_text = server.gui.add_text("current_frame", initial_value=f"0 / {max(0, n_frames - 1)}")
         play_btn = server.gui.add_button("Play / Pause")
+        prev_btn = server.gui.add_button("Previous frame")
+        next_btn = server.gui.add_button("Next frame")
         fps_in = server.gui.add_number("fps", initial_value=int(fps), min=1, max=240, step=1)
         loop_cb = server.gui.add_checkbox("loop", initial_value=True)
+
+    playback = MotionPlaybackController(
+        n_frames=n_frames,
+        current_frame=current_frame,
+        playing=playing,
+        apply_frame=_apply_frame,
+        frame_slider=frame_slider,
+        frame_text=frame_text,
+    )
 
     @frame_slider.on_update
     def _(_) -> None:
         frame = int(np.clip(int(frame_slider.value), 0, max(0, n_frames - 1)))
         current_frame["value"] = float(frame)
         _apply_frame(frame)
+        frame_text.value = f"{frame} / {max(0, n_frames - 1)}"
 
     @play_btn.on_click
     def _(_) -> None:
-        playing["value"] = not playing["value"]
+        playback.toggle()
+
+    @prev_btn.on_click
+    def _(_) -> None:
+        playback.step(-1)
+
+    @next_btn.on_click
+    def _(_) -> None:
+        playback.step(1)
 
     def _play_loop() -> None:
         tick = time.perf_counter()
@@ -1122,12 +1258,13 @@ def _add_motion_playback(
             frame = int(np.clip(round(current_frame["value"]), 0, n_frames - 1))
             frame_slider.value = frame
             _apply_frame(frame)
+            frame_text.value = f"{frame} / {max(0, n_frames - 1)}"
             time.sleep(0.01)
 
     _apply_frame(0)
     thread = threading.Thread(target=_play_loop, daemon=True)
     thread.start()
-    return handles
+    return handles, playback
 
 
 def run_surface_overlay_player(args: argparse.Namespace) -> None:
@@ -1148,13 +1285,14 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
     server.scene.add_grid("/grid", width=8.0, height=8.0, position=(0.0, 0.0, 0.0))
 
     qpos, motion_fps = load_motion_sequence(args.qpos_npz)
-    _add_motion_playback(
+    playback_handles, playback = _add_motion_playback(
         server,
         qpos=qpos,
         fps=int(args.fps or motion_fps),
         robot_urdf=args.robot_urdf,
         object_urdf=args.object_urdf if args.with_terrain else None,
     )
+    _ = playback_handles
     motion_points = qpos[:, :3] if qpos.shape[1] >= 3 else np.zeros((0, 3), dtype=np.float32)
     if motion_points.shape[0] > 1:
         server.scene.add_line_segments(
@@ -1166,12 +1304,22 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
         )
     controller = SurfaceEditorController.create(server, state)
     controller.edit_mode = args.edit_mode
+    controller.current_frame_getter = playback.frame if playback is not None else (lambda: 0)
     if args.select_anchor:
         controller.select_anchor(args.select_anchor)
     anchor_ids = [str(anchor.get("anchor_id", "")) for anchor in controller.anchors() if anchor.get("anchor_id")]
     selected_default = controller.selected_anchor_id or (anchor_ids[0] if anchor_ids else "")
 
-    with server.gui.add_folder("Surface Anchor Editor"):
+    with server.gui.add_folder("Motion"):
+        current_motion = server.gui.add_text("current_motion", initial_value=str(args.qpos_npz))
+        current_session = server.gui.add_text("session", initial_value=str(state.session.session_dir))
+        load_motion_btn = server.gui.add_button("Load Motion...")
+        reload_motion_btn = server.gui.add_button("Reload current")
+        save_motion_btn = server.gui.add_button("Save edits")
+        discard_motion_btn = server.gui.add_button("Discard unsaved edits")
+        motion_status = server.gui.add_text("status", initial_value="ready", multiline=True)
+
+    with server.gui.add_folder("Anchor Selection"):
         anchor_filter = server.gui.add_text("filter", initial_value="")
         surface_filter = server.gui.add_text("surface_filter", initial_value="")
         status_filter = server.gui.add_dropdown(
@@ -1179,6 +1327,7 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
             options=("all", "bound", "edited", "clamped", "suspicious", "failed", "unbound"),
             initial_value=args.show_only,
         )
+        current_frame_only = server.gui.add_checkbox("current_frame_only", initial_value=False)
         anchor_id = server.gui.add_text("anchor_id", initial_value=selected_default)
         mode = server.gui.add_dropdown("mode", options=("reject", "clamp"), initial_value=args.default_mode)
         prev_btn = server.gui.add_button("Select previous")
@@ -1187,12 +1336,12 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
         first_suspicious_btn = server.gui.add_button("First suspicious")
         first_unbound_btn = server.gui.add_button("First unbound")
         first_edited_btn = server.gui.add_button("First edited")
+
+    with server.gui.add_folder("Selected Anchor"):
         undo_btn = server.gui.add_button("Undo")
         redo_btn = server.gui.add_button("Redo")
         reset_btn = server.gui.add_button("Reset session")
-        discard_btn = server.gui.add_button("Discard unsaved edits")
         reload_btn = server.gui.add_button("Reload overlay")
-        save_btn = server.gui.add_button("Save edits")
         status_text = server.gui.add_text("status", initial_value="ready")
         matches_text = server.gui.add_text("matches", initial_value="")
         info_text = server.gui.add_text("selected_info", initial_value=controller.selected_info_text())
@@ -1202,6 +1351,7 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
             "text": str(anchor_filter.value),
             "status": str(status_filter.value),
             "surface": str(surface_filter.value),
+            "current_only": bool(current_frame_only.value),
         }
 
     def _sync_selected_fields() -> None:
@@ -1213,6 +1363,7 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
 
     def _set_status(text: str) -> None:
         status_text.value = text
+        motion_status.value = text
         info_text.value = controller.selected_info_text()
 
     def _refresh_and_sync() -> None:
@@ -1280,8 +1431,7 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
             state.last_error = str(exc)
             _set_status(f"reset error: {exc}")
 
-    @discard_btn.on_click
-    def _(_) -> None:
+    def _discard_unsaved() -> None:
         try:
             controller.discard()
             _refresh_and_sync()
@@ -1290,14 +1440,17 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
             state.last_error = str(exc)
             _set_status(f"discard error: {exc}")
 
+    @discard_motion_btn.on_click
+    def _(_) -> None:
+        _discard_unsaved()
+
     @reload_btn.on_click
     def _(_) -> None:
         next_overlay = controller.reload_overlay()
         _sync_selected_fields()
         _set_status(f"reloaded overlay objects={len(next_overlay.get('objects', []))}")
 
-    @save_btn.on_click
-    def _(_) -> None:
+    def _save_edits() -> None:
         try:
             out = controller.save()
             _set_status(f"saved: {out}")
@@ -1306,6 +1459,46 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
             state.last_error = str(exc)
             _set_status(f"save error: {exc}")
             print(f"[surface editor] save failed: {exc}")
+
+    @save_motion_btn.on_click
+    def _(_) -> None:
+        _save_edits()
+
+    @reload_motion_btn.on_click
+    def _(_) -> None:
+        _refresh_and_sync()
+        if playback is not None:
+            playback.set_frame(playback.frame())
+        _set_status("reloaded current editor state")
+
+    @load_motion_btn.on_click
+    def _(_) -> None:
+        try:
+            if controller.pending_edits():
+                _set_status("unsaved edits exist; save or discard before loading another Motion")
+                return
+            selected = _filtered_open_file_dialog(title="Load Motion", load_type="Motion")
+            if not selected:
+                _set_status("no Motion selected")
+                return
+            config = _contact_editor_config_from_motion_asset(selected)
+            cmd, prepared = _loaded_editor_command_from_config(
+                config,
+                timeline_port=args.timeline_port,
+                edit_mode=str(args.edit_mode),
+                default_mode=str(mode.value),
+                show_only=str(status_filter.value),
+                fps=int(args.fps or motion_fps),
+                robot_urdf=args.robot_urdf,
+            )
+            current_motion.value = str(config.motion)
+            current_session.value = str(prepared.session.session_dir)
+            _set_status(f"loading Motion {Path(selected).stem}")
+            print(f"[surface editor] exec: {' '.join(cmd)}")
+            os.execv(sys.executable, cmd)
+        except Exception as exc:
+            state.last_error = str(exc)
+            _set_status(f"load motion failed: {exc}")
 
     controller.reload_overlay()
     _sync_selected_fields()
@@ -1380,44 +1573,19 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
             bind_mode=str(default_mode.value),
             fps=int(args.fps),
         )
-        prepared = prepare_contact_editor_workbench_session(config)
-        terrain_urdf_for_viewer = infer_terrain_urdf(config)
-        repo_path = Path(config.repo_root).expanduser() if config.repo_root else Path("/home/xiaz/holosoma_isaaclab3_newton")
-        robot_urdf = repo_path / "OmniRetarget_Dataset/models/g1/g1_29dof_spherehand.urdf"
+        cmd, prepared = _loaded_editor_command_from_config(
+            config,
+            timeline_port=args.timeline_port,
+            edit_mode=str(args.edit_mode),
+            default_mode=str(default_mode.value),
+            show_only=str(show_only.value),
+            fps=int(args.fps),
+        )
         status.value = (
             f"Prepared {prepared.ready_anchor_count} anchors. Restarting loaded editor...\n"
             f"session={prepared.session.session_dir}\n"
             f"ready_layer={prepared.ready_layer}"
         )
-        cmd = [
-            sys.executable,
-            "-m",
-            "motion_edit.viewer.surface_overlay_player",
-            "--qpos-npz",
-            str(Path(config.motion).expanduser().resolve()),
-            "--surface-binding-overlay",
-            str(prepared.session.overlay_path),
-            "--surface-editor-session",
-            str(prepared.session.session_dir / "session.json"),
-            "--surface-editor-requests",
-            str(prepared.session.request_path),
-            "--edit-mode",
-            str(args.edit_mode),
-            "--default-mode",
-            str(default_mode.value),
-            "--show-only",
-            str(show_only.value),
-            "--timeline-port",
-            str(args.timeline_port),
-            "--fps",
-            str(args.fps),
-        ]
-        if config.terrain_urdf and bool(with_terrain.value):
-            cmd.extend(["--object-urdf", config.terrain_urdf, "--with-terrain"])
-        elif terrain_urdf_for_viewer and bool(with_terrain.value):
-            cmd.extend(["--object-urdf", terrain_urdf_for_viewer, "--with-terrain"])
-        if robot_urdf.exists():
-            cmd.extend(["--robot-urdf", str(robot_urdf)])
         pending_exec["cmd"] = cmd
 
     def _apply_selected_load_file(selected_type: str, selected_path: Path) -> None:

@@ -50,6 +50,7 @@ from motion_edit.viewer.surface_overlay_player import (
     _anchor_patch_mesh,
     _layer_name_from_path,
     _anchor_positions_differ,
+    _contact_editor_config_from_motion_asset,
     _render_overlay,
     _selected_tangent_arrows,
     _directory_contains_loadable_file,
@@ -65,6 +66,8 @@ from motion_edit.viewer.surface_overlay_player import (
     SurfaceEditorController,
     surface_quad_corners,
 )
+from motion_edit.storage.schema import MotionAssetRecord
+from motion_edit.storage.io import write_motion_asset
 from motion_edit.workbench.surface_editor_session import read_pending_surface_edits
 
 
@@ -743,6 +746,62 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         anchor_point = next(item for item in overlay["objects"] if item["type"] == "anchor_point")
         self.assertEqual(anchor_point["status"], "edited")
 
+    def test_surface_overlay_filters_anchors_by_current_frame(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray(
+                    [
+                        [True, False],
+                        [True, False],
+                        [False, False],
+                        [False, True],
+                        [False, True],
+                    ]
+                ),
+                body_pos_w=np.zeros((5, 2, 3), dtype=np.float32),
+                body_names=["LF", "RH"],
+            )
+            graph = type(graph)(
+                motion_id=graph.motion_id,
+                events=graph.events,
+                anchors=[
+                    type(anchor)(
+                        **{
+                            **anchor.__dict__,
+                            "surface_id": "top",
+                            "surface_normal": [0.0, 0.0, 1.0],
+                            "surface_origin": [0.0, 0.0, 0.0],
+                            "surface_tangent_u": [1.0, 0.0, 0.0],
+                            "surface_tangent_v": [0.0, 1.0, 0.0],
+                            "surface_bounds": {"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+                            "surface_coordinates": {"u": 0.0, "v": 0.0},
+                        }
+                    )
+                    for anchor in graph.anchors
+                ],
+                patches=graph.patches,
+                transitions=graph.transitions,
+            )
+            write_contact_layer(root / "layers" / "contact" / "bound", graph)
+            session = prepare_surface_editor_session(
+                motion_path=str(root / "motion_a.npz"),
+                motion_id="motion_a",
+                contact_layer="contact/bound",
+                surface_catalog=None,
+                session_name="surface_current_frame",
+                layers_root=root / "layers",
+                workbench_root=root / "workbench",
+            )
+            state = load_editor_state(session.session_dir / "session.json")
+            controller = SurfaceEditorController.create(_FakeServer(), state)
+            controller.current_frame_getter = lambda: 3
+            matches = controller.filter_anchors(current_only=True)
+
+        self.assertEqual(len(matches), 1)
+        self.assertIn("RH", matches[0]["anchor_id"])
+
     def test_surface_overlay_direct_move_records_error_for_reject(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1301,6 +1360,28 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertEqual(surface_config["filetypes"], [("Surface catalog jsonl", "*.jsonl")])
         self.assertEqual(output_config["filetypes"], [("Contact layer jsonl", "*.jsonl")])
         self.assertEqual(plan_config["filetypes"], [("Contact edit plan", "*.json")])
+
+    def test_motion_asset_config_uses_derived_contact_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            record = MotionAssetRecord(
+                motion_asset_id="climb_01_raw_contact_29",
+                motion_path=str(root / "climb_01.npz"),
+                source="test",
+                fps=50.0,
+                motion_id="climb_01_z_scale_1.0",
+                terrain_urdf=str(root / "terrain.urdf"),
+                raw_contact={"available": True},
+                derived={"contact_layer": "contact/raw_contact_29"},
+            )
+            path = root / "climb_01_raw_contact_29.json"
+            write_motion_asset(record, path)
+            config = _contact_editor_config_from_motion_asset(path)
+
+        self.assertEqual(config.motion, record.motion_path)
+        self.assertEqual(config.motion_id, "climb_01_z_scale_1.0")
+        self.assertEqual(config.source_contact_layer, "contact/raw_contact_29")
+        self.assertEqual(config.session_name, "climb_01_raw_contact_29_contact_editor")
 
     def test_filtered_picker_hides_directories_without_loadable_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
