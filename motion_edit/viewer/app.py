@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from motion_edit.adapters.omniretarget import detect_omniretarget_paths
@@ -49,7 +50,36 @@ def launch_viewer(
     timeline_port: int = 8094,
     fps: int = 50,
     with_terrain: bool = False,
+    surface_binding_overlay: str | Path | None = None,
+    surface_editor_session: str | Path | None = None,
+    surface_editor_requests: str | Path | None = None,
+    prefer_local_surface_editor: bool = True,
 ) -> subprocess.Popen:
+    if surface_binding_overlay is not None and prefer_local_surface_editor:
+        if surface_editor_session is None or surface_editor_requests is None:
+            raise ValueError("surface editor launch requires session and request paths")
+        cmd = [
+            sys.executable,
+            "-m",
+            "motion_edit.viewer.surface_overlay_player",
+            "--qpos-npz",
+            str(Path(motion).expanduser().resolve()),
+            "--surface-binding-overlay",
+            str(Path(surface_binding_overlay).expanduser().resolve()),
+            "--surface-editor-session",
+            str(Path(surface_editor_session).expanduser().resolve()),
+            "--surface-editor-requests",
+            str(Path(surface_editor_requests).expanduser().resolve()),
+            "--timeline-port",
+            str(timeline_port),
+            "--fps",
+            str(fps),
+        ]
+        if with_terrain:
+            cmd.append("--with-terrain")
+        env = os.environ.copy()
+        return subprocess.Popen(cmd, cwd=str(Path.cwd()), env=env)
+
     repo = Path(repo_root).expanduser().resolve() if repo_root else _default_repo_root()
     if repo is None:
         raise FileNotFoundError("could not find holosoma repo with viser_player.py; pass --repo-root")

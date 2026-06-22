@@ -30,6 +30,7 @@ class SurfaceEditorSession:
     contact_overlay_path: Path
     state_path: Path
     pending_edits_path: Path
+    request_path: Path
     contact_layer_snapshot: Path
 
     def to_manifest(self) -> dict:
@@ -79,6 +80,7 @@ def _session_paths(
         contact_overlay_path=session_dir / f"{motion_id}.contact_overlay.json",
         state_path=session_dir / f"{motion_id}.surface_editor_state.json",
         pending_edits_path=session_dir / f"{motion_id}.pending_edits.jsonl",
+        request_path=session_dir / f"{motion_id}.surface_editor_requests.jsonl",
         contact_layer_snapshot=session_dir / "contact_layer",
     )
 
@@ -103,6 +105,7 @@ def _write_session_files(session: SurfaceEditorSession, graph: ContactGraph, sur
             "status": "prepared",
             "anchor_count": len(graph.anchors),
             "surface_count": len(surfaces),
+            "processed_request_count": 0,
         },
     )
     _write_json(session.session_dir / "session.json", session.to_manifest())
@@ -145,8 +148,12 @@ def read_surface_editor_session(path: str | Path) -> SurfaceEditorSession:
         "contact_overlay_path",
         "state_path",
         "pending_edits_path",
+        "request_path",
         "contact_layer_snapshot",
     }
+    if "request_path" not in data:
+        session_dir = Path(data["session_dir"])
+        data["request_path"] = session_dir / f"{data['motion_id']}.surface_editor_requests.jsonl"
     for field in path_fields:
         data[field] = Path(data[field])
     return SurfaceEditorSession(**data)
@@ -204,6 +211,71 @@ def read_pending_surface_edits(session: SurfaceEditorSession) -> list[ContactAnc
         return []
     records = json.loads("[" + ",".join(line for line in session.pending_edits_path.read_text(encoding="utf-8").splitlines() if line.strip()) + "]")
     return [ContactAnchorEditRecord(**record) for record in records]
+
+
+def append_surface_editor_request(
+    session: SurfaceEditorSession,
+    *,
+    anchor_id: str,
+    tangent_delta: Iterable[float] | None = None,
+    requested_world_position: Iterable[float] | None = None,
+    mode: str = "reject",
+    source: str = "viser_ui",
+) -> dict:
+    existing = read_surface_editor_requests(session)
+    request = {
+        "kind": "move_anchor_request",
+        "request_id": f"{session.motion_id}_surface_request_{len(existing):06d}",
+        "anchor_id": anchor_id,
+        "tangent_delta": list(tangent_delta) if tangent_delta is not None else None,
+        "requested_world_position": list(requested_world_position) if requested_world_position is not None else None,
+        "mode": mode,
+        "source": source,
+    }
+    session.request_path.parent.mkdir(parents=True, exist_ok=True)
+    with session.request_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(request, sort_keys=True) + "\n")
+    return request
+
+
+def read_surface_editor_requests(session: SurfaceEditorSession) -> list[dict]:
+    if not session.request_path.exists():
+        return []
+    requests: list[dict] = []
+    for line in session.request_path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            requests.append(json.loads(line))
+    return requests
+
+
+def sync_surface_editor_requests(session: SurfaceEditorSession, *, save: bool = False, layers_root: Path = LAYERS_ROOT) -> tuple[int, Path | None]:
+    state = json.loads(session.state_path.read_text(encoding="utf-8")) if session.state_path.exists() else {}
+    processed = int(state.get("processed_request_count", 0))
+    requests = read_surface_editor_requests(session)
+    new_requests = requests[processed:]
+    for request in new_requests:
+        if request.get("kind") != "move_anchor_request":
+            continue
+        move_surface_editor_anchor(
+            session,
+            anchor_id=str(request["anchor_id"]),
+            tangent_delta=request.get("tangent_delta"),
+            requested_world_position=request.get("requested_world_position"),
+            mode=str(request.get("mode", "reject")),
+        )
+    out = save_surface_editor_session(session, layers_root=layers_root) if save else None
+    _write_json(
+        session.state_path,
+        {
+            **session.to_manifest(),
+            "status": "synced_saved" if save else "synced",
+            "processed_request_count": len(requests),
+            "applied_request_count": len(new_requests),
+            "pending_edit_count": len(read_pending_surface_edits(session)),
+            "output_contact_layer": session.output_contact_layer if save else None,
+        },
+    )
+    return len(new_requests), out
 
 
 def save_surface_editor_session(

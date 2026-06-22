@@ -67,6 +67,7 @@ from .workbench import (
     select_segment,
     split_segment,
     sync_cutter_session_file,
+    sync_surface_editor_requests,
     trim_segment,
     upsert_workbench_segments,
     write_workbench_segments,
@@ -855,7 +856,10 @@ def _cmd_surface_editor(args: argparse.Namespace) -> None:
     print(f"surface binding overlay: {session.overlay_path}")
     print(f"contact overlay: {session.contact_overlay_path}")
     print(f"pending edits: {session.pending_edits_path}")
-    print("viewer overlay support: fallback file bridge; existing Holosoma viewer is launched without surface overlay arguments")
+    print(f"surface edit requests: {session.request_path}")
+    print("viewer overlay support: local motion_edit Viser adapter with file-bridge move requests")
+    print(f"sync pending viewer requests: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'}")
+    print(f"save after sync: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'} --save")
     process = launch_viewer(
         args.motion,
         repo_root=args.repo_root,
@@ -864,6 +868,10 @@ def _cmd_surface_editor(args: argparse.Namespace) -> None:
         timeline_port=args.timeline_port,
         fps=args.fps,
         with_terrain=args.with_terrain,
+        surface_binding_overlay=session.overlay_path,
+        surface_editor_session=session.session_dir / "session.json",
+        surface_editor_requests=session.request_path,
+        prefer_local_surface_editor=not args.external_viewer,
     )
     print(f"viewer pid={process.pid}")
     print(f"Open Motion Cutter: http://localhost:{args.timeline_port}")
@@ -891,6 +899,16 @@ def _cmd_surface_editor_move_anchor(args: argparse.Namespace) -> None:
     print(f"updated overlay {session.overlay_path}")
     if args.save:
         out = save_surface_editor_session(session, layers_root=LAYERS_ROOT)
+        print(f"saved surface editor session output_contact_layer={out}")
+
+
+def _cmd_surface_editor_sync(args: argparse.Namespace) -> None:
+    session = read_surface_editor_session(args.session)
+    count, out = sync_surface_editor_requests(session, save=args.save, layers_root=LAYERS_ROOT)
+    print(f"synced surface editor requests session={args.session} applied={count}")
+    print(f"updated overlay {session.overlay_path}")
+    print(f"pending edits {session.pending_edits_path}")
+    if args.save:
         print(f"saved surface editor session output_contact_layer={out}")
 
 
@@ -1184,7 +1202,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fps", type=int, default=50)
     p.add_argument("--with-terrain", action="store_true")
     p.add_argument("--save-on-exit", action="store_true")
+    p.add_argument("--external-viewer", action="store_true", help="Use the legacy external Holosoma viewer instead of the local surface overlay adapter")
     p.set_defaults(func=_cmd_surface_editor)
+
+    p = sub.add_parser("surface-editor-sync")
+    p.add_argument("--session", required=True, help="Path to surface editor session.json")
+    p.add_argument("--save", action="store_true")
+    p.set_defaults(func=_cmd_surface_editor_sync)
 
     p = sub.add_parser("surface-editor-move-anchor")
     p.add_argument("--session", required=True, help="Path to surface editor session.json")
