@@ -1164,6 +1164,7 @@ def _add_motion_playback(
     fps: int,
     robot_urdf: str | Path | None,
     object_urdf: str | Path | None = None,
+    show_gui: bool = True,
 ) -> tuple[list[Any], MotionPlaybackController | None]:
     handles: list[Any] = []
     if object_urdf:
@@ -1202,14 +1203,34 @@ def _add_motion_playback(
         if q.shape[0] >= 7 + robot_dof:
             viser_robot.update_cfg(q[7 : 7 + robot_dof])
 
-    with server.gui.add_folder("Timeline"):
-        frame_slider = server.gui.add_slider("frame", min=0, max=max(0, n_frames - 1), step=1, initial_value=0)
-        frame_text = server.gui.add_text("current_frame", initial_value=f"0 / {max(0, n_frames - 1)}")
-        play_btn = server.gui.add_button("Play / Pause")
-        prev_btn = server.gui.add_button("Previous frame")
-        next_btn = server.gui.add_button("Next frame")
-        fps_in = server.gui.add_number("fps", initial_value=int(fps), min=1, max=240, step=1)
-        loop_cb = server.gui.add_checkbox("loop", initial_value=True)
+    class _ValueBox:
+        def __init__(self, value: Any) -> None:
+            self.value = value
+
+        def on_update(self, func: Any) -> Any:
+            return func
+
+    class _ButtonBox:
+        def on_click(self, func: Any) -> Any:
+            return func
+
+    if show_gui:
+        with server.gui.add_folder("Timeline"):
+            frame_slider = server.gui.add_slider("frame", min=0, max=max(0, n_frames - 1), step=1, initial_value=0)
+            frame_text = server.gui.add_text("current_frame", initial_value=f"0 / {max(0, n_frames - 1)}")
+            play_btn = server.gui.add_button("Play / Pause")
+            prev_btn = server.gui.add_button("Previous frame")
+            next_btn = server.gui.add_button("Next frame")
+            fps_in = server.gui.add_number("fps", initial_value=int(fps), min=1, max=240, step=1)
+            loop_cb = server.gui.add_checkbox("loop", initial_value=True)
+    else:
+        frame_slider = _ValueBox(0)
+        frame_text = _ValueBox(f"0 / {max(0, n_frames - 1)}")
+        play_btn = _ButtonBox()
+        prev_btn = _ButtonBox()
+        next_btn = _ButtonBox()
+        fps_in = _ValueBox(int(fps))
+        loop_cb = _ValueBox(True)
 
     playback = MotionPlaybackController(
         n_frames=n_frames,
@@ -1293,6 +1314,7 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
         fps=int(args.fps or motion_fps),
         robot_urdf=args.robot_urdf,
         object_urdf=args.object_urdf if args.with_terrain else None,
+        show_gui=False,
     )
     _ = playback_handles
     motion_points = qpos[:, :3] if qpos.shape[1] >= 3 else np.zeros((0, 3), dtype=np.float32)
@@ -1310,200 +1332,10 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
     if args.select_anchor:
         controller.select_anchor(args.select_anchor)
     anchor_ids = [str(anchor.get("anchor_id", "")) for anchor in controller.anchors() if anchor.get("anchor_id")]
-    selected_default = controller.selected_anchor_id or (anchor_ids[0] if anchor_ids else "")
-
-    with server.gui.add_folder("Motion"):
-        current_motion = server.gui.add_text("current_motion", initial_value=str(args.qpos_npz))
-        current_session = server.gui.add_text("session", initial_value=str(state.session.session_dir))
-        load_motion_btn = server.gui.add_button("Load Motion...")
-        reload_motion_btn = server.gui.add_button("Reload current")
-        save_motion_btn = server.gui.add_button("Save edits")
-        discard_motion_btn = server.gui.add_button("Discard unsaved edits")
-        motion_status = server.gui.add_text("status", initial_value="ready", multiline=True)
-
-    with server.gui.add_folder("Anchor Selection"):
-        anchor_filter = server.gui.add_text("filter", initial_value="")
-        surface_filter = server.gui.add_text("surface_filter", initial_value="")
-        status_filter = server.gui.add_dropdown(
-            "status_filter",
-            options=("all", "bound", "edited", "clamped", "suspicious", "failed", "unbound"),
-            initial_value=args.show_only,
-        )
-        current_frame_only = server.gui.add_checkbox("current_frame_only", initial_value=False)
-        anchor_id = server.gui.add_text("anchor_id", initial_value=selected_default)
-        mode = server.gui.add_dropdown("mode", options=("reject", "clamp"), initial_value=args.default_mode)
-        prev_btn = server.gui.add_button("Select previous")
-        next_btn = server.gui.add_button("Select next")
-        find_btn = server.gui.add_button("Find anchors")
-        first_suspicious_btn = server.gui.add_button("First suspicious")
-        first_unbound_btn = server.gui.add_button("First unbound")
-        first_edited_btn = server.gui.add_button("First edited")
-
-    with server.gui.add_folder("Selected Anchor"):
-        undo_btn = server.gui.add_button("Undo")
-        redo_btn = server.gui.add_button("Redo")
-        reset_btn = server.gui.add_button("Reset session")
-        reload_btn = server.gui.add_button("Reload overlay")
-        status_text = server.gui.add_text("status", initial_value="ready")
-        matches_text = server.gui.add_text("matches", initial_value="")
-        info_text = server.gui.add_text("selected_info", initial_value=controller.selected_info_text())
-
-    def _filters() -> dict[str, str]:
-        return {
-            "text": str(anchor_filter.value),
-            "status": str(status_filter.value),
-            "surface": str(surface_filter.value),
-            "current_only": bool(current_frame_only.value),
-        }
-
-    def _sync_selected_fields() -> None:
-        anchor_id.value = controller.selected_anchor_id or ""
-        info_text.value = controller.selected_info_text()
-
-    controller.on_change = _sync_selected_fields
-    controller.drag_mode_getter = lambda: str(mode.value)
-
-    def _set_status(text: str) -> None:
-        status_text.value = text
-        motion_status.value = text
-        info_text.value = controller.selected_info_text()
-
-    def _refresh_and_sync() -> None:
-        controller.reload_overlay()
-        _sync_selected_fields()
-
-    @find_btn.on_click
-    def _(_) -> None:
-        matches = controller.filter_anchors(**_filters())
-        matches_text.value = "\n".join(str(item.get("anchor_id")) for item in matches[:20]) or "<none>"
-        if matches:
-            controller.select_anchor(str(matches[0].get("anchor_id")))
-            _refresh_and_sync()
-        _set_status(f"matches={len(matches)}")
-
-    @prev_btn.on_click
-    def _(_) -> None:
-        controller.select_relative(-1, **_filters())
-        _refresh_and_sync()
-        _set_status(f"selected {controller.selected_anchor_id}")
-
-    @next_btn.on_click
-    def _(_) -> None:
-        controller.select_relative(1, **_filters())
-        _refresh_and_sync()
-        _set_status(f"selected {controller.selected_anchor_id}")
-
-    @first_suspicious_btn.on_click
-    def _(_) -> None:
-        controller.select_first_status("suspicious")
-        _refresh_and_sync()
-        _set_status(f"selected {controller.selected_anchor_id}")
-
-    @first_unbound_btn.on_click
-    def _(_) -> None:
-        controller.select_first_status("unbound")
-        _refresh_and_sync()
-        _set_status(f"selected {controller.selected_anchor_id}")
-
-    @first_edited_btn.on_click
-    def _(_) -> None:
-        controller.select_first_status("edited")
-        _refresh_and_sync()
-        _set_status(f"selected {controller.selected_anchor_id}")
-
-    @undo_btn.on_click
-    def _(_) -> None:
-        controller.undo()
-        _refresh_and_sync()
-        _set_status(controller.state.last_message or "undo")
-
-    @redo_btn.on_click
-    def _(_) -> None:
-        controller.redo()
-        _refresh_and_sync()
-        _set_status(controller.state.last_message or "redo")
-
-    @reset_btn.on_click
-    def _(_) -> None:
-        try:
-            controller.reset()
-            _refresh_and_sync()
-            _set_status("reset session")
-        except Exception as exc:
-            state.last_error = str(exc)
-            _set_status(f"reset error: {exc}")
-
-    def _discard_unsaved() -> None:
-        try:
-            controller.discard()
-            _refresh_and_sync()
-            _set_status("discarded unsaved edits")
-        except Exception as exc:
-            state.last_error = str(exc)
-            _set_status(f"discard error: {exc}")
-
-    @discard_motion_btn.on_click
-    def _(_) -> None:
-        _discard_unsaved()
-
-    @reload_btn.on_click
-    def _(_) -> None:
-        next_overlay = controller.reload_overlay()
-        _sync_selected_fields()
-        _set_status(f"reloaded overlay objects={len(next_overlay.get('objects', []))}")
-
-    def _save_edits() -> None:
-        try:
-            out = controller.save()
-            _set_status(f"saved: {out}")
-            print(f"[surface editor] saved output_contact_layer={out}")
-        except Exception as exc:
-            state.last_error = str(exc)
-            _set_status(f"save error: {exc}")
-            print(f"[surface editor] save failed: {exc}")
-
-    @save_motion_btn.on_click
-    def _(_) -> None:
-        _save_edits()
-
-    @reload_motion_btn.on_click
-    def _(_) -> None:
-        _refresh_and_sync()
-        if playback is not None:
-            playback.set_frame(playback.frame())
-        _set_status("reloaded current editor state")
-
-    @load_motion_btn.on_click
-    def _(_) -> None:
-        try:
-            if controller.pending_edits():
-                _set_status("unsaved edits exist; save or discard before loading another Motion")
-                return
-            selected = _filtered_open_file_dialog(title="Load Motion", load_type="Motion")
-            if not selected:
-                _set_status("no Motion selected")
-                return
-            config = _contact_editor_config_from_motion_asset(selected)
-            cmd, prepared = _loaded_editor_command_from_config(
-                config,
-                timeline_port=args.timeline_port,
-                edit_mode=str(args.edit_mode),
-                default_mode=str(mode.value),
-                show_only=str(status_filter.value),
-                fps=int(args.fps or motion_fps),
-                robot_urdf=args.robot_urdf,
-            )
-            current_motion.value = str(config.motion)
-            current_session.value = str(prepared.session.session_dir)
-            _set_status(f"loading Motion {Path(selected).stem}")
-            print(f"[surface editor] exec: {' '.join(cmd)}")
-            os.execv(sys.executable, cmd)
-        except Exception as exc:
-            state.last_error = str(exc)
-            _set_status(f"load motion failed: {exc}")
+    controller.on_change = lambda: None
+    controller.drag_mode_getter = lambda: str(args.default_mode)
 
     controller.reload_overlay()
-    _sync_selected_fields()
     start_contact_timeline_wrapper(
         controller=controller,
         playback=playback,
