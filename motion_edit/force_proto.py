@@ -9,6 +9,38 @@ from .contact import contact_graph_from_masks, mask_string, segment_from_contact
 from .contact.graph import ContactGraph
 from .schema import SegmentRecord
 
+CONTACT_PART_ORDER = ("left_foot", "right_foot", "left_hand", "right_hand", "left_knee", "right_knee")
+_CONTACT_PART_ALIASES = {
+    "LF": "left_foot",
+    "RF": "right_foot",
+    "LH": "left_hand",
+    "RH": "right_hand",
+    "LK": "left_knee",
+    "RK": "right_knee",
+}
+_CONTACT_PART_BODY_CANDIDATES = {
+    "left_foot": (
+        "left_ankle_roll_sphere_1_link",
+        "left_ankle_roll_sphere_2_link",
+        "left_ankle_roll_sphere_3_link",
+        "left_ankle_roll_sphere_4_link",
+        "left_ankle_roll_sphere_5_link",
+        "left_ankle_roll_link",
+    ),
+    "right_foot": (
+        "right_ankle_roll_sphere_1_link",
+        "right_ankle_roll_sphere_2_link",
+        "right_ankle_roll_sphere_3_link",
+        "right_ankle_roll_sphere_4_link",
+        "right_ankle_roll_sphere_5_link",
+        "right_ankle_roll_link",
+    ),
+    "left_hand": ("left_rubber_hand_link", "left_thumb_link", "left_pinky_link", "left_wrist_yaw_link"),
+    "right_hand": ("right_rubber_hand_link", "right_thumb_link", "right_pinky_link", "right_wrist_yaw_link"),
+    "left_knee": ("left_knee_link",),
+    "right_knee": ("right_knee_link",),
+}
+
 
 def _optional_mask(data: np.lib.npyio.NpzFile, key: str) -> np.ndarray | None:
     return np.asarray(data[key], dtype=bool) if key in data else None
@@ -18,13 +50,64 @@ def _optional_indices(data: np.lib.npyio.NpzFile, key: str) -> np.ndarray:
     return np.asarray(data[key], dtype=np.int64) if key in data else np.asarray([], dtype=np.int64)
 
 
-def _body_names(data: np.lib.npyio.NpzFile) -> list[str] | None:
-    for key in ("contact_body_names", "body_names", "contact_part_names", "part_names"):
+def _string_array(data: np.lib.npyio.NpzFile, keys: tuple[str, ...]) -> list[str] | None:
+    for key in keys:
         if key not in data:
             continue
         values = np.asarray(data[key]).reshape(-1)
         return [str(value.item() if hasattr(value, "item") else value) for value in values]
     return None
+
+
+def _normalize_contact_part(name: str) -> str:
+    return _CONTACT_PART_ALIASES.get(name, name)
+
+
+def _contact_part_indices(data: np.lib.npyio.NpzFile, width: int | None) -> list[int]:
+    raw_names = _string_array(data, ("contact_part_names", "part_order", "part_names", "contact_body_names"))
+    if raw_names is None:
+        if width is not None and width < len(CONTACT_PART_ORDER):
+            raise ValueError(f"contact mask has {width} columns; expected fixed 6 contact parts")
+        return list(range(len(CONTACT_PART_ORDER)))
+    normalized = [_normalize_contact_part(name) for name in raw_names]
+    missing = [part for part in CONTACT_PART_ORDER if part not in normalized]
+    if missing:
+        raise ValueError(f"contact part order is missing required parts: {missing}")
+    return [normalized.index(part) for part in CONTACT_PART_ORDER]
+
+
+def _select_contact_parts(mask: np.ndarray | None, indices: list[int]) -> np.ndarray | None:
+    if mask is None:
+        return None
+    arr = np.asarray(mask, dtype=bool)
+    if arr.ndim == 1:
+        arr = arr.reshape(arr.shape[0], 1)
+    if arr.ndim != 2:
+        raise ValueError(f"contact mask must be 1D or 2D, got shape={arr.shape}")
+    if max(indices, default=-1) >= arr.shape[1]:
+        raise ValueError(f"contact mask has {arr.shape[1]} columns; cannot select fixed contact parts")
+    return arr[:, indices]
+
+
+def _contact_part_positions(
+    *,
+    data: np.lib.npyio.NpzFile,
+    body_pos_w: np.ndarray | None,
+) -> np.ndarray | None:
+    if body_pos_w is None:
+        return None
+    body_names = _string_array(data, ("body_names",))
+    if body_names is None:
+        return body_pos_w if body_pos_w.shape[1] == len(CONTACT_PART_ORDER) else None
+    body_index = {name: index for index, name in enumerate(body_names)}
+    part_positions: list[np.ndarray] = []
+    for part in CONTACT_PART_ORDER:
+        indices = [body_index[name] for name in _CONTACT_PART_BODY_CANDIDATES[part] if name in body_index]
+        if not indices:
+            part_positions.append(np.full((body_pos_w.shape[0], 3), np.nan, dtype=float))
+            continue
+        part_positions.append(np.nanmean(body_pos_w[:, indices, :3], axis=1))
+    return np.stack(part_positions, axis=1)
 
 
 class _MaskedMotion(NamedTuple):
@@ -39,14 +122,19 @@ class _MaskedMotion(NamedTuple):
 
 def _load_masked_motion(path: Path) -> _MaskedMotion:
     with np.load(path, allow_pickle=True) as data:
+        raw_contact = _optional_mask(data, "contact_part_mask")
+        width = raw_contact.shape[1] if raw_contact is not None and raw_contact.ndim == 2 else None
+        part_indices = _contact_part_indices(data, width)
+        raw_body_pos_w = np.asarray(data["body_pos_w"], dtype=float) if "body_pos_w" in data else None
+        part_body_pos_w = _contact_part_positions(data=data, body_pos_w=raw_body_pos_w)
         return _MaskedMotion(
             starts=_optional_indices(data, "proto_start_idx"),
             ends=_optional_indices(data, "proto_end_idx"),
-            contact=_optional_mask(data, "contact_part_mask"),
-            active=_optional_mask(data, "active_part_mask"),
-            support=_optional_mask(data, "support_part_mask"),
-            body_pos_w=np.asarray(data["body_pos_w"], dtype=float) if "body_pos_w" in data else None,
-            body_names=_body_names(data),
+            contact=_select_contact_parts(raw_contact, part_indices),
+            active=_select_contact_parts(_optional_mask(data, "active_part_mask"), part_indices),
+            support=_select_contact_parts(_optional_mask(data, "support_part_mask"), part_indices),
+            body_pos_w=part_body_pos_w,
+            body_names=list(CONTACT_PART_ORDER),
         )
 
 

@@ -17,6 +17,11 @@ from motion_edit.force_proto import contact_graph_from_masked_motion, segments_f
 from motion_edit.layers import read_layer
 
 
+CONTACT_PART_ORDER_8 = np.asarray(
+    ["left_foot", "right_foot", "left_hand", "right_hand", "left_knee", "right_knee", "left_hip", "right_hip"]
+)
+
+
 def _write_proto_motion(path: Path) -> None:
     np.savez(
         path,
@@ -24,32 +29,75 @@ def _write_proto_motion(path: Path) -> None:
         proto_end_idx=np.asarray([4]),
         contact_part_mask=np.asarray(
             [
-                [False, True],
-                [True, True],
-                [True, False],
-                [False, False],
-                [False, True],
+                [False, True, False, False, False, False],
+                [True, True, False, False, False, False],
+                [True, False, False, False, False, False],
+                [False, False, False, False, False, False],
+                [False, True, False, False, False, False],
             ]
         ),
         active_part_mask=np.asarray(
             [
-                [False, True],
-                [True, False],
-                [True, False],
-                [False, True],
-                [False, True],
+                [False, True, False, False, False, False],
+                [True, False, False, False, False, False],
+                [True, False, False, False, False, False],
+                [False, True, False, False, False, False],
+                [False, True, False, False, False, False],
             ]
         ),
         support_part_mask=np.asarray(
             [
-                [False, True],
-                [False, True],
-                [True, False],
-                [True, False],
-                [False, True],
+                [False, True, False, False, False, False],
+                [False, True, False, False, False, False],
+                [True, False, False, False, False, False],
+                [True, False, False, False, False, False],
+                [False, True, False, False, False, False],
             ]
         ),
-        contact_body_names=np.asarray(["LF", "RF"]),
+        part_order=np.asarray(["left_foot", "right_foot", "left_hand", "right_hand", "left_knee", "right_knee"]),
+    )
+
+
+def _write_proto_motion_with_eight_parts(path: Path) -> None:
+    contact = np.asarray(
+        [
+            [True, False, False, False, False, False, True, True],
+            [True, True, False, False, False, False, True, True],
+            [False, True, False, False, True, False, True, True],
+            [False, False, False, False, True, True, True, True],
+        ]
+    )
+    body_names = np.asarray(
+        [
+            "world",
+            "pelvis",
+            "left_ankle_roll_sphere_1_link",
+            "right_ankle_roll_sphere_1_link",
+            "left_rubber_hand_link",
+            "right_rubber_hand_link",
+            "left_knee_link",
+            "right_knee_link",
+        ]
+    )
+    body_pos_w = np.zeros((4, len(body_names), 3), dtype=float)
+    body_pos_w[:, 0, :] = [99.0, 0.0, 0.0]
+    body_pos_w[:, 1, :] = [88.0, 0.0, 0.0]
+    body_pos_w[:, 2, :] = [0.1, 0.0, 0.0]
+    body_pos_w[:, 3, :] = [0.2, 0.0, 0.0]
+    body_pos_w[:, 4, :] = [0.3, 0.0, 0.0]
+    body_pos_w[:, 5, :] = [0.4, 0.0, 0.0]
+    body_pos_w[:, 6, :] = [0.5, 0.0, 0.0]
+    body_pos_w[:, 7, :] = [0.6, 0.0, 0.0]
+    np.savez(
+        path,
+        proto_start_idx=np.asarray([0]),
+        proto_end_idx=np.asarray([4]),
+        contact_part_mask=contact,
+        active_part_mask=contact,
+        support_part_mask=contact,
+        part_order=CONTACT_PART_ORDER_8,
+        body_names=body_names,
+        body_pos_w=body_pos_w,
     )
 
 
@@ -59,11 +107,11 @@ def _write_proto_motion_with_positions(path: Path) -> None:
         payload = {key: data[key] for key in data.files}
     payload["body_pos_w"] = np.asarray(
         [
-            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
-            [[0.2, 0.0, 0.0], [1.0, 0.0, 0.0]],
-            [[0.4, 0.0, 0.0], [1.0, 0.0, 0.0]],
-            [[0.6, 0.0, 0.0], [1.0, 0.0, 0.0]],
-            [[0.8, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            [[0.2, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            [[0.4, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            [[0.6, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            [[0.8, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
         ]
     )
     np.savez(path, **payload)
@@ -79,14 +127,14 @@ class ForceProtoContactTests(unittest.TestCase):
                 proto_end_idx=np.asarray([2, 5]),
                 contact_part_mask=np.asarray(
                     [
-                        [True, False],
-                        [False, False],
-                        [True, False],
-                        [True, True],
-                        [False, True],
+                        [True, False, False, False, False, False],
+                        [False, False, False, False, False, False],
+                        [True, False, False, False, False, False],
+                        [True, True, False, False, False, False],
+                        [False, True, False, False, False, False],
                     ]
                 ),
-                contact_body_names=np.asarray(["LF", "RF"]),
+                part_order=np.asarray(["left_foot", "right_foot", "left_hand", "right_hand", "left_knee", "right_knee"]),
             )
 
             graph = contact_graph_from_masked_motion(path)
@@ -100,13 +148,13 @@ class ForceProtoContactTests(unittest.TestCase):
                 path,
                 contact_part_mask=np.asarray(
                     [
-                        [True, False],
-                        [False, False],
-                        [True, False],
-                        [True, False],
+                        [True, False, False, False, False, False],
+                        [False, False, False, False, False, False],
+                        [True, False, False, False, False, False],
+                        [True, False, False, False, False, False],
                     ]
                 ),
-                contact_body_names=np.asarray(["LF", "RF"]),
+                part_order=np.asarray(["left_foot", "right_foot", "left_hand", "right_hand", "left_knee", "right_knee"]),
             )
 
             segments = segments_from_masked_motion(path)
@@ -126,10 +174,10 @@ class ForceProtoContactTests(unittest.TestCase):
         self.assertEqual(len(segments), 1)
         segment = segments[0]
         self.assertEqual((segment.start_frame, segment.end_frame), (1, 4))
-        self.assertEqual(segment.contact_start, "11")
-        self.assertEqual(segment.contact_end, "00")
-        self.assertEqual(segment.metadata["active_body"], "LF")
-        self.assertEqual(segment.metadata["support_bodies"], ["RF"])
+        self.assertEqual(segment.contact_start, "110000")
+        self.assertEqual(segment.contact_end, "000000")
+        self.assertEqual(segment.metadata["active_body"], "left_foot")
+        self.assertEqual(segment.metadata["support_bodies"], ["right_foot"])
         self.assertIn("contact_transition", segment.metadata)
         self.assertIn("contact_events", segment.metadata)
         self.assertIn("contact_anchors", segment.metadata)
@@ -143,7 +191,7 @@ class ForceProtoContactTests(unittest.TestCase):
 
             graph = contact_graph_from_masked_motion(path)
 
-        lf_anchor = next(anchor for anchor in graph.anchors if anchor.body == "LF")
+        lf_anchor = next(anchor for anchor in graph.anchors if anchor.body == "left_foot")
         self.assertEqual(lf_anchor.world_position, [0.30000000000000004, 0.0, 0.0])
         self.assertEqual(lf_anchor.position_source, "body_pos_w_mean")
         self.assertIn("mean_drift_xy", lf_anchor.metadata)
@@ -159,6 +207,45 @@ class ForceProtoContactTests(unittest.TestCase):
         self.assertEqual(len(graph.transitions), 1)
         self.assertGreaterEqual(len(graph.events), 1)
         self.assertGreaterEqual(len(graph.anchors), 1)
+
+    def test_force_proto_uses_fixed_six_contact_parts_and_drops_hips(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "motion_parts.npz"
+            _write_proto_motion_with_eight_parts(path)
+
+            graph = contact_graph_from_masked_motion(path)
+            segments = segments_from_masked_motion(path)
+
+        bodies = {anchor.body for anchor in graph.anchors}
+        self.assertIn("left_foot", bodies)
+        self.assertIn("right_foot", bodies)
+        self.assertIn("left_knee", bodies)
+        self.assertNotIn("left_hip", bodies)
+        self.assertNotIn("right_hip", bodies)
+        self.assertNotIn("world", bodies)
+        self.assertNotIn("pelvis", bodies)
+        self.assertEqual(segments[0].contact_start, "100000")
+        self.assertEqual(segments[0].contact_end, "000011")
+        self.assertEqual(segments[0].metadata["contact_transition"]["metadata"]["body_names"], [
+            "left_foot",
+            "right_foot",
+            "left_hand",
+            "right_hand",
+            "left_knee",
+            "right_knee",
+        ])
+
+    def test_force_proto_part_positions_use_body_link_mapping_not_mask_column_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "motion_parts.npz"
+            _write_proto_motion_with_eight_parts(path)
+
+            graph = contact_graph_from_masked_motion(path)
+
+        left_foot = next(anchor for anchor in graph.anchors if anchor.body == "left_foot")
+        right_foot = next(anchor for anchor in graph.anchors if anchor.body == "right_foot")
+        self.assertEqual(left_foot.world_position, [0.1, 0.0, 0.0])
+        self.assertEqual(right_foot.world_position, [0.2, 0.0, 0.0])
 
     def test_import_force_proto_writes_contact_layer_sidecar(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
