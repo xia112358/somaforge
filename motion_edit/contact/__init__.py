@@ -32,6 +32,7 @@ from .schema import (
     ContactTransitionRecord,
 )
 from .surfaces import bind_anchor_to_plane
+from .surface_binding import bind_anchor_to_surface, bind_anchors_to_surfaces, surface_compatible_with_body
 from .transitions import (
     mask_string,
     segment_from_contact_transition,
@@ -52,6 +53,8 @@ __all__ = [
     "append_anchor_edit_to_plan",
     "bind_segment_to_contact_graph",
     "bind_anchor_to_plane",
+    "bind_anchor_to_surface",
+    "bind_anchors_to_surfaces",
     "bodies_from_mask",
     "body_names_for_mask",
     "contact_graph_from_masks",
@@ -74,6 +77,7 @@ __all__ = [
     "read_contact_transitions",
     "read_contact_graph",
     "segment_from_contact_transition",
+    "surface_compatible_with_body",
     "transitions_from_event_pairs",
     "transitions_from_proto_indices",
     "validate_contact_edit_plan",
