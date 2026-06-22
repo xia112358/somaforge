@@ -8,7 +8,7 @@ from unittest import mock
 import numpy as np
 
 from motion_edit import cli, paths
-from motion_edit.contact import ContactSurfaceRecord, contact_graph_from_masks, write_contact_layer, write_contact_surfaces
+from motion_edit.contact import ContactSurfaceRecord, contact_graph_from_masks, read_contact_graph, write_contact_layer, write_contact_surfaces
 from motion_edit.io import read_jsonl, write_jsonl
 from motion_edit.layers import write_layer
 from motion_edit.schema import SegmentRecord
@@ -492,6 +492,82 @@ class StorageSchemaTests(unittest.TestCase):
         self.assertEqual(args.source_contact_layer, "contact/motion_a_bound")
         self.assertTrue(args.with_terrain)
         self.assertEqual(args.fps, 60)
+
+    def test_import_force_proto_uses_registered_motion_id_and_updates_motion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            motion_dir = root / "motions_src"
+            motion_dir.mkdir()
+            motion = motion_dir / "climb_01_rollout_ref_contact_force.npz"
+            np.savez(
+                motion,
+                proto_start_idx=np.asarray([0], dtype=np.int64),
+                proto_end_idx=np.asarray([3], dtype=np.int64),
+                contact_part_mask=np.asarray(
+                    [
+                        [True, False, False, False, False, False],
+                        [True, False, False, False, False, False],
+                        [False, True, False, False, False, False],
+                    ],
+                    dtype=bool,
+                ),
+                active_part_mask=np.asarray(
+                    [
+                        [True, False, False, False, False, False],
+                        [True, False, False, False, False, False],
+                        [False, True, False, False, False, False],
+                    ],
+                    dtype=bool,
+                ),
+                support_part_mask=np.asarray(
+                    [
+                        [False, True, False, False, False, False],
+                        [False, True, False, False, False, False],
+                        [True, False, False, False, False, False],
+                    ],
+                    dtype=bool,
+                ),
+            )
+            record = MotionAssetRecord(
+                motion_asset_id="climb_01_raw_contact_29",
+                motion_id="climb_01_z_scale_1.0",
+                motion_path=str(motion),
+                raw_contact={"available": True, "source": "newton_raw_rigid_contacts"},
+            )
+            with (
+                mock.patch.object(paths, "CATALOGS_ROOT", root / "catalogs"),
+                mock.patch.object(paths, "LAYERS_ROOT", root / "layers"),
+                mock.patch.object(paths, "MOTIONS_ROOT", root / "motions"),
+                mock.patch.object(paths, "MOTION_ASSETS_ROOT", root / "motion_assets"),
+                mock.patch.object(paths, "MOTION_VERSIONS_ROOT", root / "motion_versions"),
+                mock.patch.object(paths, "SEGMENTS_ROOT", root / "segments"),
+                mock.patch.object(paths, "TOKENS_ROOT", root / "tokens"),
+                mock.patch.object(paths, "EXPORTS_ROOT", root / "exports"),
+                mock.patch.object(paths, "WORKBENCH_ROOT", root / "workbench"),
+                mock.patch.object(paths, "BACKUPS_ROOT", root / "backups"),
+                mock.patch.object(storage_io, "MOTIONS_ROOT", root / "motions"),
+                mock.patch.object(cli, "LAYERS_ROOT", root / "layers"),
+            ):
+                write_motion_asset(record)
+                cli._cmd_import_force_proto(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "motion_dir": str(motion_dir),
+                            "pattern": "*.npz",
+                            "layer_name": "raw_contact_29",
+                            "source": "force_contact",
+                            "use_registered_motion_ids": True,
+                            "update_motions": True,
+                        },
+                    )()
+                )
+                graph = read_contact_graph(root / "layers" / "contact" / "raw_contact_29", "climb_01_z_scale_1.0")
+                updated = read_motion_asset("climb_01_raw_contact_29")
+
+        self.assertEqual(graph.motion_id, "climb_01_z_scale_1.0")
+        self.assertEqual(updated.derived["contact_layer"], "contact/raw_contact_29")
 
     def test_register_motion_version_cli_writes_metadata_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

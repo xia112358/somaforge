@@ -138,10 +138,10 @@ def _load_masked_motion(path: Path) -> _MaskedMotion:
         )
 
 
-def contact_graph_from_masked_motion(path: Path, *, source: str = "force_contact") -> ContactGraph:
+def contact_graph_from_masked_motion(path: Path, *, source: str = "force_contact", motion_id: str | None = None) -> ContactGraph:
     inputs = _load_masked_motion(path)
     return contact_graph_from_masks(
-        motion_id=path.stem,
+        motion_id=motion_id or path.stem,
         proto_starts=inputs.starts,
         proto_ends=inputs.ends,
         contact_mask=inputs.contact,
@@ -153,9 +153,9 @@ def contact_graph_from_masked_motion(path: Path, *, source: str = "force_contact
     )
 
 
-def segments_from_masked_motion(path: Path, *, source: str = "force_contact", status: str = "candidate") -> list[SegmentRecord]:
+def segments_from_masked_motion(path: Path, *, source: str = "force_contact", status: str = "candidate", motion_id: str | None = None) -> list[SegmentRecord]:
     inputs = _load_masked_motion(path)
-    motion_id = path.stem
+    motion_id = motion_id or path.stem
     graph = contact_graph_from_masks(
         motion_id=motion_id,
         proto_starts=inputs.starts,

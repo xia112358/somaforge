@@ -93,12 +93,38 @@ def _cmd_import_force_proto(args: argparse.Namespace) -> None:
     motion_dir = Path(args.motion_dir).expanduser().resolve()
     out_dir = layer_dir("candidate", args.layer_name)
     out_dir.mkdir(parents=True, exist_ok=True)
+    registered_by_path = {}
+    if getattr(args, "use_registered_motion_ids", False) or getattr(args, "update_motions", False):
+        registered_by_path = {
+            str(Path(record.motion_path).expanduser().resolve()): record
+            for record in list_motion_assets()
+        }
     total = 0
     for motion_path in sorted(motion_dir.glob(args.pattern)):
-        segments = segments_from_masked_motion(motion_path, source=args.source, status="candidate")
+        registered = registered_by_path.get(str(motion_path.resolve()))
+        motion_id = registered.motion_id if registered is not None and registered.motion_id else None
+        segments = segments_from_masked_motion(motion_path, source=args.source, status="candidate", motion_id=motion_id)
         write_layer(out_dir / f"{motion_path.stem}.jsonl", segments)
-        graph = contact_graph_from_masked_motion(motion_path, source=args.source)
+        graph = contact_graph_from_masked_motion(motion_path, source=args.source, motion_id=motion_id)
         write_contact_layer(LAYERS_ROOT / "contact" / args.layer_name, graph)
+        if registered is not None and getattr(args, "update_motions", False):
+            derived = dict(registered.derived or {})
+            derived["contact_layer"] = f"contact/{args.layer_name}"
+            write_motion_asset(
+                MotionAssetRecord(
+                    motion_asset_id=registered.motion_asset_id,
+                    motion_path=registered.motion_path,
+                    source=registered.source,
+                    fps=registered.fps,
+                    motion_id=registered.motion_id,
+                    terrain_id=registered.terrain_id,
+                    terrain_urdf=registered.terrain_urdf,
+                    surface_catalog_path=registered.surface_catalog_path,
+                    raw_contact=dict(registered.raw_contact or {}),
+                    derived=derived,
+                    metadata=dict(registered.metadata),
+                )
+            )
         total += len(segments)
     print(f"wrote {total} candidate segments to {out_dir}; contact layer={LAYERS_ROOT / 'contact' / args.layer_name}")
 
@@ -1382,6 +1408,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pattern", default="*.npz")
     p.add_argument("--layer-name", default="force_contact")
     p.add_argument("--source", default="force_contact")
+    p.add_argument("--use-registered-motion-ids", action="store_true")
+    p.add_argument("--update-motions", action="store_true")
     p.set_defaults(func=_cmd_import_force_proto)
 
     p = sub.add_parser("import-manual-cuts")
