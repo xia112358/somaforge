@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import tempfile
 import unittest
@@ -8,7 +10,14 @@ from pathlib import Path
 import numpy as np
 
 from motion_edit import cli
-from motion_edit.contact import ContactAnchorRecord, ContactGraph, ContactSurfaceRecord, contact_graph_from_masks
+from motion_edit.contact import (
+    ContactAnchorRecord,
+    ContactGraph,
+    ContactSurfaceRecord,
+    contact_graph_from_masks,
+    write_contact_layer,
+    write_contact_surfaces,
+)
 from motion_edit.export import (
     export_contact_overlay,
     export_cutter_segments,
@@ -226,6 +235,136 @@ class ExportContactMetadataTests(unittest.TestCase):
         self.assertEqual(anchor_point["status"], "bound")
         self.assertEqual(projection_line["from"], [0.1, 0.2, 0.02])
         self.assertEqual(projection_line["to"], [0.1, 0.2, 0.0])
+
+    def test_cli_exports_surface_binding_report_from_sidecar(self) -> None:
+        surface = ContactSurfaceRecord(
+            motion_id="motion_a",
+            surface_id="top",
+            object_id="box",
+            surface_type="box_face",
+            origin=[0.0, 0.0, 0.0],
+            normal=[0.0, 0.0, 1.0],
+            tangent_u=[1.0, 0.0, 0.0],
+            tangent_v=[0.0, 1.0, 0.0],
+            bounds={"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+        )
+        graph = ContactGraph(
+            motion_id="motion_a",
+            anchors=[
+                ContactAnchorRecord(
+                    motion_id="motion_a",
+                    anchor_id="anchor_lf",
+                    body="LF",
+                    start_frame=0,
+                    end_frame=2,
+                    world_position=[0.1, 0.2, 0.0],
+                    surface_id="top",
+                    surface_coordinates={"u": 0.1, "v": 0.2},
+                    metadata={"surface_bindings": [{"bound_world_position": [0.1, 0.2, 0.0], "clamped": False}]},
+                )
+            ],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            layer = root / "layers" / "contact" / "bound"
+            write_contact_layer(layer, graph)
+            write_contact_surfaces(layer / "surfaces" / "motion_a.jsonl", [surface])
+            out = root / "report.json"
+            with mock.patch.object(cli, "LAYERS_ROOT", root / "layers"):
+                cli._cmd_export_surface_binding_report(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "contact_layer": "contact/bound",
+                            "motion_id": "motion_a",
+                            "surface_catalog": None,
+                            "output": str(out),
+                        },
+                    )()
+                )
+            report = json.loads(out.read_text(encoding="utf-8"))
+
+        self.assertEqual(report["summary"]["surface_count"], 1)
+        self.assertEqual(report["anchors"][0]["surface_id"], "top")
+
+    def test_cli_exports_surface_binding_overlay_from_explicit_catalog_and_summary(self) -> None:
+        surface = ContactSurfaceRecord(
+            motion_id="motion_a",
+            surface_id="top",
+            object_id="box",
+            surface_type="box_face",
+            origin=[0.0, 0.0, 0.0],
+            normal=[0.0, 0.0, 1.0],
+            tangent_u=[1.0, 0.0, 0.0],
+            tangent_v=[0.0, 1.0, 0.0],
+            bounds={"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+        )
+        graph = ContactGraph(
+            motion_id="motion_a",
+            anchors=[
+                ContactAnchorRecord(
+                    motion_id="motion_a",
+                    anchor_id="anchor_lf",
+                    body="LF",
+                    start_frame=0,
+                    end_frame=2,
+                    world_position=[0.1, 0.2, 0.0],
+                    surface_id="top",
+                    metadata={"surface_bindings": [{"bound_world_position": [0.1, 0.2, 0.0], "clamped": False}]},
+                ),
+                ContactAnchorRecord(
+                    motion_id="motion_a",
+                    anchor_id="anchor_bad",
+                    body="RF",
+                    start_frame=0,
+                    end_frame=2,
+                    world_position=[2.0, 0.0, 0.0],
+                    metadata={"surface_binding_failed": True, "surface_binding_failure_reason": "too far"},
+                ),
+            ],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            layer = root / "layers" / "contact" / "bound"
+            catalog = root / "surfaces.jsonl"
+            overlay_path = root / "overlay.json"
+            write_contact_layer(layer, graph)
+            write_contact_surfaces(catalog, [surface])
+            with mock.patch.object(cli, "LAYERS_ROOT", root / "layers"):
+                cli._cmd_export_surface_binding_overlay(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "contact_layer": "contact/bound",
+                            "motion_id": "motion_a",
+                            "surface_catalog": str(catalog),
+                            "output": str(overlay_path),
+                        },
+                    )()
+                )
+                buffer = io.StringIO()
+                with contextlib.redirect_stdout(buffer):
+                    cli._cmd_summarize_surface_bindings(
+                        type(
+                            "Args",
+                            (),
+                            {
+                                "contact_layer": "contact/bound",
+                                "motion_id": "motion_a",
+                                "surface_catalog": str(catalog),
+                                "limit": 5,
+                            },
+                        )()
+                    )
+            overlay = json.loads(overlay_path.read_text(encoding="utf-8"))
+            summary = buffer.getvalue()
+
+        self.assertTrue(any(item["type"] == "surface_quad" for item in overlay["objects"]))
+        self.assertIn("anchors=2", summary)
+        self.assertIn("failed=1", summary)
+        self.assertIn("suspicious anchor_bad", summary)
 
     def test_contact_overlay_export_writes_contact_graph(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

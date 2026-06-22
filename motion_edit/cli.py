@@ -9,7 +9,15 @@ from .adapters.omniretarget import detect_omniretarget_paths
 from .adapters.lte import import_lte_catalog
 from .curation import filter_segments, load_layer_segments, write_status_layer
 from .editing import clip_motion, splice_motions
-from .export import export_contact_overlay, export_cutter_segments, export_motion_manifest, export_motion_version_manifest, export_split_npz
+from .export import (
+    export_contact_overlay,
+    export_cutter_segments,
+    export_motion_manifest,
+    export_motion_version_manifest,
+    export_split_npz,
+    export_surface_binding_overlay,
+    export_surface_binding_report,
+)
 from .force_proto import contact_graph_from_masked_motion, segments_from_masked_motion
 from .io import read_jsonl, segment_from_dict, write_jsonl
 from .layers import iter_layer_files, read_layer, write_layer
@@ -129,6 +137,85 @@ def _cmd_export_contact_overlay(args: argparse.Namespace) -> None:
     graph = read_contact_graph(LAYERS_ROOT / args.source, args.motion_id)
     output = export_contact_overlay(args.output, graph)
     print(f"wrote contact overlay {output}")
+
+
+def _read_surfaces_for_contact_layer(contact_layer: str, motion_id: str, surface_catalog: str | None):
+    if surface_catalog:
+        return read_contact_surfaces(Path(surface_catalog).expanduser())
+    sidecar = LAYERS_ROOT / contact_layer / "surfaces" / f"{motion_id}.jsonl"
+    if sidecar.exists():
+        return read_contact_surfaces(sidecar)
+    return []
+
+
+def _surface_binding_counts(graph) -> dict[str, int]:
+    statuses = []
+    for anchor in graph.anchors:
+        bindings = anchor.metadata.get("surface_bindings")
+        latest = bindings[-1] if isinstance(bindings, list) and bindings else None
+        if anchor.metadata.get("surface_binding_failed"):
+            statuses.append("failed")
+        elif not anchor.surface_id:
+            statuses.append("unbound")
+        elif isinstance(latest, dict) and latest.get("clamped"):
+            statuses.append("clamped")
+        elif anchor.surface_id and latest is None:
+            statuses.append("suspicious")
+        else:
+            statuses.append("bound")
+    return {
+        "anchor_count": len(graph.anchors),
+        "bound_count": statuses.count("bound") + statuses.count("clamped") + statuses.count("suspicious"),
+        "unbound_count": statuses.count("unbound"),
+        "failed_count": statuses.count("failed"),
+        "clamped_count": statuses.count("clamped"),
+        "suspicious_count": statuses.count("suspicious"),
+    }
+
+
+def _cmd_export_surface_binding_report(args: argparse.Namespace) -> None:
+    graph = read_contact_graph(LAYERS_ROOT / args.contact_layer, args.motion_id)
+    surfaces = _read_surfaces_for_contact_layer(args.contact_layer, args.motion_id, args.surface_catalog)
+    out = export_surface_binding_report(args.output, graph=graph, surfaces=surfaces)
+    counts = _surface_binding_counts(graph)
+    print(
+        f"wrote surface binding report {out} anchors={counts['anchor_count']} "
+        f"bound={counts['bound_count']} unbound={counts['unbound_count']} failed={counts['failed_count']} "
+        f"clamped={counts['clamped_count']} surfaces={len(surfaces)}"
+    )
+
+
+def _cmd_export_surface_binding_overlay(args: argparse.Namespace) -> None:
+    graph = read_contact_graph(LAYERS_ROOT / args.contact_layer, args.motion_id)
+    surfaces = _read_surfaces_for_contact_layer(args.contact_layer, args.motion_id, args.surface_catalog)
+    out = export_surface_binding_overlay(args.output, graph=graph, surfaces=surfaces)
+    counts = _surface_binding_counts(graph)
+    print(
+        f"wrote surface binding overlay {out} anchors={counts['anchor_count']} "
+        f"bound={counts['bound_count']} unbound={counts['unbound_count']} failed={counts['failed_count']} "
+        f"clamped={counts['clamped_count']} surfaces={len(surfaces)}"
+    )
+
+
+def _cmd_summarize_surface_bindings(args: argparse.Namespace) -> None:
+    graph = read_contact_graph(LAYERS_ROOT / args.contact_layer, args.motion_id)
+    surfaces = _read_surfaces_for_contact_layer(args.contact_layer, args.motion_id, args.surface_catalog)
+    counts = _surface_binding_counts(graph)
+    used_surfaces = sorted({anchor.surface_id for anchor in graph.anchors if anchor.surface_id})
+    suspicious = []
+    for anchor in graph.anchors:
+        bindings = anchor.metadata.get("surface_bindings")
+        if anchor.metadata.get("surface_binding_failed") or (anchor.surface_id and not bindings):
+            suspicious.append(anchor)
+    print(f"motion_id={args.motion_id}")
+    print(
+        f"anchors={counts['anchor_count']} bound={counts['bound_count']} unbound={counts['unbound_count']} "
+        f"failed={counts['failed_count']} clamped={counts['clamped_count']} suspicious={counts['suspicious_count']}"
+    )
+    print(f"surfaces={len(surfaces)} used={','.join(used_surfaces) if used_surfaces else '<none>'}")
+    for anchor in suspicious[: args.limit]:
+        reason = anchor.metadata.get("surface_binding_failure_reason") or "binding metadata missing"
+        print(f"suspicious {anchor.anchor_id} body={anchor.body} surface={anchor.surface_id} reason={reason}")
 
 
 def _cmd_bind_contact_surfaces(args: argparse.Namespace) -> None:
@@ -803,6 +890,27 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--motion-id", required=True)
     p.add_argument("--output", required=True)
     p.set_defaults(func=_cmd_export_contact_overlay)
+
+    p = sub.add_parser("export-surface-binding-report")
+    p.add_argument("--contact-layer", required=True, help="Contact layer path relative to data/layers")
+    p.add_argument("--motion-id", required=True)
+    p.add_argument("--surface-catalog", default=None)
+    p.add_argument("--output", required=True)
+    p.set_defaults(func=_cmd_export_surface_binding_report)
+
+    p = sub.add_parser("export-surface-binding-overlay")
+    p.add_argument("--contact-layer", required=True, help="Contact layer path relative to data/layers")
+    p.add_argument("--motion-id", required=True)
+    p.add_argument("--surface-catalog", default=None)
+    p.add_argument("--output", required=True)
+    p.set_defaults(func=_cmd_export_surface_binding_overlay)
+
+    p = sub.add_parser("summarize-surface-bindings")
+    p.add_argument("--contact-layer", required=True, help="Contact layer path relative to data/layers")
+    p.add_argument("--motion-id", required=True)
+    p.add_argument("--surface-catalog", default=None)
+    p.add_argument("--limit", type=int, default=10)
+    p.set_defaults(func=_cmd_summarize_surface_bindings)
 
     p = sub.add_parser("bind-contact-surfaces")
     p.add_argument("--contact-layer", default=None, help="Contact layer path relative to data/layers, e.g. contact/force_contact")
