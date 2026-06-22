@@ -26,7 +26,7 @@ from .contact import (
 from .contact.generation import apply_contact_edit_plan_to_motion
 from .contact.layers import read_contact_graph
 from .storage.canonical import build_canonical_segments, mark_canonical_segment_statuses, write_motion_version_with_canonical_segments
-from .storage.io import read_canonical_segments, read_motion_version, write_canonical_segments, write_motion_asset, write_motion_version, write_token_catalog
+from .storage.io import read_canonical_segments, read_motion_version, read_token_catalog, write_canonical_segments, write_motion_asset, write_motion_version, write_token_catalog
 from .storage.schema import MotionAssetRecord, MotionVersionRecord
 from .storage.tokens import build_tokens_from_segments
 from .viewer import launch_viewer
@@ -337,9 +337,32 @@ def _cmd_export_manifest(args: argparse.Namespace) -> None:
 
 def _cmd_export_split_npz(args: argparse.Namespace) -> None:
     if args.motion_version_id:
+        version = read_motion_version(args.motion_version_id)
         segments = read_canonical_segments(args.motion_version_id)
         if args.status:
             segments = [segment for segment in segments if segment.status == args.status]
+        token_by_segment = {}
+        if version.token_catalog_path:
+            try:
+                token_by_segment = {token.segment_id: token.token_id for token in read_token_catalog(args.motion_version_id, version.token_catalog_path)}
+            except FileNotFoundError:
+                print(f"warning: token catalog not found: {version.token_catalog_path}")
+        hardened_segments = []
+        for segment in segments:
+            metadata = dict(segment.metadata)
+            metadata["motion_version_id"] = args.motion_version_id
+            token_id = token_by_segment.get(segment.segment_id)
+            if token_id:
+                metadata["token_id"] = token_id
+            hardened_segments.append(
+                replace(
+                    segment,
+                    motion_path=segment.motion_path or segment.clip_npz or version.motion_path,
+                    clip_npz=segment.clip_npz or segment.motion_path or version.motion_path,
+                    metadata=metadata,
+                )
+            )
+        segments = hardened_segments
         default_output_name = args.motion_version_id if args.status is None else f"{args.motion_version_id}_{args.status}"
     else:
         if not args.source:

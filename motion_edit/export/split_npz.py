@@ -29,6 +29,8 @@ def export_split_npz(output_dir: str | Path, segments: list[SegmentRecord]) -> l
         arrays = load_motion_npz(source)
         clipped = subset_arrays(arrays, segment.start_frame, segment.end_frame)
         clipped["motion_edit_segment_id"] = np.asarray(segment.segment_id)
+        clipped["motion_edit_motion_version_id"] = np.asarray(str(segment.metadata.get("motion_version_id") or ""))
+        clipped["motion_edit_token_id"] = np.asarray(str(segment.metadata.get("token_id") or ""))
         clipped["motion_edit_source_motion"] = np.asarray(str(source))
         clipped["motion_edit_contact_transition"] = np.asarray(
             json.dumps(segment.metadata.get("contact_transition"), sort_keys=True)

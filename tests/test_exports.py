@@ -13,7 +13,7 @@ from motion_edit.export import export_contact_overlay, export_cutter_segments, e
 from motion_edit.io import read_jsonl
 from motion_edit.schema import SegmentRecord
 from motion_edit.storage import io as storage_io
-from motion_edit.storage import MotionVersionRecord, write_canonical_segments, write_motion_version
+from motion_edit.storage import MotionVersionRecord, TokenRecord, write_canonical_segments, write_motion_version, write_token_catalog
 from unittest import mock
 
 
@@ -131,6 +131,8 @@ class ExportContactMetadataTests(unittest.TestCase):
                 **{
                     **accepted.__dict__,
                     "status": "accepted",
+                    "motion_path": None,
+                    "clip_npz": None,
                     "metadata": {**accepted.metadata, "motion_version_id": "motion_a_raw"},
                 }
             )
@@ -144,8 +146,25 @@ class ExportContactMetadataTests(unittest.TestCase):
                 motion_path=str(motion),
             )
             output_dir = root / "split"
-            with mock.patch.object(storage_io, "SEGMENTS_ROOT", root / "segments"):
+            version = MotionVersionRecord(
+                motion_version_id="motion_a_raw",
+                motion_path=str(motion),
+                token_catalog_path=str(root / "tokens" / "motion_a_raw.jsonl"),
+            )
+            token = TokenRecord(
+                token_id="token_0",
+                motion_version_id="motion_a_raw",
+                segment_id="motion_a_force_0000",
+                token_family="LF__RF__support_transfer",
+            )
+            with (
+                mock.patch.object(storage_io, "SEGMENTS_ROOT", root / "segments"),
+                mock.patch.object(storage_io, "MOTION_VERSIONS_ROOT", root / "motion_versions"),
+                mock.patch.object(storage_io, "TOKENS_ROOT", root / "tokens"),
+            ):
+                write_motion_version(version)
                 write_canonical_segments("motion_a_raw", [accepted, rejected])
+                write_token_catalog("motion_a_raw", [token])
                 cli._cmd_export_split_npz(
                     type(
                         "Args",
@@ -163,9 +182,13 @@ class ExportContactMetadataTests(unittest.TestCase):
                 )
 
             written = sorted(output_dir.glob("*.npz"))
+            data = np.load(written[0], allow_pickle=True)
 
         self.assertEqual(len(written), 1)
         self.assertIn("motion_a_force_0000", written[0].name)
+        self.assertEqual(str(data["motion_edit_motion_version_id"]), "motion_a_raw")
+        self.assertEqual(str(data["motion_edit_token_id"]), "token_0")
+        self.assertEqual(str(data["motion_edit_source_motion"]), str(motion))
 
     def test_manifest_includes_contact_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
