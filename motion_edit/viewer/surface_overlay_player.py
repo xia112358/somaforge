@@ -539,6 +539,56 @@ def _save_file_dialog(*, title: str, defaultextension: str = "", filetypes: list
         root.destroy()
 
 
+SETUP_LOAD_TYPES = ("Motion NPZ", "Contact Layer", "Terrain URDF", "Surface Catalog")
+SETUP_SAVE_TYPES = ("Output Contact Layer", "Edit Plan")
+
+
+def _setup_load_dialog_config(load_type: str) -> dict[str, Any]:
+    if load_type == "Motion NPZ":
+        return {
+            "title": "Load motion npz",
+            "filetypes": [("Motion npz", "*.npz")],
+            "initialdir": Path.cwd(),
+        }
+    if load_type == "Contact Layer":
+        return {
+            "title": "Load contact layer jsonl",
+            "filetypes": [("Contact layer jsonl", "*.jsonl")],
+            "initialdir": LAYERS_ROOT / "contact",
+        }
+    if load_type == "Terrain URDF":
+        return {
+            "title": "Load terrain URDF",
+            "filetypes": [("URDF", "*.urdf")],
+            "initialdir": Path.cwd(),
+        }
+    if load_type == "Surface Catalog":
+        return {
+            "title": "Load surface catalog",
+            "filetypes": [("Surface catalog jsonl", "*.jsonl")],
+            "initialdir": Path("data/surfaces"),
+        }
+    raise ValueError(f"unknown load type: {load_type}")
+
+
+def _setup_save_dialog_config(save_type: str) -> dict[str, Any]:
+    if save_type == "Output Contact Layer":
+        return {
+            "title": "Save contact layer as jsonl",
+            "defaultextension": ".jsonl",
+            "filetypes": [("Contact layer jsonl", "*.jsonl")],
+            "initialdir": LAYERS_ROOT / "contact",
+        }
+    if save_type == "Edit Plan":
+        return {
+            "title": "Save edit plan as JSON",
+            "defaultextension": ".json",
+            "filetypes": [("Contact edit plan", "*.json")],
+            "initialdir": WORKBENCH_ROOT,
+        }
+    raise ValueError(f"unknown save type: {save_type}")
+
+
 def _layer_name_from_path(path: str | Path) -> str:
     resolved = Path(path).expanduser()
     try:
@@ -1082,12 +1132,10 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
     pending_exec: dict[str, list[str] | None] = {"cmd": None}
 
     with server.gui.add_folder("Contact Editor Setup"):
-        open_motion_btn = server.gui.add_button("Load Motion...")
-        open_contact_layer_btn = server.gui.add_button("Load Contact Layer...")
-        open_terrain_btn = server.gui.add_button("Load Terrain URDF...")
-        open_surface_btn = server.gui.add_button("Load Surface Catalog...")
-        save_output_layer_btn = server.gui.add_button("Save Contact Layer As...")
-        save_edit_plan_btn = server.gui.add_button("Save Edit Plan As...")
+        load_type = server.gui.add_dropdown("load_type", options=SETUP_LOAD_TYPES, initial_value=SETUP_LOAD_TYPES[0])
+        browse_btn = server.gui.add_button("Browse...")
+        save_type = server.gui.add_dropdown("save_type", options=SETUP_SAVE_TYPES, initial_value=SETUP_SAVE_TYPES[0])
+        save_as_btn = server.gui.add_button("Save As...")
         motion = server.gui.add_text("motion_npz", initial_value="")
         motion_id = server.gui.add_text("motion_id", initial_value="")
         source_contact_layer = server.gui.add_text("source_contact_layer", initial_value="")
@@ -1112,96 +1160,63 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
         status.value = text
         print(f"[contact editor setup] {text}")
 
-    @open_motion_btn.on_click
+    @browse_btn.on_click
     def _(_) -> None:
         try:
+            selected_type = str(load_type.value)
+            config = _setup_load_dialog_config(selected_type)
             selected = _open_file_dialog(
-                title="Load motion npz",
-                filetypes=[("Motion npz", "*.npz"), ("All files", "*")],
-                initialdir=Path.cwd(),
+                title=config["title"],
+                filetypes=config["filetypes"],
+                initialdir=config["initialdir"],
             )
-            if selected:
+            if not selected:
+                return
+            if selected_type == "Motion NPZ":
                 motion.value = selected
                 if not str(motion_id.value).strip():
                     motion_id.value = Path(selected).stem
                 if not str(session_name.value).strip() or str(session_name.value) == "contact_editor":
                     session_name.value = f"{Path(selected).stem}_contact_editor"
                 _set_status(f"selected motion: {selected}")
-        except Exception as exc:
-            _set_status(f"motion picker failed: {exc}")
-
-    @open_contact_layer_btn.on_click
-    def _(_) -> None:
-        try:
-            selected = _open_file_dialog(
-                title="Load contact layer jsonl",
-                filetypes=[("Contact layer jsonl", "*.jsonl"), ("All files", "*")],
-                initialdir=LAYERS_ROOT / "contact",
-            )
-            if selected:
+            elif selected_type == "Contact Layer":
                 source_contact_layer.value = _layer_name_from_path(selected)
                 _set_status(f"selected contact layer: {source_contact_layer.value}")
-        except Exception as exc:
-            _set_status(f"contact layer picker failed: {exc}")
-
-    @open_terrain_btn.on_click
-    def _(_) -> None:
-        try:
-            selected = _open_file_dialog(
-                title="Load terrain URDF",
-                filetypes=[("URDF", "*.urdf"), ("All files", "*")],
-                initialdir=Path.cwd(),
-            )
-            if selected:
+            elif selected_type == "Terrain URDF":
                 terrain_urdf.value = selected
                 with_terrain.value = True
                 _set_status(f"selected terrain URDF: {selected}")
-        except Exception as exc:
-            _set_status(f"terrain picker failed: {exc}")
-
-    @open_surface_btn.on_click
-    def _(_) -> None:
-        try:
-            selected = _open_file_dialog(
-                title="Load surface catalog",
-                filetypes=[("Surface catalog jsonl", "*.jsonl"), ("All files", "*")],
-                initialdir=Path("data/surfaces"),
-            )
-            if selected:
+            elif selected_type == "Surface Catalog":
                 surface_catalog.value = selected
                 _set_status(f"selected surface catalog: {selected}")
+            else:
+                raise ValueError(f"unknown load type: {selected_type}")
         except Exception as exc:
-            _set_status(f"surface catalog picker failed: {exc}")
+            _set_status(f"browse failed: {exc}")
 
-    @save_output_layer_btn.on_click
+    @save_as_btn.on_click
     def _(_) -> None:
         try:
+            selected_type = str(save_type.value)
+            config = _setup_save_dialog_config(selected_type)
             selected = _save_file_dialog(
-                title="Save contact layer as jsonl",
-                defaultextension=".jsonl",
-                filetypes=[("Contact layer jsonl", "*.jsonl"), ("All files", "*")],
-                initialdir=LAYERS_ROOT / "contact",
+                title=config["title"],
+                defaultextension=config["defaultextension"],
+                filetypes=config["filetypes"],
+                initialdir=config["initialdir"],
             )
-            if selected:
+            if not selected:
+                return
+            if selected_type == "Output Contact Layer":
                 output_contact_layer.value = _layer_name_from_path(selected)
                 _set_status(f"output contact layer: {output_contact_layer.value}")
-        except Exception as exc:
-            _set_status(f"output layer picker failed: {exc}")
-
-    @save_edit_plan_btn.on_click
-    def _(_) -> None:
-        try:
-            selected = _save_file_dialog(
-                title="Save edit plan as JSON",
-                defaultextension=".json",
-                filetypes=[("Contact edit plan", "*.json"), ("All files", "*")],
-                initialdir=WORKBENCH_ROOT,
-            )
-            if selected:
+            elif selected_type == "Edit Plan":
                 edit_plan.value = selected
                 _set_status(f"edit plan: {selected}")
+            else:
+                raise ValueError(f"unknown save type: {selected_type}")
         except Exception as exc:
-            _set_status(f"edit plan picker failed: {exc}")
+            _set_status(f"save picker failed: {exc}")
 
     @load_btn.on_click
     def _(_) -> None:

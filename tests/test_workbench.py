@@ -52,6 +52,8 @@ from motion_edit.viewer.surface_overlay_player import (
     _anchor_positions_differ,
     _render_overlay,
     _selected_tangent_arrows,
+    _setup_load_dialog_config,
+    _setup_save_dialog_config,
     append_move_request,
     apply_direct_anchor_move,
     load_editor_state,
@@ -1279,6 +1281,21 @@ class SurfaceEditorSessionTests(unittest.TestCase):
             name = _layer_name_from_path(layer_file)
 
         self.assertEqual(name, "contact/example")
+
+    def test_setup_picker_configs_filter_by_selected_file_type(self) -> None:
+        motion_config = _setup_load_dialog_config("Motion NPZ")
+        contact_config = _setup_load_dialog_config("Contact Layer")
+        terrain_config = _setup_load_dialog_config("Terrain URDF")
+        surface_config = _setup_load_dialog_config("Surface Catalog")
+        output_config = _setup_save_dialog_config("Output Contact Layer")
+        plan_config = _setup_save_dialog_config("Edit Plan")
+
+        self.assertEqual(motion_config["filetypes"], [("Motion npz", "*.npz")])
+        self.assertEqual(contact_config["filetypes"], [("Contact layer jsonl", "*.jsonl")])
+        self.assertEqual(terrain_config["filetypes"], [("URDF", "*.urdf")])
+        self.assertEqual(surface_config["filetypes"], [("Surface catalog jsonl", "*.jsonl")])
+        self.assertEqual(output_config["filetypes"], [("Contact layer jsonl", "*.jsonl")])
+        self.assertEqual(plan_config["filetypes"], [("Contact edit plan", "*.json")])
 
 
 class WorkbenchActionTests(unittest.TestCase):
