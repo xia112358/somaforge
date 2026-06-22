@@ -37,6 +37,23 @@ STATUS_COLORS: dict[str, tuple[int, int, int]] = {
     "surface": (120, 150, 170),
 }
 
+STATUS_COLOR_OVERRIDES = {"selected", "edited", "clamped", "suspicious", "failed"}
+
+BODY_COLORS: dict[str, tuple[int, int, int]] = {
+    "lf": (60, 140, 255),
+    "left_foot": (60, 140, 255),
+    "rf": (255, 120, 65),
+    "right_foot": (255, 120, 65),
+    "lh": (80, 210, 130),
+    "left_hand": (80, 210, 130),
+    "rh": (210, 110, 255),
+    "right_hand": (210, 110, 255),
+    "lk": (255, 205, 70),
+    "left_knee": (255, 205, 70),
+    "rk": (90, 220, 220),
+    "right_knee": (90, 220, 220),
+}
+
 
 @dataclass
 class SurfaceOverlayEditorState:
@@ -380,6 +397,20 @@ def _color(status: str | None) -> tuple[int, int, int]:
     return STATUS_COLORS.get(str(status or ""), (80, 180, 255))
 
 
+def _anchor_color(obj: dict[str, Any]) -> tuple[int, int, int]:
+    status = str(obj.get("status", ""))
+    if status in STATUS_COLOR_OVERRIDES:
+        return _color(status)
+    explicit = obj.get("color")
+    if isinstance(explicit, list) and len(explicit) == 3:
+        return tuple(int(value) for value in explicit)
+    body = str(obj.get("body", "")).lower()
+    for key, color in BODY_COLORS.items():
+        if key in body or body in key:
+            return color
+    return _color(status)
+
+
 def _remove_handles(handles: list[Any]) -> None:
     for handle in handles:
         remove = getattr(handle, "remove", None)
@@ -421,6 +452,7 @@ def _render_overlay(server: Any, overlay: dict[str, Any], *, namespace: str = "/
             line_points.append([obj["from"], obj["to"]])
             line_colors.append([color, color])
         elif obj_type == "anchor_point":
+            color = _anchor_color(obj)
             if selected_anchor_id and obj.get("anchor_id") == selected_anchor_id:
                 selected_points.append(obj["position"])
             else:

@@ -7,6 +7,21 @@ from typing import Any, Iterable
 from motion_edit.contact.graph import ContactGraph
 from motion_edit.contact.schema import ContactAnchorRecord, ContactSurfaceRecord
 
+BODY_COLORS: dict[str, list[int]] = {
+    "lf": [60, 140, 255],
+    "left_foot": [60, 140, 255],
+    "rf": [255, 120, 65],
+    "right_foot": [255, 120, 65],
+    "lh": [80, 210, 130],
+    "left_hand": [80, 210, 130],
+    "rh": [210, 110, 255],
+    "right_hand": [210, 110, 255],
+    "lk": [255, 205, 70],
+    "left_knee": [255, 205, 70],
+    "rk": [90, 220, 220],
+    "right_knee": [90, 220, 220],
+}
+
 
 def _latest_binding(anchor: ContactAnchorRecord) -> dict[str, Any] | None:
     bindings = anchor.metadata.get("surface_bindings")
@@ -103,6 +118,7 @@ def _anchor_report(anchor: ContactAnchorRecord) -> dict[str, Any]:
         "binding": binding,
         "status": status,
         "binding_candidate_class": _binding_candidate_class(anchor),
+        "color": _body_color(anchor.body),
         "warnings": _anchor_warnings(anchor, binding),
         "raw_contact_position_refinement": anchor.metadata.get("raw_contact_position_refinement"),
         "binding_granularity": "anchor_point",
@@ -112,6 +128,14 @@ def _anchor_report(anchor: ContactAnchorRecord) -> dict[str, Any]:
 
 def _surface_dict(surface: ContactSurfaceRecord) -> dict[str, Any]:
     return surface.to_dict()
+
+
+def _body_color(body: str) -> list[int]:
+    normalized = body.lower()
+    for key, color in BODY_COLORS.items():
+        if key in normalized or normalized in key:
+            return color
+    return [80, 180, 255]
 
 
 def _summary(graph: ContactGraph, surfaces: list[ContactSurfaceRecord]) -> dict[str, int]:
@@ -217,6 +241,7 @@ def _anchor_overlay_objects(anchor: ContactAnchorRecord) -> list[dict[str, Any]]
             "surface_id": anchor.surface_id,
             "status": status,
             "binding_candidate_class": _binding_candidate_class(anchor),
+            "color": _body_color(anchor.body),
         }
     ]
     if binding is not None and binding.get("original_world_position") is not None and binding.get("bound_world_position") is not None:

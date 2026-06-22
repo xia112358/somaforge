@@ -250,6 +250,7 @@ class ExportContactMetadataTests(unittest.TestCase):
         self.assertEqual(surface_quad["corners"][0], [-1.0, -0.5, 0.0])
         self.assertEqual(surface_quad["corners"][2], [1.0, 0.5, 0.0])
         self.assertEqual(anchor_point["status"], "bound")
+        self.assertEqual(anchor_point["color"], [60, 140, 255])
         self.assertEqual(projection_line["from"], [0.1, 0.2, 0.02])
         self.assertEqual(projection_line["to"], [0.1, 0.2, 0.0])
 

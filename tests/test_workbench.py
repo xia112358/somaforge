@@ -45,6 +45,7 @@ from motion_edit.workbench import (
     write_workbench_segments,
 )
 from motion_edit.viewer.surface_overlay_player import (
+    _anchor_color,
     append_move_request,
     apply_direct_anchor_move,
     load_editor_state,
@@ -718,6 +719,16 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertIn("motion_edit.viewer.surface_overlay_player", cmd)
         self.assertIn("--edit-mode", cmd)
         self.assertEqual(cmd[cmd.index("--edit-mode") + 1], "direct")
+
+    def test_surface_overlay_anchor_color_uses_body_palette_with_status_override(self) -> None:
+        left = _anchor_color({"type": "anchor_point", "body": "left_foot", "status": "bound"})
+        right = _anchor_color({"type": "anchor_point", "body": "right_foot", "status": "bound"})
+        suspicious = _anchor_color({"type": "anchor_point", "body": "left_foot", "status": "suspicious"})
+
+        self.assertNotEqual(left, right)
+        self.assertEqual(left, (60, 140, 255))
+        self.assertEqual(right, (255, 120, 65))
+        self.assertEqual(suspicious, (255, 120, 95))
 
 
 class WorkbenchActionTests(unittest.TestCase):
