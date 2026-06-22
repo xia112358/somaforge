@@ -199,6 +199,104 @@ class SurfaceEditorSessionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "bounds"):
                 move_surface_editor_anchor(session, anchor_id=bound_anchor.anchor_id, tangent_delta=[0.1, 0.0])
 
+    def test_surface_editor_cli_prepares_session_and_launches_viewer_without_saving_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            motion = root / "motion_a.npz"
+            motion.write_bytes(b"original")
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True], [True], [False]]),
+                body_pos_w=np.asarray([[[0.0, 0.0, 0.0]], [[0.0, 0.0, 0.0]], [[0.0, 0.0, 0.0]]]),
+                body_names=["LF"],
+            )
+            write_contact_layer(root / "layers" / "contact" / "bound", graph)
+            process = mock.Mock(pid=1234)
+            process.wait.return_value = None
+            with (
+                mock.patch.object(cli, "LAYERS_ROOT", root / "layers"),
+                mock.patch.object(cli, "WORKBENCH_ROOT", root / "workbench"),
+                mock.patch.object(cli, "launch_viewer", return_value=process) as launch_mock,
+            ):
+                cli._cmd_surface_editor(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "motion": str(motion),
+                            "motion_id": "motion_a",
+                            "contact_layer": "contact/bound",
+                            "surface_catalog": None,
+                            "session_name": "surface_a",
+                            "edit_plan": None,
+                            "output_contact_layer": "contact/edited",
+                            "repo_root": None,
+                            "conda_env": "hsretargeting",
+                            "timeline_port": 8094,
+                            "fps": 50,
+                            "with_terrain": False,
+                            "save_on_exit": False,
+                        },
+                    )()
+                )
+                session_dir = root / "workbench" / "surface_sessions" / "surface_a"
+                report_exists = (session_dir / "motion_a.surface_binding_report.json").exists()
+                overlay_exists = (session_dir / "motion_a.surface_binding_overlay.json").exists()
+                contact_overlay_exists = (session_dir / "motion_a.contact_overlay.json").exists()
+                motion_bytes = motion.read_bytes()
+                output_layer_exists = (root / "layers" / "contact" / "edited").exists()
+
+        launch_mock.assert_called_once()
+        self.assertEqual(motion_bytes, b"original")
+        self.assertTrue(report_exists)
+        self.assertTrue(overlay_exists)
+        self.assertTrue(contact_overlay_exists)
+        self.assertFalse(output_layer_exists)
+
+    def test_surface_editor_cli_save_on_exit_writes_output_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            motion = root / "motion_a.npz"
+            motion.write_bytes(b"original")
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True], [True], [False]]),
+                body_pos_w=np.asarray([[[0.0, 0.0, 0.0]], [[0.0, 0.0, 0.0]], [[0.0, 0.0, 0.0]]]),
+                body_names=["LF"],
+            )
+            write_contact_layer(root / "layers" / "contact" / "bound", graph)
+            process = mock.Mock(pid=1234)
+            process.wait.return_value = None
+            with (
+                mock.patch.object(cli, "LAYERS_ROOT", root / "layers"),
+                mock.patch.object(cli, "WORKBENCH_ROOT", root / "workbench"),
+                mock.patch.object(cli, "launch_viewer", return_value=process),
+            ):
+                cli._cmd_surface_editor(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "motion": str(motion),
+                            "motion_id": "motion_a",
+                            "contact_layer": "contact/bound",
+                            "surface_catalog": None,
+                            "session_name": "surface_save",
+                            "edit_plan": None,
+                            "output_contact_layer": "contact/edited",
+                            "repo_root": None,
+                            "conda_env": "hsretargeting",
+                            "timeline_port": 8094,
+                            "fps": 50,
+                            "with_terrain": False,
+                            "save_on_exit": True,
+                        },
+                    )()
+                )
+                saved = read_contact_graph(root / "layers" / "contact" / "edited", "motion_a")
+
+        self.assertEqual(len(saved.anchors), 1)
+
 
 class WorkbenchActionTests(unittest.TestCase):
     def test_trim_preserves_identity_and_records_provenance(self) -> None:

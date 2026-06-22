@@ -59,7 +59,9 @@ from .workbench import (
     export_cutter_session_file,
     load_workbench_segments,
     make_workbench_server,
+    prepare_surface_editor_session,
     replace_segment,
+    save_surface_editor_session,
     select_segment,
     split_segment,
     sync_cutter_session_file,
@@ -833,6 +835,44 @@ def _cmd_cutter(args: argparse.Namespace) -> None:
     print(f"synced cutter session to {out}")
 
 
+def _cmd_surface_editor(args: argparse.Namespace) -> None:
+    ensure_data_dirs()
+    session = prepare_surface_editor_session(
+        motion_path=args.motion,
+        motion_id=args.motion_id,
+        contact_layer=args.contact_layer,
+        surface_catalog=args.surface_catalog,
+        session_name=args.session_name,
+        edit_plan_path=args.edit_plan,
+        output_contact_layer=args.output_contact_layer,
+        layers_root=LAYERS_ROOT,
+        workbench_root=WORKBENCH_ROOT,
+    )
+    print(f"surface editor session: {session.session_dir}")
+    print(f"surface binding report: {session.report_path}")
+    print(f"surface binding overlay: {session.overlay_path}")
+    print(f"contact overlay: {session.contact_overlay_path}")
+    print(f"pending edits: {session.pending_edits_path}")
+    print("viewer overlay support: fallback file bridge; existing Holosoma viewer is launched without surface overlay arguments")
+    process = launch_viewer(
+        args.motion,
+        repo_root=args.repo_root,
+        layer=None,
+        conda_env=args.conda_env,
+        timeline_port=args.timeline_port,
+        fps=args.fps,
+        with_terrain=args.with_terrain,
+    )
+    print(f"viewer pid={process.pid}")
+    print(f"Open Motion Cutter: http://localhost:{args.timeline_port}")
+    process.wait()
+    if args.save_on_exit:
+        out = save_surface_editor_session(session, layers_root=LAYERS_ROOT)
+        print(f"saved surface editor session output_contact_layer={out}")
+    else:
+        print("surface editor session prepared; no ContactLayer was saved because --save-on-exit was not set")
+
+
 def _cmd_workbench(args: argparse.Namespace) -> None:
     ensure_data_dirs()
     session = WorkbenchSession(
@@ -1108,6 +1148,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fps", type=int, default=50)
     p.add_argument("--with-terrain", action="store_true")
     p.set_defaults(func=_cmd_cutter)
+
+    p = sub.add_parser("surface-editor")
+    p.add_argument("motion")
+    p.add_argument("--motion-id", required=True)
+    p.add_argument("--contact-layer", required=True)
+    p.add_argument("--surface-catalog", default=None)
+    p.add_argument("--session-name", required=True)
+    p.add_argument("--edit-plan", default=None)
+    p.add_argument("--output-contact-layer", default=None)
+    p.add_argument("--repo-root", default=None)
+    p.add_argument("--conda-env", default="hsretargeting")
+    p.add_argument("--timeline-port", type=int, default=8094)
+    p.add_argument("--fps", type=int, default=50)
+    p.add_argument("--with-terrain", action="store_true")
+    p.add_argument("--save-on-exit", action="store_true")
+    p.set_defaults(func=_cmd_surface_editor)
 
     p = sub.add_parser("workbench")
     p.add_argument("motion", nargs="?", default=None, help="Optional .npz motion path for state metadata")
