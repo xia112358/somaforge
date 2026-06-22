@@ -53,6 +53,7 @@ def launch_viewer(
     surface_binding_overlay: str | Path | None = None,
     surface_editor_session: str | Path | None = None,
     surface_editor_requests: str | Path | None = None,
+    surface_editor_edit_mode: str = "direct",
     prefer_local_surface_editor: bool = True,
 ) -> subprocess.Popen:
     if surface_binding_overlay is not None and prefer_local_surface_editor:
@@ -70,6 +71,8 @@ def launch_viewer(
             str(Path(surface_editor_session).expanduser().resolve()),
             "--surface-editor-requests",
             str(Path(surface_editor_requests).expanduser().resolve()),
+            "--edit-mode",
+            surface_editor_edit_mode,
             "--timeline-port",
             str(timeline_port),
             "--fps",

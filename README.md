@@ -211,9 +211,15 @@ The overlay export is a lightweight frontend-agnostic JSON file. It contains `su
 
 `surface-editor` is the Viser-connected entry point for anchor-level contact editing. It prepares a surface binding report, surface binding overlay, contact overlay, session state, request file, and pending edit file under `data/workbench/surface_sessions/<session_name>/`, then launches the local `motion_edit` Viser surface overlay adapter by default.
 
-The local adapter reads the existing overlay JSON and renders `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects in Viser. Its minimal GUI lets a user enter/select an anchor id, set `du`/`dv` surface-coordinate deltas, choose `reject` or `clamp`, and write a move request. Requests are applied by `surface-editor-sync`, which routes every move through the same surface-constrained backend as `move-contact-anchor`.
+The local adapter reads the existing overlay JSON and renders `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects in Viser. Its minimal GUI lets a user enter/select an anchor id, set `du`/`dv` surface-coordinate deltas, choose `reject` or `clamp`, click `Move anchor`, and refresh the overlay immediately. `Save edits` writes the moved ContactLayer and appends ContactEditPlan entries.
 
-The older external Holosoma viewer can still be used with `--external-viewer`, but it is no longer required for the surface overlay bridge. Direct draggable 3D handles are not claimed yet; this first in-viewer interaction is an explicit Viser control panel plus request/sync bridge.
+Interaction levels:
+
+- Level 1: local Viser direct editor. It renders the overlay, moves anchors from the Viser GUI, refreshes the overlay, and saves from the Viser GUI.
+- Level 2: request bridge fallback. Run `surface-editor --edit-mode request`, click `Write move request`, then apply requests with `surface-editor-sync`.
+- Level 3: future true draggable 3D handles. Not implemented yet.
+
+The older external Holosoma viewer can still be used with `--external-viewer`, but it is no longer required for the surface overlay bridge. Direct draggable 3D handles are not claimed yet; the current in-viewer interaction is an explicit Viser control panel.
 
 Edits remain anchor-level and surface-constrained. They use `move_contact_anchor_on_surface`, never allow normal displacement, never jump to another surface, and do not model full foot sole contact, toe/heel rolling, pressure, or physical sticking.
 
@@ -227,19 +233,14 @@ Edits remain anchor-level and surface-constrained. They use `move_contact_anchor
   --output-contact-layer contact/climb00_surface_edited \
   --with-terrain
 
-~/motion_edit/motion-edit surface-editor-sync \
-  --session data/workbench/surface_sessions/climb00_surface/session.json
-
-~/motion_edit/motion-edit surface-editor-sync \
-  --session data/workbench/surface_sessions/climb00_surface/session.json \
-  --save
-
 ~/motion_edit/motion-edit surface-editor-move-anchor \
   --session data/workbench/surface_sessions/climb00_surface/session.json \
   --anchor-id <anchor_id> \
   --tangent-delta 0.10 0.00 \
   --save
 ```
+
+In the Viser GUI, enter `anchor_id`, `du`, `dv`, and `mode`, click `Move anchor`, then click `Save edits`. No terminal sync is needed in default direct mode. `surface-editor-sync` remains available for request-mode fallback.
 
 Saving writes a moved ContactLayer and appends `ContactAnchorEditRecord` entries to the edit plan if configured. It does not modify the original motion `.npz`, does not generate LTE augmented motion, and does not mutate canonical segmentation.
 

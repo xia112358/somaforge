@@ -857,9 +857,13 @@ def _cmd_surface_editor(args: argparse.Namespace) -> None:
     print(f"contact overlay: {session.contact_overlay_path}")
     print(f"pending edits: {session.pending_edits_path}")
     print(f"surface edit requests: {session.request_path}")
-    print("viewer overlay support: local motion_edit Viser adapter with file-bridge move requests")
-    print(f"sync pending viewer requests: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'}")
-    print(f"save after sync: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'} --save")
+    print(f"viewer overlay support: local motion_edit Viser adapter edit_mode={args.edit_mode}")
+    if args.edit_mode == "request":
+        print(f"sync pending viewer requests: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'}")
+        print(f"save after sync: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'} --save")
+    else:
+        print("direct edit mode: use Viser 'Move anchor' and 'Save edits'; no terminal sync is required")
+        print(f"request fallback remains available: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'}")
     process = launch_viewer(
         args.motion,
         repo_root=args.repo_root,
@@ -871,6 +875,7 @@ def _cmd_surface_editor(args: argparse.Namespace) -> None:
         surface_binding_overlay=session.overlay_path,
         surface_editor_session=session.session_dir / "session.json",
         surface_editor_requests=session.request_path,
+        surface_editor_edit_mode=args.edit_mode,
         prefer_local_surface_editor=not args.external_viewer,
     )
     print(f"viewer pid={process.pid}")
@@ -1202,6 +1207,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fps", type=int, default=50)
     p.add_argument("--with-terrain", action="store_true")
     p.add_argument("--save-on-exit", action="store_true")
+    p.add_argument("--edit-mode", choices=("direct", "request"), default="direct")
     p.add_argument("--external-viewer", action="store_true", help="Use the legacy external Holosoma viewer instead of the local surface overlay adapter")
     p.set_defaults(func=_cmd_surface_editor)
 

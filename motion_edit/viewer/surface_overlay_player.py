@@ -3,10 +3,15 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from motion_edit.paths import LAYERS_ROOT
+from motion_edit.workbench import move_surface_editor_anchor, read_surface_editor_session, save_surface_editor_session
+from motion_edit.workbench.surface_editor_session import SurfaceEditorSession
 
 
 STATUS_COLORS: dict[str, tuple[int, int, int]] = {
@@ -19,6 +24,30 @@ STATUS_COLORS: dict[str, tuple[int, int, int]] = {
     "unbound": (180, 180, 180),
     "surface": (120, 150, 170),
 }
+
+
+@dataclass
+class SurfaceOverlayEditorState:
+    session_path: Path
+    session: SurfaceEditorSession
+    overlay_path: Path
+    request_path: Path
+    selected_anchor_id: str | None = None
+    last_error: str | None = None
+    last_message: str | None = None
+    applied_edit_count: int = 0
+    render_generation: int = 0
+
+
+def load_editor_state(session_path: str | Path) -> SurfaceOverlayEditorState:
+    path = Path(session_path).expanduser()
+    session = read_surface_editor_session(path)
+    return SurfaceOverlayEditorState(
+        session_path=path,
+        session=session,
+        overlay_path=session.overlay_path,
+        request_path=session.request_path,
+    )
 
 
 def load_surface_overlay(path: str | Path) -> dict[str, Any]:
@@ -72,6 +101,41 @@ def append_move_request(
     return request
 
 
+def apply_direct_anchor_move(
+    state: SurfaceOverlayEditorState,
+    *,
+    anchor_id: str,
+    tangent_delta: list[float],
+    mode: str = "reject",
+) -> dict[str, Any]:
+    moved_graph, edit = move_surface_editor_anchor(
+        state.session,
+        anchor_id=anchor_id,
+        tangent_delta=tangent_delta,
+        mode=mode,
+    )
+    state.selected_anchor_id = anchor_id
+    state.applied_edit_count += 1
+    state.last_error = None
+    state.last_message = f"moved {anchor_id} delta={edit.delta_world}"
+    return {
+        "motion_id": moved_graph.motion_id,
+        "anchor_id": anchor_id,
+        "edit_id": edit.edit_id,
+        "delta_world": edit.delta_world,
+        "tangent_delta": edit.tangent_delta,
+        "pending_edits_path": str(state.session.pending_edits_path),
+        "overlay_path": str(state.overlay_path),
+    }
+
+
+def save_editor_state(state: SurfaceOverlayEditorState, *, layers_root: Path = LAYERS_ROOT) -> Path | None:
+    out = save_surface_editor_session(state.session, layers_root=layers_root)
+    state.last_error = None
+    state.last_message = f"saved output_contact_layer={out}"
+    return out
+
+
 def _safe_name(text: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"_", "-", "."} else "_" for ch in text)
 
@@ -80,7 +144,15 @@ def _color(status: str | None) -> tuple[int, int, int]:
     return STATUS_COLORS.get(str(status or ""), (80, 180, 255))
 
 
-def _render_overlay(server: Any, overlay: dict[str, Any]) -> None:
+def _remove_handles(handles: list[Any]) -> None:
+    for handle in handles:
+        remove = getattr(handle, "remove", None)
+        if callable(remove):
+            remove()
+
+
+def _render_overlay(server: Any, overlay: dict[str, Any], *, namespace: str = "/surface_editor") -> list[Any]:
+    handles: list[Any] = []
     line_points: list[list[list[float]]] = []
     line_colors: list[list[tuple[int, int, int]]] = []
     anchor_points: list[list[float]] = []
@@ -97,11 +169,12 @@ def _render_overlay(server: Any, overlay: dict[str, Any]) -> None:
                 line_points.append([corners[a], corners[b]])
                 line_colors.append([color, color])
             if hasattr(server.scene, "add_mesh_simple"):
-                name = f"/surface_editor/surfaces/{_safe_name(str(obj.get('surface_id', 'surface')))}"
+                name = f"{namespace}/surfaces/{_safe_name(str(obj.get('surface_id', 'surface')))}"
                 vertices = np.asarray(corners, dtype=np.float32)
                 faces = np.asarray([[0, 1, 2], [0, 2, 3]], dtype=np.uint32)
                 try:
-                    server.scene.add_mesh_simple(name, vertices, faces, color=tuple(c / 255.0 for c in color), opacity=0.22)
+                    handle = server.scene.add_mesh_simple(name, vertices, faces, color=tuple(c / 255.0 for c in color), opacity=0.22)
+                    handles.append(handle)
                 except TypeError:
                     pass
         elif obj_type == "normal_axis":
@@ -115,22 +188,25 @@ def _render_overlay(server: Any, overlay: dict[str, Any]) -> None:
             anchor_colors.append(color)
 
     if line_points:
-        server.scene.add_line_segments(
-            "/surface_editor/overlay_lines",
+        handle = server.scene.add_line_segments(
+            f"{namespace}/overlay_lines",
             points=np.asarray(line_points, dtype=np.float32),
             colors=np.asarray(line_colors, dtype=np.uint8),
             line_width=3.0,
             visible=True,
         )
+        handles.append(handle)
     if anchor_points:
-        server.scene.add_point_cloud(
-            "/surface_editor/anchor_points",
+        handle = server.scene.add_point_cloud(
+            f"{namespace}/anchor_points",
             points=np.asarray(anchor_points, dtype=np.float32),
             colors=np.asarray(anchor_colors, dtype=np.uint8),
             point_size=0.06,
             point_shape="circle",
             visible=True,
         )
+        handles.append(handle)
+    return handles
 
 
 def _load_motion_points(path: str | Path) -> np.ndarray:
@@ -152,6 +228,7 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
     except ImportError as exc:
         raise SystemExit("viser is not installed in this environment; use surface-editor fallback/sync commands") from exc
 
+    state = load_editor_state(args.surface_editor_session)
     overlay = load_surface_overlay(args.surface_binding_overlay)
     server = viser.ViserServer(port=args.viser_port)
     server.gui.configure_theme(control_layout="fixed", control_width="large", dark_mode=True, show_logo=False, show_share_button=False)
@@ -166,7 +243,14 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
             line_width=1.5,
             visible=True,
         )
-    _render_overlay(server, overlay)
+    render_handles = {"value": _render_overlay(server, overlay)}
+
+    def _refresh_overlay() -> dict[str, Any]:
+        state.render_generation += 1
+        next_overlay = load_surface_overlay(state.overlay_path)
+        _remove_handles(render_handles["value"])
+        render_handles["value"] = _render_overlay(server, next_overlay, namespace=f"/surface_editor/render_{state.render_generation:06d}")
+        return next_overlay
 
     anchors = overlay_anchor_items(overlay)
     anchor_ids = [str(anchor.get("anchor_id", "")) for anchor in anchors if anchor.get("anchor_id")]
@@ -176,12 +260,48 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
         du = server.gui.add_number("du", initial_value=0.0, step=0.01)
         dv = server.gui.add_number("dv", initial_value=0.0, step=0.01)
         mode = server.gui.add_dropdown("mode", options=("reject", "clamp"), initial_value="reject")
-        move_btn = server.gui.add_button("Write move request")
+        move_btn = server.gui.add_button("Move anchor" if args.edit_mode == "direct" else "Write move request")
+        request_btn = server.gui.add_button("Write request only")
+        reload_btn = server.gui.add_button("Reload overlay")
+        save_btn = server.gui.add_button("Save edits")
+        status_text = server.gui.add_text("status", initial_value="ready")
 
     @move_btn.on_click
     def _(_) -> None:
         if not str(anchor_id.value).strip():
             print("[surface editor] no anchor_id selected")
+            status_text.value = "error: no anchor_id selected"
+            return
+        if args.edit_mode == "request":
+            request = append_move_request(
+                args.surface_editor_requests,
+                anchor_id=str(anchor_id.value).strip(),
+                tangent_delta=[float(du.value), float(dv.value)],
+                mode=str(mode.value),
+            )
+            status_text.value = f"request written: {request['request_id']}"
+            print(f"[surface editor] wrote request {request['request_id']} anchor={request['anchor_id']}")
+            print(f"[surface editor] apply with: motion-edit surface-editor-sync --session {args.surface_editor_session}")
+            return
+        try:
+            result = apply_direct_anchor_move(
+                state,
+                anchor_id=str(anchor_id.value).strip(),
+                tangent_delta=[float(du.value), float(dv.value)],
+                mode=str(mode.value),
+            )
+            _refresh_overlay()
+            status_text.value = f"moved {result['anchor_id']} delta={result['delta_world']}"
+            print(f"[surface editor] moved anchor={result['anchor_id']} edit={result['edit_id']}")
+        except Exception as exc:
+            state.last_error = str(exc)
+            status_text.value = f"error: {exc}"
+            print(f"[surface editor] move failed anchor={anchor_id.value}: {exc}")
+
+    @request_btn.on_click
+    def _(_) -> None:
+        if not str(anchor_id.value).strip():
+            status_text.value = "error: no anchor_id selected"
             return
         request = append_move_request(
             args.surface_editor_requests,
@@ -189,12 +309,31 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
             tangent_delta=[float(du.value), float(dv.value)],
             mode=str(mode.value),
         )
+        status_text.value = f"request written: {request['request_id']}"
         print(f"[surface editor] wrote request {request['request_id']} anchor={request['anchor_id']}")
-        print(f"[surface editor] apply with: motion-edit surface-editor-sync --session {args.surface_editor_session}")
+
+    @reload_btn.on_click
+    def _(_) -> None:
+        next_overlay = _refresh_overlay()
+        status_text.value = f"reloaded overlay objects={len(next_overlay.get('objects', []))}"
+
+    @save_btn.on_click
+    def _(_) -> None:
+        try:
+            out = save_editor_state(state)
+            status_text.value = f"saved: {out}"
+            print(f"[surface editor] saved output_contact_layer={out}")
+        except Exception as exc:
+            state.last_error = str(exc)
+            status_text.value = f"save error: {exc}"
+            print(f"[surface editor] save failed: {exc}")
 
     print(f"[surface editor] overlay={args.surface_binding_overlay}")
     print(f"[surface editor] session={args.surface_editor_session}")
     print(f"[surface editor] requests={args.surface_editor_requests}")
+    print(f"[surface editor] edit_mode={args.edit_mode}")
+    if anchor_ids:
+        print(f"[surface editor] anchors={', '.join(anchor_ids[:20])}{' ...' if len(anchor_ids) > 20 else ''}")
     print("Close this process with Ctrl+C.")
     while True:
         time.sleep(1.0)
@@ -206,6 +345,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--surface-binding-overlay", required=True)
     parser.add_argument("--surface-editor-session", required=True)
     parser.add_argument("--surface-editor-requests", required=True)
+    parser.add_argument("--edit-mode", choices=("direct", "request"), default="direct")
     parser.add_argument("--viser-port", type=int, default=None)
     parser.add_argument("--timeline-port", type=int, default=8094)
     parser.add_argument("--fps", type=int, default=50)
