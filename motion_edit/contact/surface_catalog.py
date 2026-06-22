@@ -97,3 +97,19 @@ def box_surfaces(
             ]
         )
     return surfaces
+
+
+def surfaces_from_terrain_metadata(*_args, **_kwargs) -> list[ContactSurfaceRecord]:
+    raise NotImplementedError("terrain metadata surface loading is not implemented yet")
+
+
+def surfaces_from_urdf_collision_boxes(*_args, **_kwargs) -> list[ContactSurfaceRecord]:
+    raise NotImplementedError("URDF collision box surface loading is not implemented yet")
+
+
+def surfaces_from_obj_mesh_faces(*_args, **_kwargs) -> list[ContactSurfaceRecord]:
+    raise NotImplementedError("OBJ mesh face surface loading is not implemented yet")
+
+
+def surfaces_from_heightfield_patches(*_args, **_kwargs) -> list[ContactSurfaceRecord]:
+    raise NotImplementedError("heightfield surface patch loading is not implemented yet")

@@ -48,6 +48,8 @@ data/
 ~/motion_edit/motion-edit export-split-npz --motion-version-id climb00_raw --status accepted
 ~/motion_edit/motion-edit list-contact-layer --source contact/force_contact --motion-id climb_00_z_scale_1.0
 ~/motion_edit/motion-edit move-contact-anchor --source contact/force_contact --motion-id climb_00_z_scale_1.0 --anchor-id climb_00_z_scale_1.0_anchor_LF_000100_000140 --delta-world 0.10 0.0 0.0 --output-source contact/force_contact_farther --edit-plan data/workbench/climb00_farther.json --source-motion /path/to/climb_00_z_scale_1.0.npz
+~/motion_edit/motion-edit create-box-surface-catalog --motion-id climb_00_z_scale_1.0 --box box_0:1.0,0.0,0.4:0.5,0.5,0.8 --output data/surfaces/climb_00_surfaces.jsonl
+~/motion_edit/motion-edit bind-contact-surfaces --contact-layer contact/force_contact --motion-id climb_00_z_scale_1.0 --surface-catalog data/surfaces/climb_00_surfaces.jsonl --output-contact-layer contact/force_contact_bound
 ~/motion_edit/motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
 ~/motion_edit/motion-edit generate-lte-augmentation --plan data/workbench/climb00_farther.json --output-motion data/exports/motions/climb00_farther.npz
 ~/motion_edit/motion-edit export-contact-overlay --source contact/force_contact --motion-id climb_00_z_scale_1.0 --output data/exports/contact_overlays/climb_00.json
@@ -140,6 +142,34 @@ If proto boundaries are missing, initial segments can be derived from contact ev
 
 Contact anchors are editable first-class objects. When `body_pos_w` is available, anchor extraction estimates `world_position` from the mean body position over the contact interval and stores drift statistics. `move-contact-anchor` writes a new ContactLayer and records a `move_contact_anchor` edit without deforming the source motion. This is the persistent representation for edits such as "move this foot contact 10 cm farther."
 
+## Surface Binding
+
+`ContactAnchor.world_position` is not enough for safe dragging. Before a future Viser drag can move an anchor, the anchor should be bound to its original terrain/object surface. A bound anchor stores `object_id`, `surface_id`, normal/tangent basis, surface bounds, and `surface_coordinates`. `move-contact-anchor --tangent-delta DU DV` then moves in surface coordinates; normal motion is removed and bounds prevent dragging off the original platform/face.
+
+Surface binding is explicit and does not generate augmented motion. It writes a new ContactLayer by default.
+
+```bash
+~/motion_edit/motion-edit create-box-surface-catalog \
+  --motion-id climb_00_z_scale_1.0 \
+  --box box_0:1.0,0.0,0.4:0.5,0.5,0.8 \
+  --output data/surfaces/climb_00_surfaces.jsonl
+
+~/motion_edit/motion-edit bind-contact-surfaces \
+  --contact-layer contact/force_contact \
+  --motion-id climb_00_z_scale_1.0 \
+  --surface-catalog data/surfaces/climb_00_surfaces.jsonl \
+  --output-contact-layer contact/force_contact_bound
+
+~/motion_edit/motion-edit move-contact-anchor \
+  --source contact/force_contact_bound \
+  --motion-id climb_00_z_scale_1.0 \
+  --anchor-id <anchor_id> \
+  --tangent-delta 0.10 0.00 \
+  --output-source contact/climb00_farther
+```
+
+Manual surface catalogs are JSONL records with fields such as `surface_id`, `object_id`, `surface_type`, `origin`, `normal`, `tangent_u`, `tangent_v`, and bounds like `{"u": [-0.25, 0.25], "v": [-0.25, 0.25]}`. `create-box-surface-catalog` provides a simple bridge by emitting top and side faces for box/platform descriptors. URDF, OBJ, terrain metadata, and heightfield loaders are intentionally left as explicit future loaders.
+
 ## Contact Anchor Edit Plans
 
 Contact-anchor editing is intentionally two-stage.
@@ -214,7 +244,9 @@ The cutter is still the visual frontend. `motion_edit` owns the durable session,
   --source candidates/force_contact \
   --contact-layer contact/force_contact
 ~/motion_edit/motion-edit list-contact-layer --source contact/force_contact --motion-id climb_00_z_scale_1.0
-~/motion_edit/motion-edit move-contact-anchor --source contact/force_contact --motion-id climb_00_z_scale_1.0 --anchor-id <anchor_id> --delta-world 0.10 0.0 0.0 --output-source contact/climb00_anchor_farther --edit-plan data/workbench/climb00_farther.json --source-motion /path/to/climb_00_z_scale_1.0.npz --source-segments candidates/force_contact
+~/motion_edit/motion-edit create-box-surface-catalog --motion-id climb_00_z_scale_1.0 --box box_0:1.0,0.0,0.4:0.5,0.5,0.8 --output data/surfaces/climb_00_surfaces.jsonl
+~/motion_edit/motion-edit bind-contact-surfaces --contact-layer contact/force_contact --motion-id climb_00_z_scale_1.0 --surface-catalog data/surfaces/climb_00_surfaces.jsonl --output-contact-layer contact/force_contact_bound
+~/motion_edit/motion-edit move-contact-anchor --source contact/force_contact_bound --motion-id climb_00_z_scale_1.0 --anchor-id <anchor_id> --tangent-delta 0.10 0.00 --output-source contact/climb00_anchor_farther --edit-plan data/workbench/climb00_farther.json --source-motion /path/to/climb_00_z_scale_1.0.npz --source-segments candidates/force_contact
 ~/motion_edit/motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
 ~/motion_edit/motion-edit cutter /path/to/climb_00_z_scale_1.0.npz --motion-version-id climb00_raw --update-canonical --session-name climb00_check --with-terrain
 ~/motion_edit/motion-edit canonical-action --motion-version-id climb00_raw --segment-id <segment_id> --action split --frame 150
