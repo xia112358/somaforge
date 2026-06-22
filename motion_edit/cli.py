@@ -66,8 +66,13 @@ def _cmd_import_force_proto(args: argparse.Namespace) -> None:
     print(f"wrote {total} candidate segments to {out_dir}; contact layer={LAYERS_ROOT / 'contact' / args.layer_name}")
 
 
+def _warn_legacy_layer_workflow(preferred: str) -> None:
+    print(f"legacy layer workflow: for canonical storage, use {preferred} instead.")
+
+
 def _cmd_import_manual_cuts(args: argparse.Namespace) -> None:
     ensure_data_dirs()
+    _warn_legacy_layer_workflow("cutter --update-canonical or build-canonical-segmentation")
     segments_dir = Path(args.segments_dir).expanduser().resolve()
     out_dir = LAYERS_ROOT / "manual" / args.layer_name
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -87,6 +92,7 @@ def _load_source_segments(source: str) -> list:
 
 def _cmd_export_cutter_segments(args: argparse.Namespace) -> None:
     ensure_data_dirs()
+    _warn_legacy_layer_workflow("cutter --motion-version-id ... --update-canonical")
     segments = _load_source_segments(args.source)
     output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else EXPORTS_ROOT / "cutter_segments" / args.source.replace("/", "_")
     written = export_cutter_segments(output_dir, segments)
@@ -339,6 +345,7 @@ def _cmd_import_lte_catalog(args: argparse.Namespace) -> None:
 
 
 def _cmd_curate(args: argparse.Namespace) -> None:
+    _warn_legacy_layer_workflow("mark-segment-status")
     segments = _load_source_segments(args.source)
     selected = filter_segments(
         segments,
@@ -436,6 +443,7 @@ def _cmd_workbench_action(args: argparse.Namespace) -> None:
         destination = args.output_source or "manual/workbench_tmp"
         output_segments = replace_segment(segments, selected.segment_id, replacements)
     elif args.action in {"accept", "reject"}:
+        _warn_legacy_layer_workflow("mark-segment-status")
         status = "accepted" if args.action == "accept" else "rejected"
         replacements = [curate_segment(selected, status=status)]  # type: ignore[arg-type]
         destination = args.output_source or f"{status}/{args.layer_name}"

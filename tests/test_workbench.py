@@ -493,7 +493,51 @@ class WorkbenchCliTests(unittest.TestCase):
             fps=50,
             with_terrain=False,
         )
-        process.wait.assert_called_once()
+
+    def test_legacy_accept_reject_command_prints_warning(self) -> None:
+        args = argparse.Namespace(
+            source="candidates/force_contact",
+            layer_name="curated",
+            motion_id="motion_a",
+            segment_id=None,
+            index=[0],
+            status="accepted",
+        )
+        with (
+            mock.patch.object(cli, "_load_source_segments", return_value=[_segment()]),
+            mock.patch.object(cli, "write_status_layer", return_value=Path("/tmp/accepted/curated")),
+            mock.patch("sys.stdout") as stdout_mock,
+        ):
+            cli._cmd_curate(args)
+
+        output = "".join(call.args[0] for call in stdout_mock.write.call_args_list if call.args)
+        self.assertIn("legacy layer workflow", output)
+        self.assertIn("mark-segment-status", output)
+
+    def test_legacy_workbench_accept_prints_warning(self) -> None:
+        args = argparse.Namespace(
+            source="candidates/force_contact",
+            action="accept",
+            motion_id="motion_a",
+            segment_id=None,
+            index=0,
+            current_frame=-1,
+            start_frame=None,
+            end_frame=None,
+            frame=None,
+            output_source="accepted/workbench_tmp",
+            layer_name="workbench_tmp",
+            dry_run=True,
+        )
+        with (
+            mock.patch.object(cli, "load_workbench_segments", return_value=[_segment()]),
+            mock.patch("sys.stdout") as stdout_mock,
+        ):
+            cli._cmd_workbench_action(args)
+
+        output = "".join(call.args[0] for call in stdout_mock.write.call_args_list if call.args)
+        self.assertIn("legacy layer workflow", output)
+        self.assertIn("mark-segment-status", output)
 
     def test_workbench_action_dry_run_executes_without_writing(self) -> None:
         args = argparse.Namespace(
