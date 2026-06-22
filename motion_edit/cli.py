@@ -59,7 +59,9 @@ from .workbench import (
     export_cutter_session_file,
     load_workbench_segments,
     make_workbench_server,
+    move_surface_editor_anchor,
     prepare_surface_editor_session,
+    read_surface_editor_session,
     replace_segment,
     save_surface_editor_session,
     select_segment,
@@ -873,6 +875,25 @@ def _cmd_surface_editor(args: argparse.Namespace) -> None:
         print("surface editor session prepared; no ContactLayer was saved because --save-on-exit was not set")
 
 
+def _cmd_surface_editor_move_anchor(args: argparse.Namespace) -> None:
+    session = read_surface_editor_session(args.session)
+    moved_graph, edit = move_surface_editor_anchor(
+        session,
+        anchor_id=args.anchor_id,
+        tangent_delta=args.tangent_delta,
+        requested_world_position=args.requested_world_position,
+        mode=args.mode,
+    )
+    print(
+        f"moved surface anchor {args.anchor_id} motion={session.motion_id} "
+        f"delta_world={edit.delta_world} tangent_delta={edit.tangent_delta}"
+    )
+    print(f"updated overlay {session.overlay_path}")
+    if args.save:
+        out = save_surface_editor_session(session, layers_root=LAYERS_ROOT)
+        print(f"saved surface editor session output_contact_layer={out}")
+
+
 def _cmd_workbench(args: argparse.Namespace) -> None:
     ensure_data_dirs()
     session = WorkbenchSession(
@@ -1164,6 +1185,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--with-terrain", action="store_true")
     p.add_argument("--save-on-exit", action="store_true")
     p.set_defaults(func=_cmd_surface_editor)
+
+    p = sub.add_parser("surface-editor-move-anchor")
+    p.add_argument("--session", required=True, help="Path to surface editor session.json")
+    p.add_argument("--anchor-id", required=True)
+    p.add_argument("--tangent-delta", nargs=2, type=float, default=None)
+    p.add_argument("--requested-world-position", nargs=3, type=float, default=None)
+    p.add_argument("--mode", choices=("reject", "clamp"), default="reject")
+    p.add_argument("--save", action="store_true")
+    p.set_defaults(func=_cmd_surface_editor_move_anchor)
 
     p = sub.add_parser("workbench")
     p.add_argument("motion", nargs="?", default=None, help="Optional .npz motion path for state metadata")

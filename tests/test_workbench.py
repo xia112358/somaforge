@@ -297,6 +297,59 @@ class SurfaceEditorSessionTests(unittest.TestCase):
 
         self.assertEqual(len(saved.anchors), 1)
 
+    def test_surface_editor_move_anchor_cli_updates_session_and_can_save(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True], [True], [False]]),
+                body_pos_w=np.asarray([[[0.0, 0.0, 0.0]], [[0.0, 0.0, 0.0]], [[0.0, 0.0, 0.0]]]),
+                body_names=["LF"],
+            )
+            anchor = graph.anchors[0]
+            bound_anchor = type(anchor)(
+                **{
+                    **anchor.__dict__,
+                    "surface_id": "top",
+                    "surface_normal": [0.0, 0.0, 1.0],
+                    "surface_origin": [0.0, 0.0, 0.0],
+                    "surface_tangent_u": [1.0, 0.0, 0.0],
+                    "surface_tangent_v": [0.0, 1.0, 0.0],
+                    "surface_bounds": {"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+                    "surface_coordinates": {"u": 0.0, "v": 0.0},
+                }
+            )
+            graph = type(graph)(motion_id="motion_a", events=graph.events, anchors=[bound_anchor], patches=graph.patches, transitions=graph.transitions)
+            write_contact_layer(root / "layers" / "contact" / "bound", graph)
+            session = prepare_surface_editor_session(
+                motion_path=str(root / "motion_a.npz"),
+                motion_id="motion_a",
+                contact_layer="contact/bound",
+                surface_catalog=None,
+                session_name="surface_move",
+                output_contact_layer="contact/edited",
+                layers_root=root / "layers",
+                workbench_root=root / "workbench",
+            )
+            with mock.patch.object(cli, "LAYERS_ROOT", root / "layers"):
+                cli._cmd_surface_editor_move_anchor(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "session": str(session.session_dir / "session.json"),
+                            "anchor_id": bound_anchor.anchor_id,
+                            "tangent_delta": [0.1, 0.0],
+                            "requested_world_position": None,
+                            "mode": "reject",
+                            "save": True,
+                        },
+                    )()
+                )
+                saved = read_contact_graph(root / "layers" / "contact" / "edited", "motion_a")
+
+        self.assertEqual(saved.anchors[0].world_position, [0.1, 0.0, 0.0])
+
 
 class WorkbenchActionTests(unittest.TestCase):
     def test_trim_preserves_identity_and_records_provenance(self) -> None:
