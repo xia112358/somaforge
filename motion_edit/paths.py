@@ -14,6 +14,7 @@ MOTION_ASSETS_ROOT = DATA_ROOT / "motion_assets"
 MOTION_VERSIONS_ROOT = DATA_ROOT / "motion_versions"
 SEGMENTS_ROOT = DATA_ROOT / "segments"
 TOKENS_ROOT = DATA_ROOT / "tokens"
+SURFACES_ROOT = DATA_ROOT / "surfaces"
 
 
 def ensure_data_dirs() -> None:
@@ -30,6 +31,7 @@ def ensure_data_dirs() -> None:
         MOTION_VERSIONS_ROOT,
         SEGMENTS_ROOT,
         TOKENS_ROOT,
+        SURFACES_ROOT,
         EXPORTS_ROOT / "cutter_segments",
         EXPORTS_ROOT / "manifests",
         EXPORTS_ROOT / "split_npz",

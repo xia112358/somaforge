@@ -16,15 +16,20 @@ from .layers import iter_layer_files, read_layer, write_layer
 from .paths import BACKUPS_ROOT, EXPORTS_ROOT, LAYERS_ROOT, WORKBENCH_ROOT, ensure_data_dirs, layer_dir
 from .contact import (
     append_anchor_edit_to_plan,
+    bind_anchors_to_surfaces,
     bind_segment_to_contact_graph,
     move_anchor_in_contact_layer,
     read_contact_edit_plan,
+    read_contact_surfaces,
     validate_contact_edit_plan,
     write_contact_edit_plan,
     write_contact_layer,
+    write_contact_surfaces,
 )
+from .contact.graph import ContactGraph
 from .contact.generation import apply_contact_edit_plan_to_motion
 from .contact.layers import read_contact_graph
+from .contact.patches import patches_from_anchors
 from .storage.canonical import build_canonical_segments, mark_canonical_segment_statuses, write_motion_version_with_canonical_segments
 from .storage.io import (
     read_canonical_segments,
@@ -123,6 +128,66 @@ def _cmd_export_contact_overlay(args: argparse.Namespace) -> None:
     graph = read_contact_graph(LAYERS_ROOT / args.source, args.motion_id)
     output = export_contact_overlay(args.output, graph)
     print(f"wrote contact overlay {output}")
+
+
+def _cmd_bind_contact_surfaces(args: argparse.Namespace) -> None:
+    ensure_data_dirs()
+    contact_layer = args.contact_layer
+    version = None
+    if args.motion_version_id:
+        version = read_motion_version(args.motion_version_id)
+        if contact_layer is None:
+            contact_layer = version.contact_layer
+    if contact_layer is None:
+        raise ValueError("bind-contact-surfaces requires --contact-layer or --motion-version-id with contact_layer")
+    if args.update_motion_version and not args.motion_version_id:
+        raise ValueError("--update-motion-version requires --motion-version-id")
+    graph = read_contact_graph(LAYERS_ROOT / contact_layer, args.motion_id)
+    surfaces = read_contact_surfaces(Path(args.surface_catalog).expanduser())
+    bound_anchors = bind_anchors_to_surfaces(
+        graph.anchors,
+        surfaces,
+        max_distance=args.max_distance,
+        mode=args.mode,
+    )
+    bound_graph = ContactGraph(
+        motion_id=graph.motion_id,
+        events=graph.events,
+        anchors=bound_anchors,
+        patches=patches_from_anchors(bound_anchors),
+        transitions=graph.transitions,
+    )
+    out_layer = write_contact_layer(LAYERS_ROOT / args.output_contact_layer, bound_graph)
+    write_contact_surfaces(out_layer / "surfaces" / f"{args.motion_id}.jsonl", surfaces)
+    bound_count = sum(1 for anchor in bound_anchors if anchor.surface_id)
+    failed_count = sum(1 for anchor in bound_anchors if anchor.metadata.get("surface_binding_failed"))
+    clamped_count = sum(
+        1
+        for anchor in bound_anchors
+        for binding in anchor.metadata.get("surface_bindings", [])
+        if binding.get("clamped")
+    )
+    if args.update_motion_version and version is not None:
+        write_motion_version(replace(version, contact_layer=args.output_contact_layer))
+    if args.rebind_canonical_segments:
+        if not args.motion_version_id:
+            raise ValueError("--rebind-canonical-segments requires --motion-version-id")
+        segments = [
+            bind_segment_to_contact_graph(segment, bound_graph)
+            for segment in read_canonical_segments(args.motion_version_id)
+        ]
+        replace_canonical_segments(
+            args.motion_version_id,
+            segments,
+            reason=f"surface binding from {args.output_contact_layer}",
+            source="surface_binding",
+            kind="surface_binding_rebind",
+        )
+    print(
+        f"bound contact surfaces motion={args.motion_id} total={len(bound_anchors)} "
+        f"bound={bound_count} unbound={len(bound_anchors) - bound_count} clamped={clamped_count} failed={failed_count}"
+    )
+    print(f"wrote contact layer {out_layer}")
 
 
 def _cmd_move_contact_anchor(args: argparse.Namespace) -> None:
@@ -719,6 +784,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--motion-id", required=True)
     p.add_argument("--output", required=True)
     p.set_defaults(func=_cmd_export_contact_overlay)
+
+    p = sub.add_parser("bind-contact-surfaces")
+    p.add_argument("--contact-layer", default=None, help="Contact layer path relative to data/layers, e.g. contact/force_contact")
+    p.add_argument("--motion-id", required=True)
+    p.add_argument("--surface-catalog", required=True)
+    p.add_argument("--output-contact-layer", required=True)
+    p.add_argument("--max-distance", type=float, default=0.05)
+    p.add_argument("--mode", choices=("reject", "clamp"), default="reject")
+    p.add_argument("--motion-version-id", default=None)
+    p.add_argument("--update-motion-version", action="store_true")
+    p.add_argument("--rebind-canonical-segments", action="store_true")
+    p.set_defaults(func=_cmd_bind_contact_surfaces)
 
     p = sub.add_parser("move-contact-anchor")
     p.add_argument("--source", required=True, help="Contact layer path relative to data/layers, e.g. contact/force_contact")

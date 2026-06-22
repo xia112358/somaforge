@@ -3,9 +3,11 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
+from motion_edit import cli
 from motion_edit.contact import (
     anchors_from_contact_mask,
     bind_anchor_to_plane,
@@ -448,6 +450,57 @@ class ContactEventTests(unittest.TestCase):
 
         self.assertEqual(moved.world_position, [0.1, 0.0, 0.0])
         self.assertEqual(edit.delta_world, [0.1, 0.0, 0.0])
+
+    def test_bind_contact_surfaces_cli_writes_bound_contact_layer(self) -> None:
+        graph = contact_graph_from_masks(
+            motion_id="motion_a",
+            contact_mask=np.asarray([[True], [True], [False]]),
+            body_pos_w=np.asarray([[[0.1, 0.2, 0.02]], [[0.1, 0.2, 0.02]], [[0.0, 0.0, 0.0]]]),
+            body_names=["LF"],
+        )
+        surface = ContactSurfaceRecord(
+            motion_id="motion_a",
+            surface_id="box_0_top",
+            object_id="box_0",
+            surface_type="box_face",
+            origin=[0.0, 0.0, 0.0],
+            normal=[0.0, 0.0, 1.0],
+            tangent_u=[1.0, 0.0, 0.0],
+            tangent_v=[0.0, 1.0, 0.0],
+            bounds={"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_contact_layer(root / "layers" / "contact" / "force_contact", graph)
+            surface_catalog = root / "surfaces.jsonl"
+            write_contact_surfaces(surface_catalog, [surface])
+            with mock.patch.object(cli, "LAYERS_ROOT", root / "layers"):
+                cli._cmd_bind_contact_surfaces(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "contact_layer": "contact/force_contact",
+                            "motion_id": "motion_a",
+                            "surface_catalog": str(surface_catalog),
+                            "output_contact_layer": "contact/force_contact_bound",
+                            "max_distance": 0.05,
+                            "mode": "reject",
+                            "motion_version_id": None,
+                            "update_motion_version": False,
+                            "rebind_canonical_segments": False,
+                        },
+                    )()
+                )
+                bound = read_contact_graph(root / "layers" / "contact" / "force_contact_bound", "motion_a")
+                written_surfaces = read_contact_surfaces(
+                    root / "layers" / "contact" / "force_contact_bound" / "surfaces" / "motion_a.jsonl"
+                )
+
+        self.assertEqual(bound.anchors[0].surface_id, "box_0_top")
+        self.assertEqual(bound.anchors[0].world_position, [0.1, 0.2, 0.0])
+        self.assertEqual(bound.patches[0].patch_center_world, bound.anchors[0].world_position)
+        self.assertEqual(written_surfaces[0].surface_id, "box_0_top")
 
     def test_move_anchor_in_graph_updates_anchor_patch_and_returns_edit(self) -> None:
         graph = contact_graph_from_masks(
