@@ -207,6 +207,34 @@ The overlay export is a lightweight frontend-agnostic JSON file. It contains `su
   --motion-id climb_00_z_scale_1.0
 ```
 
+## Interactive Surface Editor
+
+`surface-editor` is the Viser-connected entry point for anchor-level contact editing. It prepares a surface binding report, surface binding overlay, contact overlay, session state, and pending edit file under `data/workbench/surface_sessions/<session_name>/`, then launches the existing Holosoma/Viser motion viewer.
+
+Current external Holosoma `viser_player.py` supports the motion viewer, terrain/object display, contact force display, timeline wrapper, and cutter segment JSONL, but it does not yet accept a surface overlay argument or expose draggable 3D anchor handles. For this reason, `surface-editor` currently uses a fallback file bridge: it writes the overlay/report artifacts and launches the viewer without changing the external viewer. The prepared overlay can be rendered by a future Viser patch using `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects.
+
+Edits remain anchor-level and surface-constrained. They use `move_contact_anchor_on_surface`, never allow normal displacement, never jump to another surface, and do not model full foot sole contact, toe/heel rolling, pressure, or physical sticking.
+
+```bash
+~/motion_edit/motion-edit surface-editor /path/to/climb_00.npz \
+  --motion-id climb_00_z_scale_1.0 \
+  --contact-layer contact/force_contact_bound \
+  --surface-catalog data/surfaces/climb_00_surfaces.jsonl \
+  --session-name climb00_surface \
+  --edit-plan data/workbench/climb00_surface_edits.json \
+  --output-contact-layer contact/climb00_surface_edited \
+  --repo-root /path/to/holosoma_repo \
+  --with-terrain
+
+~/motion_edit/motion-edit surface-editor-move-anchor \
+  --session data/workbench/surface_sessions/climb00_surface/session.json \
+  --anchor-id <anchor_id> \
+  --tangent-delta 0.10 0.00 \
+  --save
+```
+
+Saving writes a moved ContactLayer and appends `ContactAnchorEditRecord` entries to the edit plan if configured. It does not modify the original motion `.npz`, does not generate LTE augmented motion, and does not mutate canonical segmentation.
+
 ## Contact Anchor Edit Plans
 
 Contact-anchor editing is intentionally two-stage.
