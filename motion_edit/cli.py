@@ -26,6 +26,7 @@ from .contact import (
     append_anchor_edit_to_plan,
     bind_anchors_to_surfaces,
     bind_segment_to_contact_graph,
+    filter_short_raw_missing_anchors,
     merge_nearby_contact_anchors,
     move_anchor_in_contact_layer,
     read_contact_edit_plan,
@@ -342,6 +343,28 @@ def _cmd_merge_contact_anchors(args: argparse.Namespace) -> None:
     print(
         f"merged contact anchors motion={args.motion_id} before={len(graph.anchors)} "
         f"after={len(merged_graph.anchors)} merges={len(events)}"
+    )
+    print(f"wrote contact layer {out_layer}")
+
+
+def _cmd_filter_contact_anchors(args: argparse.Namespace) -> None:
+    ensure_data_dirs()
+    graph = read_contact_graph(LAYERS_ROOT / args.contact_layer, args.motion_id)
+    neighbor_classes = set(args.neighbor_class) if args.neighbor_class else None
+    filtered_graph, events = filter_short_raw_missing_anchors(
+        graph,
+        max_duration=args.max_duration,
+        max_gap=args.max_gap,
+        max_distance=args.max_distance,
+        neighbor_classes=neighbor_classes,
+        source=args.source,
+    )
+    out_layer = write_contact_layer(LAYERS_ROOT / args.output_contact_layer, filtered_graph)
+    if events:
+        write_jsonl(out_layer / "edits" / f"{args.motion_id}.filter_events.jsonl", events)
+    print(
+        f"filtered contact anchors motion={args.motion_id} before={len(graph.anchors)} "
+        f"after={len(filtered_graph.anchors)} removed={len(events)}"
     )
     print(f"wrote contact layer {out_layer}")
 
@@ -1203,6 +1226,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--allow-cross-class", action="store_true")
     p.add_argument("--source", default="merge_contact_anchors")
     p.set_defaults(func=_cmd_merge_contact_anchors)
+
+    p = sub.add_parser("filter-contact-anchors")
+    p.add_argument("--contact-layer", required=True, help="Contact layer path relative to data/layers")
+    p.add_argument("--motion-id", required=True)
+    p.add_argument("--output-contact-layer", required=True)
+    p.add_argument("--strategy", choices=("short_raw_missing",), default="short_raw_missing")
+    p.add_argument("--max-duration", type=int, default=5)
+    p.add_argument("--max-gap", type=int, default=2)
+    p.add_argument("--max-distance", type=float, default=0.08)
+    p.add_argument("--neighbor-class", action="append", choices=("top", "ground"))
+    p.add_argument("--source", default="filter_short_raw_missing")
+    p.set_defaults(func=_cmd_filter_contact_anchors)
 
     p = sub.add_parser("create-box-surface-catalog")
     p.add_argument("--motion-id", required=True)

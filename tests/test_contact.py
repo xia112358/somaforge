@@ -22,6 +22,7 @@ from motion_edit.contact import (
     move_anchor_in_graph,
     move_anchor_in_contact_layer,
     merge_nearby_contact_anchors,
+    filter_short_raw_missing_anchors,
     read_contact_anchors,
     read_contact_events,
     read_contact_graph,
@@ -811,6 +812,93 @@ class ContactEventTests(unittest.TestCase):
         self.assertEqual(merged.anchors[0].start_frame, 0)
         self.assertEqual(merged.anchors[0].end_frame, 20)
         self.assertEqual(len(events), 1)
+
+    def test_filter_short_raw_missing_anchors_removes_adjacent_noise(self) -> None:
+        anchors = [
+            ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="noise",
+                body="right_hand",
+                start_frame=0,
+                end_frame=3,
+                world_position=[0.0, 0.0, 0.0],
+                metadata={"raw_contact_position_refinement": {"binding_candidate_class": "raw_missing"}},
+            ),
+            ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="top",
+                body="right_hand",
+                start_frame=4,
+                end_frame=20,
+                world_position=[0.03, 0.0, 0.0],
+                metadata={"raw_contact_position_refinement": {"binding_candidate_class": "top"}},
+            ),
+            ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="long_raw_missing",
+                body="right_hand",
+                start_frame=30,
+                end_frame=40,
+                world_position=[0.03, 0.0, 0.0],
+                metadata={"raw_contact_position_refinement": {"binding_candidate_class": "raw_missing"}},
+            ),
+        ]
+        graph = contact_graph_from_masks(motion_id="motion_a", contact_mask=None)
+        graph = graph.__class__(motion_id="motion_a", anchors=anchors)
+
+        filtered, events = filter_short_raw_missing_anchors(graph)
+
+        self.assertEqual([anchor.anchor_id for anchor in filtered.anchors], ["top", "long_raw_missing"])
+        self.assertEqual(events[0]["anchor_id"], "noise")
+
+    def test_filter_contact_anchors_cli_writes_layer_and_events(self) -> None:
+        anchors = [
+            ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="noise",
+                body="right_hand",
+                start_frame=0,
+                end_frame=3,
+                world_position=[0.0, 0.0, 0.0],
+                metadata={"raw_contact_position_refinement": {"binding_candidate_class": "raw_missing"}},
+            ),
+            ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="ground",
+                body="right_hand",
+                start_frame=5,
+                end_frame=20,
+                world_position=[0.04, 0.0, 0.0],
+                metadata={"raw_contact_position_refinement": {"binding_candidate_class": "ground"}},
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_contact_layer(root / "layers" / "contact" / "source", contact_graph_from_masks(motion_id="motion_a", contact_mask=None))
+            write_contact_jsonl(root / "layers" / "contact" / "source" / "anchors" / "motion_a.jsonl", anchors)
+            with mock.patch.object(cli, "LAYERS_ROOT", root / "layers"):
+                cli._cmd_filter_contact_anchors(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "contact_layer": "contact/source",
+                            "motion_id": "motion_a",
+                            "output_contact_layer": "contact/filtered",
+                            "strategy": "short_raw_missing",
+                            "max_duration": 5,
+                            "max_gap": 2,
+                            "max_distance": 0.08,
+                            "neighbor_class": None,
+                            "source": "test",
+                        },
+                    )()
+                )
+                filtered = read_contact_graph(root / "layers" / "contact" / "filtered", "motion_a")
+                events = read_contact_jsonl(root / "layers" / "contact" / "filtered" / "edits" / "motion_a.filter_events.jsonl")
+
+        self.assertEqual([anchor.anchor_id for anchor in filtered.anchors], ["ground"])
+        self.assertEqual(events[0]["kind"], "filter_contact_anchor")
 
     def test_create_box_surface_catalog_cli_emits_top_and_side_faces(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

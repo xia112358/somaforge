@@ -132,6 +132,66 @@ def merge_nearby_contact_anchors(
     return replace(graph, anchors=merged, patches=patches_from_anchors(merged)), events
 
 
+def filter_short_raw_missing_anchors(
+    graph: ContactGraph,
+    *,
+    max_duration: int = 5,
+    max_gap: int = 2,
+    max_distance: float = 0.08,
+    neighbor_classes: set[str] | None = None,
+    source: str = "filter_short_raw_missing",
+) -> tuple[ContactGraph, list[dict]]:
+    allowed_neighbors = DEFAULT_MERGE_CLASSES if neighbor_classes is None else set(neighbor_classes)
+    anchors = sorted(graph.anchors, key=lambda anchor: (anchor.body, anchor.start_frame, anchor.end_frame, anchor.anchor_id))
+    drop_ids: set[str] = set()
+    events: list[dict] = []
+    by_body: dict[str, list[ContactAnchorRecord]] = {}
+    for anchor in anchors:
+        by_body.setdefault(anchor.body, []).append(anchor)
+    for body_anchors in by_body.values():
+        for index, anchor in enumerate(body_anchors):
+            if _binding_candidate_class(anchor) != "raw_missing":
+                continue
+            duration = anchor.end_frame - anchor.start_frame
+            if duration > max_duration:
+                continue
+            neighbors = []
+            if index > 0:
+                neighbors.append(body_anchors[index - 1])
+            if index + 1 < len(body_anchors):
+                neighbors.append(body_anchors[index + 1])
+            compatible = [
+                neighbor
+                for neighbor in neighbors
+                if _binding_candidate_class(neighbor) in allowed_neighbors
+                and _temporal_gap(anchor, neighbor) <= max_gap
+                and (_anchor_distance(anchor, neighbor) is not None and _anchor_distance(anchor, neighbor) <= max_distance)
+            ]
+            if not compatible:
+                continue
+            drop_ids.add(anchor.anchor_id)
+            events.append(
+                {
+                    "kind": "filter_contact_anchor",
+                    "source": source,
+                    "anchor_id": anchor.anchor_id,
+                    "body": anchor.body,
+                    "start_frame": anchor.start_frame,
+                    "end_frame": anchor.end_frame,
+                    "duration": duration,
+                    "binding_candidate_class": "raw_missing",
+                    "neighbor_anchor_ids": [neighbor.anchor_id for neighbor in compatible],
+                    "max_duration": max_duration,
+                    "max_gap": max_gap,
+                    "max_distance": max_distance,
+                    "reason": "short raw_missing adjacent to reliable contact anchor",
+                }
+            )
+    kept = [anchor for anchor in anchors if anchor.anchor_id not in drop_ids]
+    kept = sorted(kept, key=lambda anchor: (anchor.start_frame, anchor.end_frame, anchor.body, anchor.anchor_id))
+    return replace(graph, anchors=kept, patches=patches_from_anchors(kept)), events
+
+
 def _should_merge_anchor_pair(
     left: ContactAnchorRecord,
     right: ContactAnchorRecord,
@@ -169,6 +229,14 @@ def _anchor_distance(left: ContactAnchorRecord, right: ContactAnchorRecord) -> f
     if left.world_position is None or right.world_position is None:
         return None
     return math.sqrt(sum((float(left.world_position[index]) - float(right.world_position[index])) ** 2 for index in range(3)))
+
+
+def _temporal_gap(left: ContactAnchorRecord, right: ContactAnchorRecord) -> int:
+    if left.end_frame <= right.start_frame:
+        return right.start_frame - left.end_frame
+    if right.end_frame <= left.start_frame:
+        return left.start_frame - right.end_frame
+    return 0
 
 
 def _merge_anchor_pair(left: ContactAnchorRecord, right: ContactAnchorRecord, *, source: str, max_gap: int, max_distance: float) -> ContactAnchorRecord:

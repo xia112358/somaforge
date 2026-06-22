@@ -1,5 +1,5 @@
 from .anchors import anchors_from_contact_mask
-from .actions import merge_nearby_contact_anchors, move_anchor_in_contact_layer, move_anchor_in_graph
+from .actions import filter_short_raw_missing_anchors, merge_nearby_contact_anchors, move_anchor_in_contact_layer, move_anchor_in_graph
 from .bindings import bind_segment_to_contact_graph, contact_metadata_for_bounds
 from .edits import make_anchor_move_edit, move_contact_anchor, move_contact_anchor_free, move_contact_anchor_on_surface
 from .events import bodies_from_mask, body_names_for_mask, detect_contact_events
@@ -73,6 +73,7 @@ __all__ = [
     "move_anchor_in_contact_layer",
     "move_anchor_in_graph",
     "merge_nearby_contact_anchors",
+    "filter_short_raw_missing_anchors",
     "patches_from_anchors",
     "RawContactMotion",
     "read_contact_anchors",
