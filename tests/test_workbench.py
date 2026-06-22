@@ -49,6 +49,7 @@ from motion_edit.viewer.surface_overlay_player import (
     _anchor_color,
     _anchor_patch_mesh,
     _render_overlay,
+    _selected_tangent_arrows,
     append_move_request,
     apply_direct_anchor_move,
     load_editor_state,
@@ -1094,14 +1095,34 @@ class SurfaceEditorSessionTests(unittest.TestCase):
             surface_tangent_v=[0.0, 1.0, 0.0],
         )
 
-        mesh = _anchor_patch_mesh(anchor, half_extent=0.1, normal_offset=0.002)
+        mesh = _anchor_patch_mesh(anchor, radius=0.1, normal_offset=0.002, segments=16)
 
         self.assertIsNotNone(mesh)
         vertices, faces = mesh
-        self.assertEqual(vertices.shape, (4, 3))
-        self.assertEqual(faces.shape, (2, 3))
-        np.testing.assert_allclose(vertices[:, 2], np.full(4, 0.502))
-        np.testing.assert_allclose(vertices.mean(axis=0), [1.0, 2.0, 0.502])
+        self.assertEqual(vertices.shape, (17, 3))
+        self.assertEqual(faces.shape, (16, 3))
+        np.testing.assert_allclose(vertices[:, 2], np.full(17, 0.502))
+        np.testing.assert_allclose(vertices.mean(axis=0), [1.0, 2.0, 0.502], atol=1e-6)
+
+    def test_selected_tangent_arrows_use_viser_color_shape(self) -> None:
+        anchor = ContactAnchorRecord(
+            motion_id="motion_a",
+            anchor_id="anchor",
+            body="left_foot",
+            start_frame=0,
+            end_frame=10,
+            world_position=[1.0, 2.0, 0.5],
+            surface_normal=[0.0, 0.0, 1.0],
+            surface_tangent_u=[1.0, 0.0, 0.0],
+            surface_tangent_v=[0.0, 1.0, 0.0],
+        )
+
+        arrows = _selected_tangent_arrows(anchor)
+
+        self.assertIsNotNone(arrows)
+        points, colors = arrows
+        self.assertEqual(points.shape, (2, 2, 3))
+        self.assertEqual(colors.shape, (2, 3))
 
     def test_launch_viewer_uses_local_surface_adapter_direct_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

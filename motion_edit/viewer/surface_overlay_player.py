@@ -471,24 +471,7 @@ def _remove_handles(handles: list[Any]) -> None:
             remove()
 
 
-def _selected_handle_lines(record: ContactAnchorRecord) -> tuple[list[list[list[float]]], list[list[tuple[int, int, int]]]]:
-    if record.world_position is None:
-        return [], []
-    base = np.asarray(record.world_position, dtype=float)
-    lines: list[list[list[float]]] = []
-    colors: list[list[tuple[int, int, int]]] = []
-    if record.surface_tangent_u is not None:
-        u = np.asarray(record.surface_tangent_u, dtype=float)
-        lines.append([(base - u * 0.18).tolist(), (base + u * 0.18).tolist()])
-        colors.append([(255, 90, 90), (255, 90, 90)])
-    if record.surface_tangent_v is not None:
-        v = np.asarray(record.surface_tangent_v, dtype=float)
-        lines.append([(base - v * 0.18).tolist(), (base + v * 0.18).tolist()])
-        colors.append([(90, 255, 120), (90, 255, 120)])
-    return lines, colors
-
-
-def _anchor_patch_mesh(record: ContactAnchorRecord, *, half_extent: float = 0.045, normal_offset: float = 0.002) -> tuple[np.ndarray, np.ndarray] | None:
+def _anchor_patch_mesh(record: ContactAnchorRecord, *, radius: float = 0.045, normal_offset: float = 0.002, segments: int = 24) -> tuple[np.ndarray, np.ndarray] | None:
     if record.world_position is None or record.surface_tangent_u is None or record.surface_tangent_v is None:
         return None
     center = np.asarray(record.world_position, dtype=float)
@@ -496,17 +479,39 @@ def _anchor_patch_mesh(record: ContactAnchorRecord, *, half_extent: float = 0.04
     tangent_v = np.asarray(record.surface_tangent_v, dtype=float)
     if record.surface_normal is not None:
         center = center + np.asarray(record.surface_normal, dtype=float) * normal_offset
-    vertices = np.asarray(
+    vertices = [center]
+    for index in range(segments):
+        angle = 2.0 * np.pi * float(index) / float(segments)
+        vertices.append(center + tangent_u * np.cos(angle) * radius + tangent_v * np.sin(angle) * radius)
+    faces = [[0, index, 1 + (index % segments)] for index in range(1, segments + 1)]
+    vertices = np.asarray(vertices, dtype=np.float32)
+    faces = np.asarray(faces, dtype=np.uint32)
+    return vertices, faces
+
+
+def _selected_tangent_arrows(record: ContactAnchorRecord, *, length: float = 0.2) -> tuple[np.ndarray, np.ndarray] | None:
+    if record.world_position is None or record.surface_tangent_u is None or record.surface_tangent_v is None:
+        return None
+    start = np.asarray(record.world_position, dtype=float)
+    if record.surface_normal is not None:
+        start = start + np.asarray(record.surface_normal, dtype=float) * 0.006
+    tangent_u = np.asarray(record.surface_tangent_u, dtype=float)
+    tangent_v = np.asarray(record.surface_tangent_v, dtype=float)
+    points = np.asarray(
         [
-            center - tangent_u * half_extent - tangent_v * half_extent,
-            center + tangent_u * half_extent - tangent_v * half_extent,
-            center + tangent_u * half_extent + tangent_v * half_extent,
-            center - tangent_u * half_extent + tangent_v * half_extent,
+            [start, start + tangent_u * length],
+            [start, start + tangent_v * length],
         ],
         dtype=np.float32,
     )
-    faces = np.asarray([[0, 1, 2], [0, 2, 3]], dtype=np.uint32)
-    return vertices, faces
+    colors = np.asarray(
+        [
+            (255, 90, 90),
+            (90, 255, 120),
+        ],
+        dtype=np.uint8,
+    )
+    return points, colors
 
 
 def _render_overlay(
@@ -542,11 +547,12 @@ def _render_overlay(
             mesh = _anchor_patch_mesh(record) if record is not None else None
             if mesh is not None and hasattr(server.scene, "add_mesh_simple"):
                 vertices, faces = mesh
+                patch_color = STATUS_COLORS["selected"] if selected_anchor_id and anchor_id == selected_anchor_id else color
                 marker = server.scene.add_mesh_simple(
                     f"{namespace}/anchors/{anchor_name}_patch",
                     vertices=vertices,
                     faces=faces,
-                    color=color,
+                    color=patch_color,
                     opacity=0.9,
                     side="double",
                 )
@@ -603,27 +609,14 @@ def _render_overlay(
     if controller is not None and selected_anchor_id:
         record = controller._anchor_record(selected_anchor_id)
         if record is not None and record.world_position is not None:
-            selected_mesh = _anchor_patch_mesh(record, half_extent=0.075, normal_offset=0.004)
-            if selected_mesh is not None and hasattr(server.scene, "add_mesh_simple"):
-                vertices, faces = selected_mesh
-                selected_frame = server.scene.add_mesh_simple(
-                    f"{namespace}/selected_anchor_handle_patch",
-                    vertices=vertices,
-                    faces=faces,
-                    color=STATUS_COLORS["selected"],
-                    opacity=0.95,
-                    side="double",
-                )
-                handles.append(selected_frame)
-            else:
-                selected_frame = server.scene.add_frame(
-                    f"{namespace}/selected_anchor_handle",
-                    show_axes=False,
-                    origin_radius=0.09,
-                    origin_color=STATUS_COLORS["selected"],
-                    position=np.asarray(record.world_position, dtype=np.float32),
-                )
-                handles.append(selected_frame)
+            selected_frame = server.scene.add_frame(
+                f"{namespace}/selected_anchor_handle",
+                show_axes=False,
+                origin_radius=0.001,
+                origin_color=STATUS_COLORS["selected"],
+                position=np.asarray(record.world_position, dtype=np.float32),
+            )
+            handles.append(selected_frame)
 
             @selected_frame.on_drag
             def _(event: Any) -> None:
@@ -649,13 +642,16 @@ def _render_overlay(
                     if event.phase == "end" and callable(controller.on_change):
                         controller.on_change()
 
-            selected_lines, selected_colors = _selected_handle_lines(record)
-            if selected_lines:
-                handle = server.scene.add_line_segments(
-                    f"{namespace}/selected_anchor_handle_axes",
-                    points=np.asarray(selected_lines, dtype=np.float32),
-                    colors=np.asarray(selected_colors, dtype=np.uint8),
-                    line_width=4.0,
+            arrows = _selected_tangent_arrows(record)
+            if arrows is not None and hasattr(server.scene, "add_arrows"):
+                points, colors = arrows
+                handle = server.scene.add_arrows(
+                    f"{namespace}/selected_anchor_tangent_arrows",
+                    points=points,
+                    colors=colors,
+                    shaft_radius=0.008,
+                    head_radius=0.025,
+                    head_length=0.045,
                     visible=True,
                 )
                 handles.append(handle)
