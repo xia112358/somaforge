@@ -25,7 +25,7 @@ from .contact import (
 )
 from .contact.generation import apply_contact_edit_plan_to_motion
 from .contact.layers import read_contact_graph
-from .storage.canonical import build_canonical_segments, mark_canonical_segment_status, write_motion_version_with_canonical_segments
+from .storage.canonical import build_canonical_segments, mark_canonical_segment_statuses, write_motion_version_with_canonical_segments
 from .storage.io import read_canonical_segments, read_motion_version, write_canonical_segments, write_motion_asset, write_motion_version, write_token_catalog
 from .storage.schema import MotionAssetRecord, MotionVersionRecord
 from .storage.tokens import build_tokens_from_segments
@@ -240,12 +240,25 @@ def _cmd_build_canonical_segmentation(args: argparse.Namespace) -> None:
 
 
 def _cmd_mark_segment_status(args: argparse.Namespace) -> None:
-    segments = mark_canonical_segment_status(
-        motion_version_id=args.motion_version_id,
-        segment_id=args.segment_id,
-        status=args.status,
-    )
-    print(f"updated canonical segment status motion_version={args.motion_version_id} segment={args.segment_id} status={args.status}")
+    updates = []
+    if args.status_by_file:
+        updates.extend(read_jsonl(Path(args.status_by_file).expanduser()))
+    if args.segment_id:
+        if not args.status:
+            raise ValueError("--segment-id requires --status")
+        updates.extend(
+            {
+                "segment_id": segment_id,
+                "status": args.status,
+                "reason": args.reason,
+                "source": args.source,
+            }
+            for segment_id in args.segment_id
+        )
+    if not updates:
+        raise ValueError("mark-segment-status requires --segment-id or --status-by-file")
+    segments = mark_canonical_segment_statuses(motion_version_id=args.motion_version_id, updates=updates)
+    print(f"updated canonical segment status motion_version={args.motion_version_id} updates={len(updates)}")
     print(f"canonical segments={len(segments)}")
 
 
@@ -688,8 +701,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("mark-segment-status")
     p.add_argument("--motion-version-id", required=True)
-    p.add_argument("--segment-id", required=True)
-    p.add_argument("--status", choices=("candidate", "accepted", "rejected", "manual"), required=True)
+    p.add_argument("--segment-id", action="append", default=None)
+    p.add_argument("--status", choices=("candidate", "accepted", "rejected", "manual"), default=None)
+    p.add_argument("--reason", default=None)
+    p.add_argument("--source", default="mark_segment_status")
+    p.add_argument("--status-by-file", default=None)
     p.set_defaults(func=_cmd_mark_segment_status)
 
     p = sub.add_parser("build-token-catalog")

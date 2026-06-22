@@ -408,8 +408,11 @@ class StorageSchemaTests(unittest.TestCase):
                         (),
                         {
                             "motion_version_id": "motion_a_raw",
-                            "segment_id": "seg_0",
+                            "segment_id": ["seg_0"],
                             "status": "accepted",
+                            "reason": "good_contact",
+                            "source": "test",
+                            "status_by_file": None,
                         },
                     )()
                 )
@@ -420,6 +423,45 @@ class StorageSchemaTests(unittest.TestCase):
         self.assertEqual(loaded[0].status, "accepted")
         self.assertEqual(loaded[0].metadata["status_history"][0]["old_status"], "candidate")
         self.assertEqual(loaded[0].metadata["status_history"][0]["new_status"], "accepted")
+        self.assertEqual(loaded[0].metadata["status_history"][0]["reason"], "good_contact")
+        self.assertEqual(loaded[0].metadata["status_history"][0]["source"], "test")
+
+    def test_mark_segment_status_updates_multiple_segments_from_file(self) -> None:
+        segments = [
+            SegmentRecord(motion_id="motion_a", segment_id="seg_0", start_frame=0, end_frame=2, source="canonical"),
+            SegmentRecord(motion_id="motion_a", segment_id="seg_1", start_frame=2, end_frame=4, source="canonical"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            updates = root / "updates.jsonl"
+            write_jsonl(
+                updates,
+                [
+                    {"segment_id": "seg_0", "status": "accepted", "reason": "clean", "source": "batch"},
+                    {"segment_id": "seg_1", "status": "rejected", "reason": "bad", "source": "batch"},
+                ],
+            )
+            with mock.patch.object(storage_io, "SEGMENTS_ROOT", root / "segments"):
+                write_canonical_segments("motion_a_raw", segments)
+                cli._cmd_mark_segment_status(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "motion_version_id": "motion_a_raw",
+                            "segment_id": None,
+                            "status": None,
+                            "reason": None,
+                            "source": "mark_segment_status",
+                            "status_by_file": str(updates),
+                        },
+                    )()
+                )
+                loaded = read_canonical_segments("motion_a_raw")
+
+        self.assertEqual([segment.status for segment in loaded], ["accepted", "rejected"])
+        self.assertEqual(loaded[0].metadata["status_history"][0]["source"], "batch")
+        self.assertEqual(loaded[1].metadata["status_history"][0]["reason"], "bad")
 
     def test_cutter_update_canonical_writes_back_to_segment_index(self) -> None:
         segment = SegmentRecord(

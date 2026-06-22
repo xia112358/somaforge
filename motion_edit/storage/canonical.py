@@ -134,21 +134,45 @@ def mark_canonical_segment_status(
     motion_version_id: str,
     segment_id: str,
     status: str,
+    reason: str | None = None,
+    source: str = "mark_segment_status",
+) -> list[SegmentRecord]:
+    return mark_canonical_segment_statuses(
+        motion_version_id=motion_version_id,
+        updates=[{"segment_id": segment_id, "status": status, "reason": reason, "source": source}],
+    )
+
+
+def mark_canonical_segment_statuses(
+    *,
+    motion_version_id: str,
+    updates: list[dict],
 ) -> list[SegmentRecord]:
     segments = read_canonical_segments(motion_version_id)
+    update_by_id = {str(update["segment_id"]): update for update in updates}
     updated: list[SegmentRecord] = []
-    found = False
+    found: set[str] = set()
     for segment in segments:
-        if segment.segment_id == segment_id:
+        if segment.segment_id in update_by_id:
+            update = update_by_id[segment.segment_id]
+            status = str(update["status"])
             metadata = dict(segment.metadata)
             history = list(metadata.get("status_history") or [])
-            history.append({"old_status": segment.status, "new_status": status, "source": "mark_segment_status"})
+            event = {
+                "old_status": segment.status,
+                "new_status": status,
+                "source": str(update.get("source") or "mark_segment_status"),
+            }
+            if update.get("reason") is not None:
+                event["reason"] = str(update["reason"])
+            history.append(event)
             metadata["status_history"] = history
             updated.append(replace(segment, status=status, metadata=metadata))  # type: ignore[arg-type]
-            found = True
+            found.add(segment.segment_id)
         else:
             updated.append(segment)
-    if not found:
-        raise ValueError(f"segment not found in canonical segmentation: {segment_id}")
+    missing = sorted(set(update_by_id) - found)
+    if missing:
+        raise ValueError(f"segments not found in canonical segmentation: {', '.join(missing)}")
     write_canonical_segments(motion_version_id, updated)
     return updated
