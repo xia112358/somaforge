@@ -25,6 +25,54 @@ ContactSurfaceType = Literal["plane", "box_face", "mesh_face", "heightfield", "u
 
 
 @dataclass(frozen=True)
+class ContactSurfaceRecord:
+    motion_id: str
+    surface_id: str
+    object_id: str | None
+    surface_type: ContactSurfaceType
+    origin: list[float]
+    normal: list[float]
+    tangent_u: list[float]
+    tangent_v: list[float]
+    bounds: dict[str, Any] | None = None
+    source: str = "manual"
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def validate(self) -> None:
+        if not self.surface_id:
+            raise ValueError("surface_id is required")
+        for name in ("origin", "normal", "tangent_u", "tangent_v"):
+            value = getattr(self, name)
+            if len(value) != 3:
+                raise ValueError(f"{self.surface_id}: {name} must have length 3")
+        for name in ("normal", "tangent_u", "tangent_v"):
+            value = getattr(self, name)
+            norm = sum(float(item) * float(item) for item in value) ** 0.5
+            if abs(norm - 1.0) > 1e-6:
+                raise ValueError(f"{self.surface_id}: {name} must be normalized")
+        normal = [float(item) for item in self.normal]
+        tangent_u = [float(item) for item in self.tangent_u]
+        tangent_v = [float(item) for item in self.tangent_v]
+        dot_nu = sum(normal[index] * tangent_u[index] for index in range(3))
+        dot_nv = sum(normal[index] * tangent_v[index] for index in range(3))
+        if abs(dot_nu) > 1e-6:
+            raise ValueError(f"{self.surface_id}: tangent_u must be orthogonal to normal")
+        if abs(dot_nv) > 1e-6:
+            raise ValueError(f"{self.surface_id}: tangent_v must be orthogonal to normal")
+        if self.bounds is not None:
+            for axis in ("u", "v"):
+                value = self.bounds.get(axis)
+                if not isinstance(value, list) or len(value) != 2:
+                    raise ValueError(f"{self.surface_id}: bounds[{axis!r}] must be a two-item list")
+                if float(value[1]) < float(value[0]):
+                    raise ValueError(f"{self.surface_id}: bounds[{axis!r}] max must be >= min")
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class ContactEventRecord:
     motion_id: str
     event_id: str

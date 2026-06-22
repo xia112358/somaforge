@@ -9,7 +9,9 @@ from .io import (
     read_contact_events,
     read_contact_jsonl,
     read_contact_patches,
+    read_contact_surfaces,
     read_contact_transitions,
+    write_contact_surfaces,
     write_contact_jsonl,
 )
 from .layers import read_contact_graph, write_contact_layer
@@ -26,6 +28,7 @@ from .schema import (
     ContactAnchorEditRecord,
     ContactEventRecord,
     ContactPatchRecord,
+    ContactSurfaceRecord,
     ContactTransitionRecord,
 )
 from .surfaces import bind_anchor_to_plane
@@ -43,6 +46,7 @@ __all__ = [
     "ContactGraph",
     "ContactEditPlan",
     "ContactPatchRecord",
+    "ContactSurfaceRecord",
     "ContactTransitionRecord",
     "anchors_from_contact_mask",
     "append_anchor_edit_to_plan",
@@ -66,6 +70,7 @@ __all__ = [
     "read_contact_events",
     "read_contact_jsonl",
     "read_contact_patches",
+    "read_contact_surfaces",
     "read_contact_transitions",
     "read_contact_graph",
     "segment_from_contact_transition",
@@ -73,6 +78,7 @@ __all__ = [
     "transitions_from_proto_indices",
     "validate_contact_edit_plan",
     "write_contact_jsonl",
+    "write_contact_surfaces",
     "write_contact_edit_plan",
     "write_contact_layer",
 ]

@@ -21,13 +21,15 @@ from motion_edit.contact import (
     read_contact_events,
     read_contact_graph,
     read_contact_patches,
+    read_contact_surfaces,
     read_contact_transitions,
     segment_from_contact_transition,
     transitions_from_proto_indices,
+    write_contact_surfaces,
     write_contact_jsonl,
     write_contact_layer,
 )
-from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord
+from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord, ContactSurfaceRecord
 from motion_edit.schema import SegmentRecord
 
 
@@ -72,6 +74,45 @@ class ContactEventTests(unittest.TestCase):
         self.assertEqual(loaded.surface_binding_source, "manual")
         self.assertTrue(loaded.editable)
         self.assertEqual(loaded.position_source, "manual")
+
+    def test_contact_surface_record_roundtrips_jsonl(self) -> None:
+        surface = ContactSurfaceRecord(
+            motion_id="motion_a",
+            surface_id="box_0_top",
+            object_id="box_0",
+            surface_type="box_face",
+            origin=[1.0, 0.0, 0.8],
+            normal=[0.0, 0.0, 1.0],
+            tangent_u=[1.0, 0.0, 0.0],
+            tangent_v=[0.0, 1.0, 0.0],
+            bounds={"u": [-0.25, 0.25], "v": [-0.25, 0.25]},
+            source="manual_surface_catalog",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "surfaces.jsonl"
+            write_contact_surfaces(path, [surface])
+            loaded = read_contact_surfaces(path)[0]
+
+        self.assertEqual(loaded.surface_id, "box_0_top")
+        self.assertEqual(loaded.object_id, "box_0")
+        self.assertEqual(loaded.normal, [0.0, 0.0, 1.0])
+        self.assertEqual(loaded.bounds, {"u": [-0.25, 0.25], "v": [-0.25, 0.25]})
+
+    def test_contact_surface_record_rejects_non_normalized_axes(self) -> None:
+        surface = ContactSurfaceRecord(
+            motion_id="motion_a",
+            surface_id="bad_top",
+            object_id=None,
+            surface_type="plane",
+            origin=[0.0, 0.0, 0.0],
+            normal=[0.0, 0.0, 2.0],
+            tangent_u=[1.0, 0.0, 0.0],
+            tangent_v=[0.0, 1.0, 0.0],
+        )
+
+        with self.assertRaisesRegex(ValueError, "normal"):
+            surface.validate()
 
     def test_anchor_edit_surface_constraint_fields_validate(self) -> None:
         edit = ContactAnchorEditRecord(
