@@ -26,7 +26,16 @@ from .contact import (
 from .contact.generation import apply_contact_edit_plan_to_motion
 from .contact.layers import read_contact_graph
 from .storage.canonical import build_canonical_segments, mark_canonical_segment_statuses, write_motion_version_with_canonical_segments
-from .storage.io import read_canonical_segments, read_motion_version, read_token_catalog, write_canonical_segments, write_motion_asset, write_motion_version, write_token_catalog
+from .storage.io import (
+    read_canonical_segments,
+    read_motion_version,
+    read_token_catalog,
+    replace_canonical_segments,
+    write_canonical_segments,
+    write_motion_asset,
+    write_motion_version,
+    write_token_catalog,
+)
 from .storage.schema import MotionAssetRecord, MotionVersionRecord
 from .storage.tokens import build_tokens_from_segments
 from .viewer import launch_viewer
@@ -520,6 +529,8 @@ def _cmd_cutter(args: argparse.Namespace) -> None:
     if args.update_canonical:
         if not args.motion_version_id:
             raise ValueError("--update-canonical requires --motion-version-id")
+        if args.destination:
+            raise ValueError("--destination is a legacy layer output and cannot be used with --update-canonical")
         version = read_motion_version(args.motion_version_id)
         contact_graph = None
         if version.contact_layer:
@@ -573,7 +584,13 @@ def _cmd_cutter(args: argparse.Namespace) -> None:
                     rebound_meta["parent_transition_id"] = transition["transition_id"]
                 updated = replace(updated, metadata=rebound_meta)
             edited_segments.append(updated)
-        out = write_canonical_segments(args.motion_version_id, edited_segments)
+        out = replace_canonical_segments(
+            args.motion_version_id,
+            edited_segments,
+            reason=f"cutter session {args.session_name}",
+            source="viser_cutter",
+            kind="cutter_refine",
+        )
         print(f"updated canonical segmentation from cutter {out}")
         return
     if not args.source:

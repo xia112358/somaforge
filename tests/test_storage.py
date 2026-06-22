@@ -728,8 +728,12 @@ class StorageSchemaTests(unittest.TestCase):
                     )()
                 )
                 loaded = read_canonical_segments("motion_a_raw")
+                active_files = sorted(path.name for path in (root / "segments").glob("motion_a_raw*.jsonl"))
+                history_events = read_jsonl(canonical_history_event_path("motion_a_raw"))
 
         launch_mock.assert_called_once()
+        self.assertEqual(active_files, ["motion_a_raw.jsonl"])
+        self.assertIn("cutter_refine", [event["kind"] for event in history_events])
         self.assertEqual((loaded[0].start_frame, loaded[0].end_frame), (1, 3))
         self.assertEqual(loaded[0].source, "viser_cutter")
         self.assertEqual(loaded[0].status, "manual")
@@ -738,6 +742,29 @@ class StorageSchemaTests(unittest.TestCase):
         self.assertIn("parent_transition_id", loaded[0].metadata)
         self.assertEqual(loaded[0].metadata["active_body"], "LF")
         self.assertFalse((root / "layers" / "manual").exists())
+
+    def test_cutter_update_canonical_rejects_legacy_destination(self) -> None:
+        with self.assertRaisesRegex(ValueError, "--destination"):
+            cli._cmd_cutter(
+                type(
+                    "Args",
+                    (),
+                    {
+                        "motion": "motion_a.npz",
+                        "source": None,
+                        "session_name": "check",
+                        "destination": "manual/check",
+                        "motion_version_id": "motion_a_raw",
+                        "update_canonical": True,
+                        "motion_id": "motion_a",
+                        "repo_root": None,
+                        "conda_env": "hsretargeting",
+                        "timeline_port": 8094,
+                        "fps": 50,
+                        "with_terrain": False,
+                    },
+                )()
+            )
 
 
 if __name__ == "__main__":
