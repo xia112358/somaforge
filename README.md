@@ -12,6 +12,7 @@ data/
   motions/
     raw/
     generated/
+  motion_assets/
   motion_versions/
   segments/
   tokens/
@@ -36,10 +37,13 @@ data/
 
 ```bash
 ~/motion_edit/motion-edit import-force-proto --motion-dir /path/to/masked_motions --layer-name force_contact
+~/motion_edit/motion-edit register-motion-asset --motion-asset-id climb00 --motion /path/to/climb_00_z_scale_1.0.npz --fps 50 --source local
+~/motion_edit/motion-edit register-motion-version --motion-version-id climb00_raw --motion /path/to/climb_00_z_scale_1.0.npz --kind raw --motion-asset-id climb00 --contact-layer contact/force_contact
 ~/motion_edit/motion-edit migrate-layer-to-canonical --motion-version-id climb00_raw --motion /path/to/climb_00_z_scale_1.0.npz --source candidates/force_contact --contact-layer contact/force_contact
 ~/motion_edit/motion-edit cutter /path/to/climb_00_z_scale_1.0.npz --motion-version-id climb00_raw --update-canonical --session-name climb00_check --with-terrain
 ~/motion_edit/motion-edit mark-segment-status --motion-version-id climb00_raw --segment-id SEG_ID --status accepted
 ~/motion_edit/motion-edit build-token-catalog --motion-version-id climb00_raw
+~/motion_edit/motion-edit export-manifest --motion-version-id climb00_raw --output data/exports/manifests/climb00_raw.json
 ~/motion_edit/motion-edit export-split-npz --motion-version-id climb00_raw --status accepted
 ~/motion_edit/motion-edit list-contact-layer --source contact/force_contact --motion-id climb_00_z_scale_1.0
 ~/motion_edit/motion-edit move-contact-anchor --source contact/force_contact --motion-id climb_00_z_scale_1.0 --anchor-id climb_00_z_scale_1.0_anchor_LF_000100_000140 --delta-world 0.10 0.0 0.0 --output-source contact/force_contact_farther --edit-plan data/workbench/climb00_farther.json --source-motion /path/to/climb_00_z_scale_1.0.npz
@@ -89,11 +93,13 @@ MotionVersionRecord
   -> data/tokens/<motion_version_id>.jsonl
 ```
 
-`accepted`, `rejected`, `manual`, and cutter-refined states are statuses or provenance fields on canonical `SegmentRecord`s. They should not become competing active segment layers for the same motion version. Legacy `data/layers/{candidates,manual,accepted,rejected}` paths remain for compatibility and migration, but the canonical path is preferred for new curation.
+Motion assets and motion versions are path references; registering them does not copy the `.npz`. Contact-first segmentation is the default canonical segmentation source. Cutter/manual refinement updates the canonical segmentation with `cut_source=cutter_refined` or related provenance. `accepted`, `rejected`, `manual`, and cutter-refined states are statuses or provenance fields on canonical `SegmentRecord`s. They should not become competing active segment layers for the same motion version.
+
+Legacy `data/layers/{candidates,manual,accepted,rejected}` paths remain for compatibility and migration. CLI commands that write these legacy layers print a warning and should not be treated as the primary storage path for new curation.
 
 Split `.npz` files are export caches only. `export-split-npz` reads canonical segments and materializes clips for downstream training/export; those clips are safe to delete and regenerate.
 
-## Layer Policy
+## Legacy Layer Policy
 
 - `manual/original`: imported hand-made cutter cuts.
 - `manual/current_cutter`: current cutter state.
@@ -102,7 +108,7 @@ Split `.npz` files are export caches only. `export-split-npz` reads canonical se
 - `accepted`: curated segments that downstream training/export should consume.
 - `rejected`: candidates kept for provenance but excluded from export.
 
-Accept/reject writes use upsert-by-segment-id semantics. They preserve previously curated records from the same motion unless a matching `segment_id` is replaced.
+Accept/reject writes use upsert-by-segment-id semantics for legacy compatibility. For canonical storage, use `mark-segment-status` so accepted/rejected remains a status inside `data/segments/<motion_version_id>.jsonl`.
 
 ## Contact-Centric Pipeline
 
@@ -188,6 +194,17 @@ The cutter is still the visual frontend. `motion_edit` owns the durable session,
 
 ```bash
 ~/motion_edit/motion-edit import-force-proto --motion-dir /path/to/masked_motions --layer-name force_contact
+~/motion_edit/motion-edit register-motion-asset \
+  --motion-asset-id climb00 \
+  --motion /path/to/climb_00_z_scale_1.0.npz \
+  --fps 50 \
+  --source local
+~/motion_edit/motion-edit register-motion-version \
+  --motion-version-id climb00_raw \
+  --motion /path/to/climb_00_z_scale_1.0.npz \
+  --kind raw \
+  --motion-asset-id climb00 \
+  --contact-layer contact/force_contact
 ~/motion_edit/motion-edit migrate-layer-to-canonical \
   --motion-version-id climb00_raw \
   --motion /path/to/climb_00_z_scale_1.0.npz \
@@ -199,6 +216,7 @@ The cutter is still the visual frontend. `motion_edit` owns the durable session,
 ~/motion_edit/motion-edit cutter /path/to/climb_00_z_scale_1.0.npz --motion-version-id climb00_raw --update-canonical --session-name climb00_check --with-terrain
 ~/motion_edit/motion-edit mark-segment-status --motion-version-id climb00_raw --segment-id <segment_id> --status accepted
 ~/motion_edit/motion-edit build-token-catalog --motion-version-id climb00_raw
+~/motion_edit/motion-edit export-manifest --motion-version-id climb00_raw --output data/exports/manifests/climb00_raw.json
 ~/motion_edit/motion-edit export-split-npz --motion-version-id climb00_raw --status accepted
 ```
 
