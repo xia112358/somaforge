@@ -29,6 +29,7 @@ from .contact import (
     move_anchor_in_contact_layer,
     read_contact_edit_plan,
     read_contact_surfaces,
+    refine_contact_graph_anchor_positions_from_raw_contacts,
     validate_contact_edit_plan,
     write_contact_edit_plan,
     write_contact_layer,
@@ -291,6 +292,33 @@ def _cmd_bind_contact_surfaces(args: argparse.Namespace) -> None:
     print(
         f"bound contact surfaces motion={args.motion_id} total={len(bound_anchors)} "
         f"bound={bound_count} unbound={len(bound_anchors) - bound_count} clamped={clamped_count} failed={failed_count}"
+    )
+    print(f"wrote contact layer {out_layer}")
+
+
+def _cmd_refine_contact_anchor_positions(args: argparse.Namespace) -> None:
+    ensure_data_dirs()
+    graph = read_contact_graph(LAYERS_ROOT / args.contact_layer, args.motion_id)
+    surfaces = read_contact_surfaces(args.surface_catalog) if args.surface_catalog else None
+    refined_graph = refine_contact_graph_anchor_positions_from_raw_contacts(
+        graph,
+        args.motion,
+        surfaces=surfaces,
+        max_part_distance=args.max_part_distance,
+        max_surface_distance=args.max_surface_distance,
+    )
+    out_layer = write_contact_layer(LAYERS_ROOT / args.output_contact_layer, refined_graph)
+    if surfaces is not None:
+        write_contact_surfaces(out_layer / "surfaces" / f"{args.motion_id}.jsonl", surfaces)
+    refined_count = sum(
+        1
+        for anchor in refined_graph.anchors
+        if not anchor.metadata.get("raw_contact_position_refinement_failed")
+    )
+    failed_count = len(refined_graph.anchors) - refined_count
+    print(
+        f"refined contact anchor positions motion={args.motion_id} total={len(refined_graph.anchors)} "
+        f"refined={refined_count} failed={failed_count}"
     )
     print(f"wrote contact layer {out_layer}")
 
@@ -1131,6 +1159,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--update-motion-version", action="store_true")
     p.add_argument("--rebind-canonical-segments", action="store_true")
     p.set_defaults(func=_cmd_bind_contact_surfaces)
+
+    p = sub.add_parser("refine-contact-anchor-positions")
+    p.add_argument("--contact-layer", required=True, help="Contact layer path relative to data/layers")
+    p.add_argument("--motion-id", required=True)
+    p.add_argument("--motion", required=True, help="Motion npz containing raw_contact_* arrays")
+    p.add_argument("--surface-catalog", default=None)
+    p.add_argument("--output-contact-layer", required=True)
+    p.add_argument("--max-part-distance", type=float, default=0.25)
+    p.add_argument("--max-surface-distance", type=float, default=0.05)
+    p.set_defaults(func=_cmd_refine_contact_anchor_positions)
 
     p = sub.add_parser("create-box-surface-catalog")
     p.add_argument("--motion-id", required=True)

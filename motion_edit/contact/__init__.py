@@ -23,6 +23,11 @@ from .plans import (
     validate_contact_edit_plan,
     write_contact_edit_plan,
 )
+from .raw_contacts import (
+    RawContactMotion,
+    estimate_anchor_position_from_raw_contacts,
+    refine_contact_graph_anchor_positions_from_raw_contacts,
+)
 from .schema import (
     ContactAnchorRecord,
     ContactAnchorEditRecord,
@@ -68,6 +73,7 @@ __all__ = [
     "move_anchor_in_contact_layer",
     "move_anchor_in_graph",
     "patches_from_anchors",
+    "RawContactMotion",
     "read_contact_anchors",
     "read_contact_edit_plan",
     "read_contact_events",
@@ -76,6 +82,8 @@ __all__ = [
     "read_contact_surfaces",
     "read_contact_transitions",
     "read_contact_graph",
+    "estimate_anchor_position_from_raw_contacts",
+    "refine_contact_graph_anchor_positions_from_raw_contacts",
     "segment_from_contact_transition",
     "surface_compatible_with_body",
     "transitions_from_event_pairs",

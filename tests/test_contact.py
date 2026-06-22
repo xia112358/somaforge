@@ -27,6 +27,7 @@ from motion_edit.contact import (
     read_contact_patches,
     read_contact_surfaces,
     read_contact_transitions,
+    refine_contact_graph_anchor_positions_from_raw_contacts,
     segment_from_contact_transition,
     surface_compatible_with_body,
     transitions_from_proto_indices,
@@ -593,6 +594,124 @@ class ContactEventTests(unittest.TestCase):
         self.assertEqual(bound.anchors[0].world_position, [0.1, 0.2, 0.0])
         self.assertEqual(bound.patches[0].patch_center_world, bound.anchors[0].world_position)
         self.assertEqual(written_surfaces[0].surface_id, "box_0_top")
+
+    def test_refine_anchor_position_from_raw_contact_surface_points(self) -> None:
+        graph = contact_graph_from_masks(
+            motion_id="motion_a",
+            contact_mask=np.asarray([[True], [True], [False]]),
+            body_pos_w=np.asarray([[[9.0, 9.0, 9.0]], [[9.0, 9.0, 9.0]], [[0.0, 0.0, 0.0]]]),
+            body_names=["left_foot"],
+        )
+        surface = ContactSurfaceRecord(
+            motion_id="motion_a",
+            surface_id="box_0_top",
+            object_id="box_0",
+            surface_type="mesh_face",
+            origin=[0.0, 0.0, 0.0],
+            normal=[0.0, 0.0, 1.0],
+            tangent_u=[1.0, 0.0, 0.0],
+            tangent_v=[0.0, 1.0, 0.0],
+            bounds={"u": [0.0, 1.0], "v": [0.0, 1.0]},
+            metadata={"polygon_world": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]]},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            motion = Path(tmp) / "motion.npz"
+            np.savez(
+                motion,
+                raw_contact_count=np.asarray([1, 1, 0], dtype=np.int32),
+                raw_contact_point0_w=np.asarray(
+                    [
+                        [[0.2, 0.2, 0.0]],
+                        [[0.4, 0.2, 0.0]],
+                        [[0.0, 0.0, 0.0]],
+                    ],
+                    dtype=np.float32,
+                ),
+                raw_contact_point1_w=np.asarray(
+                    [
+                        [[0.21, 0.2, 0.01]],
+                        [[0.41, 0.2, 0.01]],
+                        [[0.0, 0.0, 0.0]],
+                    ],
+                    dtype=np.float32,
+                ),
+                contact_force_part_position_w=np.asarray(
+                    [
+                        [[0.21, 0.2, 0.01], [3.0, 3.0, 3.0]],
+                        [[0.41, 0.2, 0.01], [3.0, 3.0, 3.0]],
+                        [[0.0, 0.0, 0.0], [3.0, 3.0, 3.0]],
+                    ],
+                    dtype=np.float32,
+                ),
+                contact_force_part_order=np.asarray(["LF", "RF"]),
+                raw_contact_source=np.asarray("newton_raw_rigid_contacts"),
+            )
+            refined = refine_contact_graph_anchor_positions_from_raw_contacts(graph, motion, surfaces=[surface])
+
+        self.assertEqual(refined.anchors[0].position_source, "raw_contact_point0_w_polygon_median")
+        self.assertEqual(refined.anchors[0].world_position, [0.30000000447034836, 0.20000000298023224, 0.0])
+        self.assertEqual(refined.patches[0].patch_center_world, refined.anchors[0].world_position)
+        self.assertEqual(
+            refined.anchors[0].metadata["raw_contact_position_refinement"]["accepted_raw_contact_sample_count"],
+            2,
+        )
+
+    def test_refine_anchor_position_cli_writes_contact_layer(self) -> None:
+        graph = contact_graph_from_masks(
+            motion_id="motion_a",
+            contact_mask=np.asarray([[True], [True], [False]]),
+            body_pos_w=np.asarray([[[9.0, 9.0, 9.0]], [[9.0, 9.0, 9.0]], [[0.0, 0.0, 0.0]]]),
+            body_names=["left_foot"],
+        )
+        surface = ContactSurfaceRecord(
+            motion_id="motion_a",
+            surface_id="box_0_top",
+            object_id="box_0",
+            surface_type="mesh_face",
+            origin=[0.0, 0.0, 0.0],
+            normal=[0.0, 0.0, 1.0],
+            tangent_u=[1.0, 0.0, 0.0],
+            tangent_v=[0.0, 1.0, 0.0],
+            bounds={"u": [0.0, 1.0], "v": [0.0, 1.0]},
+            metadata={"polygon_world": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]]},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_contact_layer(root / "layers" / "contact" / "force_contact", graph)
+            surface_catalog = root / "surfaces.jsonl"
+            write_contact_surfaces(surface_catalog, [surface])
+            motion = root / "motion.npz"
+            np.savez(
+                motion,
+                raw_contact_count=np.asarray([1, 1, 0], dtype=np.int32),
+                raw_contact_point0_w=np.asarray([[[0.2, 0.2, 0.0]], [[0.4, 0.2, 0.0]], [[0.0, 0.0, 0.0]]], dtype=np.float32),
+                raw_contact_point1_w=np.asarray([[[0.21, 0.2, 0.01]], [[0.41, 0.2, 0.01]], [[0.0, 0.0, 0.0]]], dtype=np.float32),
+                contact_force_part_position_w=np.asarray(
+                    [[[0.21, 0.2, 0.01], [3.0, 3.0, 3.0]], [[0.41, 0.2, 0.01], [3.0, 3.0, 3.0]], [[0.0, 0.0, 0.0], [3.0, 3.0, 3.0]]],
+                    dtype=np.float32,
+                ),
+                contact_force_part_order=np.asarray(["LF", "RF"]),
+            )
+            with mock.patch.object(cli, "LAYERS_ROOT", root / "layers"):
+                cli._cmd_refine_contact_anchor_positions(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "contact_layer": "contact/force_contact",
+                            "motion_id": "motion_a",
+                            "motion": str(motion),
+                            "surface_catalog": str(surface_catalog),
+                            "output_contact_layer": "contact/refined",
+                            "max_part_distance": 0.25,
+                            "max_surface_distance": 0.05,
+                        },
+                    )()
+                )
+                refined = read_contact_graph(root / "layers" / "contact" / "refined", "motion_a")
+
+        self.assertEqual(refined.anchors[0].position_source, "raw_contact_point0_w_polygon_median")
+        self.assertEqual(refined.anchors[0].metadata["raw_contact_position_refinement_failed"], False)
 
     def test_create_box_surface_catalog_cli_emits_top_and_side_faces(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

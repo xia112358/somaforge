@@ -162,8 +162,15 @@ Surface binding is explicit and does not generate augmented motion. It writes a 
   --terrain-urdf /path/to/multi_boxes_z_scale_1.0.urdf \
   --output data/surfaces/climb_00_surfaces.jsonl
 
-~/motion_edit/motion-edit bind-contact-surfaces \
+~/motion_edit/motion-edit refine-contact-anchor-positions \
   --contact-layer contact/force_contact \
+  --motion-id climb_00_z_scale_1.0 \
+  --motion /path/to/climb_00_with_raw_contacts.npz \
+  --surface-catalog data/surfaces/climb_00_surfaces.jsonl \
+  --output-contact-layer contact/force_contact_raw_point_refined
+
+~/motion_edit/motion-edit bind-contact-surfaces \
+  --contact-layer contact/force_contact_raw_point_refined \
   --motion-id climb_00_z_scale_1.0 \
   --surface-catalog data/surfaces/climb_00_surfaces.jsonl \
   --output-contact-layer contact/force_contact_bound
@@ -176,7 +183,7 @@ Surface binding is explicit and does not generate augmented motion. It writes a 
   --output-source contact/climb00_farther
 ```
 
-Surface catalogs are JSONL records with fields such as `surface_id`, `object_id`, `surface_type`, `origin`, `normal`, `tangent_u`, `tangent_v`, and bounds like `{"u": [-0.25, 0.25], "v": [-0.25, 0.25]}`. Prefer `create-urdf-surface-catalog` for terrain: it parses URDF OBJ meshes into real mesh face groups and adds an explicit `terrain_ground_z0` plane by default. URDF surface catalogs default to top/upward faces plus ground only; side faces are excluded unless `--include-side-surfaces` is passed. `bind-contact-surfaces` applies the same default filter even for an explicit catalog. Mesh faces bind and render from their true polygon vertices; there is no outer-rectangle fallback for mesh surfaces. `create-box-surface-catalog` remains only a manual/debug bridge and should not be used as a substitute for real terrain.
+Surface catalogs are JSONL records with fields such as `surface_id`, `object_id`, `surface_type`, `origin`, `normal`, `tangent_u`, `tangent_v`, and bounds like `{"u": [-0.25, 0.25], "v": [-0.25, 0.25]}`. Prefer `create-urdf-surface-catalog` for terrain: it parses URDF OBJ meshes into real mesh face groups and adds an explicit `terrain_ground_z0` plane by default. URDF surface catalogs default to top/upward faces plus ground only; side faces are excluded unless `--include-side-surfaces` is passed. `bind-contact-surfaces` applies the same default filter even for an explicit catalog. Mesh faces bind and render from their true polygon vertices; there is no outer-rectangle fallback for mesh surfaces. If the motion npz includes `raw_contact_*` arrays, run `refine-contact-anchor-positions` before binding; it estimates anchor positions from raw terrain-side contact points instead of the whole-interval body-position mean. `create-box-surface-catalog` remains only a manual/debug bridge and should not be used as a substitute for real terrain.
 
 ## Surface Binding Inspection
 
