@@ -914,6 +914,199 @@ def _loaded_editor_command_from_config(
     return cmd, prepared
 
 
+def _exec_loaded_editor_from_motion_asset(
+    motion_asset_path: str | Path,
+    *,
+    timeline_port: int,
+    edit_mode: str,
+    default_mode: str,
+    show_only: str,
+    fps: int,
+    robot_urdf: str | Path | None = None,
+) -> None:
+    config = _contact_editor_config_from_motion_asset(motion_asset_path)
+    cmd, prepared = _loaded_editor_command_from_config(
+        config,
+        timeline_port=timeline_port,
+        edit_mode=edit_mode,
+        default_mode=default_mode,
+        show_only=show_only,
+        fps=fps,
+        robot_urdf=robot_urdf,
+    )
+    print(
+        "[surface editor] loaded motion asset "
+        f"{Path(motion_asset_path).name}: anchors={prepared.ready_anchor_count} "
+        f"session={prepared.session.session_dir}"
+    )
+    print(f"[surface editor] exec: {' '.join(cmd)}")
+    os.execv(sys.executable, cmd)
+
+
+def _add_loaded_editor_sidebar(
+    server: Any,
+    *,
+    controller: SurfaceEditorController,
+    args: argparse.Namespace,
+    playback: MotionPlaybackController | None,
+) -> None:
+    status_refs: dict[str, Any] = {}
+
+    def _current_frame_text() -> str:
+        if playback is None:
+            return "no playback"
+        return f"{playback.frame()} / {max(0, playback.n_frames - 1)}"
+
+    def _set_status(text: str) -> None:
+        controller.state.last_message = text
+        widget = status_refs.get("status")
+        if widget is not None:
+            widget.value = text
+        print(f"[surface editor] {text}")
+
+    def _refresh_info() -> None:
+        selected = status_refs.get("selected_anchor")
+        info = status_refs.get("anchor_info")
+        frame = status_refs.get("frame")
+        if selected is not None:
+            selected.value = controller.selected_anchor_id or ""
+        if info is not None:
+            info.value = controller.selected_info_text()
+        if frame is not None:
+            frame.value = _current_frame_text()
+        status = status_refs.get("status")
+        if status is not None:
+            status.value = controller.state.last_error or controller.state.last_message or "ready"
+
+    with server.gui.add_folder("Motion / Session"):
+        current_motion = server.gui.add_text("motion", initial_value=str(args.qpos_npz or ""))
+        current_motion.disabled = True
+        current_session = server.gui.add_text("session", initial_value=str(args.surface_editor_session or ""))
+        current_session.disabled = True
+        frame_text = server.gui.add_text("frame", initial_value=_current_frame_text())
+        frame_text.disabled = True
+        load_motion_btn = server.gui.add_button("Load Motion...")
+        reload_btn = server.gui.add_button("Reload current")
+        save_btn = server.gui.add_button("Save edits")
+        discard_btn = server.gui.add_button("Discard unsaved edits")
+        status = server.gui.add_text("status", initial_value="ready", multiline=True)
+    status_refs["frame"] = frame_text
+    status_refs["status"] = status
+
+    with server.gui.add_folder("Selected Anchor"):
+        selected_anchor = server.gui.add_text("anchor_id", initial_value=controller.selected_anchor_id or "")
+        selected_anchor.disabled = True
+        anchor_info = server.gui.add_text("info", initial_value=controller.selected_info_text(), multiline=True)
+        anchor_info.disabled = True
+        prev_btn = server.gui.add_button("Select previous")
+        next_btn = server.gui.add_button("Select next")
+        first_unbound_btn = server.gui.add_button("First unbound")
+        first_edited_btn = server.gui.add_button("First edited")
+    status_refs["selected_anchor"] = selected_anchor
+    status_refs["anchor_info"] = anchor_info
+
+    with server.gui.add_folder("Edit"):
+        undo_btn = server.gui.add_button("Undo")
+        redo_btn = server.gui.add_button("Redo")
+        reset_btn = server.gui.add_button("Reset session")
+
+    @load_motion_btn.on_click
+    def _(_) -> None:
+        try:
+            selected = _filtered_open_file_dialog(title="Load Motion", load_type="Motion")
+            if not selected:
+                _set_status("no motion selected")
+                return
+            _set_status(f"loading motion: {selected}")
+            _exec_loaded_editor_from_motion_asset(
+                selected,
+                timeline_port=int(args.timeline_port),
+                edit_mode=str(args.edit_mode),
+                default_mode=str(args.default_mode),
+                show_only=str(args.show_only),
+                fps=int(args.fps),
+                robot_urdf=args.robot_urdf,
+            )
+        except Exception as exc:
+            controller.state.last_error = str(exc)
+            _refresh_info()
+
+    @reload_btn.on_click
+    def _(_) -> None:
+        try:
+            controller.reload_overlay()
+            _set_status("reloaded current overlay")
+        except Exception as exc:
+            controller.state.last_error = str(exc)
+        _refresh_info()
+
+    @save_btn.on_click
+    def _(_) -> None:
+        try:
+            out = controller.save()
+            _set_status(f"saved output contact layer: {out}")
+        except Exception as exc:
+            controller.state.last_error = str(exc)
+        _refresh_info()
+
+    @discard_btn.on_click
+    def _(_) -> None:
+        try:
+            controller.discard()
+            _set_status("discarded unsaved edits")
+        except Exception as exc:
+            controller.state.last_error = str(exc)
+        _refresh_info()
+
+    @prev_btn.on_click
+    def _(_) -> None:
+        controller.select_relative(-1)
+        _refresh_info()
+
+    @next_btn.on_click
+    def _(_) -> None:
+        controller.select_relative(1)
+        _refresh_info()
+
+    @first_unbound_btn.on_click
+    def _(_) -> None:
+        controller.select_first_status("unbound")
+        _refresh_info()
+
+    @first_edited_btn.on_click
+    def _(_) -> None:
+        controller.select_first_status("edited")
+        _refresh_info()
+
+    @undo_btn.on_click
+    def _(_) -> None:
+        controller.undo()
+        _refresh_info()
+
+    @redo_btn.on_click
+    def _(_) -> None:
+        controller.redo()
+        _refresh_info()
+
+    @reset_btn.on_click
+    def _(_) -> None:
+        try:
+            controller.reset()
+        except Exception as exc:
+            controller.state.last_error = str(exc)
+        _refresh_info()
+
+    previous_on_change = controller.on_change
+
+    def _on_change() -> None:
+        if callable(previous_on_change):
+            previous_on_change()
+        _refresh_info()
+
+    controller.on_change = _on_change
+    _refresh_info()
+
+
 def _safe_name(text: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"_", "-", "."} else "_" for ch in text)
 
@@ -1336,6 +1529,7 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
     controller.drag_mode_getter = lambda: str(args.default_mode)
 
     controller.reload_overlay()
+    _add_loaded_editor_sidebar(server, controller=controller, args=args, playback=playback)
     start_contact_timeline_wrapper(
         controller=controller,
         playback=playback,

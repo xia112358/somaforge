@@ -88,9 +88,9 @@ def _timeline_html(*, viser_url: str) -> str:
 <title>Motion Edit Contact Timeline</title>
 <style>
 html, body {{ margin: 0; height: 100%; background: #080b12; color: #e8ecf7; font-family: Inter, system-ui, sans-serif; overflow: hidden; }}
-#app {{ height: 100%; display: grid; grid-template-rows: minmax(0, 1fr) 282px; }}
+#app {{ height: 100%; display: grid; grid-template-rows: minmax(0, 1fr) 248px; }}
 #viewer {{ width: 100%; height: 100%; border: 0; background: #05070c; }}
-#panel {{ border-top: 1px solid #26314a; background: #101622; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 10px; padding: 10px 12px; box-sizing: border-box; }}
+#panel {{ border-top: 1px solid #26314a; background: #101622; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 8px; padding: 8px 12px 10px; box-sizing: border-box; min-height: 0; }}
 #top {{ display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; }}
 #title {{ font-size: 14px; font-weight: 650; }}
 #readout, #status, #hint {{ color: #95a6c8; font: 12px ui-monospace, monospace; overflow-wrap: anywhere; }}
@@ -98,16 +98,16 @@ html, body {{ margin: 0; height: 100%; background: #080b12; color: #e8ecf7; font
 button {{ height: 30px; border: 1px solid #34415f; border-radius: 5px; background: #172033; color: #dce7ff; padding: 0 10px; cursor: pointer; }}
 button.primary {{ background: #1d5f8f; border-color: #2b8eca; color: white; }}
 button.danger {{ background: #67212a; border-color: #a33a45; }}
-#timeline {{ position: relative; min-height: 170px; border: 1px solid #28334c; border-radius: 6px; background: #0b101a; overflow: hidden; user-select: none; }}
-#rail {{ position: absolute; left: 56px; right: 12px; top: 22px; height: 2px; background: #44506c; }}
+#timeline {{ position: relative; min-height: 0; height: 100%; border: 1px solid #28334c; border-radius: 6px; background: #0b101a; overflow: auto hidden; user-select: none; }}
+#rail {{ position: absolute; left: 92px; right: 12px; top: 22px; height: 2px; background: #44506c; }}
 #current {{ position: absolute; top: 8px; bottom: 6px; width: 2px; background: #ffd35a; z-index: 4; }}
-.laneLabel {{ position: absolute; left: 8px; width: 42px; height: 18px; color: #9eb3d7; font: 11px ui-monospace, monospace; text-align: right; overflow: hidden; }}
+.laneLabel {{ position: absolute; left: 8px; width: 78px; height: 18px; color: #9eb3d7; font: 11px ui-monospace, monospace; text-align: right; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }}
 .anchorBlock {{ position: absolute; height: 16px; border-radius: 4px; opacity: .72; cursor: pointer; border: 1px solid rgba(255,255,255,.18); box-sizing: border-box; }}
 .anchorBlock:hover {{ opacity: 1; transform: translateY(-1px); }}
 .anchorBlock.selected {{ opacity: 1; border-color: #ffe083; box-shadow: 0 0 0 2px rgba(255, 211, 90, .28); }}
 .anchorBlock.edited {{ border-color: #82eb91; }}
 .tick {{ position: absolute; top: 4px; color: #7284a8; font: 10px ui-monospace, monospace; transform: translateX(-50%); }}
-#bottom {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; }}
+#bottom {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 18px; }}
 #message {{ color: #95a6c8; font: 12px ui-monospace, monospace; }}
 </style>
 </head>
@@ -126,8 +126,8 @@ button.danger {{ background: #67212a; border-color: #a33a45; }}
         <button id="discard" class="danger">Discard</button>
       </div>
     </div>
-    <div id="timeline"><div id="rail"></div><div id="current"></div></div>
     <div id="bottom"><div id="hint">Drag/click timeline to scrub. Click contact blocks to select anchors. Space=play, Arrow=step.</div><div id="message"></div></div>
+    <div id="timeline"><div id="rail"></div><div id="current"></div></div>
   </div>
 </div>
 <script>
@@ -142,11 +142,11 @@ const message = document.getElementById('message');
 function clamp(x, lo, hi) {{ return Math.max(lo, Math.min(hi, x)); }}
 function railRect() {{
   const rect = timeline.getBoundingClientRect();
-  return {{left: rect.left + 56, width: Math.max(1, rect.width - 68)}};
+  return {{left: rect.left + 92, width: Math.max(1, rect.width - 104)}};
 }}
 function frameToX(frame) {{
   const rr = railRect();
-  return 56 + (frame / Math.max(1, state.n_frames - 1)) * rr.width;
+  return 92 + (frame / Math.max(1, state.n_frames - 1)) * rr.width;
 }}
 function xToFrame(clientX) {{
   const rr = railRect();

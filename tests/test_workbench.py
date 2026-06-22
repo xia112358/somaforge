@@ -47,6 +47,7 @@ from motion_edit.workbench import (
     write_workbench_segments,
 )
 from motion_edit.viewer.surface_overlay_player import (
+    _add_loaded_editor_sidebar,
     _anchor_color,
     _anchor_patch_mesh,
     _layer_name_from_path,
@@ -138,6 +139,54 @@ class _FakeScene:
 class _FakeServer:
     def __init__(self) -> None:
         self.scene = _FakeScene()
+        self.gui = _FakeGui()
+
+
+class _FakeGuiHandle:
+    def __init__(self, label: str, initial_value=None) -> None:
+        self.label = label
+        self.value = initial_value
+        self.disabled = False
+        self.click_cb = None
+
+    def on_click(self, func):
+        self.click_cb = func
+        return func
+
+    def on_update(self, func):
+        return func
+
+
+class _FakeFolder:
+    def __init__(self, gui: "_FakeGui", name: str) -> None:
+        self.gui = gui
+        self.name = name
+
+    def __enter__(self):
+        self.gui.folders.append(self.name)
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
+class _FakeGui:
+    def __init__(self) -> None:
+        self.folders: list[str] = []
+        self.buttons: list[str] = []
+        self.texts: list[str] = []
+
+    def add_folder(self, name: str):
+        return _FakeFolder(self, name)
+
+    def add_button(self, label: str):
+        self.buttons.append(label)
+        return _FakeGuiHandle(label)
+
+    def add_text(self, label: str, initial_value="", multiline: bool = False):
+        _ = multiline
+        self.texts.append(label)
+        return _FakeGuiHandle(label, initial_value)
 
 
 class _FakeDragEvent:
@@ -886,6 +935,70 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertIn("http://localhost:8084", html)
         self.assertIn("/api/select_anchor", html)
         self.assertIn("anchorBlock", html)
+        self.assertIn("#bottom", html)
+
+    def test_loaded_surface_editor_sidebar_restores_file_and_session_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True], [True], [False]]),
+                body_pos_w=np.zeros((3, 1, 3), dtype=np.float32),
+                body_names=["LF"],
+            )
+            graph = type(graph)(
+                motion_id=graph.motion_id,
+                events=graph.events,
+                anchors=[
+                    type(graph.anchors[0])(
+                        **{
+                            **graph.anchors[0].__dict__,
+                            "surface_id": "top",
+                            "surface_normal": [0.0, 0.0, 1.0],
+                            "surface_origin": [0.0, 0.0, 0.0],
+                            "surface_tangent_u": [1.0, 0.0, 0.0],
+                            "surface_tangent_v": [0.0, 1.0, 0.0],
+                            "surface_bounds": {"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+                            "surface_coordinates": {"u": 0.0, "v": 0.0},
+                        }
+                    )
+                ],
+                patches=graph.patches,
+                transitions=graph.transitions,
+            )
+            write_contact_layer(root / "layers" / "contact" / "bound", graph)
+            session = prepare_surface_editor_session(
+                motion_path=str(root / "motion_a.npz"),
+                motion_id="motion_a",
+                contact_layer="contact/bound",
+                surface_catalog=None,
+                session_name="loaded_sidebar",
+                layers_root=root / "layers",
+                workbench_root=root / "workbench",
+            )
+            server = _FakeServer()
+            state = load_editor_state(session.session_dir / "session.json")
+            controller = SurfaceEditorController.create(server, state)
+            args = argparse.Namespace(
+                qpos_npz=str(root / "motion_a.npz"),
+                surface_editor_session=str(session.session_dir / "session.json"),
+                timeline_port=8094,
+                edit_mode="direct",
+                default_mode="reject",
+                show_only="all",
+                fps=50,
+                robot_urdf=None,
+            )
+
+            _add_loaded_editor_sidebar(server, controller=controller, args=args, playback=_FakePlayback())
+
+        self.assertIn("Motion / Session", server.gui.folders)
+        self.assertIn("Selected Anchor", server.gui.folders)
+        self.assertIn("Edit", server.gui.folders)
+        self.assertIn("Load Motion...", server.gui.buttons)
+        self.assertIn("Save edits", server.gui.buttons)
+        self.assertIn("Undo", server.gui.buttons)
+        self.assertIn("info", server.gui.texts)
 
     def test_surface_overlay_direct_move_records_error_for_reject(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
