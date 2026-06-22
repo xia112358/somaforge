@@ -872,18 +872,7 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
             initial_value=args.show_only,
         )
         anchor_id = server.gui.add_text("anchor_id", initial_value=selected_default)
-        du = server.gui.add_number("du", initial_value=0.0, step=0.01)
-        dv = server.gui.add_number("dv", initial_value=0.0, step=0.01)
-        step_size = server.gui.add_number("step_size", initial_value=float(args.step_size), step=0.005)
-        target_u = server.gui.add_number("target_u", initial_value=0.0, step=0.01)
-        target_v = server.gui.add_number("target_v", initial_value=0.0, step=0.01)
         mode = server.gui.add_dropdown("mode", options=("reject", "clamp"), initial_value=args.default_mode)
-        move_btn = server.gui.add_button("Move anchor" if args.edit_mode == "direct" else "Write move request")
-        move_to_uv_btn = server.gui.add_button("Move to u/v")
-        plus_u_btn = server.gui.add_button("+u")
-        minus_u_btn = server.gui.add_button("-u")
-        plus_v_btn = server.gui.add_button("+v")
-        minus_v_btn = server.gui.add_button("-v")
         prev_btn = server.gui.add_button("Select previous")
         next_btn = server.gui.add_button("Select next")
         find_btn = server.gui.add_button("Find anchors")
@@ -894,7 +883,6 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
         redo_btn = server.gui.add_button("Redo")
         reset_btn = server.gui.add_button("Reset session")
         discard_btn = server.gui.add_button("Discard unsaved edits")
-        request_btn = server.gui.add_button("Write request only")
         reload_btn = server.gui.add_button("Reload overlay")
         save_btn = server.gui.add_button("Save edits")
         status_text = server.gui.add_text("status", initial_value="ready")
@@ -910,10 +898,6 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
 
     def _sync_selected_fields() -> None:
         anchor_id.value = controller.selected_anchor_id or ""
-        current = controller.current_surface_uv()
-        if current is not None:
-            target_u.value = current[0]
-            target_v.value = current[1]
         info_text.value = controller.selected_info_text()
 
     controller.on_change = _sync_selected_fields
@@ -926,80 +910,6 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
     def _refresh_and_sync() -> None:
         controller.reload_overlay()
         _sync_selected_fields()
-
-    def _move_delta(delta: list[float]) -> None:
-        if args.edit_mode == "request":
-            if not str(anchor_id.value).strip():
-                _set_status("error: no anchor_id selected")
-                return
-            request = append_move_request(
-                args.surface_editor_requests,
-                anchor_id=str(anchor_id.value).strip(),
-                tangent_delta=delta,
-                mode=str(mode.value),
-            )
-            _set_status(f"request written: {request['request_id']}")
-            print(f"[surface editor] wrote request {request['request_id']} anchor={request['anchor_id']}")
-            return
-        try:
-            if str(anchor_id.value).strip() != controller.selected_anchor_id:
-                controller.select_anchor(str(anchor_id.value).strip())
-            result = controller.move_selected(tangent_delta=delta, mode=str(mode.value))
-            _refresh_and_sync()
-            _set_status(f"moved {result['anchor_id']} delta={result['delta_world']}")
-            print(f"[surface editor] moved anchor={result['anchor_id']} edit={result['edit_id']}")
-        except Exception as exc:
-            state.last_error = str(exc)
-            _set_status(f"error: {exc}")
-            print(f"[surface editor] move failed anchor={anchor_id.value}: {exc}")
-
-    @move_btn.on_click
-    def _(_) -> None:
-        if not str(anchor_id.value).strip():
-            print("[surface editor] no anchor_id selected")
-            status_text.value = "error: no anchor_id selected"
-            return
-        _move_delta([float(du.value), float(dv.value)])
-
-    @move_to_uv_btn.on_click
-    def _(_) -> None:
-        try:
-            if str(anchor_id.value).strip() != controller.selected_anchor_id:
-                controller.select_anchor(str(anchor_id.value).strip())
-            if args.edit_mode == "request":
-                current = controller.current_surface_uv()
-                if current is None:
-                    raise ValueError("selected anchor has no surface coordinates")
-                _move_delta([float(target_u.value) - current[0], float(target_v.value) - current[1]])
-                return
-            result = controller.move_selected_to_uv(
-                target_u=float(target_u.value),
-                target_v=float(target_v.value),
-                mode=str(mode.value),
-            )
-            _refresh_and_sync()
-            _set_status(f"moved {result['anchor_id']} delta={result['delta_world']}")
-            print(f"[surface editor] moved anchor={result['anchor_id']} edit={result['edit_id']}")
-        except Exception as exc:
-            state.last_error = str(exc)
-            _set_status(f"error: {exc}")
-            print(f"[surface editor] move failed anchor={anchor_id.value}: {exc}")
-
-    @plus_u_btn.on_click
-    def _(_) -> None:
-        _move_delta([float(step_size.value), 0.0])
-
-    @minus_u_btn.on_click
-    def _(_) -> None:
-        _move_delta([-float(step_size.value), 0.0])
-
-    @plus_v_btn.on_click
-    def _(_) -> None:
-        _move_delta([0.0, float(step_size.value)])
-
-    @minus_v_btn.on_click
-    def _(_) -> None:
-        _move_delta([0.0, -float(step_size.value)])
 
     @find_btn.on_click
     def _(_) -> None:
@@ -1071,20 +981,6 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
         except Exception as exc:
             state.last_error = str(exc)
             _set_status(f"discard error: {exc}")
-
-    @request_btn.on_click
-    def _(_) -> None:
-        if not str(anchor_id.value).strip():
-            status_text.value = "error: no anchor_id selected"
-            return
-        request = append_move_request(
-            args.surface_editor_requests,
-            anchor_id=str(anchor_id.value).strip(),
-            tangent_delta=[float(du.value), float(dv.value)],
-            mode=str(mode.value),
-        )
-        status_text.value = f"request written: {request['request_id']}"
-        print(f"[surface editor] wrote request {request['request_id']} anchor={request['anchor_id']}")
 
     @reload_btn.on_click
     def _(_) -> None:
