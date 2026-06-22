@@ -48,6 +48,7 @@ from motion_edit.workbench import (
 from motion_edit.viewer.surface_overlay_player import (
     _anchor_color,
     _anchor_patch_mesh,
+    _anchor_positions_differ,
     _render_overlay,
     _selected_tangent_arrows,
     append_move_request,
@@ -96,6 +97,16 @@ class _FakeScene:
         return handle
 
     def add_point_cloud(self, name, **_kwargs):
+        handle = _FakeSceneHandle(name)
+        self.handles[name] = handle
+        return handle
+
+    def add_mesh_simple(self, name, **_kwargs):
+        handle = _FakeSceneHandle(name)
+        self.handles[name] = handle
+        return handle
+
+    def add_arrows(self, name, **_kwargs):
         handle = _FakeSceneHandle(name)
         self.handles[name] = handle
         return handle
@@ -1064,9 +1075,110 @@ class SurfaceEditorSessionTests(unittest.TestCase):
             pending = read_pending_surface_edits(session)
 
         self.assertEqual(controller.selected_anchor_id, bound_anchor.anchor_id)
-        self.assertIn("selected_anchor_handle", "\n".join(server.scene.handles.keys()))
+        self.assertIn("selected_anchor_tangent_arrows", "\n".join(server.scene.handles.keys()))
         np.testing.assert_allclose(moved.world_position, [0.2, 0.0, 0.0])
         self.assertEqual(len(pending), 1)
+
+    def test_surface_editor_drag_update_does_not_commit_or_rerender(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True], [True], [False]]),
+                body_pos_w=np.asarray([[[0.0, 0.0, 0.0]], [[0.0, 0.0, 0.0]], [[0.0, 0.0, 0.0]]]),
+                body_names=["LF"],
+            )
+            anchor = graph.anchors[0]
+            bound_anchor = type(anchor)(
+                **{
+                    **anchor.__dict__,
+                    "surface_id": "top",
+                    "surface_normal": [0.0, 0.0, 1.0],
+                    "surface_origin": [0.0, 0.0, 0.0],
+                    "surface_tangent_u": [1.0, 0.0, 0.0],
+                    "surface_tangent_v": [0.0, 1.0, 0.0],
+                    "surface_bounds": {"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+                    "surface_coordinates": {"u": 0.0, "v": 0.0},
+                }
+            )
+            graph = type(graph)(motion_id="motion_a", events=graph.events, anchors=[bound_anchor], patches=graph.patches, transitions=graph.transitions)
+            write_contact_layer(root / "layers" / "contact" / "bound", graph)
+            session = prepare_surface_editor_session(
+                motion_path=str(root / "motion_a.npz"),
+                motion_id="motion_a",
+                contact_layer="contact/bound",
+                surface_catalog=None,
+                session_name="surface_render_update",
+                layers_root=root / "layers",
+                workbench_root=root / "workbench",
+            )
+            state = load_editor_state(session.session_dir / "session.json")
+            server = _FakeServer()
+            controller = SurfaceEditorController.create(server, state)
+            controller.drag_mode_getter = lambda: "reject"
+            overlay = load_surface_overlay(session.overlay_path)
+            _render_overlay(server, overlay, selected_anchor_id=bound_anchor.anchor_id, controller=controller, edit_mode="direct")
+            marker = next(handle for name, handle in server.scene.handles.items() if "/anchors/" in name)
+            render_generation = controller.state.render_generation
+            marker.drag_cb(_FakeDragEvent(target=marker, phase="update", end_position=[0.2, 0.0, 0.4]))
+            moved = read_contact_graph(session.contact_layer_snapshot, "motion_a").anchors[0]
+            pending = read_pending_surface_edits(session)
+
+        self.assertEqual(controller.state.render_generation, render_generation)
+        np.testing.assert_allclose(moved.world_position, [0.0, 0.0, 0.0])
+        self.assertEqual(pending, [])
+
+    def test_surface_editor_initial_ghost_click_restores_anchor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True], [True], [False]]),
+                body_pos_w=np.asarray([[[0.0, 0.0, 0.0]], [[0.0, 0.0, 0.0]], [[0.0, 0.0, 0.0]]]),
+                body_names=["LF"],
+            )
+            anchor = graph.anchors[0]
+            bound_anchor = type(anchor)(
+                **{
+                    **anchor.__dict__,
+                    "surface_id": "top",
+                    "surface_normal": [0.0, 0.0, 1.0],
+                    "surface_origin": [0.0, 0.0, 0.0],
+                    "surface_tangent_u": [1.0, 0.0, 0.0],
+                    "surface_tangent_v": [0.0, 1.0, 0.0],
+                    "surface_bounds": {"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+                    "surface_coordinates": {"u": 0.0, "v": 0.0},
+                }
+            )
+            graph = type(graph)(motion_id="motion_a", events=graph.events, anchors=[bound_anchor], patches=graph.patches, transitions=graph.transitions)
+            write_contact_layer(root / "layers" / "contact" / "bound", graph)
+            session = prepare_surface_editor_session(
+                motion_path=str(root / "motion_a.npz"),
+                motion_id="motion_a",
+                contact_layer="contact/bound",
+                surface_catalog=None,
+                session_name="surface_restore",
+                layers_root=root / "layers",
+                workbench_root=root / "workbench",
+            )
+            state = load_editor_state(session.session_dir / "session.json")
+            server = _FakeServer()
+            controller = SurfaceEditorController.create(server, state)
+            controller.drag_mode_getter = lambda: "reject"
+            controller.move_selected(tangent_delta=[0.2, 0.0], mode="reject")
+            moved = read_contact_graph(session.contact_layer_snapshot, "motion_a").anchors[0]
+            self.assertTrue(_anchor_positions_differ(bound_anchor, moved))
+
+            overlay = load_surface_overlay(session.overlay_path)
+            _render_overlay(server, overlay, selected_anchor_id=bound_anchor.anchor_id, controller=controller, edit_mode="direct")
+            ghost = next(handle for name, handle in server.scene.handles.items() if name.endswith("_initial_ghost"))
+            ghost.click_cb(None)
+            restored = read_contact_graph(session.contact_layer_snapshot, "motion_a").anchors[0]
+            pending = read_pending_surface_edits(session)
+
+        np.testing.assert_allclose(restored.world_position, [0.0, 0.0, 0.0])
+        self.assertEqual(len(pending), 2)
+        self.assertEqual(pending[-1].metadata["surface_editor_action"], "restore_initial_position")
 
     def test_surface_overlay_helper_reuses_or_computes_corners(self) -> None:
         corners = surface_quad_corners(

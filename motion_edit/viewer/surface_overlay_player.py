@@ -5,7 +5,7 @@ import copy
 import json
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -128,6 +128,15 @@ class SurfaceEditorController:
                 return anchor
         return None
 
+    def _original_anchor_record(self, anchor_id: str | None = None) -> ContactAnchorRecord | None:
+        target = anchor_id or self.selected_anchor_id
+        if not target or self.original_graph is None:
+            return None
+        for anchor in self.original_graph.anchors:
+            if anchor.anchor_id == target:
+                return anchor
+        return None
+
     def default_anchor_id(self) -> str | None:
         anchors = self.anchors()
         for status in ("bound", "edited", "clamped", "suspicious"):
@@ -160,6 +169,9 @@ class SurfaceEditorController:
         if self._anchor_obj(anchor_id) is None:
             self.state.last_error = f"anchor not found: {anchor_id}"
             return None
+        if self.selected_anchor_id == anchor_id:
+            self.state.last_error = None
+            return anchor_id
         self.selected_anchor_id = anchor_id
         self.state.selected_anchor_id = anchor_id
         self.state.last_error = None
@@ -243,6 +255,47 @@ class SurfaceEditorController:
         du = float(target_u) - current[0]
         dv = float(target_v) - current[1]
         return self.move_selected(tangent_delta=[du, dv], mode=mode)
+
+    def restore_anchor_to_initial(self, anchor_id: str | None = None, *, mode: str = "reject", eps: float = 1e-6) -> dict[str, Any]:
+        target = anchor_id or self.selected_anchor_id
+        if not target:
+            raise ValueError("no anchor selected")
+        self.select_anchor(target)
+        current = self._anchor_record(target)
+        original = self._original_anchor_record(target)
+        if current is None or original is None:
+            raise ValueError(f"anchor initial state not found: {target}")
+        if current.surface_id != original.surface_id or current.object_id != original.object_id:
+            raise ValueError("cannot restore across a different contact surface")
+        current_uv = current.surface_coordinates or {}
+        original_uv = original.surface_coordinates or {}
+        if "u" in original_uv and "v" in original_uv:
+            du = float(original_uv["u"]) - float(current_uv.get("u", 0.0))
+            dv = float(original_uv["v"]) - float(current_uv.get("v", 0.0))
+        elif original.world_position is not None:
+            du, dv = self.tangent_delta_from_world_request(current, original.world_position)
+        else:
+            raise ValueError("initial anchor has no surface coordinates or world position")
+        if abs(du) < eps and abs(dv) < eps:
+            self.state.last_message = f"{target} already at initial position"
+            self.state.last_error = None
+            return {"no_op": True, "anchor_id": target, "tangent_delta": [0.0, 0.0]}
+        result = self.move_selected(tangent_delta=[du, dv], mode=mode)
+        pending = self.pending_edits()
+        if pending:
+            latest = pending[-1]
+            metadata = dict(latest.metadata)
+            metadata.update(
+                {
+                    "surface_editor_action": "restore_initial_position",
+                    "restored_from_initial_anchor": True,
+                }
+            )
+            pending[-1] = replace(latest, metadata=metadata, source="viser_surface_editor")
+            write_pending_surface_edits(self.state.session, pending)
+        self.state.last_message = f"restored {target} to initial position"
+        self.reload_overlay()
+        return result
 
     def tangent_delta_from_world_request(self, record: ContactAnchorRecord, requested_world_position: list[float] | tuple[float, float, float]) -> tuple[float, float]:
         if not record.surface_id or record.surface_origin is None or record.surface_tangent_u is None or record.surface_tangent_v is None:
@@ -489,6 +542,12 @@ def _anchor_patch_mesh(record: ContactAnchorRecord, *, radius: float = 0.045, no
     return vertices, faces
 
 
+def _anchor_positions_differ(first: ContactAnchorRecord | None, second: ContactAnchorRecord | None, *, eps: float = 1e-6) -> bool:
+    if first is None or second is None or first.world_position is None or second.world_position is None:
+        return False
+    return bool(np.linalg.norm(np.asarray(first.world_position, dtype=float) - np.asarray(second.world_position, dtype=float)) > eps)
+
+
 def _selected_tangent_arrows(record: ContactAnchorRecord, *, length: float = 0.2) -> tuple[np.ndarray, np.ndarray] | None:
     if record.world_position is None or record.surface_tangent_u is None or record.surface_tangent_v is None:
         return None
@@ -524,8 +583,6 @@ def _render_overlay(
     edit_mode: str = "direct",
 ) -> list[Any]:
     handles: list[Any] = []
-    line_points: list[list[list[float]]] = []
-    line_colors: list[list[tuple[int, int, int]]] = []
 
     for obj in overlay.get("objects", []):
         obj_type = obj.get("type")
@@ -536,14 +593,45 @@ def _render_overlay(
         elif obj_type == "normal_axis":
             continue
         elif obj_type == "projection_line":
-            line_points.append([obj["from"], obj["to"]])
-            line_colors.append([color, color])
+            continue
         elif obj_type == "anchor_point":
             color = _anchor_color(obj)
             anchor_id = str(obj.get("anchor_id", ""))
             anchor_name = _safe_name(anchor_id or "anchor")
             record = controller._anchor_record(anchor_id) if controller is not None else None
+            original_record = controller._original_anchor_record(anchor_id) if controller is not None else None
             marker = None
+            if (
+                controller is not None
+                and original_record is not None
+                and _anchor_positions_differ(record, original_record)
+            ):
+                original_mesh = _anchor_patch_mesh(original_record, radius=0.043, normal_offset=0.001)
+                if original_mesh is not None and hasattr(server.scene, "add_mesh_simple"):
+                    vertices, faces = original_mesh
+                    original_marker = server.scene.add_mesh_simple(
+                        f"{namespace}/anchors/{anchor_name}_initial_ghost",
+                        vertices=vertices,
+                        faces=faces,
+                        color=color,
+                        opacity=0.28,
+                        side="double",
+                    )
+                    handles.append(original_marker)
+
+                    @original_marker.on_click
+                    def _(_, anchor_id: str = anchor_id) -> None:
+                        try:
+                            result = controller.restore_anchor_to_initial(anchor_id)
+                            print(f"[surface editor] restored anchor={anchor_id} result={result}")
+                            if callable(controller.on_change):
+                                controller.on_change()
+                        except Exception as exc:
+                            controller.state.last_error = str(exc)
+                            if callable(controller.on_change):
+                                controller.on_change()
+                            print(f"[surface editor] restore failed anchor={anchor_id}: {exc}")
+
             mesh = _anchor_patch_mesh(record) if record is not None else None
             if mesh is not None and hasattr(server.scene, "add_mesh_simple"):
                 vertices, faces = mesh
@@ -577,7 +665,8 @@ def _render_overlay(
                     if edit_mode != "direct":
                         controller.state.last_message = "drag disabled in request mode"
                         return
-                    controller.select_anchor(anchor_id)
+                    if event.phase == "start" and controller.selected_anchor_id != anchor_id:
+                        controller.select_anchor(anchor_id)
                     record = controller._anchor_record(anchor_id)
                     if record is None:
                         return
@@ -597,51 +686,9 @@ def _render_overlay(
                         if event.phase == "end" and callable(controller.on_change):
                             controller.on_change()
 
-    if line_points:
-        handle = server.scene.add_line_segments(
-            f"{namespace}/overlay_lines",
-            points=np.asarray(line_points, dtype=np.float32),
-            colors=np.asarray(line_colors, dtype=np.uint8),
-            line_width=3.0,
-            visible=True,
-        )
-        handles.append(handle)
     if controller is not None and selected_anchor_id:
         record = controller._anchor_record(selected_anchor_id)
         if record is not None and record.world_position is not None:
-            selected_frame = server.scene.add_frame(
-                f"{namespace}/selected_anchor_handle",
-                show_axes=False,
-                origin_radius=0.001,
-                origin_color=STATUS_COLORS["selected"],
-                position=np.asarray(record.world_position, dtype=np.float32),
-            )
-            handles.append(selected_frame)
-
-            @selected_frame.on_drag
-            def _(event: Any) -> None:
-                if edit_mode != "direct":
-                    controller.state.last_message = "drag disabled in request mode"
-                    return
-                current = controller._anchor_record()
-                if current is None:
-                    return
-                try:
-                    projected = controller.projected_world_request(current, event.end_position)
-                    if event.phase == "update":
-                        event.target.position = tuple(float(v) for v in projected)
-                        return
-                    if event.phase == "end":
-                        mode = str(controller.drag_mode_getter()) if callable(controller.drag_mode_getter) else "reject"
-                        result = controller.drag_selected_to_world(event.end_position, mode=mode)
-                        print(f"[surface editor] dragged selected_anchor result={result}")
-                        if callable(controller.on_change):
-                            controller.on_change()
-                except Exception as exc:
-                    controller.state.last_error = str(exc)
-                    if event.phase == "end" and callable(controller.on_change):
-                        controller.on_change()
-
             arrows = _selected_tangent_arrows(record)
             if arrows is not None and hasattr(server.scene, "add_arrows"):
                 points, colors = arrows
