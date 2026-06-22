@@ -661,6 +661,88 @@ class StorageSchemaTests(unittest.TestCase):
         self.assertEqual(loaded[0].metadata["status_history"][0]["source"], "batch")
         self.assertEqual(loaded[1].metadata["status_history"][0]["reason"], "bad")
 
+    def test_canonical_action_trim_split_delete_updates_same_canonical_path(self) -> None:
+        segment = SegmentRecord(
+            motion_id="motion_a",
+            segment_id="seg_0",
+            start_frame=0,
+            end_frame=10,
+            source="canonical",
+            status="candidate",
+            metadata={"motion_version_id": "motion_a_raw"},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(storage_io, "SEGMENTS_ROOT", root / "segments"):
+                write_canonical_segments("motion_a_raw", [segment])
+                cli._cmd_canonical_action(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "motion_version_id": "motion_a_raw",
+                            "segment_id": "seg_0",
+                            "motion_id": None,
+                            "index": None,
+                            "action": "trim",
+                            "start_frame": 2,
+                            "end_frame": 8,
+                            "frame": None,
+                            "reason": "tighten bounds",
+                            "source": "test",
+                        },
+                    )()
+                )
+                trimmed = read_canonical_segments("motion_a_raw")
+                cli._cmd_canonical_action(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "motion_version_id": "motion_a_raw",
+                            "segment_id": "seg_0",
+                            "motion_id": None,
+                            "index": None,
+                            "action": "split",
+                            "start_frame": None,
+                            "end_frame": None,
+                            "frame": 5,
+                            "reason": "split transition",
+                            "source": "test",
+                        },
+                    )()
+                )
+                split = read_canonical_segments("motion_a_raw")
+                cli._cmd_canonical_action(
+                    type(
+                        "Args",
+                        (),
+                        {
+                            "motion_version_id": "motion_a_raw",
+                            "segment_id": split[0].segment_id,
+                            "motion_id": None,
+                            "index": None,
+                            "action": "delete",
+                            "start_frame": None,
+                            "end_frame": None,
+                            "frame": None,
+                            "reason": "remove bad child",
+                            "source": "test",
+                        },
+                    )()
+                )
+                deleted = read_canonical_segments("motion_a_raw")
+                active_files = sorted(path.name for path in (root / "segments").glob("motion_a_raw*.jsonl"))
+                history_events = read_jsonl(canonical_history_event_path("motion_a_raw"))
+
+        self.assertEqual((trimmed[0].start_frame, trimmed[0].end_frame), (2, 8))
+        self.assertEqual(len(split), 2)
+        self.assertEqual(len(deleted), 1)
+        self.assertEqual(active_files, ["motion_a_raw.jsonl"])
+        self.assertIn("trim", [event["kind"] for event in history_events])
+        self.assertIn("split", [event["kind"] for event in history_events])
+        self.assertIn("delete", [event["kind"] for event in history_events])
+
     def test_cutter_update_canonical_writes_back_to_segment_index(self) -> None:
         segment = SegmentRecord(
             motion_id="motion_a",

@@ -274,6 +274,42 @@ def _cmd_mark_segment_status(args: argparse.Namespace) -> None:
     print(f"canonical segments={len(segments)}")
 
 
+def _cmd_canonical_action(args: argparse.Namespace) -> None:
+    ensure_data_dirs()
+    segments = read_canonical_segments(args.motion_version_id)
+    selected = select_segment(
+        segments,
+        motion_id=args.motion_id,
+        segment_id=args.segment_id,
+        index=args.index,
+    )
+    if args.action == "trim":
+        if args.start_frame is None or args.end_frame is None:
+            raise ValueError("trim requires --start-frame and --end-frame")
+        replacements = [trim_segment(selected, start_frame=args.start_frame, end_frame=args.end_frame)]
+    elif args.action == "split":
+        if args.frame is None:
+            raise ValueError("split requires --frame")
+        replacements = list(split_segment(selected, frame=args.frame))
+    elif args.action == "delete":
+        replacements = []
+    else:
+        raise ValueError(f"unsupported canonical action: {args.action}")
+    updated = replace_segment(segments, selected.segment_id, replacements)
+    out = replace_canonical_segments(
+        args.motion_version_id,
+        updated,
+        reason=args.reason or f"{args.action} {selected.segment_id}",
+        source=args.source,
+        kind=args.action,
+    )
+    print(
+        f"{args.action}: motion_version={args.motion_version_id} "
+        f"selected={selected.segment_id} replacements={','.join(segment.segment_id for segment in replacements) or '<deleted>'}"
+    )
+    print(f"updated canonical segmentation {out}")
+
+
 def _cmd_build_token_catalog(args: argparse.Namespace) -> None:
     segments = read_canonical_segments(args.motion_version_id)
     tokens = build_tokens_from_segments(args.motion_version_id, segments)
@@ -765,6 +801,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--source", default="mark_segment_status")
     p.add_argument("--status-by-file", default=None)
     p.set_defaults(func=_cmd_mark_segment_status)
+
+    p = sub.add_parser("canonical-action")
+    p.add_argument("--motion-version-id", required=True)
+    p.add_argument("--segment-id", default=None)
+    p.add_argument("--motion-id", default=None)
+    p.add_argument("--index", type=int, default=None)
+    p.add_argument("--action", required=True, choices=("trim", "split", "delete"))
+    p.add_argument("--start-frame", type=int, default=None)
+    p.add_argument("--end-frame", type=int, default=None)
+    p.add_argument("--frame", type=int, default=None)
+    p.add_argument("--reason", default=None)
+    p.add_argument("--source", default="canonical_action")
+    p.set_defaults(func=_cmd_canonical_action)
 
     p = sub.add_parser("build-token-catalog")
     p.add_argument("--motion-version-id", required=True)
