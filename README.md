@@ -150,6 +150,41 @@ Legacy `data/layers/{candidates,manual,accepted,rejected}` paths remain for comp
 
 Split `.npz` files are export caches only. `export-split-npz` reads canonical segments and materializes clips for downstream training/export; those clips are safe to delete and regenerate.
 
+## LTE Fullbody Generation
+
+The main generation entry is:
+
+```bash
+~/motion_edit/motion-edit generate-lte-augmentation \
+  --mode lte_fullbody \
+  --fullbody-solver ik_subprocess \
+  --plan data/workbench/climb00_edits.json \
+  --output-motion data/motions/generated/climb00_augmented.npz
+```
+
+The default `ik_subprocess` solver keeps the stable production path: contact
+edits are converted into LTE task-space keypoints, then the external fullbody IK
+subprocess writes joint arrays for the final motion.
+
+An advanced experimental solver is also available:
+
+```bash
+~/motion_edit/motion-edit generate-lte-augmentation \
+  --mode lte_fullbody \
+  --fullbody-solver batch_contact_laplacian \
+  --mesh-laplacian-weight 5 \
+  --plan data/workbench/climb00_edits.json \
+  --output-motion data/motions/generated/climb00_batch_augmented.npz
+```
+
+This path runs `ContactEditPlan -> body-space batch contact-Laplacian proxy ->
+fullbody IK subprocess -> final motion`. It uses semantic `body_pos_w` points as
+the optimization variables, so it is not true q-space contact-Laplacian yet. The
+proxy solve improves contact/task-space propagation before IK, and the final
+output combines refined `body_pos_w` with IK `joint_pos`. For diagnostics only,
+pass `--contact-laplacian-proxy-only` to write the body-space proxy without
+running IK; that output is not guaranteed to be joint consistent.
+
 ## Legacy Layer Policy
 
 - `manual/original`: imported hand-made cutter cuts.

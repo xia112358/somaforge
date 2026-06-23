@@ -697,28 +697,107 @@ class ContactEditPlanTests(unittest.TestCase):
         self.assertFalse((root / "out.npz").exists())
         self.assertIn("batch contact-Laplacian", "\n".join(result.warnings or []))
 
-    def test_batch_backend_writes_experimental_proxy_motion(self) -> None:
+    def test_batch_contact_laplacian_proxy_only_writes_proxy_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _motion, plan = _write_fullbody_lte_source(root)
             output = root / "out.npz"
-            result = apply_contact_edit_plan_to_motion(
-                plan,
-                output_motion_path=output,
-                mode="lte_fullbody",
-                fullbody_solver="batch_contact_laplacian",
-                mesh_laplacian_weight=1.0,
-                contact_laplacian_trust=1.0,
-                layers_root=root / "layers",
-            )
+            with mock.patch("motion_edit.generation.lte_fullbody.subprocess.run") as run_mock:
+                result = apply_contact_edit_plan_to_motion(
+                    plan,
+                    output_motion_path=output,
+                    mode="lte_fullbody",
+                    fullbody_solver="batch_contact_laplacian",
+                    mesh_laplacian_weight=1.0,
+                    contact_laplacian_trust=1.0,
+                    contact_laplacian_proxy_only=True,
+                    layers_root=root / "layers",
+                )
             generated = np.load(output, allow_pickle=True)
             metadata = json.loads(generated["motion_edit_generation_metadata"].item())
 
         self.assertEqual(result.output_motion_path, output)
         self.assertIn("body_pos_w", generated.files)
         self.assertIn("experimental body_pos_w proxy", "\n".join(result.warnings or []))
+        run_mock.assert_not_called()
         self.assertEqual(metadata["fullbody_solver"], "batch_contact_laplacian")
         self.assertEqual(metadata["proxy_kinematics"], "body_pos_w_semantic_points")
+        self.assertEqual(metadata["output_kind"], "bodyspace_proxy_only")
+
+    def test_batch_contact_laplacian_runs_ik_after_proxy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _motion, plan = _write_fullbody_lte_source(root)
+            output = root / "out.npz"
+            intermediate = root / "intermediate"
+
+            def fake_run(cmd, cwd=None, check=False):
+                ik_out = Path(cmd[cmd.index("--out") + 1])
+                np.savez(
+                    ik_out,
+                    joint_pos=np.full((8, 10), 7.0, dtype=np.float32),
+                    joint_vel=np.full((8, 10), 3.0, dtype=np.float32),
+                    joint_names=np.asarray(["j0", "j1"], dtype=object),
+                    is_qpos=np.asarray(True),
+                )
+                return mock.Mock(returncode=0)
+
+            with mock.patch("motion_edit.generation.lte_fullbody.subprocess.run", side_effect=fake_run) as run_mock:
+                result = apply_contact_edit_plan_to_motion(
+                    plan,
+                    output_motion_path=output,
+                    mode="lte_fullbody",
+                    fullbody_solver="batch_contact_laplacian",
+                    mesh_laplacian_weight=1.0,
+                    contact_laplacian_trust=1.0,
+                    output_segment_layer="candidates/batch_generated",
+                    intermediate_dir=intermediate,
+                    layers_root=root / "layers",
+                )
+            generated = np.load(output, allow_pickle=True)
+            metadata = json.loads(generated["motion_edit_generation_metadata"].item())
+            segments = read_layer(
+                root / "layers" / "candidates" / "batch_generated" / "motion_a.jsonl",
+                default_source="lte_fullbody",
+                default_status="candidate",
+            )
+
+            self.assertEqual(result.output_motion_path, output)
+            self.assertTrue((intermediate / "out.contact_laplacian_keypoints.npz").exists())
+            self.assertTrue((intermediate / "out.contact_laplacian_taskspace_motion.npz").exists())
+            self.assertTrue((intermediate / "out.contact_laplacian_fullbody_ik_motion.npz").exists())
+            run_mock.assert_called_once()
+            np.testing.assert_allclose(generated["joint_pos"], 7.0)
+            self.assertIn("body_pos_w", generated.files)
+            self.assertEqual(metadata["output_kind"], "fullbody_ik_after_contact_laplacian_proxy")
+            self.assertEqual(metadata["fullbody_solver"], "batch_contact_laplacian")
+            self.assertIn("solver_metadata", metadata)
+            self.assertIn("interaction_mesh", metadata["solver_metadata"])
+            self.assertIn("evaluation_summary", metadata)
+            self.assertTrue(segments)
+            self.assertTrue(all(segment.source == "lte_fullbody" for segment in segments))
+            self.assertTrue(all(segment.metadata.get("fullbody_solver") == "batch_contact_laplacian" for segment in segments))
+            self.assertFalse(any(segment.metadata.get("cut_source") == "lte_windowed" for segment in segments))
+
+    def test_batch_contact_laplacian_missing_ik_joint_pos_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _motion, plan = _write_fullbody_lte_source(root)
+
+            def fake_run(cmd, cwd=None, check=False):
+                ik_out = Path(cmd[cmd.index("--out") + 1])
+                np.savez(ik_out, joint_vel=np.zeros((8, 2), dtype=np.float32))
+                return mock.Mock(returncode=0)
+
+            with mock.patch("motion_edit.generation.lte_fullbody.subprocess.run", side_effect=fake_run):
+                with self.assertRaisesRegex(ValueError, "missing required joint_pos"):
+                    apply_contact_edit_plan_to_motion(
+                        plan,
+                        output_motion_path=root / "out.npz",
+                        mode="lte_fullbody",
+                        fullbody_solver="batch_contact_laplacian",
+                        layers_root=root / "layers",
+                    )
 
     def test_generate_lte_augmentation_can_register_motion_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

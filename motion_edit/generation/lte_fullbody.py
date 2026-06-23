@@ -574,6 +574,13 @@ def _batch_contact_laplacian_proxy_motion(
         name: result.q.reshape(q_init.shape[0], len(provider.point_names), 3)[:, index, :]
         for index, name in enumerate(provider.point_names)
     }
+    evaluation = _contact_laplacian_evaluation_summary(
+        q_before=q_init,
+        q_after=result.q,
+        provider=provider,
+        handles=handles,
+        semantic_points=tuple(provider.point_names),
+    )
     edited_keypoints = _merge_solver_keypoints(original_keypoints, edited_solver)
     arrays = _dense_taskspace_from_keypoints(motion, original_keypoints, edited_keypoints, source_motion, source_motion.with_suffix(".batch_contact_laplacian_proxy.npz"))
     warnings = [
@@ -593,6 +600,7 @@ def _batch_contact_laplacian_proxy_motion(
         "fixed_contact_handle_count": sum(1 for handle in handles if handle.kind == "fixed_contact"),
         "contact_laplacian_config": config.__dict__,
         "solver_metadata": result.metadata,
+        "evaluation_summary": evaluation,
         "warnings": warnings,
         "edits": [edit.to_dict() for edit in edits],
     }
@@ -603,6 +611,110 @@ def _batch_contact_laplacian_proxy_motion(
         if key in motion:
             arrays[key] = np.asarray(motion[key])
     return arrays, warnings, metadata
+
+
+def _contact_laplacian_evaluation_summary(
+    *,
+    q_before: np.ndarray,
+    q_after: np.ndarray,
+    provider: BodyPositionTrajectoryKinematicsProvider,
+    handles: list[ContactHandleSpec],
+    semantic_points: tuple[str, ...],
+) -> dict[str, Any]:
+    edited_before: list[float] = []
+    edited_after: list[float] = []
+    fixed_drift: list[float] = []
+    for handle in handles:
+        frames = np.asarray(handle.frames, dtype=np.int64)
+        target = np.asarray(handle.target_xyz, dtype=np.float64)
+        before = np.asarray([provider.fk_points(q_before[int(frame)], [handle.semantic_name])[0] for frame in frames], dtype=np.float64)
+        after = np.asarray([provider.fk_points(q_after[int(frame)], [handle.semantic_name])[0] for frame in frames], dtype=np.float64)
+        if handle.kind == "edited_contact":
+            edited_before.extend(np.linalg.norm(target - before, axis=1).tolist())
+            edited_after.extend(np.linalg.norm(target - after, axis=1).tolist())
+        elif handle.kind == "fixed_contact":
+            fixed_drift.extend(np.linalg.norm(after - before, axis=1).tolist())
+    before_points = q_before.reshape(q_before.shape[0], len(semantic_points), 3)
+    after_points = q_after.reshape(q_after.shape[0], len(semantic_points), 3)
+    deltas = np.linalg.norm(after_points - before_points, axis=2)
+    return {
+        "edited_contact_target_error_before": _stats(edited_before),
+        "edited_contact_target_error_after": _stats(edited_after),
+        "fixed_contact_drift_max": float(max(fixed_drift)) if fixed_drift else 0.0,
+        "fixed_contact_drift_mean": float(np.mean(fixed_drift)) if fixed_drift else 0.0,
+        "body_pos_delta_max_by_semantic": {
+            name: float(np.max(deltas[:, index])) for index, name in enumerate(semantic_points)
+        },
+    }
+
+
+def _stats(values: list[float]) -> dict[str, float]:
+    if not values:
+        return {"mean": 0.0, "max": 0.0}
+    arr = np.asarray(values, dtype=np.float64)
+    return {"mean": float(np.mean(arr)), "max": float(np.max(arr))}
+
+
+def _write_contact_laplacian_intermediates(
+    *,
+    out: Path,
+    intermediate_dir: str | Path | None,
+    proxy_taskspace: dict[str, Any],
+    metadata: dict[str, Any],
+) -> tuple[Path, Path, Path]:
+    work_dir = Path(intermediate_dir).expanduser() if intermediate_dir is not None else out.with_suffix("")
+    work_dir.mkdir(parents=True, exist_ok=True)
+    lte_path = work_dir / f"{out.stem}.contact_laplacian_keypoints.npz"
+    taskspace_path = work_dir / f"{out.stem}.contact_laplacian_taskspace_motion.npz"
+    ik_path = work_dir / f"{out.stem}.contact_laplacian_fullbody_ik_motion.npz"
+    keypoint_arrays = {
+        key[len("keypoint_") :]: np.asarray(value)
+        for key, value in proxy_taskspace.items()
+        if key.startswith("keypoint_")
+    }
+    source_motion = Path(str(metadata.get("source_motion", out)))
+    edits = [ContactAnchorEditRecord(**raw) for raw in metadata.get("edits", [])]
+    motion_for_masks = {key: value for key, value in proxy_taskspace.items()}
+    _save_lte_keypoints(lte_path, keypoints=keypoint_arrays, motion=motion_for_masks, source_motion=source_motion, edits=edits, graph=None)
+    taskspace_payload = dict(proxy_taskspace)
+    taskspace_payload["algorithm"] = np.asarray("motion_edit_batch_contact_laplacian_taskspace")
+    np.savez(taskspace_path, **taskspace_payload)
+    return lte_path, taskspace_path, ik_path
+
+
+def _merge_contact_laplacian_ik_output(
+    *,
+    proxy_taskspace: dict[str, Any],
+    ik_motion: dict[str, Any],
+    metadata: dict[str, Any],
+    lte_path: Path,
+    taskspace_path: Path,
+    ik_path: Path,
+    ik_conda_env: str,
+    ik_script: str | Path | None,
+    lte_repo_root: str | Path | None,
+) -> dict[str, Any]:
+    if "joint_pos" not in ik_motion:
+        raise ValueError(f"batch_contact_laplacian IK output missing required joint_pos: {ik_path}")
+    generated = dict(proxy_taskspace)
+    for key in ("joint_pos", "joint_vel", "joint_names", "is_qpos"):
+        if key in ik_motion:
+            generated[key] = ik_motion[key]
+    final_metadata = {
+        **metadata,
+        "output_kind": "fullbody_ik_after_contact_laplacian_proxy",
+        "joint_consistency": "fullbody_ik_subprocess",
+        "contact_laplacian_keypoints": str(lte_path),
+        "contact_laplacian_taskspace_motion": str(taskspace_path),
+        "contact_laplacian_fullbody_ik_motion": str(ik_path),
+        "ik_conda_env": ik_conda_env,
+        "ik_script": str(Path(ik_script).expanduser()) if ik_script else str((Path(lte_repo_root or "/home/xiaz/lte").expanduser() / "scripts" / "solve_lte_fullbody_ik.py")),
+    }
+    warnings = list(final_metadata.get("warnings", []))
+    warnings.append("batch_contact_laplacian ran fullbody IK after body-space proxy solve")
+    final_metadata["warnings"] = warnings
+    generated["motion_edit_generation_metadata"] = _json_npz_value(final_metadata)
+    return generated
 
 
 def _contact_laplacian_handles_from_edits(
@@ -815,6 +927,7 @@ def _candidate_segments_from_graph(
     motion_version_id: str | None,
     plan_id: str,
     source: str,
+    fullbody_solver: str | None = None,
 ) -> list[SegmentRecord]:
     if graph.transitions:
         segments = segments_from_contact_transitions(
@@ -831,6 +944,8 @@ def _candidate_segments_from_graph(
     for segment in segments:
         meta = dict(segment.metadata)
         meta["source_contact_edit_plan"] = plan_id
+        if fullbody_solver is not None:
+            meta["fullbody_solver"] = fullbody_solver
         output.append(replace(segment, motion_id=graph.motion_id, metadata=meta))
     return output
 
@@ -867,6 +982,7 @@ def apply_contact_edit_plan_to_motion(
     q_prior_weight: float = 1.0,
     q_smooth_weight: float = 1.0,
     mesh_laplacian_weight: float = 0.0,
+    contact_laplacian_proxy_only: bool = False,
     lte_repo_root: str | Path | None = None,
     ik_script: str | Path | None = None,
     ik_conda_env: str = "env_pyroki_climb_projection",
@@ -925,6 +1041,46 @@ def apply_contact_edit_plan_to_motion(
                 source_plan_path=source_plan_path,
                 plan=plan,
             )
+            if contact_laplacian_proxy_only:
+                proxy_metadata = json.loads(generated["motion_edit_generation_metadata"].item())
+                proxy_metadata["output_kind"] = "bodyspace_proxy_only"
+                proxy_metadata["joint_consistency"] = "not guaranteed"
+                proxy_warnings = list(proxy_metadata.get("warnings", []))
+                proxy_warnings.append("contact-Laplacian proxy-only output is not q/joint consistent")
+                proxy_metadata["warnings"] = proxy_warnings
+                generated["motion_edit_generation_metadata"] = _json_npz_value(proxy_metadata)
+                warnings = proxy_warnings
+            else:
+                proxy_metadata = json.loads(generated["motion_edit_generation_metadata"].item())
+                lte_path, taskspace_path, ik_path = _write_contact_laplacian_intermediates(
+                    out=out,
+                    intermediate_dir=intermediate_dir,
+                    proxy_taskspace=generated,
+                    metadata=proxy_metadata,
+                )
+                _run_fullbody_ik_subprocess(
+                    lte_path=lte_path,
+                    ik_output_path=ik_path,
+                    lte_repo_root=lte_repo_root,
+                    ik_script=ik_script,
+                    ik_conda_env=ik_conda_env,
+                    ik_max_nfev=ik_max_nfev,
+                )
+                if not ik_path.exists():
+                    raise FileNotFoundError(f"fullbody IK did not produce {ik_path}")
+                ik_motion = _load_motion_npz(ik_path)
+                generated = _merge_contact_laplacian_ik_output(
+                    proxy_taskspace=generated,
+                    ik_motion=ik_motion,
+                    metadata=proxy_metadata,
+                    lte_path=lte_path,
+                    taskspace_path=taskspace_path,
+                    ik_path=ik_path,
+                    ik_conda_env=ik_conda_env,
+                    ik_script=ik_script,
+                    lte_repo_root=lte_repo_root,
+                )
+                warnings = json.loads(generated["motion_edit_generation_metadata"].item()).get("warnings", warnings)
             out.parent.mkdir(parents=True, exist_ok=True)
             np.savez(out, **generated)
             edited_graph = _apply_anchor_edits_to_graph(graph, edits)
@@ -937,6 +1093,7 @@ def apply_contact_edit_plan_to_motion(
                     motion_version_id=output_motion_version_id,
                     plan_id=plan.plan_id,
                     source=mode,
+                    fullbody_solver=fullbody_solver,
                 )
                 write_layer(layers_root / output_segment_layer / f"{edited_graph.motion_id}.jsonl", segments)
             if register_motion_version:
@@ -1046,6 +1203,7 @@ def apply_contact_edit_plan_to_motion(
                 motion_version_id=output_motion_version_id,
                 plan_id=plan.plan_id,
                 source=mode,
+                fullbody_solver=fullbody_solver,
             )
             write_layer(layers_root / output_segment_layer / f"{edited_graph.motion_id}.jsonl", segments)
         if register_motion_version:
@@ -1059,7 +1217,7 @@ def apply_contact_edit_plan_to_motion(
                     base_motion_id=plan.source_motion_id,
                     contact_layer=output_contact_layer,
                     edit_plan_id=plan.plan_id,
-                    metadata={"source_contact_edit_plan": plan.plan_id, "generation_mode": mode},
+                    metadata={"source_contact_edit_plan": plan.plan_id, "generation_mode": mode, "fullbody_solver": fullbody_solver},
                 )
             )
         return LteGenerationResult(

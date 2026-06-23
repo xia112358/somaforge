@@ -807,6 +807,7 @@ def _cmd_generate_lte_augmentation(args: argparse.Namespace) -> None:
         q_prior_weight=args.q_prior_weight,
         q_smooth_weight=args.q_smooth_weight,
         mesh_laplacian_weight=args.mesh_laplacian_weight,
+        contact_laplacian_proxy_only=args.contact_laplacian_proxy_only,
         lte_repo_root=args.lte_repo_root,
         ik_script=args.ik_script,
         ik_conda_env=args.ik_conda_env,
@@ -1619,6 +1620,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--q-prior-weight", type=float, default=1.0)
     p.add_argument("--q-smooth-weight", type=float, default=1.0)
     p.add_argument("--mesh-laplacian-weight", type=float, default=0.0)
+    p.add_argument("--contact-laplacian-proxy-only", action="store_true", help="[debug] write only the body-space contact-Laplacian proxy output; do not run IK")
     p.add_argument("--falloff-before", type=int, default=20)
     p.add_argument("--falloff-after", type=int, default=20)
     p.add_argument("--global-weight", type=float, default=0.35)
