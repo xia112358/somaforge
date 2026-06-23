@@ -22,6 +22,7 @@ from motion_edit.paths import LAYERS_ROOT, MOTIONS_ROOT, WORKBENCH_ROOT
 from motion_edit.storage.io import read_motion_asset
 from motion_edit.viewer.contact_timeline import start_contact_timeline_wrapper
 from motion_edit.workbench import (
+    coalesce_pending_surface_edits,
     move_surface_editor_anchor,
     read_pending_surface_edits,
     read_surface_editor_graph,
@@ -582,6 +583,7 @@ class ContactEditorShellController:
     current: SurfaceEditorController | None = None
     state: _ShellState | SurfaceOverlayEditorState = field(default_factory=_ShellState)
     selected_anchor_id: str | None = None
+    load_recent_callback: Any = None
 
     def set_current(self, controller: SurfaceEditorController) -> None:
         self.current = controller
@@ -620,6 +622,7 @@ class ContactEditorShellController:
             self.state.last_error = "load a motion before selecting anchors"
             return None
         result = self.current.select_anchor(anchor_id)
+        self.state = self.current.state
         self.selected_anchor_id = self.current.selected_anchor_id
         return result
 
@@ -627,19 +630,33 @@ class ContactEditorShellController:
         if self.current is None:
             self.state.last_error = "load a motion before saving"
             return None
-        return self.current.save()
+        result = self.current.save()
+        self.state = self.current.state
+        return result
 
     def discard(self) -> None:
         if self.current is None:
             self.state.last_error = "load a motion before discarding"
             return
         self.current.discard()
+        self.state = self.current.state
 
     def open_recent_motion(self, index: int) -> None:
         if self.current is None:
+            items = read_recent_motions()
+            if index < 0 or index >= len(items):
+                self.state.last_error = f"recent motion index out of range: {index}"
+                return
+            if callable(self.load_recent_callback):
+                self.load_recent_callback(items[index])
+                if self.current is not None:
+                    self.state = self.current.state
+                    self.selected_anchor_id = self.current.selected_anchor_id
+                return
             self.state.last_error = "load a motion before switching recent motions"
             return
         self.current.open_recent_motion(index)
+        self.state = self.current.state
         self.selected_anchor_id = self.current.selected_anchor_id
 
     def open_latest_motion(self) -> None:
@@ -650,6 +667,7 @@ class ContactEditorShellController:
             self.state.last_error = "load a motion before reloading"
             return
         self.current.reload_current_motion()
+        self.state = self.current.state
         self.selected_anchor_id = self.current.selected_anchor_id
 
 
@@ -784,7 +802,7 @@ def _write_session_edits_to_plan(session: SurfaceEditorSession) -> Path:
         )
     existing_edits = list(plan.edits)
     edit_index = {str(edit.get("edit_id")): index for index, edit in enumerate(existing_edits) if edit.get("edit_id")}
-    for edit in read_pending_surface_edits(session):
+    for edit in coalesce_pending_surface_edits(session):
         metadata = dict(edit.metadata)
         metadata.update(
             {
@@ -2270,7 +2288,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
             fps=int(fps_hint or motion_fps),
             robot_urdf=robot_urdf,
             object_urdf=object_urdf,
-            show_gui=True,
+            show_gui=False,
         )
         motion_handles.extend(playback_handles)
         motion_handles.extend(_add_motion_root_path(server, qpos))
@@ -2314,30 +2332,8 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
         status.value = text
         print(f"[contact editor setup] {text}")
 
-    def _start_loaded_editor() -> None:
-        _set_status("loading contact editor: validating inputs...")
-        if not str(motion.value).strip():
-            raise ValueError("motion_npz is required")
-        if not str(motion_id.value).strip():
-            raise ValueError("motion_id is required")
-        if not str(source_contact_layer.value).strip():
-            raise ValueError("source_contact_layer is required")
+    def _load_config(config: ContactEditorConfig) -> None:
         _set_status("loading contact editor: preparing session and overlays...")
-        config = ContactEditorConfig(
-            motion=str(motion.value).strip(),
-            motion_id=str(motion_id.value).strip(),
-            source_contact_layer=str(source_contact_layer.value).strip(),
-            session_name=str(session_name.value).strip() or "contact_editor",
-            surface_catalog=str(surface_catalog.value).strip() or None,
-            terrain_urdf=str(terrain_urdf.value).strip() or None,
-            output_prefix=str(output_prefix.value).strip() or None,
-            edit_plan=str(edit_plan.value).strip() or None,
-            output_contact_layer=str(output_contact_layer.value).strip() or None,
-            repo_root=str(repo_root.value).strip() or None,
-            with_terrain=bool(with_terrain.value),
-            bind_mode=str(default_mode.value),
-            fps=int(args.fps),
-        )
         next_state, prepared, terrain_urdf_for_viewer = _prepared_state_from_config(config)
         repo_path = Path(config.repo_root).expanduser() if config.repo_root else Path("/home/xiaz/holosoma_isaaclab3_newton")
         robot_urdf = repo_path / "OmniRetarget_Dataset/models/g1/g1_29dof_spherehand.urdf"
@@ -2383,6 +2379,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
             controller.state.last_message = f"loaded motion: {Path(next_config.motion).name}"
             controller.state.last_error = None
             controller.reload_overlay()
+            shell_controller.set_current(controller)
             upsert_recent_motion(entry)
             if callable(controller.on_change):
                 controller.on_change()
@@ -2414,6 +2411,32 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
             "[contact editor] loaded in-process "
             f"motion={config.motion} anchors={prepared.ready_anchor_count} "
             f"user_url=http://localhost:{shell_port} internal_viser=http://localhost:{viewer_port}"
+        )
+
+    def _start_loaded_editor() -> None:
+        _set_status("loading contact editor: validating inputs...")
+        if not str(motion.value).strip():
+            raise ValueError("motion_npz is required")
+        if not str(motion_id.value).strip():
+            raise ValueError("motion_id is required")
+        if not str(source_contact_layer.value).strip():
+            raise ValueError("source_contact_layer is required")
+        _load_config(
+            ContactEditorConfig(
+                motion=str(motion.value).strip(),
+                motion_id=str(motion_id.value).strip(),
+                source_contact_layer=str(source_contact_layer.value).strip(),
+                session_name=str(session_name.value).strip() or "contact_editor",
+                surface_catalog=str(surface_catalog.value).strip() or None,
+                terrain_urdf=str(terrain_urdf.value).strip() or None,
+                output_prefix=str(output_prefix.value).strip() or None,
+                edit_plan=str(edit_plan.value).strip() or None,
+                output_contact_layer=str(output_contact_layer.value).strip() or None,
+                repo_root=str(repo_root.value).strip() or None,
+                with_terrain=bool(with_terrain.value),
+                bind_mode=str(default_mode.value),
+                fps=int(args.fps),
+            )
         )
 
     def _apply_selected_load_file(selected_type: str, selected_path: Path) -> None:
@@ -2508,6 +2531,8 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
         except Exception as exc:
             print(f"[contact editor setup] Load failed: {exc}", file=sys.stderr)
             _set_status(f"Load failed: {exc}")
+
+    shell_controller.load_recent_callback = lambda entry: _load_config(_contact_editor_config_from_recent_entry(entry))
 
     print(f"[contact editor setup] Open Contact Editor: http://localhost:{shell_port}")
     print(f"[contact editor setup] internal Viser iframe: http://localhost:{viewer_port}")

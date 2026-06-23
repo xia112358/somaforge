@@ -65,6 +65,7 @@ from motion_edit.viewer.surface_overlay_player import (
     _setup_load_suffixes,
     append_move_request,
     apply_direct_anchor_move,
+    ContactEditorShellController,
     load_editor_state,
     load_surface_overlay,
     save_editor_state,
@@ -1094,6 +1095,97 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertEqual(plan.status, "validated")
         self.assertEqual(len(plan.edits), 1)
         self.assertFalse((root / "layers" / "contact" / "edited").exists())
+
+    def test_validate_session_plan_coalesces_repeated_anchor_moves_to_final_delta(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True], [True], [False]]),
+                body_pos_w=np.zeros((3, 1, 3), dtype=np.float32),
+                body_names=["LF"],
+            )
+            anchor = graph.anchors[0]
+            bound_anchor = type(anchor)(
+                **{
+                    **anchor.__dict__,
+                    "world_position": [0.0, 0.0, 0.0],
+                    "surface_id": "top",
+                    "surface_normal": [0.0, 0.0, 1.0],
+                    "surface_origin": [0.0, 0.0, 0.0],
+                    "surface_tangent_u": [1.0, 0.0, 0.0],
+                    "surface_tangent_v": [0.0, 1.0, 0.0],
+                    "surface_bounds": {"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+                    "surface_coordinates": {"u": 0.0, "v": 0.0},
+                }
+            )
+            graph = type(graph)(motion_id=graph.motion_id, events=graph.events, anchors=[bound_anchor], patches=graph.patches, transitions=graph.transitions)
+            write_contact_layer(root / "layers" / "contact" / "bound", graph)
+            plan_path = root / "plan.json"
+            session = prepare_surface_editor_session(
+                motion_path=str(root / "motion_a.npz"),
+                motion_id="motion_a",
+                contact_layer="contact/bound",
+                surface_catalog=None,
+                session_name="validate_coalesce",
+                edit_plan_path=str(plan_path),
+                output_contact_layer=None,
+                layers_root=root / "layers",
+                workbench_root=root / "workbench",
+            )
+            move_surface_editor_anchor(session, anchor_id=anchor.anchor_id, tangent_delta=[0.1, 0.0], mode="reject")
+            move_surface_editor_anchor(session, anchor_id=anchor.anchor_id, tangent_delta=[0.2, 0.3], mode="reject")
+
+            plan_path, warnings = _validate_session_plan(session, layers_root=root / "layers")
+            plan = read_contact_edit_plan(plan_path)
+
+        self.assertEqual(warnings, [])
+        self.assertEqual(len(plan.edits), 1)
+        edit = plan.edits[0]
+        np.testing.assert_allclose(edit["old_world_position"], [0.0, 0.0, 0.0])
+        np.testing.assert_allclose(edit["new_world_position"], [0.3, 0.3, 0.0])
+        np.testing.assert_allclose(edit["delta_world"], [0.3, 0.3, 0.0])
+        np.testing.assert_allclose(edit["tangent_delta"], [0.3, 0.3])
+        self.assertEqual(edit["metadata"]["coalesced_pending_edits"], 2)
+
+    def test_contact_editor_shell_syncs_state_after_recent_reload(self) -> None:
+        class _Current:
+            def __init__(self) -> None:
+                self.state = type("State", (), {"last_error": None, "last_message": "old"})()
+                self.selected_anchor_id = "old"
+
+            def open_recent_motion(self, index: int) -> None:
+                self.state = type("State", (), {"last_error": None, "last_message": f"new_{index}"})()
+                self.selected_anchor_id = "new"
+
+            def graph(self) -> object:
+                return object()
+
+            def pending_edits(self) -> list:
+                return []
+
+            def recent_motion_items(self) -> list:
+                return []
+
+        current = _Current()
+        shell = ContactEditorShellController(current=current)
+        shell.set_current(current)
+        shell.open_recent_motion(3)
+
+        self.assertEqual(shell.state.last_message, "new_3")
+        self.assertEqual(shell.selected_anchor_id, "new")
+
+    def test_contact_editor_shell_can_load_recent_before_controller_exists(self) -> None:
+        entry = RecentMotionEntry(label="motion", motion_path="/tmp/motion.npz", motion_id="motion", contact_layer="contact/layer")
+        loaded: list[RecentMotionEntry] = []
+        shell = ContactEditorShellController()
+        shell.load_recent_callback = loaded.append
+
+        with mock.patch("motion_edit.viewer.surface_overlay_player.read_recent_motions", return_value=[entry]):
+            shell.open_recent_motion(0)
+
+        self.assertEqual(loaded, [entry])
+        self.assertIsNone(shell.state.last_error)
 
     def test_debug_save_and_validate_still_exports_contact_layer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

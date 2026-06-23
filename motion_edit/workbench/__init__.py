@@ -10,6 +10,7 @@ from .session import WorkbenchSession
 from .surface_editor_session import (
     SurfaceEditorSession,
     append_surface_editor_request,
+    coalesce_pending_surface_edits,
     move_surface_editor_anchor,
     prepare_surface_editor_session,
     read_pending_surface_edits,
@@ -35,6 +36,7 @@ __all__ = [
     "CutterSession",
     "SurfaceEditorSession",
     "append_surface_editor_request",
+    "coalesce_pending_surface_edits",
     "curate_segment",
     "export_cutter_session_file",
     "load_workbench_segments",

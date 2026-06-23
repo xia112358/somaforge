@@ -225,6 +225,50 @@ def read_pending_surface_edits(session: SurfaceEditorSession) -> list[ContactAnc
     return [ContactAnchorEditRecord(**record) for record in records]
 
 
+def _delta3(before: list[float] | None, after: list[float] | None) -> list[float] | None:
+    if before is None or after is None:
+        return None
+    return [float(after[index]) - float(before[index]) for index in range(3)]
+
+
+def _delta_uv(before: dict | None, after: dict | None) -> list[float] | None:
+    if not before or not after or "u" not in before or "v" not in before or "u" not in after or "v" not in after:
+        return None
+    return [float(after["u"]) - float(before["u"]), float(after["v"]) - float(before["v"])]
+
+
+def coalesce_pending_surface_edits(session: SurfaceEditorSession) -> list[ContactAnchorEditRecord]:
+    """Return one final edit per anchor, from initial touched position to final position."""
+    coalesced: dict[str, ContactAnchorEditRecord] = {}
+    order: list[str] = []
+    for edit in read_pending_surface_edits(session):
+        key = edit.anchor_id
+        if key not in coalesced:
+            order.append(key)
+            coalesced[key] = edit
+            continue
+        first = coalesced[key]
+        metadata = dict(first.metadata)
+        metadata.update(edit.metadata)
+        metadata["coalesced_pending_edits"] = int(metadata.get("coalesced_pending_edits", 1)) + 1
+        old_world = first.old_world_position
+        new_world = edit.new_world_position
+        before_uv = first.surface_coordinates_before
+        after_uv = edit.surface_coordinates_after
+        coalesced[key] = replace(
+            edit,
+            old_world_position=old_world,
+            new_world_position=new_world,
+            delta_world=_delta3(old_world, new_world),
+            tangent_delta=_delta_uv(before_uv, after_uv),
+            surface_coordinates_before=before_uv,
+            surface_coordinates_after=after_uv,
+            source="viser_surface_editor",
+            metadata=metadata,
+        )
+    return [coalesced[key] for key in order]
+
+
 def append_surface_editor_request(
     session: SurfaceEditorSession,
     *,
@@ -307,7 +351,7 @@ def save_surface_editor_session(
             write_contact_surfaces(out_layer / "surfaces" / f"{session.motion_id}.jsonl", surfaces)
     plan_path = edit_plan_path or session.edit_plan_path
     if plan_path:
-        for edit in read_pending_surface_edits(session):
+        for edit in coalesce_pending_surface_edits(session):
             metadata = dict(edit.metadata)
             metadata.update(
                 {
