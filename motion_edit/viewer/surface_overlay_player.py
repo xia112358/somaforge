@@ -129,6 +129,15 @@ class ReloadablePlayback:
 
 
 @dataclass
+class GenerationJobState:
+    running: bool = False
+    last_output_motion: str | None = None
+    last_error: str | None = None
+    last_started_at: float | None = None
+    last_finished_at: float | None = None
+
+
+@dataclass
 class SurfaceOverlayEditorState:
     session_path: Path
     session: SurfaceEditorSession
@@ -1295,6 +1304,7 @@ def _add_loaded_editor_sidebar(
     playback: MotionPlaybackController | None,
 ) -> None:
     status_refs: dict[str, Any] = {}
+    generation_state = GenerationJobState()
 
     def _current_frame_text() -> str:
         if playback is None:
@@ -1330,6 +1340,16 @@ def _add_loaded_editor_sidebar(
         status = status_refs.get("status")
         if status is not None:
             status.value = controller.state.last_error or controller.state.last_message or "ready"
+        generation_info = status_refs.get("generation_info")
+        if generation_info is not None:
+            if generation_state.running:
+                generation_info.value = f"running: {generation_state.last_output_motion or ''}"
+            elif generation_state.last_error:
+                generation_info.value = f"failed: {generation_state.last_error}"
+            elif generation_state.last_output_motion:
+                generation_info.value = f"last output: {generation_state.last_output_motion}"
+            else:
+                generation_info.value = "idle"
 
     with server.gui.add_folder("Motion"):
         current_motion = server.gui.add_text("motion", initial_value=str(args.qpos_npz or ""))
@@ -1367,10 +1387,13 @@ def _add_loaded_editor_sidebar(
         validate_btn = server.gui.add_button("Validate plan")
         dry_run_btn = server.gui.add_button("Dry run fullbody LTE")
         generate_btn = server.gui.add_button("Generate fullbody LTE")
+        generation_info = server.gui.add_text("generation_status", initial_value="idle", multiline=True)
+        generation_info.disabled = True
         debug_export_btn = server.gui.add_button("Export debug ContactLayer")
         reset_btn = server.gui.add_button("Reset session")
         discard_btn = server.gui.add_button("Discard unsaved edits")
     status_refs["plan_info"] = plan_info
+    status_refs["generation_info"] = generation_info
 
     @reload_btn.on_click
     def _(_) -> None:
@@ -1402,30 +1425,40 @@ def _add_loaded_editor_sidebar(
             controller.state.last_error = str(exc)
         _refresh_info()
 
-    def _run_generation(*, dry_run: bool) -> None:
+    def _generation_inputs() -> dict[str, Any]:
         generated_motion = str(output_motion.value).strip()
-        generated_contact_layer = str(output_contact_layer.value).strip() or None
-        generated_segment_layer = str(output_segment_layer.value).strip() or None
-        generated_motion_version_id = str(output_motion_version_id.value).strip() or None
+        if not generated_motion:
+            raise ValueError("output_motion is required")
+        return {
+            "generated_motion": generated_motion,
+            "generated_contact_layer": str(output_contact_layer.value).strip() or None,
+            "generated_segment_layer": str(output_segment_layer.value).strip() or None,
+            "generated_motion_version_id": str(output_motion_version_id.value).strip() or None,
+            "intermediate_dir": str(intermediate_dir.value).strip() or None,
+            "overwrite": bool(overwrite.value),
+            "register_motion_version": bool(register_motion_version.value),
+        }
+
+    def _run_generation(*, dry_run: bool, inputs: dict[str, Any]) -> None:
         result = _generate_fullbody_lte_from_session(
             controller.state.session,
-            output_motion=generated_motion,
-            output_motion_version_id=generated_motion_version_id,
-            output_contact_layer=generated_contact_layer,
-            output_segment_layer=generated_segment_layer,
-            intermediate_dir=str(intermediate_dir.value).strip() or None,
+            output_motion=inputs["generated_motion"],
+            output_motion_version_id=inputs["generated_motion_version_id"],
+            output_contact_layer=inputs["generated_contact_layer"],
+            output_segment_layer=inputs["generated_segment_layer"],
+            intermediate_dir=inputs["intermediate_dir"],
             dry_run=dry_run,
-            overwrite=bool(overwrite.value),
-            register_motion_version=bool(register_motion_version.value),
+            overwrite=inputs["overwrite"],
+            register_motion_version=inputs["register_motion_version"],
         )
         if not dry_run:
             upsert_recent_motion(
                 _recent_entry_from_generated_session(
                     controller.state.session,
                     output_motion=str(result.output_motion_path),
-                    output_contact_layer=generated_contact_layer,
-                    output_segment_layer=generated_segment_layer,
-                    output_motion_version_id=generated_motion_version_id,
+                    output_contact_layer=inputs["generated_contact_layer"],
+                    output_segment_layer=inputs["generated_segment_layer"],
+                    output_motion_version_id=inputs["generated_motion_version_id"],
                     terrain_urdf=controller.terrain_urdf,
                 )
             )
@@ -1433,22 +1466,58 @@ def _add_loaded_editor_sidebar(
         warning_suffix = f" warnings={len(result.warnings or [])}" if result.warnings else ""
         _set_status(f"{action}: {result.output_motion_path}{warning_suffix}")
         plan_info.value = _session_plan_summary(controller.state.session)
+        generation_state.last_output_motion = str(result.output_motion_path)
+        generation_state.last_error = None
+
+    def _start_generation(*, dry_run: bool) -> None:
+        if generation_state.running:
+            controller.state.last_error = "generation already running"
+            print("[surface editor] generation already running")
+            _refresh_info()
+            return
+        try:
+            inputs = _generation_inputs()
+        except Exception as exc:
+            controller.state.last_error = str(exc)
+            print(f"[surface editor] generation setup failed: {exc}")
+            _refresh_info()
+            return
+        action = "dry-run fullbody LTE" if dry_run else "generate fullbody LTE"
+        generation_state.running = True
+        generation_state.last_error = None
+        generation_state.last_output_motion = inputs["generated_motion"]
+        generation_state.last_started_at = time.time()
+        controller.state.last_error = None
+        _set_status(f"{action} started: {inputs['generated_motion']}")
+        _refresh_info()
+
+        def _worker() -> None:
+            try:
+                print(
+                    "[surface editor] "
+                    f"{action} worker started output={inputs['generated_motion']} "
+                    f"plan={controller.state.session.edit_plan_path}"
+                )
+                _run_generation(dry_run=dry_run, inputs=inputs)
+                print(f"[surface editor] {action} worker finished output={inputs['generated_motion']}")
+            except Exception as exc:
+                generation_state.last_error = str(exc)
+                controller.state.last_error = f"{action} failed: {exc}"
+                print(f"[surface editor] {action} failed: {exc}")
+            finally:
+                generation_state.running = False
+                generation_state.last_finished_at = time.time()
+                _refresh_info()
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     @dry_run_btn.on_click
     def _(_) -> None:
-        try:
-            _run_generation(dry_run=True)
-        except Exception as exc:
-            controller.state.last_error = str(exc)
-        _refresh_info()
+        _start_generation(dry_run=True)
 
     @generate_btn.on_click
     def _(_) -> None:
-        try:
-            _run_generation(dry_run=False)
-        except Exception as exc:
-            controller.state.last_error = str(exc)
-        _refresh_info()
+        _start_generation(dry_run=False)
 
     @discard_btn.on_click
     def _(_) -> None:
