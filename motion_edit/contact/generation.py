@@ -401,20 +401,53 @@ def _save_lte_keypoints(path: Path, *, keypoints: dict[str, np.ndarray], motion:
 
 
 def _foot_orientation_target_arrays(motion: dict[str, Any], n_frames: int) -> dict[str, np.ndarray]:
-    if "body_quat_w" not in motion:
+    if "body_quat_w" not in motion or "joint_pos" not in motion:
         return {}
     names = _motion_strings(motion, ("body_names", "body_name", "body_pos_w_names", "body_pos_names"))
     if not names:
         return {}
     body_quat = np.asarray(motion["body_quat_w"], dtype=np.float64)
+    joint_pos = np.asarray(motion["joint_pos"], dtype=np.float64)
     if body_quat.ndim != 3 or body_quat.shape[2] != 4:
         return {}
+    if joint_pos.ndim != 2 or joint_pos.shape[1] < 7:
+        return {}
+    root_quat = _normalize_quat_wxyz(joint_pos[:n_frames, 3:7])
     out: dict[str, np.ndarray] = {}
     for foot_name, link_name in (("left_foot", "left_ankle_roll_link"), ("right_foot", "right_ankle_roll_link")):
         index = _index_by_alias_or_none(names, (link_name, f"{foot_name}_contact_point"))
         if index is not None:
-            out[f"orientation_target_{foot_name}"] = body_quat[:n_frames, index, :4].copy()
+            foot_world = _normalize_quat_wxyz(body_quat[:n_frames, index, :4])
+            out[f"orientation_target_{foot_name}"] = _quat_mul_wxyz(_quat_conj_wxyz(root_quat), foot_world)
     return out
+
+
+def _normalize_quat_wxyz(quat: np.ndarray) -> np.ndarray:
+    q = np.asarray(quat, dtype=np.float64).copy()
+    norm = np.linalg.norm(q, axis=-1, keepdims=True)
+    norm = np.where(norm > 1.0e-12, norm, 1.0)
+    return q / norm
+
+
+def _quat_conj_wxyz(quat: np.ndarray) -> np.ndarray:
+    q = np.asarray(quat, dtype=np.float64).copy()
+    q[..., 1:4] *= -1.0
+    return q
+
+
+def _quat_mul_wxyz(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    aw, ax, ay, az = a[..., 0], a[..., 1], a[..., 2], a[..., 3]
+    bw, bx, by, bz = b[..., 0], b[..., 1], b[..., 2], b[..., 3]
+    out = np.stack(
+        [
+            aw * bw - ax * bx - ay * by - az * bz,
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+        ],
+        axis=-1,
+    )
+    return _normalize_quat_wxyz(out)
 
 
 def _semantic_body_weights(body_names: list[str], keypoint_names: list[str]) -> np.ndarray:
