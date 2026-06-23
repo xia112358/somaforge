@@ -9,10 +9,12 @@ from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRec
 from motion_edit.contact_laplacian import (
     BatchContactLaplacianConfig,
     ContactHandleSpec,
+    InteractionMeshSpec,
     LinearPointKinematicsProvider,
     solve_batch_contact_laplacian,
 )
 from motion_edit.contact_laplacian.backend import build_contact_handle_specs
+from motion_edit.contact_laplacian.residuals import build_uniform_laplacian_matrix
 
 
 def _provider_shared_root() -> LinearPointKinematicsProvider:
@@ -29,6 +31,19 @@ def _provider_shared_root() -> LinearPointKinematicsProvider:
 
 
 class BatchContactLaplacianTests(unittest.TestCase):
+    def test_uniform_laplacian_matrix_matches_neighbor_mean_form(self) -> None:
+        lap = build_uniform_laplacian_matrix(3, [(0, 1), (0, 2)])
+
+        expected = np.asarray(
+            [
+                [1.0, -0.5, -0.5],
+                [-1.0, 1.0, 0.0],
+                [-1.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+        np.testing.assert_allclose(lap, expected)
+
     def test_batch_solver_optimizes_whole_trajectory_not_per_frame(self) -> None:
         provider = LinearPointKinematicsProvider(
             base_points={"left_foot": np.zeros(3)},
@@ -163,6 +178,114 @@ class BatchContactLaplacianTests(unittest.TestCase):
         self.assertEqual(result.metadata["fixed_handle_count"], 1)
         self.assertGreaterEqual(len(result.metadata["iterations"]), 1)
         self.assertIn("weights", result.metadata)
+
+    def test_interaction_mesh_laplacian_pulls_robot_to_reference_relation(self) -> None:
+        provider = LinearPointKinematicsProvider(
+            base_points={"left_foot": np.zeros(3)},
+            weights={"left_foot": np.asarray([[1.0], [0.0], [0.0]], dtype=np.float64)},
+        )
+        q = np.zeros((4, 1), dtype=np.float64)
+        q_prior = np.ones((4, 1), dtype=np.float64)
+        mesh = InteractionMeshSpec(
+            robot_points=("left_foot",),
+            object_points=np.asarray([[0.0, 0.0, 0.0]], dtype=np.float64),
+            edges=((0, 1),),
+        )
+
+        before_robot = provider.fk_points(q[0], ["left_foot"])[0]
+        ref_robot = provider.fk_points(q_prior[0], ["left_foot"])[0]
+        before_error = float(np.linalg.norm((before_robot - mesh.object_points[0]) - (ref_robot - mesh.object_points[0])))
+
+        result = solve_batch_contact_laplacian(
+            q,
+            provider,
+            [],
+            ["left_foot"],
+            BatchContactLaplacianConfig(
+                num_iters=5,
+                trust_region=10.0,
+                mesh_laplacian_weight=100.0,
+                q_prior_weight=0.0,
+                q_smooth_weight=0.0,
+                temporal_laplacian_weight=0.0,
+                body_relative_weight=0.0,
+            ),
+            q_prior=q_prior,
+            interaction_mesh=mesh,
+        )
+
+        after_robot = provider.fk_points(result.q[0], ["left_foot"])[0]
+        after_error = float(np.linalg.norm((after_robot - mesh.object_points[0]) - (ref_robot - mesh.object_points[0])))
+        self.assertLess(after_error, before_error * 0.1)
+        self.assertTrue(result.metadata["interaction_mesh"]["active"])
+        self.assertGreater(result.metadata["interaction_mesh"]["rows"], 0)
+        self.assertFalse(result.warnings)
+
+    def test_interaction_mesh_residual_coexists_with_contact_and_temporal_terms(self) -> None:
+        provider = _provider_shared_root()
+        q = np.zeros((10, 2), dtype=np.float64)
+        q_prior = np.zeros_like(q)
+        q_prior[:, 0] = 0.25
+        mesh = InteractionMeshSpec(
+            robot_points=("left_foot", "left_hand"),
+            object_points=np.asarray([[0.0, 0.0, 0.0]], dtype=np.float64),
+            edges=((0, 2), (1, 2)),
+        )
+        handle = ContactHandleSpec(
+            anchor_id="anchor_lf",
+            body="left_foot",
+            semantic_name="left_foot",
+            frames=np.arange(3, 6, dtype=np.int64),
+            target_xyz=np.tile(np.asarray([[0.5, 0.0, 0.0]], dtype=np.float64), (3, 1)),
+            kind="edited_contact",
+            weight=100.0,
+        )
+
+        result = solve_batch_contact_laplacian(
+            q,
+            provider,
+            [handle],
+            ["left_foot", "left_hand"],
+            BatchContactLaplacianConfig(
+                num_iters=4,
+                trust_region=10.0,
+                mesh_laplacian_weight=10.0,
+                temporal_laplacian_weight=5.0,
+                q_prior_weight=0.1,
+                q_smooth_weight=0.1,
+                body_relative_weight=0.0,
+            ),
+            q_prior=q_prior,
+            interaction_mesh=mesh,
+        )
+
+        labels = result.metadata["iterations"][-1]["residual_norms_by_label"]
+        self.assertIn("mesh_laplacian", labels)
+        self.assertIn("edited_contact", labels)
+        self.assertIn("temporal_laplacian", labels)
+
+    def test_mesh_laplacian_weight_without_mesh_spec_warns_and_skips(self) -> None:
+        provider = LinearPointKinematicsProvider(
+            base_points={"left_foot": np.zeros(3)},
+            weights={"left_foot": np.asarray([[1.0], [0.0], [0.0]], dtype=np.float64)},
+        )
+        result = solve_batch_contact_laplacian(
+            np.zeros((3, 1), dtype=np.float64),
+            provider,
+            [],
+            ["left_foot"],
+            BatchContactLaplacianConfig(
+                num_iters=1,
+                mesh_laplacian_weight=1.0,
+                q_prior_weight=0.0,
+                q_smooth_weight=0.0,
+                temporal_laplacian_weight=0.0,
+                body_relative_weight=0.0,
+            ),
+        )
+
+        self.assertIn("no interaction_mesh spec", result.warnings[0])
+        self.assertFalse(result.metadata["interaction_mesh"]["active"])
 
 
 if __name__ == "__main__":

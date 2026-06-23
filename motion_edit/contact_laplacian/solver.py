@@ -18,13 +18,14 @@ from .residuals import (
     LeastSquaresSystem,
     add_body_relative_residuals,
     add_contact_handle_residuals,
+    add_interaction_mesh_laplacian_residuals,
     add_q_prior_residuals,
     add_q_smooth_residuals,
     add_temporal_laplacian_residuals,
     label_norms,
     system_to_sparse_or_dense,
 )
-from .schema import BatchContactLaplacianConfig, ContactHandleSpec, ContactLaplacianSolveResult
+from .schema import BatchContactLaplacianConfig, ContactHandleSpec, ContactLaplacianSolveResult, InteractionMeshSpec
 
 
 def solve_batch_contact_laplacian(
@@ -36,6 +37,7 @@ def solve_batch_contact_laplacian(
     *,
     q_prior: np.ndarray | None = None,
     body_edges: Sequence[tuple[str, str]] | None = None,
+    interaction_mesh: InteractionMeshSpec | None = None,
 ) -> ContactLaplacianSolveResult:
     """Solve a full-trajectory contact-Laplacian least-squares problem.
 
@@ -58,12 +60,13 @@ def solve_batch_contact_laplacian(
         handle.validate()
 
     warnings: list[str] = []
-    if float(cfg.mesh_laplacian_weight) > 0.0:
-        warnings.append("mesh_laplacian residual is not active yet; missing object/terrain mesh adapter")
+    if float(cfg.mesh_laplacian_weight) > 0.0 and interaction_mesh is None:
+        warnings.append("mesh_laplacian_weight > 0 but no interaction_mesh spec was provided; mesh residual skipped")
 
     edited_count = sum(1 for handle in handles if handle.kind == "edited_contact")
     fixed_count = sum(1 for handle in handles if handle.kind == "fixed_contact")
     iteration_meta: list[dict[str, object]] = []
+    mesh_meta: dict[str, object] = {"active": False, "rows": 0}
     var_count = n_frames * nq
 
     for iteration in range(max(0, int(cfg.num_iters))):
@@ -87,6 +90,18 @@ def solve_batch_contact_laplacian(
             edges=body_edges or (),
             weight=float(cfg.body_relative_weight),
         )
+        if interaction_mesh is not None and float(cfg.mesh_laplacian_weight) > 0.0:
+            mesh_meta = add_interaction_mesh_laplacian_residuals(
+                system,
+                q=q,
+                q_reference=prior,
+                kinematics=kinematics,
+                mesh=interaction_mesh,
+                weight=float(cfg.mesh_laplacian_weight),
+            )
+            warning = mesh_meta.get("warning")
+            if warning and str(warning) not in warnings:
+                warnings.append(str(warning))
         if not system.rows:
             iteration_meta.append({"iteration": iteration, "rows": 0, "step_norm": 0.0, "residual_norm": 0.0})
             break
@@ -121,6 +136,7 @@ def solve_batch_contact_laplacian(
         "edited_handle_count": int(edited_count),
         "fixed_handle_count": int(fixed_count),
         "handle_count": int(len(handles)),
+        "interaction_mesh": mesh_meta,
         "weights": {
             "edit_contact_weight": float(cfg.edit_contact_weight),
             "fixed_contact_weight": float(cfg.fixed_contact_weight),

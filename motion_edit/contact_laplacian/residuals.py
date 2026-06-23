@@ -6,7 +6,7 @@ from typing import Any, Sequence
 import numpy as np
 
 from .kinematics import KinematicsProvider
-from .schema import ContactHandleSpec
+from .schema import ContactHandleSpec, InteractionMeshSpec
 
 
 @dataclass
@@ -152,6 +152,151 @@ def add_body_relative_residuals(
             for axis in range(3):
                 values = {variable_index(frame, dof, nq): rel_jac[axis, dof] for dof in range(nq)}
                 system.add_row(values, float(residual[axis]), "body_relative", weight)
+
+
+def build_uniform_laplacian_matrix(num_vertices: int, edges: Sequence[tuple[int, int]]) -> np.ndarray:
+    """Build the uniform interaction-mesh Laplacian used by Holosoma.
+
+    Each row encodes ``v_i - mean(neighbors_i)``. This is the lightweight
+    extraction of the original interaction mesh retargeter Laplacian term; it
+    avoids Delaunay/tetrahedral dependencies and accepts explicit or KNN edges.
+    """
+
+    n = int(num_vertices)
+    if n <= 0:
+        raise ValueError("num_vertices must be positive")
+    neighbors: list[set[int]] = [set() for _ in range(n)]
+    for a_raw, b_raw in edges:
+        a, b = int(a_raw), int(b_raw)
+        if a == b:
+            continue
+        if a < 0 or b < 0 or a >= n or b >= n:
+            raise ValueError(f"edge {(a, b)!r} outside vertex range 0..{n - 1}")
+        neighbors[a].add(b)
+        neighbors[b].add(a)
+
+    laplacian = np.zeros((n, n), dtype=np.float64)
+    for index, nbrs in enumerate(neighbors):
+        if not nbrs:
+            continue
+        laplacian[index, index] = 1.0
+        weight = -1.0 / float(len(nbrs))
+        for neighbor in nbrs:
+            laplacian[index, neighbor] = weight
+    return laplacian
+
+
+def build_knn_edges(vertices: np.ndarray, k: int) -> tuple[tuple[int, int], ...]:
+    """Build undirected KNN edges for a small interaction mesh."""
+
+    points = np.asarray(vertices, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError(f"vertices must have shape [N, 3], got {points.shape}")
+    n = points.shape[0]
+    if n <= 1 or int(k) <= 0:
+        return ()
+    k_eff = min(int(k), n - 1)
+    edges: set[tuple[int, int]] = set()
+    for index in range(n):
+        dist = np.linalg.norm(points - points[index], axis=1)
+        order = np.argsort(dist)
+        for neighbor in order[1 : k_eff + 1]:
+            a, b = sorted((int(index), int(neighbor)))
+            edges.add((a, b))
+    return tuple(sorted(edges))
+
+
+def add_interaction_mesh_laplacian_residuals(
+    system: LeastSquaresSystem,
+    *,
+    q: np.ndarray,
+    q_reference: np.ndarray,
+    kinematics: KinematicsProvider,
+    mesh: InteractionMeshSpec,
+    weight: float,
+) -> dict[str, Any]:
+    """Add whole-trajectory interaction mesh Laplacian residuals.
+
+    Robot vertices are linearized through FK Jacobians. Object vertices are
+    fixed points and therefore contribute to the residual value but not to the
+    Jacobian columns.
+    """
+
+    if weight <= 0.0:
+        return {"active": False, "rows": 0}
+    mesh.validate()
+    q_arr = np.asarray(q, dtype=np.float64)
+    q_ref = np.asarray(q_reference, dtype=np.float64)
+    if q_arr.shape != q_ref.shape:
+        raise ValueError(f"q_reference must have shape {q_arr.shape}, got {q_ref.shape}")
+    n_frames, nq = q_arr.shape
+    robot_points = tuple(str(point) for point in mesh.robot_points)
+    object_points = np.asarray(mesh.object_points, dtype=np.float64)
+    ref_object_points = (
+        np.asarray(mesh.reference_object_points, dtype=np.float64)
+        if mesh.reference_object_points is not None
+        else object_points
+    )
+    robot_count = len(robot_points)
+    object_count = object_points.shape[0]
+    vertex_count = robot_count + object_count
+
+    ref_robot_all = _reference_robot_points(mesh, q_ref, kinematics, robot_points)
+    ref_vertices_first = np.vstack([ref_robot_all[0], ref_object_points])
+    edges = tuple(mesh.edges) if mesh.edges else build_knn_edges(ref_vertices_first, int(mesh.knn_k))
+    if not edges:
+        return {"active": False, "rows": 0, "warning": "interaction mesh has no edges"}
+    laplacian = build_uniform_laplacian_matrix(vertex_count, edges)
+
+    row_count = 0
+    for frame in range(n_frames):
+        robot_current = kinematics.fk_points(q_arr[frame], robot_points)
+        robot_jac = kinematics.jacobian_points(q_arr[frame], robot_points)
+        vertices_current = np.vstack([robot_current, object_points])
+        vertices_ref = np.vstack([ref_robot_all[frame], ref_object_points])
+        current_lap = laplacian @ vertices_current
+        target_lap = laplacian @ vertices_ref
+        residual = target_lap - current_lap
+
+        for lap_row in range(vertex_count):
+            robot_coeffs = laplacian[lap_row, :robot_count]
+            if not np.any(robot_coeffs):
+                continue
+            for axis in range(3):
+                values: dict[int, float] = {}
+                for robot_index, coeff in enumerate(robot_coeffs):
+                    if coeff == 0.0:
+                        continue
+                    jac_axis = robot_jac[robot_index, axis]
+                    for dof in range(nq):
+                        col = variable_index(frame, dof, nq)
+                        values[col] = values.get(col, 0.0) + float(coeff) * float(jac_axis[dof])
+                if values:
+                    system.add_row(values, float(residual[lap_row, axis]), "mesh_laplacian", weight)
+                    row_count += 1
+
+    return {
+        "active": True,
+        "rows": int(row_count),
+        "vertex_count": int(vertex_count),
+        "robot_vertex_count": int(robot_count),
+        "object_vertex_count": int(object_count),
+        "edge_count": int(len(edges)),
+    }
+
+
+def _reference_robot_points(
+    mesh: InteractionMeshSpec,
+    q_reference: np.ndarray,
+    kinematics: KinematicsProvider,
+    robot_points: Sequence[str],
+) -> np.ndarray:
+    if mesh.reference_robot_points is not None:
+        ref = np.asarray(mesh.reference_robot_points, dtype=np.float64)
+        if ref.ndim == 2:
+            return np.repeat(ref[None, :, :], q_reference.shape[0], axis=0)
+        return ref
+    return np.asarray([kinematics.fk_points(q_reference[frame], robot_points) for frame in range(q_reference.shape[0])], dtype=np.float64)
 
 
 def label_norms(labels: Sequence[str], residual: np.ndarray) -> dict[str, float]:

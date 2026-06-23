@@ -424,6 +424,13 @@ Add internal solver selection:
 global problem. Task-space LTE output may be used as a warm start or proposal,
 but the final target algorithm is the unified batch solve.
 
+The current interaction-mesh term is a lightweight extraction of the Holosoma
+`interaction_mesh_retargeter.py` Laplacian idea: robot semantic points and
+fixed object/terrain points form an interaction mesh, and the solver penalizes
+changes in uniform Laplacian coordinates `L * V`. Only robot vertices write
+Jacobian columns; object vertices are fixed. Real robot/object geometry adapters
+and richer mesh construction remain future work.
+
 ### Stage 3: Unify Solver Interface
 
 Create a backend-neutral interface:
