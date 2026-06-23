@@ -1,14 +1,24 @@
 # Contact Laplacian Editing Algorithms
 
-This document describes the two Laplacian-style algorithms that should coexist
-in `motion_edit` contact-anchor augmentation:
+This document describes the two Laplacian-style residual families that should
+coexist in `motion_edit` contact-anchor augmentation:
 
 1. task-space contact-handle LTE over semantic keypoints;
 2. fullbody interaction-mesh / q-space Laplacian refinement.
 
-The goal is not to choose one algorithm and delete the other. The intended
-direction is to let both affect the edit solution at different levels of the
-same contact-edit pipeline.
+The goal is not to choose one family and delete the other. The long-term target
+is a unified full-trajectory optimization where both temporal/task-space and
+spatial/fullbody terms affect the same solve.
+
+The target variable is the whole robot trajectory:
+
+```text
+Q = [q_0, q_1, ..., q_{T-1}]
+```
+
+The target solver optimizes `Q` jointly. Per-frame QP is insufficient as the
+final algorithm because temporal Laplacian and q-smoothness terms couple
+adjacent frames.
 
 ## Problem
 
@@ -45,12 +55,13 @@ edited contact anchors move to their targets;
 unedited contact anchors stay fixed unless explicitly edited.
 ```
 
-## Algorithm A: Task-Space Contact Handle LTE
+## Residual Family A: Task-Space Contact Handle LTE
 
 ### Role
 
-Task-space LTE is the fast first-stage trajectory editor. It operates on a
-small semantic keypoint set, not directly on robot joint angles.
+Task-space LTE is the fast semantic trajectory editor and a useful production
+path / warm-start source. It operates on a small semantic keypoint set, not
+directly on robot joint angles.
 
 Current implementation source:
 
@@ -198,11 +209,11 @@ metadata should record:
 
 This should be the next short-term stability fix.
 
-## Algorithm B: Fullbody Interaction Mesh / q-Space Laplacian
+## Residual Family B: Fullbody Interaction Mesh / q-Space Laplacian
 
 ### Role
 
-The fullbody interaction-mesh method refines a robot motion in joint space. It
+The fullbody interaction-mesh method constrains robot motion in joint space. It
 is closer to OmniRetarget/Holosoma retargeting than the task-space LTE layer.
 
 Relevant implementation source:
@@ -320,18 +331,32 @@ would eventually become a generated `MotionVersion` with:
 - harder to unit test;
 - not ideal as the first interactive preview path.
 
-## How The Two Algorithms Should Coexist
+## Full-Trajectory Contact-Laplacian Optimization
 
-The two algorithms operate at different abstraction levels:
+The target algorithm is not:
 
 ```text
-ContactEditPlan
-  -> task-space contact-handle LTE
-  -> fullbody interaction-mesh / q-space Laplacian refinement
-  -> generated MotionVersion
+task-space LTE first, then unrelated fullbody cleanup
 ```
 
-They can also be viewed as one combined objective:
+That cascade can remain as a production path and warm start, but the target
+solver should assemble one global sparse least-squares problem over the whole
+trajectory:
+
+```text
+q'_t = q_t + dq_t
+dq = [dq_0, dq_1, ..., dq_{T-1}]
+min_dq || A dq - b ||^2 + damping ||dq||^2
+```
+
+The matrix structure should be:
+
+```text
+spatial/contact terms: block diagonal over time
+temporal terms: banded across adjacent frames
+```
+
+The combined objective is:
 
 ```text
 min
@@ -352,11 +377,12 @@ subject to
   optional non-penetration
 ```
 
-In practice, implement this progressively.
+Both residual families then influence the same `dq`, instead of one stage
+permanently baking artifacts for a later stage to clean up.
 
 ## Recommended motion_edit Roadmap
 
-### Stage 1: Stabilize Existing Task-Space LTE
+### Stage 1: Stabilize Existing Production Path
 
 Add fixed handles for unedited contacts.
 
@@ -372,22 +398,27 @@ Expected behavior:
 - body-relative Laplacian still contributes, but cannot overpower fixed
   contact pins.
 
-### Stage 2: Add Fullbody Contact-Laplacian Backend
+This is still valuable even after the batch solver lands because the existing
+`lte_fullbody` subprocess path is the current production path and can provide a
+warm start/proposal.
 
-Add a backend mode such as:
+### Stage 2: Add Batch Contact-Laplacian Backend
 
-```text
---mode fullbody_contact_laplacian
-```
-
-or:
+Keep the public generation mode as:
 
 ```text
---refine-backend interaction_mesh_qp
+--mode lte_fullbody
 ```
 
-This backend should use the task-space LTE output as a reference and refine it
-with q-space/contact constraints.
+Add internal solver selection:
+
+```text
+--fullbody-solver ik_subprocess|batch_contact_laplacian
+```
+
+`batch_contact_laplacian` should solve the full `[T, nq]` trajectory in one
+global problem. Task-space LTE output may be used as a warm start or proposal,
+but the final target algorithm is the unified batch solve.
 
 ### Stage 3: Unify Solver Interface
 
@@ -405,9 +436,8 @@ solver config
 
 Backends can include:
 
-- `taskspace_lte`;
-- `taskspace_lte_with_fixed_contacts`;
-- `fullbody_contact_laplacian`;
+- `lte_fullbody` with `ik_subprocess`;
+- `lte_fullbody` with `batch_contact_laplacian`;
 - future physics/IK refiners.
 
 ## Key Invariant
@@ -423,4 +453,3 @@ motion-edit generate-lte-augmentation --plan ...
 
 The generated motion must be a new motion version. The source motion, source
 contact layer, and canonical segmentation must not be mutated by default.
-

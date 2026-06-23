@@ -14,6 +14,7 @@ from motion_edit.contact.layers import read_contact_graph, write_contact_layer
 from motion_edit.contact.patches import patches_from_anchors
 from motion_edit.contact.plans import ContactEditPlan, validate_contact_edit_plan
 from motion_edit.contact.schema import ContactAnchorEditRecord
+from motion_edit.contact_laplacian.schema import BatchContactLaplacianConfig
 from motion_edit.layers import write_layer
 from motion_edit.paths import LAYERS_ROOT
 from motion_edit.schema import SegmentRecord
@@ -269,15 +270,32 @@ def _keypoint_contact_weights(motion: dict[str, Any], keypoint: str, n_frames: i
     return mask.astype(np.float64)
 
 
-def _handles_from_contact_edits(edits: list[ContactAnchorEditRecord], keypoints: dict[str, np.ndarray]) -> list[dict[str, Any]]:
+def _resolve_lte_handle_name(body: str, keypoints: dict[str, np.ndarray]) -> str | None:
+    name = str(body)
+    if name in keypoints:
+        return name
+    aliases = CONTACT_BODY_LINK_CANDIDATES.get(name.lower(), ())
+    for candidate in aliases:
+        if candidate in keypoints:
+            return candidate
+    lowered = name.lower()
+    for candidate in keypoints:
+        if candidate in lowered or lowered in candidate:
+            return candidate
+    return None
+
+
+def _handles_from_contact_edits(
+    edits: list[ContactAnchorEditRecord],
+    keypoints: dict[str, np.ndarray],
+    graph: Any | None = None,
+) -> list[dict[str, Any]]:
     handles: list[dict[str, Any]] = []
     n_frames = len(next(iter(keypoints.values())))
+    edited_anchor_ids: set[str] = set()
+    zero_delta_anchor_ids: set[str] = set()
     for edit in edits:
-        name = str(edit.body)
-        if name not in keypoints:
-            aliases = CONTACT_BODY_LINK_CANDIDATES.get(name.lower(), ())
-            matching = [candidate for candidate in aliases if candidate in keypoints]
-            name = matching[0] if matching else name
+        name = _resolve_lte_handle_name(edit.body, keypoints)
         if name not in keypoints:
             raise ValueError(f"{edit.edit_id}: LTE fullbody edit body {edit.body!r} is not a supported semantic keypoint")
         start, end = _edit_interval(edit, type("AnchorInterval", (), {"start_frame": 0, "end_frame": n_frames})())
@@ -287,6 +305,10 @@ def _handles_from_contact_edits(edits: list[ContactAnchorEditRecord], keypoints:
             raise ValueError(f"{edit.edit_id}: empty LTE fullbody edit interval [{start}, {end}]")
         frames = np.arange(start, end, dtype=np.int64)
         delta = _edit_delta(edit)
+        if float(np.linalg.norm(delta)) <= 1.0e-9:
+            zero_delta_anchor_ids.add(edit.anchor_id)
+            continue
+        edited_anchor_ids.add(edit.anchor_id)
         handles.append(
             {
                 "name": name,
@@ -295,8 +317,35 @@ def _handles_from_contact_edits(edits: list[ContactAnchorEditRecord], keypoints:
                 "mode": "xyz",
                 "weight": float(edit.metadata.get("lte_handle_weight", 1.0)) if isinstance(edit.metadata, dict) else 1.0,
                 "ramp": int(edit.metadata.get("lte_handle_ramp", 0)) if isinstance(edit.metadata, dict) else 0,
+                "kind": "edited_contact",
+                "anchor_id": edit.anchor_id,
             }
         )
+    if graph is not None:
+        for anchor in graph.anchors:
+            if anchor.anchor_id in edited_anchor_ids:
+                continue
+            name = _resolve_lte_handle_name(anchor.body, keypoints)
+            if name not in keypoints:
+                continue
+            start = max(0, min(n_frames, int(anchor.start_frame)))
+            end = max(start, min(n_frames, int(anchor.end_frame)))
+            if end <= start:
+                continue
+            frames = np.arange(start, end, dtype=np.int64)
+            handles.append(
+                {
+                    "name": name,
+                    "frames": frames,
+                    "target": keypoints[name][frames],
+                    "mode": "xyz",
+                    "weight": 1.0,
+                    "ramp": 0,
+                    "kind": "fixed_contact",
+                    "anchor_id": anchor.anchor_id,
+                    "zero_delta_edit": anchor.anchor_id in zero_delta_anchor_ids,
+                }
+            )
     return handles
 
 
@@ -520,6 +569,17 @@ def apply_contact_edit_plan_to_motion(
     build_canonical: bool = False,
     allow_draft: bool = False,
     allow_free: bool = False,
+    fullbody_solver: str = "ik_subprocess",
+    contact_laplacian_iters: int = 5,
+    contact_laplacian_damping: float = 1.0e-4,
+    contact_laplacian_trust: float = 0.05,
+    edit_contact_weight: float = 1000.0,
+    fixed_contact_weight: float = 1000.0,
+    temporal_laplacian_weight: float = 10.0,
+    body_relative_weight: float = 10.0,
+    q_prior_weight: float = 1.0,
+    q_smooth_weight: float = 1.0,
+    mesh_laplacian_weight: float = 0.0,
     lte_repo_root: str | Path | None = None,
     ik_script: str | Path | None = None,
     ik_conda_env: str = "env_pyroki_climb_projection",
@@ -541,10 +601,44 @@ def apply_contact_edit_plan_to_motion(
     graph = read_contact_graph(layers_root / (source_contact_layer or plan.source_contact_layer), plan.source_motion_id)
     edits = [ContactAnchorEditRecord(**raw) for raw in plan.edits]
     if mode == "lte_fullbody":
+        if fullbody_solver not in {"ik_subprocess", "batch_contact_laplacian"}:
+            raise ValueError("fullbody_solver must be 'ik_subprocess' or 'batch_contact_laplacian'")
+        batch_config = BatchContactLaplacianConfig(
+            num_iters=int(contact_laplacian_iters),
+            damping=float(contact_laplacian_damping),
+            trust_region=float(contact_laplacian_trust),
+            edit_contact_weight=float(edit_contact_weight),
+            fixed_contact_weight=float(fixed_contact_weight),
+            temporal_laplacian_weight=float(temporal_laplacian_weight),
+            body_relative_weight=float(body_relative_weight),
+            q_prior_weight=float(q_prior_weight),
+            q_smooth_weight=float(q_smooth_weight),
+            mesh_laplacian_weight=float(mesh_laplacian_weight),
+        )
+        if fullbody_solver == "batch_contact_laplacian":
+            warnings = [
+                "batch_contact_laplacian solver is implemented for synthetic kinematics tests, "
+                "but real motion generation requires a robot kinematics provider",
+            ]
+            if dry_run:
+                return LteGenerationResult(
+                    output_motion_path=out,
+                    output_contact_layer=output_contact_layer,
+                    output_segment_layer=output_segment_layer,
+                    output_motion_version_id=output_motion_version_id,
+                    warnings=[
+                        *warnings,
+                        f"would run full-trajectory batch contact-Laplacian iters={batch_config.num_iters} trust={batch_config.trust_region}",
+                    ],
+                )
+            raise NotImplementedError(
+                "batch_contact_laplacian requires a real robot kinematics provider for motion generation; "
+                "the solver is available for synthetic tests and dry-run diagnostics"
+            )
         motion = _load_motion_npz(source_motion)
         original_keypoints = _semantic_keypoints_from_motion(motion)
         solver_keypoints = _legacy_lte_solver_keypoints(original_keypoints)
-        handles = _handles_from_contact_edits(edits, solver_keypoints)
+        handles = _handles_from_contact_edits(edits, solver_keypoints, graph=graph)
         legacy_lte = _import_legacy_lte_module(lte_repo_root)
         result = legacy_lte.deform_demo_with_contact_handles_lte(
             solver_keypoints,
@@ -596,6 +690,11 @@ def apply_contact_edit_plan_to_motion(
             "ik_conda_env": ik_conda_env,
             "ik_script": str(Path(ik_script).expanduser()) if ik_script else str((Path(lte_repo_root or "/home/xiaz/lte").expanduser() / "scripts" / "solve_lte_fullbody_ik.py")),
             "num_edits": len(edits),
+            "fullbody_solver": fullbody_solver,
+            "contact_laplacian_config": batch_config.__dict__,
+            "moving_contact_handle_count": sum(1 for handle in handles if handle.get("kind") == "edited_contact"),
+            "fixed_contact_handle_count": sum(1 for handle in handles if handle.get("kind") == "fixed_contact"),
+            "zero_delta_fixed_handle_count": sum(1 for handle in handles if handle.get("zero_delta_edit")),
             "warnings": warnings,
             "edits": [edit.to_dict() for edit in edits],
             "lte_debug": result.get("debug", {}),

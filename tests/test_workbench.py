@@ -2333,6 +2333,8 @@ class WorkbenchCliTests(unittest.TestCase):
         self.assertEqual(validate_plan_args.cmd, "validate-contact-edit-plan")
         self.assertEqual(generate_args.cmd, "generate-lte-augmentation")
         self.assertFalse(generate_args.allow_draft)
+        self.assertEqual(generate_args.mode, "lte_fullbody")
+        self.assertEqual(generate_args.fullbody_solver, "ik_subprocess")
         self.assertEqual(move_anchor_args.cmd, "move-contact-anchor")
         self.assertEqual(move_anchor_args.delta_world, [0.1, 0.0, 0.0])
         self.assertIsNone(move_anchor_args.tangent_delta)

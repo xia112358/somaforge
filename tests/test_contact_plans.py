@@ -598,6 +598,90 @@ class ContactEditPlanTests(unittest.TestCase):
             run_mock.assert_not_called()
             self.assertIn("would run fullbody IK", "\n".join(result.warnings or []))
 
+    def test_lte_fullbody_adds_fixed_handles_for_unedited_contacts(self) -> None:
+        captured = {}
+
+        class FakeLegacyLte:
+            @staticmethod
+            def deform_demo_with_contact_handles_lte(keypoints, handles, weights=None, config=None):
+                captured["handles"] = list(handles)
+                edited = {name: value.copy() for name, value in keypoints.items()}
+                for handle in handles:
+                    frames = np.asarray(handle["frames"], dtype=np.int64)
+                    edited[handle["name"]][frames] = np.asarray(handle["target"], dtype=np.float64)
+                return {"edited_keypoints": edited, "debug": {"fake": True}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _motion, plan = _write_fullbody_lte_source(root)
+            graph = cli.read_contact_graph(root / "layers" / "contact" / "force_contact", "motion_a")
+            graph = ContactGraph(
+                motion_id=graph.motion_id,
+                anchors=[
+                    *graph.anchors,
+                    ContactAnchorRecord(
+                        motion_id="motion_a",
+                        anchor_id="anchor_lh",
+                        body="left_hand",
+                        start_frame=2,
+                        end_frame=5,
+                        world_position=[10.0, 0.0, 0.0],
+                        surface_id="platform_top",
+                    ),
+                ],
+            )
+            write_contact_layer(root / "layers" / "contact" / "force_contact", graph)
+
+            def fake_run(cmd, cwd=None, check=False):
+                ik_out = Path(cmd[cmd.index("--out") + 1])
+                np.savez(ik_out, joint_pos=np.zeros((8, 10), dtype=np.float32), joint_vel=np.zeros((8, 10), dtype=np.float32))
+                return mock.Mock(returncode=0)
+
+            with mock.patch("motion_edit.contact.generation._import_legacy_lte_module", return_value=FakeLegacyLte):
+                with mock.patch("motion_edit.contact.generation.subprocess.run", side_effect=fake_run):
+                    apply_contact_edit_plan_to_motion(
+                        plan,
+                        output_motion_path=root / "out.npz",
+                        mode="lte_fullbody",
+                        intermediate_dir=root / "intermediate",
+                        layers_root=root / "layers",
+                    )
+
+        kinds = [handle.get("kind") for handle in captured["handles"]]
+        self.assertIn("edited_contact", kinds)
+        self.assertIn("fixed_contact", kinds)
+        fixed = [handle for handle in captured["handles"] if handle.get("anchor_id") == "anchor_lh"][0]
+        self.assertEqual(fixed["name"], "left_hand")
+
+    def test_batch_contact_laplacian_backend_dry_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _motion, plan = _write_fullbody_lte_source(root)
+            result = apply_contact_edit_plan_to_motion(
+                plan,
+                output_motion_path=root / "out.npz",
+                mode="lte_fullbody",
+                fullbody_solver="batch_contact_laplacian",
+                dry_run=True,
+                layers_root=root / "layers",
+            )
+
+        self.assertFalse((root / "out.npz").exists())
+        self.assertIn("batch contact-Laplacian", "\n".join(result.warnings or []))
+
+    def test_batch_backend_requires_real_kinematics_for_real_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _motion, plan = _write_fullbody_lte_source(root)
+            with self.assertRaises(NotImplementedError):
+                apply_contact_edit_plan_to_motion(
+                    plan,
+                    output_motion_path=root / "out.npz",
+                    mode="lte_fullbody",
+                    fullbody_solver="batch_contact_laplacian",
+                    layers_root=root / "layers",
+                )
+
     def test_generate_lte_augmentation_can_register_motion_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

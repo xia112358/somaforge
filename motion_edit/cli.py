@@ -802,6 +802,17 @@ def _cmd_generate_lte_augmentation(args: argparse.Namespace) -> None:
         build_canonical=args.build_canonical,
         allow_draft=args.allow_draft,
         allow_free=args.allow_free,
+        fullbody_solver=args.fullbody_solver,
+        contact_laplacian_iters=args.contact_laplacian_iters,
+        contact_laplacian_damping=args.contact_laplacian_damping,
+        contact_laplacian_trust=args.contact_laplacian_trust,
+        edit_contact_weight=args.edit_contact_weight,
+        fixed_contact_weight=args.fixed_contact_weight,
+        temporal_laplacian_weight=args.temporal_laplacian_weight,
+        body_relative_weight=args.body_relative_weight,
+        q_prior_weight=args.q_prior_weight,
+        q_smooth_weight=args.q_smooth_weight,
+        mesh_laplacian_weight=args.mesh_laplacian_weight,
         lte_repo_root=args.lte_repo_root,
         ik_script=args.ik_script,
         ik_conda_env=args.ik_conda_env,
@@ -1587,6 +1598,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--allow-draft", action="store_true")
     p.add_argument("--allow-free", action="store_true")
     p.add_argument("--mode", choices=("lte_fullbody",), default="lte_fullbody")
+    p.add_argument("--fullbody-solver", choices=("ik_subprocess", "batch_contact_laplacian"), default="ik_subprocess")
+    p.add_argument("--contact-laplacian-iters", type=int, default=5)
+    p.add_argument("--contact-laplacian-damping", type=float, default=1.0e-4)
+    p.add_argument("--contact-laplacian-trust", type=float, default=0.05)
+    p.add_argument("--edit-contact-weight", type=float, default=1000.0)
+    p.add_argument("--fixed-contact-weight", type=float, default=1000.0)
+    p.add_argument("--temporal-laplacian-weight", type=float, default=10.0)
+    p.add_argument("--body-relative-weight", type=float, default=10.0)
+    p.add_argument("--q-prior-weight", type=float, default=1.0)
+    p.add_argument("--q-smooth-weight", type=float, default=1.0)
+    p.add_argument("--mesh-laplacian-weight", type=float, default=0.0)
     p.add_argument("--falloff-before", type=int, default=20)
     p.add_argument("--falloff-after", type=int, default=20)
     p.add_argument("--global-weight", type=float, default=0.35)
