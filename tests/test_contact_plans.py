@@ -347,6 +347,63 @@ class ContactEditPlanTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 apply_contact_edit_plan_to_motion(plan, output_motion_path=output, layers_root=root / "layers")
 
+    def test_generate_lte_augmentation_composes_multiple_edits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _source_motion, _plan_path, plan = _write_synthetic_motion_and_contact(root)
+            second = ContactAnchorEditRecord(
+                **{
+                    **plan.edits[0],
+                    "edit_id": "edit_1",
+                    "old_world_position": [0.2, 0.0, 0.0],
+                    "new_world_position": [0.3, 0.0, 0.0],
+                    "delta_world": [0.1, 0.0, 0.0],
+                    "surface_coordinates_before": {"u": 0.2, "v": 0.0},
+                    "surface_coordinates_after": {"u": 0.3, "v": 0.0},
+                }
+            )
+            composed = ContactEditPlan(
+                plan_id=plan.plan_id,
+                source_motion_path=plan.source_motion_path,
+                source_motion_id=plan.source_motion_id,
+                source_contact_layer=plan.source_contact_layer,
+                edits=[*plan.edits, second.to_dict()],
+                status="validated",
+            )
+            output = root / "composed.npz"
+
+            apply_contact_edit_plan_to_motion(
+                composed,
+                output_motion_path=output,
+                falloff_before=0,
+                falloff_after=0,
+                global_weight=0.0,
+                layers_root=root / "layers",
+            )
+            body_pos = np.load(output, allow_pickle=True)["body_pos_w"]
+
+        np.testing.assert_allclose(body_pos[2:5, 0, 0], 0.3)
+
+    def test_generate_lte_augmentation_can_register_motion_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _source_motion, _plan_path, plan = _write_synthetic_motion_and_contact(root)
+            with mock.patch("motion_edit.contact.generation.write_motion_version") as write_version:
+                apply_contact_edit_plan_to_motion(
+                    plan,
+                    output_motion_path=root / "versioned.npz",
+                    output_motion_version_id="motion_a_aug",
+                    output_contact_layer="contact/generated",
+                    register_motion_version=True,
+                    layers_root=root / "layers",
+                )
+            record = write_version.call_args.args[0]
+
+        self.assertEqual(record.motion_version_id, "motion_a_aug")
+        self.assertEqual(record.kind, "augmented")
+        self.assertEqual(record.base_motion_id, "motion_a")
+        self.assertEqual(record.contact_layer, "contact/generated")
+
     def test_generate_lte_augmentation_requires_body_pos_and_body_mapping(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -376,6 +433,14 @@ class ContactEditPlanTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "cannot resolve body index"):
                 apply_contact_edit_plan_to_motion(plan_no_names, output_motion_path=root / "out.npz", layers_root=root / "layers")
+
+    def test_generate_lte_augmentation_refuses_draft_plan_in_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _source_motion, _plan_path, plan = _write_synthetic_motion_and_contact(root, plan_status="draft")
+
+            with self.assertRaisesRegex(ValueError, "must be validated or locked"):
+                apply_contact_edit_plan_to_motion(plan, output_motion_path=root / "out.npz", layers_root=root / "layers")
 
 
 if __name__ == "__main__":
