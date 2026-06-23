@@ -8,10 +8,9 @@ build/
 dist/
 *.egg-info/
 
-# Generated binary motion exports can be reproduced from layers.
-data/exports/motions/
-data/exports/split_npz/
-data/workbench/
+# Local runtime data and generated motion/contact artifacts.
+data/
+!data/.gitkeep
 
 # Local logs or scratch files.
 *.log
