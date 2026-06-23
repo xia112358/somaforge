@@ -166,8 +166,8 @@ For every unedited contact anchor, add a high-weight fixed handle:
 X_edit[body, contact_frames] ~= X_demo[body, contact_frames]
 ```
 
-This is the missing constraint that prevents unedited hand/foot contacts from
-being dragged by another edit.
+This is the production-path constraint that prevents unedited hand/foot
+contacts from being dragged by another edit.
 
 Important detail: fixed handles should generally target the original semantic
 keypoint trajectory, not the anchor representative point. The anchor
@@ -197,24 +197,28 @@ to produce a generated motion npz.
 - only sees a small semantic skeleton;
 - can produce artifacts if contact pins are incomplete.
 
-### Immediate Fix Needed
+### Current Production Path
 
-Add fixed contact handles for all unedited contact anchors. The generation
-metadata should record:
+`generate-lte-augmentation --mode lte_fullbody` currently uses this
+ContactEditPlan-driven path with both edited and fixed contact handles, then
+passes the dense task-space target to the configured fullbody IK subprocess.
+The generation metadata should record:
 
 - number of moving contact handles;
 - number of fixed contact handles;
 - bodies and frame intervals pinned;
-- zero-delta edits ignored or treated as fixed contacts.
+- zero-delta edits ignored or treated as fixed contacts;
+- the selected fullbody solver backend.
 
-This should be the next short-term stability fix.
+This path is the practical backend for current real rollout motions.
 
 ## Residual Family B: Fullbody Interaction Mesh / q-Space Laplacian
 
 ### Role
 
 The fullbody interaction-mesh method constrains robot motion in joint space. It
-is closer to OmniRetarget/Holosoma retargeting than the task-space LTE layer.
+is closer to OmniRetarget/Holosoma retargeting than the task-space LTE layer and
+is the direction for the experimental batch contact-Laplacian backend.
 
 Relevant implementation source:
 

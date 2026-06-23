@@ -1846,7 +1846,7 @@ class SurfaceEditorSessionTests(unittest.TestCase):
             cmd = popen.call_args.args[0]
 
         self.assertIs(returned, process)
-        self.assertIn("motion_edit.viewer.surface_overlay_player", cmd)
+        self.assertIn("motion_edit.viewer.contact_editor.app", cmd)
         self.assertIn("--edit-mode", cmd)
         self.assertEqual(cmd[cmd.index("--edit-mode") + 1], "direct")
 

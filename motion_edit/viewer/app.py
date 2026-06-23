@@ -75,7 +75,7 @@ def launch_viewer(
         cmd = [
             sys.executable,
             "-m",
-            "motion_edit.viewer.surface_overlay_player",
+            "motion_edit.viewer.contact_editor.app",
             "--edit-mode",
             surface_editor_edit_mode,
             "--step-size",
