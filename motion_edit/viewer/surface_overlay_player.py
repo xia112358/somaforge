@@ -71,6 +71,7 @@ class MotionPlaybackController:
     apply_frame: Any
     frame_slider: Any
     frame_text: Any
+    stop_callback: Any | None = None
 
     def frame(self) -> int:
         return int(np.clip(round(float(self.current_frame["value"])), 0, max(0, self.n_frames - 1)))
@@ -87,6 +88,44 @@ class MotionPlaybackController:
 
     def toggle(self) -> None:
         self.playing["value"] = not self.playing["value"]
+
+    def stop(self) -> None:
+        if callable(self.stop_callback):
+            self.stop_callback()
+        self.playing["value"] = False
+
+
+@dataclass
+class ReloadablePlayback:
+    current: MotionPlaybackController | None = None
+
+    @property
+    def n_frames(self) -> int:
+        return self.current.n_frames if self.current is not None else 0
+
+    @property
+    def playing(self) -> dict[str, bool]:
+        return self.current.playing if self.current is not None else {"value": False}
+
+    def frame(self) -> int:
+        return self.current.frame() if self.current is not None else 0
+
+    def set_frame(self, frame: int) -> None:
+        if self.current is not None:
+            self.current.set_frame(frame)
+
+    def step(self, amount: int) -> None:
+        if self.current is not None:
+            self.current.step(amount)
+
+    def toggle(self) -> None:
+        if self.current is not None:
+            self.current.toggle()
+
+    def replace(self, playback: MotionPlaybackController | None) -> None:
+        if self.current is not None:
+            self.current.stop()
+        self.current = playback
 
 
 @dataclass
@@ -116,6 +155,7 @@ class SurfaceEditorController:
     drag_mode_getter: Any = None
     edit_mode: str = "direct"
     current_frame_getter: Any = None
+    reload_motion_callback: Any = None
     timeline_port: int = 8094
     default_mode: str = "reject"
     show_only: str = "all"
@@ -478,29 +518,17 @@ class SurfaceEditorController:
             raise ValueError("no recent motions")
         if index < 0 or index >= len(items):
             raise ValueError(f"recent motion index out of range: {index}")
-        _exec_loaded_editor_from_recent_entry(
-            items[index],
-            timeline_port=self.timeline_port,
-            edit_mode=self.edit_mode,
-            default_mode=self.default_mode,
-            show_only=self.show_only,
-            fps=self.fps,
-            robot_urdf=self.robot_urdf,
-        )
+        if not callable(self.reload_motion_callback):
+            raise ValueError("in-process motion reload is unavailable")
+        self.reload_motion_callback(items[index])
 
     def open_latest_motion(self) -> None:
         self.open_recent_motion(0)
 
     def reload_current_motion(self) -> None:
-        _exec_loaded_editor_from_recent_entry(
-            _recent_entry_from_session(self.state.session, terrain_urdf=self.terrain_urdf),
-            timeline_port=self.timeline_port,
-            edit_mode=self.edit_mode,
-            default_mode=self.default_mode,
-            show_only=self.show_only,
-            fps=self.fps,
-            robot_urdf=self.robot_urdf,
-        )
+        if not callable(self.reload_motion_callback):
+            raise ValueError("in-process motion reload is unavailable")
+        self.reload_motion_callback(_recent_entry_from_session(self.state.session, terrain_urdf=self.terrain_urdf))
 
 
 def load_editor_state(session_path: str | Path) -> SurfaceOverlayEditorState:
@@ -1194,6 +1222,13 @@ def _loaded_editor_command_from_config(
     return cmd, prepared
 
 
+def _prepared_state_from_config(config: ContactEditorConfig) -> tuple[SurfaceOverlayEditorState, Any, str | None]:
+    prepared = prepare_contact_editor_workbench_session(config)
+    state = load_editor_state(prepared.session.session_dir / "session.json")
+    terrain_urdf_for_viewer = infer_terrain_urdf(config)
+    return state, prepared, terrain_urdf_for_viewer
+
+
 def _exec_loaded_editor_from_motion_asset(
     motion_asset_path: str | Path,
     *,
@@ -1274,9 +1309,15 @@ def _add_loaded_editor_sidebar(
         print(f"[surface editor] {text}")
 
     def _refresh_info() -> None:
+        motion_widget = status_refs.get("current_motion")
+        session_widget = status_refs.get("current_session")
         selected = status_refs.get("selected_anchor")
         info = status_refs.get("anchor_info")
         frame = status_refs.get("frame")
+        if motion_widget is not None:
+            motion_widget.value = str(controller.state.session.motion_path)
+        if session_widget is not None:
+            session_widget.value = str(controller.state.session.session_dir / "session.json")
         if selected is not None:
             selected.value = controller.selected_anchor_id or ""
         if info is not None:
@@ -1299,6 +1340,8 @@ def _add_loaded_editor_sidebar(
         frame_text.disabled = True
         status = server.gui.add_text("status", initial_value="ready", multiline=True)
         reload_btn = server.gui.add_button("Reload overlay")
+    status_refs["current_motion"] = current_motion
+    status_refs["current_session"] = current_session
     status_refs["frame"] = frame_text
     status_refs["status"] = status
 
@@ -1652,6 +1695,20 @@ def _load_motion_points(path: str | Path) -> np.ndarray:
     return np.asarray(qpos[:, :3], dtype=np.float32)
 
 
+def _add_motion_root_path(server: Any, qpos: np.ndarray) -> list[Any]:
+    if qpos.shape[0] <= 1 or qpos.shape[1] < 3:
+        return []
+    motion_points = qpos[:, :3]
+    handle = server.scene.add_line_segments(
+        "/motion/root_path",
+        points=np.stack([motion_points[:-1], motion_points[1:]], axis=1),
+        colors=np.full((motion_points.shape[0] - 1, 2, 3), 160, dtype=np.uint8),
+        line_width=1.5,
+        visible=True,
+    )
+    return [handle]
+
+
 def load_motion_sequence(path: str | Path) -> tuple[np.ndarray, int]:
     data = np.load(path, allow_pickle=True)
     fps = int(np.asarray(data["fps"]).reshape(-1)[0]) if "fps" in data else 50
@@ -1760,6 +1817,7 @@ def _add_motion_playback(
         apply_frame=_apply_frame,
         frame_slider=frame_slider,
         frame_text=frame_text,
+        stop_callback=lambda: stop_flag.__setitem__("value", True),
     )
 
     @frame_slider.on_update
@@ -1828,34 +1886,76 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
     server.gui.configure_theme(control_layout="fixed", control_width="large", dark_mode=True, show_logo=False, show_share_button=False)
     server.scene.add_grid("/grid", width=8.0, height=8.0, position=(0.0, 0.0, 0.0))
 
-    qpos, motion_fps = load_motion_sequence(args.qpos_npz)
-    playback_handles, playback = _add_motion_playback(
-        server,
-        qpos=qpos,
-        fps=int(args.fps or motion_fps),
-        robot_urdf=args.robot_urdf,
-        object_urdf=args.object_urdf if args.with_terrain else None,
-        show_gui=False,
-    )
-    _ = playback_handles
-    motion_points = qpos[:, :3] if qpos.shape[1] >= 3 else np.zeros((0, 3), dtype=np.float32)
-    if motion_points.shape[0] > 1:
-        server.scene.add_line_segments(
-            "/motion/root_path",
-            points=np.stack([motion_points[:-1], motion_points[1:]], axis=1),
-            colors=np.full((motion_points.shape[0] - 1, 2, 3), 160, dtype=np.uint8),
-            line_width=1.5,
-            visible=True,
+    playback_slot = ReloadablePlayback()
+    motion_handles: list[Any] = []
+
+    def _replace_motion_visuals(
+        *,
+        motion_path: str | Path,
+        object_urdf: str | Path | None,
+        fps_hint: int,
+    ) -> int:
+        nonlocal motion_handles
+        _remove_handles(motion_handles)
+        motion_handles = []
+        qpos, motion_fps = load_motion_sequence(motion_path)
+        playback_handles, next_playback = _add_motion_playback(
+            server,
+            qpos=qpos,
+            fps=int(fps_hint or motion_fps),
+            robot_urdf=args.robot_urdf,
+            object_urdf=object_urdf,
+            show_gui=False,
         )
+        motion_handles.extend(playback_handles)
+        motion_handles.extend(_add_motion_root_path(server, qpos))
+        playback_slot.replace(next_playback)
+        return int(fps_hint or motion_fps)
+
+    motion_fps = _replace_motion_visuals(
+        motion_path=args.qpos_npz,
+        object_urdf=args.object_urdf if args.with_terrain else None,
+        fps_hint=int(args.fps or 0),
+    )
     controller = SurfaceEditorController.create(server, state)
     controller.edit_mode = args.edit_mode
-    controller.current_frame_getter = playback.frame if playback is not None else (lambda: 0)
+    controller.current_frame_getter = playback_slot.frame
     controller.timeline_port = int(args.timeline_port)
     controller.default_mode = str(args.default_mode)
     controller.show_only = str(args.show_only)
     controller.fps = int(args.fps or motion_fps)
     controller.robot_urdf = args.robot_urdf
     controller.terrain_urdf = args.object_urdf if args.with_terrain else None
+
+    def _reload_entry_in_process(entry: RecentMotionEntry) -> None:
+        config = _contact_editor_config_from_recent_entry(entry)
+        next_state, prepared, terrain_urdf_for_viewer = _prepared_state_from_config(config)
+        object_urdf = config.terrain_urdf or terrain_urdf_for_viewer
+        next_fps = _replace_motion_visuals(
+            motion_path=config.motion,
+            object_urdf=object_urdf if config.with_terrain else None,
+            fps_hint=int(args.fps or config.fps),
+        )
+        controller.state = next_state
+        controller.original_graph = copy.deepcopy(read_surface_editor_graph(next_state.session))
+        controller.undo_stack.clear()
+        controller.redo_stack.clear()
+        controller.terrain_urdf = object_urdf if config.with_terrain else None
+        controller.fps = next_fps
+        controller.selected_anchor_id = controller.default_anchor_id()
+        controller.state.selected_anchor_id = controller.selected_anchor_id
+        controller.state.last_message = f"loaded motion: {Path(config.motion).name}"
+        controller.state.last_error = None
+        controller.reload_overlay()
+        upsert_recent_motion(entry)
+        if callable(controller.on_change):
+            controller.on_change()
+        print(
+            "[surface editor] reloaded motion in-place "
+            f"{entry.label}: anchors={prepared.ready_anchor_count} session={prepared.session.session_dir}"
+        )
+
+    controller.reload_motion_callback = _reload_entry_in_process
     upsert_recent_motion(
         _recent_entry_from_session(
             state.session,
@@ -1871,10 +1971,10 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
     controller.drag_mode_getter = lambda: str(args.default_mode)
 
     controller.reload_overlay()
-    _add_loaded_editor_sidebar(server, controller=controller, args=args, playback=playback)
+    _add_loaded_editor_sidebar(server, controller=controller, args=args, playback=playback_slot)
     start_contact_timeline_wrapper(
         controller=controller,
-        playback=playback,
+        playback=playback_slot,
         timeline_port=int(args.timeline_port),
         viser_port=viewer_port,
         motion_name=Path(args.qpos_npz).name,

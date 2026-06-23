@@ -63,9 +63,13 @@ def contact_timeline_state(
                 "color": _body_color_hex(anchor.body),
             }
         )
+    current_motion_name = motion_name
+    session = getattr(getattr(controller, "state", None), "session", None)
+    if session is not None:
+        current_motion_name = str(getattr(session, "motion_path", motion_name)).split("/")[-1]
     return {
         "schema_version": 1,
-        "motion_name": motion_name,
+        "motion_name": current_motion_name,
         "n_frames": n_frames,
         "fps": int(fps),
         "current_frame": current_frame,
