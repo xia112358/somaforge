@@ -1006,7 +1006,11 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertIn("Dry run fullbody LTE", server.gui.buttons)
         self.assertIn("Generate fullbody LTE", server.gui.buttons)
         self.assertIn("Export debug ContactLayer", server.gui.buttons)
-        self.assertIn("Undo", server.gui.buttons)
+        self.assertIn("Reset session", server.gui.buttons)
+        self.assertNotIn("Undo", server.gui.buttons)
+        self.assertNotIn("Redo", server.gui.buttons)
+        self.assertNotIn("Select previous", server.gui.buttons)
+        self.assertNotIn("Select next", server.gui.buttons)
         self.assertIn("info", server.gui.texts)
 
     def test_validate_session_plan_marks_draft_plan_validated_without_contact_layer_export(self) -> None:

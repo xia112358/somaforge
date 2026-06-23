@@ -251,14 +251,14 @@ The session includes a surface binding report, surface binding overlay, contact 
 The local adapter reads the existing overlay JSON and renders the motion root trace, robot playback, optional terrain/object URDF, `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects in Viser. The bottom cutter-style timeline owns playback/scrubbing and contact interval selection. The right sidebar is organized around the current workflow:
 
 - `Motion`: current motion/session, overlay reload, and loading another registered motion bundle.
-- `Contact Anchor`: selected-anchor metadata, previous/next selection, first unbound/edited selection, undo/redo, and reset.
-- `Augmentation`: write/validate the ContactEditPlan, dry-run fullbody LTE, generate the augmented motion, and optionally export a debug ContactLayer.
+- `Contact Anchor`: selected-anchor metadata only.
+- `Augmentation`: write/validate the ContactEditPlan, dry-run fullbody LTE, generate the augmented motion, reset the session, and optionally export a debug ContactLayer.
 
 3D selection and handle editing are same-surface constrained. Anchor markers can be clicked in the 3D view when supported by the local Viser runtime. The selected anchor shows a handle with tangent axes, normal axis, and surface bounds. Dragging this handle is not a free 3D transform: the dragged world point is projected back into the anchor's original surface coordinates, any normal component is discarded, and the anchor keeps the same `surface_id` and `object_id`. Bounds are enforced by the current reject/clamp mode. A normal-only drag is ignored as a no-op.
 
 Interaction levels:
 
-- Level 1: local Viser direct editor. It renders the overlay, highlights the selected anchor, moves anchors with same-surface constrained 3D handles, refreshes the overlay, supports undo/redo/reset, validates the edit plan, and can launch fullbody LTE generation from the Viser GUI.
+- Level 1: local Viser direct editor. It renders the overlay, highlights the selected anchor, moves anchors with same-surface constrained 3D handles, refreshes the overlay, supports full-session reset, validates the edit plan, and can launch fullbody LTE generation from the Viser GUI.
 - Level 2: request bridge fallback. Run `surface-editor --edit-mode request`, click `Write move request`, then apply requests with `surface-editor-sync`.
 
 The older external Holosoma viewer can still be used with `--external-viewer`, but it is no longer required for the surface overlay bridge. The local editor owns the surface overlay and same-surface anchor handle interactions.
@@ -283,7 +283,7 @@ Practical in-viewer workflow:
 1. Filter or select an anchor.
 2. Inspect the selected anchor metadata and surface binding.
 3. Move by 3D same-surface drag, `du`/`dv`, step buttons, or target `u/v`.
-4. Use `Undo`, `Redo`, `Reset session`, or `Discard unsaved edits` if needed.
+4. Use `Reset session` or `Discard unsaved edits` if needed.
 5. Click `Validate plan`, then `Dry run fullbody LTE` or `Generate fullbody LTE`.
 
 Validation writes pending `ContactAnchorEditRecord` entries into the ContactEditPlan and marks a valid draft plan as `validated`; it does not export a ContactLayer. `Generate fullbody LTE` then creates a new augmented motion from that plan. `Export debug ContactLayer` is available for inspection, but it is not the main workflow. None of these actions modify the original motion `.npz` or mutate canonical segmentation by default.

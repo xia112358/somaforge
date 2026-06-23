@@ -1140,13 +1140,6 @@ def _add_loaded_editor_sidebar(
         selected_anchor.disabled = True
         anchor_info = server.gui.add_text("info", initial_value=controller.selected_info_text(), multiline=True)
         anchor_info.disabled = True
-        prev_btn = server.gui.add_button("Select previous")
-        next_btn = server.gui.add_button("Select next")
-        first_unbound_btn = server.gui.add_button("First unbound")
-        first_edited_btn = server.gui.add_button("First edited")
-        undo_btn = server.gui.add_button("Undo")
-        redo_btn = server.gui.add_button("Redo")
-        reset_btn = server.gui.add_button("Reset session")
     status_refs["selected_anchor"] = selected_anchor
     status_refs["anchor_info"] = anchor_info
 
@@ -1165,6 +1158,7 @@ def _add_loaded_editor_sidebar(
         dry_run_btn = server.gui.add_button("Dry run fullbody LTE")
         generate_btn = server.gui.add_button("Generate fullbody LTE")
         debug_export_btn = server.gui.add_button("Export debug ContactLayer")
+        reset_btn = server.gui.add_button("Reset session")
         discard_btn = server.gui.add_button("Discard unsaved edits")
     status_refs["plan_info"] = plan_info
 
@@ -1259,36 +1253,6 @@ def _add_loaded_editor_sidebar(
             _set_status("discarded unsaved edits")
         except Exception as exc:
             controller.state.last_error = str(exc)
-        _refresh_info()
-
-    @prev_btn.on_click
-    def _(_) -> None:
-        controller.select_relative(-1)
-        _refresh_info()
-
-    @next_btn.on_click
-    def _(_) -> None:
-        controller.select_relative(1)
-        _refresh_info()
-
-    @first_unbound_btn.on_click
-    def _(_) -> None:
-        controller.select_first_status("unbound")
-        _refresh_info()
-
-    @first_edited_btn.on_click
-    def _(_) -> None:
-        controller.select_first_status("edited")
-        _refresh_info()
-
-    @undo_btn.on_click
-    def _(_) -> None:
-        controller.undo()
-        _refresh_info()
-
-    @redo_btn.on_click
-    def _(_) -> None:
-        controller.redo()
         _refresh_info()
 
     @reset_btn.on_click
