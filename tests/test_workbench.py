@@ -54,6 +54,7 @@ from motion_edit.viewer.surface_overlay_player import (
     _anchor_positions_differ,
     _contact_editor_config_from_motion_asset,
     _generate_fullbody_lte_from_session,
+    _recent_entry_from_generated_session,
     _render_overlay,
     _save_and_validate_plan,
     _validate_session_plan,
@@ -1186,6 +1187,33 @@ class SurfaceEditorSessionTests(unittest.TestCase):
 
         self.assertEqual(loaded, [entry])
         self.assertIsNone(shell.state.last_error)
+
+    def test_generated_recent_entry_preserves_source_motion_id_for_contact_lookup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = prepare_surface_editor_session(
+                motion_path=str(root / "source.npz"),
+                motion_id="source_motion",
+                contact_layer="contact/source",
+                surface_catalog=None,
+                session_name="generated_recent",
+                edit_plan_path=str(root / "plan.json"),
+                output_contact_layer="contact/debug",
+                layers_root=root / "layers",
+                workbench_root=root / "workbench",
+            )
+            entry = _recent_entry_from_generated_session(
+                session,
+                output_motion=str(root / "generated.npz"),
+                output_contact_layer="contact/generated",
+                output_segment_layer="candidates/generated",
+                output_motion_version_id="generated_motion_version",
+            )
+
+        self.assertEqual(entry.label, "generated_motion_version")
+        self.assertEqual(entry.motion_path, str(root / "generated.npz"))
+        self.assertEqual(entry.motion_id, "source_motion")
+        self.assertEqual(entry.contact_layer, "contact/generated")
 
     def test_debug_save_and_validate_still_exports_contact_layer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -1343,7 +1343,7 @@ def _recent_entry_from_generated_session(
     return RecentMotionEntry(
         label=label,
         motion_path=output_motion,
-        motion_id=output_motion_version_id or session.motion_id,
+        motion_id=session.motion_id,
         terrain_urdf=terrain_urdf,
         contact_layer=output_contact_layer,
         surface_catalog=session.surface_catalog,
