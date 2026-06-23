@@ -38,7 +38,7 @@ from .contact import (
     write_contact_surfaces,
 )
 from .contact.graph import ContactGraph
-from .contact.generation import apply_contact_edit_plan_to_motion
+from .generation import apply_contact_edit_plan_to_motion
 from .contact.layers import read_contact_graph
 from .contact.patches import patches_from_anchors
 from .contact.surface_catalog import box_surfaces, parse_box_descriptor, surfaces_from_urdf_meshes
