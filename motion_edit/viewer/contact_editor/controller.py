@@ -1,6 +1,6 @@
 """Contact Editor controller facade."""
 
-from motion_edit.viewer.surface_overlay_player import (
+from motion_edit.viewer.contact_editor.app import (
     ContactEditorShellController,
     MotionPlaybackController,
     ReloadablePlayback,

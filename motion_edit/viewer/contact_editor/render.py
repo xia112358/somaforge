@@ -1,6 +1,6 @@
 """Contact Editor rendering facade."""
 
-from motion_edit.viewer.surface_overlay_player import (
+from motion_edit.viewer.contact_editor.app import (
     _add_motion_playback,
     _add_motion_root_path,
     _render_overlay,
