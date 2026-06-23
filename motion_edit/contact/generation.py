@@ -247,7 +247,7 @@ def _import_legacy_lte_module(lte_repo_root: str | Path | None) -> Any:
 
 def _semantic_keypoints_from_motion(motion: dict[str, Any]) -> dict[str, np.ndarray]:
     if "body_pos_w" not in motion:
-        raise ValueError("lte_fullbody requires source motion body_pos_w")
+        raise ValueError("lte_fullbody requires body_pos_w in source motion")
     body_pos = np.asarray(motion["body_pos_w"], dtype=np.float64)
     if body_pos.ndim != 3 or body_pos.shape[2] != 3:
         raise ValueError(f"body_pos_w must have shape [T,B,3], got {body_pos.shape}")
@@ -577,7 +577,7 @@ def _apply_anchor_edits_to_graph(graph: Any, edits: list[ContactAnchorEditRecord
     return replace(graph, anchors=anchors, patches=patches_from_anchors(anchors))
 
 
-def _segments_from_anchor_intervals(graph: Any, *, motion_path: str, source: str = "lte_windowed") -> list[SegmentRecord]:
+def _segments_from_anchor_intervals(graph: Any, *, motion_path: str, source: str) -> list[SegmentRecord]:
     segments: list[SegmentRecord] = []
     for index, anchor in enumerate(graph.anchors):
         metadata = {
@@ -610,18 +610,19 @@ def _candidate_segments_from_graph(
     motion_path: str,
     motion_version_id: str | None,
     plan_id: str,
+    source: str,
 ) -> list[SegmentRecord]:
     if graph.transitions:
         segments = segments_from_contact_transitions(
             graph,
             motion_version_id=motion_version_id or graph.motion_id,
             motion_path=motion_path,
-            source="lte_windowed",
+            source=source,
             status="candidate",
-            cut_source="lte_windowed",
+            cut_source=source,
         )
     else:
-        segments = _segments_from_anchor_intervals(graph, motion_path=motion_path)
+        segments = _segments_from_anchor_intervals(graph, motion_path=motion_path, source=source)
     output: list[SegmentRecord] = []
     for segment in segments:
         meta = dict(segment.metadata)
@@ -634,7 +635,7 @@ def apply_contact_edit_plan_to_motion(
     plan: ContactEditPlan,
     *,
     output_motion_path: str | Path,
-    mode: str = "lte_windowed",
+    mode: str = "lte_fullbody",
     source_plan_path: str | Path | None = None,
     source_contact_layer: str | None = None,
     output_contact_layer: str | None = None,
@@ -802,6 +803,7 @@ def apply_contact_edit_plan_to_motion(
                 motion_path=str(out),
                 motion_version_id=output_motion_version_id,
                 plan_id=plan.plan_id,
+                source=mode,
             )
             write_layer(layers_root / output_segment_layer / f"{edited_graph.motion_id}.jsonl", segments)
         if register_motion_version:
@@ -915,6 +917,7 @@ def apply_contact_edit_plan_to_motion(
             motion_path=str(out),
             motion_version_id=output_motion_version_id,
             plan_id=plan.plan_id,
+            source=mode,
         )
         write_layer(layers_root / output_segment_layer / f"{edited_graph.motion_id}.jsonl", segments)
     if register_motion_version:
@@ -926,6 +929,7 @@ def apply_contact_edit_plan_to_motion(
                 motion_path=str(out),
                 motion_version_id=output_motion_version_id,
                 plan_id=plan.plan_id,
+                source=mode,
             )
             record, _segment_path = write_motion_version_with_canonical_segments(
                 motion_version_id=output_motion_version_id,
@@ -934,7 +938,7 @@ def apply_contact_edit_plan_to_motion(
                 segments=canonical_segments,
                 kind="augmented",
                 base_motion_id=plan.source_motion_id,
-                source="lte_windowed",
+                source=mode,
                 reason=f"build canonical from ContactEditPlan {plan.plan_id}",
             )
             write_motion_version(

@@ -487,19 +487,14 @@ def _launch_surface_editor_for_args(args: argparse.Namespace, *, contact_layer: 
         layers_root=LAYERS_ROOT,
         workbench_root=WORKBENCH_ROOT,
     )
-    print(f"surface editor session: {session.session_dir}")
-    print(f"surface binding report: {session.report_path}")
-    print(f"surface binding overlay: {session.overlay_path}")
-    print(f"contact overlay: {session.contact_overlay_path}")
-    print(f"pending edits: {session.pending_edits_path}")
-    print(f"surface edit requests: {session.request_path}")
-    print(f"viewer overlay support: local motion_edit Viser adapter edit_mode={args.edit_mode}")
+    user_port = args.timeline_port + 1
+    print(f"contact editor session: {session.session_dir}")
+    print(f"contact editor url: http://localhost:{user_port}")
     if args.edit_mode == "request":
-        print(f"sync pending viewer requests: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'}")
-        print(f"save after sync: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'} --save")
+        print(f"[debug] sync pending viewer requests: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'}")
+        print(f"[debug] save after sync: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'} --save")
     else:
-        print("direct edit mode: use Viser anchor editing, then Validate plan or Generate fullbody LTE; no terminal sync is required")
-        print(f"request fallback remains available: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'}")
+        print("direct edit mode: edit contacts in the Contact Editor page, then validate or generate fullbody LTE")
     process = launch_viewer(
         args.motion,
         repo_root=args.repo_root,
@@ -519,7 +514,7 @@ def _launch_surface_editor_for_args(args: argparse.Namespace, *, contact_layer: 
         prefer_local_surface_editor=not args.external_viewer,
     )
     print(f"viewer pid={process.pid}")
-    print(f"Open Motion Cutter: http://localhost:{args.timeline_port}")
+    print(f"Open Contact Editor: http://localhost:{user_port}")
     process.wait()
     if args.save_on_exit:
         out = save_surface_editor_session(session, layers_root=LAYERS_ROOT)
@@ -571,7 +566,6 @@ def _cmd_contact_editor(args: argparse.Namespace) -> None:
         )
         print(f"viewer pid={process.pid}")
         print(f"Open Motion Contact Editor: http://localhost:{args.timeline_port + 1}")
-        print(f"background timeline/api after load: http://localhost:{args.timeline_port}")
         process.wait()
         return
     if loaded_registered_motion:
@@ -1443,8 +1437,24 @@ def _cmd_workbench(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="motion-edit")
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    parser = argparse.ArgumentParser(
+        prog="motion-edit",
+        description="Contact-centric motion curation: register motion, bind contacts, edit in contact-editor, then generate lte_fullbody motion.",
+    )
+    public_commands = (
+        "init,register-motion,register-motion-asset,list-motions,show-motion,"
+        "import-force-proto,bind-contact-surfaces,summarize-surface-bindings,"
+        "export-surface-binding-report,export-surface-binding-overlay,"
+        "contact-editor,validate-contact-edit-plan,generate-lte-augmentation,"
+        "register-motion-version,build-canonical-segmentation,build-token-catalog,"
+        "export-manifest,export-split-npz"
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True, metavar="{" + public_commands + "}")
+
+    def add_hidden_parser(name: str) -> argparse.ArgumentParser:
+        hidden = sub.add_parser(name, help=argparse.SUPPRESS)
+        sub._choices_actions = [action for action in sub._choices_actions if action.dest != name]  # type: ignore[attr-defined]
+        return hidden
 
     p = sub.add_parser("init")
     p.set_defaults(func=_cmd_init)
@@ -1458,18 +1468,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--update-motions", action="store_true")
     p.set_defaults(func=_cmd_import_force_proto)
 
-    p = sub.add_parser("import-manual-cuts")
+    p = add_hidden_parser("import-manual-cuts")
     p.add_argument("--segments-dir", required=True)
     p.add_argument("--layer-name", default="default")
     p.set_defaults(func=_cmd_import_manual_cuts)
 
-    p = sub.add_parser("export-cutter-segments")
+    p = add_hidden_parser("export-cutter-segments")
     p.add_argument("--source", required=True, help="Layer path relative to data/layers, e.g. candidates/force_contact")
     p.add_argument("--output-dir", default=None)
     p.add_argument("--install-to", default=None)
     p.set_defaults(func=_cmd_export_cutter_segments)
 
-    p = sub.add_parser("export-contact-overlay")
+    p = add_hidden_parser("export-contact-overlay")
     p.add_argument("--source", required=True, help="Contact layer path relative to data/layers, e.g. contact/force_contact")
     p.add_argument("--motion-id", required=True)
     p.add_argument("--output", required=True)
@@ -1513,7 +1523,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rebind-canonical-segments", action="store_true")
     p.set_defaults(func=_cmd_bind_contact_surfaces)
 
-    p = sub.add_parser("refine-contact-anchor-positions")
+    p = sub.add_parser("refine-contact-anchor-positions", help="[internal] refine anchor positions from raw contact points")
     p.add_argument("--contact-layer", required=True, help="Contact layer path relative to data/layers")
     p.add_argument("--motion-id", required=True)
     p.add_argument("--motion", required=True, help="Motion npz containing raw_contact_* arrays")
@@ -1523,7 +1533,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-surface-distance", type=float, default=0.05)
     p.set_defaults(func=_cmd_refine_contact_anchor_positions)
 
-    p = sub.add_parser("merge-contact-anchors")
+    p = sub.add_parser("merge-contact-anchors", help="[internal] merge fragmented contact anchors")
     p.add_argument("--contact-layer", required=True, help="Contact layer path relative to data/layers")
     p.add_argument("--motion-id", required=True)
     p.add_argument("--output-contact-layer", required=True)
@@ -1534,7 +1544,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--source", default="merge_contact_anchors")
     p.set_defaults(func=_cmd_merge_contact_anchors)
 
-    p = sub.add_parser("filter-contact-anchors")
+    p = sub.add_parser("filter-contact-anchors", help="[internal] filter contact anchors for editor preparation")
     p.add_argument("--contact-layer", required=True, help="Contact layer path relative to data/layers")
     p.add_argument("--motion-id", required=True)
     p.add_argument("--output-contact-layer", required=True)
@@ -1547,14 +1557,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--source", default="filter_short_raw_missing")
     p.set_defaults(func=_cmd_filter_contact_anchors)
 
-    p = sub.add_parser("create-box-surface-catalog")
+    p = sub.add_parser("create-box-surface-catalog", help="[diagnostic] create a simple box surface catalog")
     p.add_argument("--motion-id", required=True)
     p.add_argument("--box", action="append", required=True, help="object_id:cx,cy,cz:sx,sy,sz")
     p.add_argument("--top-only", action="store_true")
     p.add_argument("--output", required=True)
     p.set_defaults(func=_cmd_create_box_surface_catalog)
 
-    p = sub.add_parser("create-urdf-surface-catalog")
+    p = sub.add_parser("create-urdf-surface-catalog", help="[internal] create surface catalog from terrain URDF")
     p.add_argument("--motion-id", required=True)
     p.add_argument("--terrain-urdf", required=True)
     p.add_argument("--include-side-surfaces", action="store_true")
@@ -1564,7 +1574,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output", required=True)
     p.set_defaults(func=_cmd_create_urdf_surface_catalog)
 
-    p = sub.add_parser("move-contact-anchor")
+    p = add_hidden_parser("move-contact-anchor")
     p.add_argument("--source", required=True, help="Contact layer path relative to data/layers, e.g. contact/force_contact")
     p.add_argument("--motion-id", required=True)
     p.add_argument("--anchor-id", required=True)
@@ -1676,7 +1686,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reason", default=None)
     p.set_defaults(func=_cmd_build_canonical_segmentation)
 
-    p = sub.add_parser("migrate-layer-to-canonical")
+    p = add_hidden_parser("migrate-layer-to-canonical")
     p.add_argument("--motion-version-id", required=True)
     p.add_argument("--motion", required=True)
     p.add_argument("--motion-id", default=None)
@@ -1688,7 +1698,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reason", default=None)
     p.set_defaults(func=_cmd_build_canonical_segmentation)
 
-    p = sub.add_parser("mark-segment-status")
+    p = sub.add_parser("mark-segment-status", help="[advanced] update canonical segment status")
     p.add_argument("--motion-version-id", required=True)
     p.add_argument("--segment-id", action="append", default=None)
     p.add_argument("--status", choices=("candidate", "accepted", "rejected", "manual"), default=None)
@@ -1697,7 +1707,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--status-by-file", default=None)
     p.set_defaults(func=_cmd_mark_segment_status)
 
-    p = sub.add_parser("canonical-action")
+    p = add_hidden_parser("canonical-action")
     p.add_argument("--motion-version-id", required=True)
     p.add_argument("--segment-id", default=None)
     p.add_argument("--motion-id", default=None)
@@ -1731,12 +1741,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--index", action="append", type=int, default=None)
     p.set_defaults(func=_cmd_export_split_npz)
 
-    p = sub.add_parser("import-lte-catalog")
+    p = add_hidden_parser("import-lte-catalog")
     p.add_argument("--catalog", required=True)
     p.add_argument("--layer-name", default="lte")
     p.set_defaults(func=_cmd_import_lte_catalog)
 
-    p = sub.add_parser("accept")
+    p = add_hidden_parser("accept")
     p.add_argument("--source", required=True)
     p.add_argument("--layer-name", default="default")
     p.add_argument("--motion-id", default=None)
@@ -1744,7 +1754,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--index", action="append", type=int, default=None)
     p.set_defaults(func=lambda args: setattr(args, "status", "accepted") or _cmd_curate(args))
 
-    p = sub.add_parser("reject")
+    p = add_hidden_parser("reject")
     p.add_argument("--source", required=True)
     p.add_argument("--layer-name", default="default")
     p.add_argument("--motion-id", default=None)
@@ -1752,7 +1762,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--index", action="append", type=int, default=None)
     p.set_defaults(func=lambda args: setattr(args, "status", "rejected") or _cmd_curate(args))
 
-    p = sub.add_parser("list-layer")
+    p = add_hidden_parser("list-layer")
     p.add_argument("--source", required=True)
     p.add_argument("--motion-id", default=None)
     p.add_argument("--limit", type=int, default=20)
@@ -1764,7 +1774,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=5)
     p.set_defaults(func=_cmd_list_contact_layer)
 
-    p = sub.add_parser("workbench-action")
+    p = add_hidden_parser("workbench-action")
     p.add_argument("--source", required=True, help="Layer path relative to data/layers")
     p.add_argument("--motion-id", default=None)
     p.add_argument("--segment-id", default=None)
@@ -1778,7 +1788,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=_cmd_workbench_action)
 
-    p = sub.add_parser("cutter")
+    p = add_hidden_parser("cutter")
     p.add_argument("motion")
     p.add_argument("--source", default=None, help="Source layer path relative to data/layers")
     p.add_argument("--session-name", required=True)
@@ -1793,7 +1803,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--with-terrain", action="store_true")
     p.set_defaults(func=_cmd_cutter)
 
-    p = sub.add_parser("contact-editor")
+    p = sub.add_parser("contact-editor", help="launch the main interactive contact-anchor editor")
     p.add_argument("motion", nargs="?", default=None)
     p.add_argument("--motion-id", default=None)
     p.add_argument("--motion-asset-id", default=None)
@@ -1826,7 +1836,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--bind-mode", choices=("reject", "clamp"), default="reject")
     p.set_defaults(func=_cmd_contact_editor)
 
-    p = sub.add_parser("surface-editor")
+    p = add_hidden_parser("surface-editor")
     p.add_argument("motion")
     p.add_argument("--motion-id", required=True)
     p.add_argument("--contact-layer", required=True)
@@ -1853,12 +1863,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--external-viewer", action="store_true", help="Use the legacy external Holosoma viewer instead of the local surface overlay adapter")
     p.set_defaults(func=_cmd_surface_editor)
 
-    p = sub.add_parser("surface-editor-sync")
+    p = add_hidden_parser("surface-editor-sync")
     p.add_argument("--session", required=True, help="Path to surface editor session.json")
     p.add_argument("--save", action="store_true")
     p.set_defaults(func=_cmd_surface_editor_sync)
 
-    p = sub.add_parser("surface-editor-move-anchor")
+    p = add_hidden_parser("surface-editor-move-anchor")
     p.add_argument("--session", required=True, help="Path to surface editor session.json")
     p.add_argument("--anchor-id", required=True)
     p.add_argument("--tangent-delta", nargs=2, type=float, default=None)
@@ -1867,7 +1877,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--save", action="store_true")
     p.set_defaults(func=_cmd_surface_editor_move_anchor)
 
-    p = sub.add_parser("workbench")
+    p = add_hidden_parser("workbench")
     p.add_argument("motion", nargs="?", default=None, help="Optional .npz motion path for state metadata")
     p.add_argument("--source", required=True, help="Layer path relative to data/layers")
     p.add_argument("--motion-id", default=None)
@@ -1882,13 +1892,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--once", action="store_true", help="Build session, print state, and exit without serving")
     p.set_defaults(func=_cmd_workbench)
 
-    p = sub.add_parser("detect-motion")
+    p = sub.add_parser("detect-motion", help="[diagnostic] inspect inferred terrain/contact paths for a motion")
     p.add_argument("motion")
     p.add_argument("--repo-root", default=None)
     p.add_argument("--dataset-root", default=None)
     p.set_defaults(func=_cmd_detect_motion)
 
-    p = sub.add_parser("view")
+    p = add_hidden_parser("view")
     p.add_argument("motion")
     p.add_argument("--repo-root", default=None)
     p.add_argument("--layer", default=None, help="Layer path relative to data/layers, e.g. candidates/force_contact")
@@ -1898,20 +1908,45 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--with-terrain", action="store_true")
     p.set_defaults(func=_cmd_view)
 
-    p = sub.add_parser("edit-clip")
+    p = add_hidden_parser("edit-clip")
     p.add_argument("--input", required=True)
     p.add_argument("--output", required=True)
     p.add_argument("--start", type=int, required=True)
     p.add_argument("--end", type=int, required=True)
     p.set_defaults(func=_cmd_edit_clip)
 
-    p = sub.add_parser("edit-splice")
+    p = add_hidden_parser("edit-splice")
     p.add_argument("--output", required=True)
     p.add_argument("inputs", nargs="+")
     p.set_defaults(func=_cmd_edit_splice)
 
-    p = sub.add_parser("summarize")
+    p = add_hidden_parser("summarize")
     p.set_defaults(func=_cmd_summarize)
+    public_help = {
+        "init": "initialize local motion_edit data directories",
+        "register-motion": "register a rollout motion bundle",
+        "register-motion-asset": "register a motion asset path",
+        "list-motions": "list registered motions",
+        "show-motion": "show one registered motion",
+        "import-force-proto": "extract contact-first proto layers from rollout motions",
+        "bind-contact-surfaces": "bind contact anchors to known terrain/object surfaces",
+        "summarize-surface-bindings": "summarize surface binding quality",
+        "export-surface-binding-report": "write a surface binding inspection report",
+        "export-surface-binding-overlay": "write a viewer overlay for surface bindings",
+        "contact-editor": "launch the main Contact Editor UI",
+        "validate-contact-edit-plan": "validate staged contact-anchor edits",
+        "generate-lte-augmentation": "generate a new motion with lte_fullbody",
+        "register-motion-version": "register a raw or generated motion version",
+        "build-canonical-segmentation": "initialize the canonical segmentation for a motion version",
+        "build-token-catalog": "build tokens from canonical segments",
+        "export-manifest": "export a manifest from legacy layers or a motion version",
+        "export-split-npz": "materialize split npz export cache",
+    }
+    sub._choices_actions = [  # type: ignore[attr-defined]
+        argparse._SubParsersAction._ChoicesPseudoAction(name, [], help_text)
+        for name, help_text in public_help.items()
+        if name in sub.choices
+    ]
     return parser
 
 

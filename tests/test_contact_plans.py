@@ -380,6 +380,7 @@ class ContactEditPlanTests(unittest.TestCase):
             result = apply_contact_edit_plan_to_motion(
                 plan,
                 output_motion_path=output,
+                mode="lte_windowed",
                 output_contact_layer="contact/generated",
                 output_segment_layer="candidates/generated",
                 falloff_before=1,
@@ -418,13 +419,14 @@ class ContactEditPlanTests(unittest.TestCase):
             result = apply_contact_edit_plan_to_motion(
                 plan,
                 output_motion_path=output,
+                mode="lte_windowed",
                 dry_run=True,
                 layers_root=root / "layers",
             )
             self.assertEqual(result.output_motion_path, output)
             self.assertEqual(output.read_bytes(), b"existing")
             with self.assertRaises(FileExistsError):
-                apply_contact_edit_plan_to_motion(plan, output_motion_path=output, layers_root=root / "layers")
+                apply_contact_edit_plan_to_motion(plan, output_motion_path=output, mode="lte_windowed", layers_root=root / "layers")
 
     def test_generate_lte_augmentation_composes_multiple_edits(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -454,6 +456,7 @@ class ContactEditPlanTests(unittest.TestCase):
             apply_contact_edit_plan_to_motion(
                 composed,
                 output_motion_path=output,
+                mode="lte_windowed",
                 falloff_before=0,
                 falloff_after=0,
                 global_weight=0.0,
@@ -514,6 +517,7 @@ class ContactEditPlanTests(unittest.TestCase):
             apply_contact_edit_plan_to_motion(
                 semantic_plan,
                 output_motion_path=output,
+                mode="lte_windowed",
                 falloff_before=0,
                 falloff_after=0,
                 global_weight=0.0,
@@ -696,6 +700,7 @@ class ContactEditPlanTests(unittest.TestCase):
                 apply_contact_edit_plan_to_motion(
                     plan,
                     output_motion_path=root / "versioned.npz",
+                    mode="lte_windowed",
                     output_motion_version_id="motion_a_aug",
                     output_contact_layer="contact/generated",
                     register_motion_version=True,
@@ -723,7 +728,7 @@ class ContactEditPlanTests(unittest.TestCase):
                 status=plan.status,
             )
             with self.assertRaisesRegex(ValueError, "requires body_pos_w"):
-                apply_contact_edit_plan_to_motion(plan_missing, output_motion_path=root / "out.npz", layers_root=root / "layers")
+                apply_contact_edit_plan_to_motion(plan_missing, output_motion_path=root / "out.npz", mode="lte_windowed", layers_root=root / "layers")
 
             no_names = root / "no_names.npz"
             np.savez(no_names, body_pos_w=np.zeros((8, 2, 3), dtype=np.float32))
@@ -736,7 +741,7 @@ class ContactEditPlanTests(unittest.TestCase):
                 status=plan.status,
             )
             with self.assertRaisesRegex(ValueError, "cannot resolve body index"):
-                apply_contact_edit_plan_to_motion(plan_no_names, output_motion_path=root / "out.npz", layers_root=root / "layers")
+                apply_contact_edit_plan_to_motion(plan_no_names, output_motion_path=root / "out.npz", mode="lte_windowed", layers_root=root / "layers")
 
     def test_generate_lte_augmentation_refuses_draft_plan_in_backend(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -744,7 +749,7 @@ class ContactEditPlanTests(unittest.TestCase):
             _source_motion, _plan_path, plan = _write_synthetic_motion_and_contact(root, plan_status="draft")
 
             with self.assertRaisesRegex(ValueError, "must be validated or locked"):
-                apply_contact_edit_plan_to_motion(plan, output_motion_path=root / "out.npz", layers_root=root / "layers")
+                apply_contact_edit_plan_to_motion(plan, output_motion_path=root / "out.npz", mode="lte_windowed", layers_root=root / "layers")
 
 
 if __name__ == "__main__":

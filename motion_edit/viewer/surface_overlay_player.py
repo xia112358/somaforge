@@ -2245,7 +2245,6 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
     print(f"[surface editor] robot_urdf={args.robot_urdf or 'none'}")
     print(f"[surface editor] object_urdf={args.object_urdf if args.with_terrain else 'none'}")
     print(f"[surface editor] Open Contact Editor: http://localhost:{shell_port}")
-    print(f"[surface editor] internal Viser: http://localhost:{viewer_port}")
     if anchor_ids:
         print(f"[surface editor] anchors={', '.join(anchor_ids[:20])}{' ...' if len(anchor_ids) > 20 else ''}")
     print("Close this process with Ctrl+C.")
@@ -2414,7 +2413,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
         print(
             "[contact editor] loaded in-process "
             f"motion={config.motion} anchors={prepared.ready_anchor_count} "
-            f"user_url=http://localhost:{shell_port} internal_viser=http://localhost:{viewer_port}"
+            f"user_url=http://localhost:{shell_port}"
         )
 
     def _start_loaded_editor() -> None:
@@ -2539,7 +2538,6 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
     shell_controller.load_recent_callback = lambda entry: _load_config(_contact_editor_config_from_recent_entry(entry))
 
     print(f"[contact editor setup] Open Contact Editor: http://localhost:{shell_port}")
-    print(f"[contact editor setup] internal Viser iframe: http://localhost:{viewer_port}")
     print("Fill setup fields in the Viser UI and click Load contact editor.")
     while True:
         time.sleep(0.2)
