@@ -7,7 +7,7 @@ defaults to the task-space LTE plus IK subprocess path unless explicitly asked
 to dry-run or experiment with this backend.
 """
 
-from .kinematics import KinematicsProvider, LinearPointKinematicsProvider
+from .kinematics import BodyPositionTrajectoryKinematicsProvider, KinematicsProvider, LinearPointKinematicsProvider
 from .schema import BatchContactLaplacianConfig, ContactHandleSpec, ContactLaplacianSolveResult, InteractionMeshSpec
 from .solver import solve_batch_contact_laplacian
 
@@ -16,6 +16,7 @@ __all__ = [
     "ContactHandleSpec",
     "ContactLaplacianSolveResult",
     "InteractionMeshSpec",
+    "BodyPositionTrajectoryKinematicsProvider",
     "KinematicsProvider",
     "LinearPointKinematicsProvider",
     "solve_batch_contact_laplacian",

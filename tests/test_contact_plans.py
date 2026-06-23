@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 import argparse
+import json
 from unittest import mock
 
 import numpy as np
@@ -401,13 +402,21 @@ class ContactEditPlanTests(unittest.TestCase):
             self.assertFalse(np.allclose(generated["body_lin_vel_w"], source["body_lin_vel_w"]))
             np.testing.assert_array_equal(generated["body_quat_w"], source["body_quat_w"])
             np.testing.assert_array_equal(generated["joint_pos"], source["joint_pos"])
-            metadata = generated["motion_edit_generation_metadata"].item()
-            self.assertIn("lte_windowed", metadata)
+            metadata = json.loads(generated["motion_edit_generation_metadata"].item())
+            self.assertEqual(metadata["generation_mode"], "lte_windowed")
             edited_graph = cli.read_contact_graph(root / "layers" / "contact" / "generated", "motion_a")
             self.assertEqual(edited_graph.anchors[0].world_position, [0.2, 0.0, 0.0])
             self.assertEqual(edited_graph.anchors[0].surface_id, "platform_top")
             segments = read_layer(root / "layers" / "candidates" / "generated" / "motion_a.jsonl", default_source="lte_windowed", default_status="candidate")
             self.assertTrue(segments)
+
+    def test_dense_taskspace_maps_contact_point_names_to_feet(self) -> None:
+        from motion_edit.generation.lte_fullbody import _semantic_body_weights
+
+        weights = _semantic_body_weights(["left_foot_contact_point", "right_foot_contact_point"], ["pelvis", "torso", "left_hand", "right_hand", "left_foot", "right_foot"])
+
+        self.assertEqual(float(weights[0, 4]), 1.0)
+        self.assertEqual(float(weights[1, 5]), 1.0)
 
     def test_generate_lte_augmentation_dry_run_and_overwrite_safety(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -688,18 +697,28 @@ class ContactEditPlanTests(unittest.TestCase):
         self.assertFalse((root / "out.npz").exists())
         self.assertIn("batch contact-Laplacian", "\n".join(result.warnings or []))
 
-    def test_batch_backend_requires_real_kinematics_for_real_generation(self) -> None:
+    def test_batch_backend_writes_experimental_proxy_motion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _motion, plan = _write_fullbody_lte_source(root)
-            with self.assertRaises(NotImplementedError):
-                apply_contact_edit_plan_to_motion(
-                    plan,
-                    output_motion_path=root / "out.npz",
-                    mode="lte_fullbody",
-                    fullbody_solver="batch_contact_laplacian",
-                    layers_root=root / "layers",
-                )
+            output = root / "out.npz"
+            result = apply_contact_edit_plan_to_motion(
+                plan,
+                output_motion_path=output,
+                mode="lte_fullbody",
+                fullbody_solver="batch_contact_laplacian",
+                mesh_laplacian_weight=1.0,
+                contact_laplacian_trust=1.0,
+                layers_root=root / "layers",
+            )
+            generated = np.load(output, allow_pickle=True)
+            metadata = json.loads(generated["motion_edit_generation_metadata"].item())
+
+        self.assertEqual(result.output_motion_path, output)
+        self.assertIn("body_pos_w", generated.files)
+        self.assertIn("experimental body_pos_w proxy", "\n".join(result.warnings or []))
+        self.assertEqual(metadata["fullbody_solver"], "batch_contact_laplacian")
+        self.assertEqual(metadata["proxy_kinematics"], "body_pos_w_semantic_points")
 
     def test_generate_lte_augmentation_can_register_motion_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

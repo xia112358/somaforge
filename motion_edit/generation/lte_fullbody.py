@@ -12,11 +12,14 @@ from typing import Any
 
 import numpy as np
 
+from motion_edit.contact.io import read_contact_surfaces
 from motion_edit.contact.layers import read_contact_graph, write_contact_layer
 from motion_edit.contact.patches import patches_from_anchors
 from motion_edit.contact.plans import ContactEditPlan, validate_contact_edit_plan
 from motion_edit.contact.schema import ContactAnchorEditRecord
-from motion_edit.contact_laplacian.schema import BatchContactLaplacianConfig
+from motion_edit.contact_laplacian.kinematics import BodyPositionTrajectoryKinematicsProvider
+from motion_edit.contact_laplacian.schema import BatchContactLaplacianConfig, ContactHandleSpec, InteractionMeshSpec
+from motion_edit.contact_laplacian.solver import solve_batch_contact_laplacian
 from motion_edit.layers import write_layer
 from motion_edit.paths import LAYERS_ROOT
 from motion_edit.schema import SegmentRecord
@@ -463,19 +466,27 @@ def _semantic_body_weights(body_names: list[str], keypoint_names: list[str]) -> 
         elif name.startswith(("waist", "torso")) or "shoulder" in name:
             weights[index, sem["torso"]] = 1.0
         elif name.startswith("left_"):
-            if any(token in name for token in ("knee", "ankle")):
+            if any(token in name for token in ("foot_contact", "toe", "heel", "sole")):
+                weights[index, sem["left_foot"]] = 1.0
+            elif any(token in name for token in ("foot", "ankle")):
                 weights[index, sem["pelvis"]] = 0.35
                 weights[index, sem["left_foot"]] = 0.65
-            elif any(token in name for token in ("elbow", "wrist", "rubber_hand", "thumb", "pinky")):
+            elif any(token in name for token in ("hand_contact", "palm", "finger", "rubber_hand", "thumb", "pinky")):
+                weights[index, sem["left_hand"]] = 1.0
+            elif any(token in name for token in ("hand", "elbow", "wrist")):
                 weights[index, sem["torso"]] = 0.25
                 weights[index, sem["left_hand"]] = 0.75
             else:
                 weights[index, sem["torso"]] = 1.0
         elif name.startswith("right_"):
-            if any(token in name for token in ("knee", "ankle")):
+            if any(token in name for token in ("foot_contact", "toe", "heel", "sole")):
+                weights[index, sem["right_foot"]] = 1.0
+            elif any(token in name for token in ("foot", "ankle")):
                 weights[index, sem["pelvis"]] = 0.35
                 weights[index, sem["right_foot"]] = 0.65
-            elif any(token in name for token in ("elbow", "wrist", "rubber_hand", "thumb", "pinky")):
+            elif any(token in name for token in ("hand_contact", "palm", "finger", "rubber_hand", "thumb", "pinky")):
+                weights[index, sem["right_hand"]] = 1.0
+            elif any(token in name for token in ("hand", "elbow", "wrist")):
                 weights[index, sem["torso"]] = 0.25
                 weights[index, sem["right_hand"]] = 0.75
             else:
@@ -519,6 +530,197 @@ def _dense_taskspace_from_keypoints(motion: dict[str, Any], original: dict[str, 
         arrays[f"keypoint_{name}"] = np.asarray(edited[name], dtype=np.float64)
         arrays[f"offset_{name}"] = np.asarray(edited[name] - original[name], dtype=np.float64)
     return arrays
+
+
+def _batch_contact_laplacian_proxy_motion(
+    *,
+    motion: dict[str, Any],
+    source_motion: Path,
+    graph: Any,
+    contact_layer_root: Path,
+    edits: list[ContactAnchorEditRecord],
+    config: BatchContactLaplacianConfig,
+    source_plan_path: str | Path | None,
+    plan: ContactEditPlan,
+) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
+    """Generate an experimental task-space proxy motion with batch contact-Laplacian.
+
+    This uses semantic ``body_pos_w`` keypoints as optimization variables. It is
+    useful for validating contact/mesh propagation on real rollouts before a
+    true joint-space robot kinematics provider is available.
+    """
+
+    original_keypoints = _semantic_keypoints_from_motion(motion)
+    solver_keypoints = _legacy_lte_solver_keypoints(original_keypoints)
+    provider = BodyPositionTrajectoryKinematicsProvider(tuple(solver_keypoints))
+    q_init = np.stack([solver_keypoints[name] for name in provider.point_names], axis=1).reshape(len(next(iter(solver_keypoints.values()))), -1)
+    handles = _contact_laplacian_handles_from_edits(edits, solver_keypoints, graph=graph, config=config)
+    surfaces = _read_contact_layer_surfaces(contact_layer_root, graph.motion_id)
+    mesh, mesh_warnings = _interaction_mesh_from_motion_and_graph(
+        graph=graph,
+        surfaces=surfaces,
+        robot_points=tuple(provider.point_names),
+    )
+    result = solve_batch_contact_laplacian(
+        q_init,
+        provider,
+        handles,
+        list(provider.point_names),
+        config,
+        q_prior=q_init,
+        interaction_mesh=mesh if float(config.mesh_laplacian_weight) > 0.0 else None,
+    )
+    edited_solver = {
+        name: result.q.reshape(q_init.shape[0], len(provider.point_names), 3)[:, index, :]
+        for index, name in enumerate(provider.point_names)
+    }
+    edited_keypoints = _merge_solver_keypoints(original_keypoints, edited_solver)
+    arrays = _dense_taskspace_from_keypoints(motion, original_keypoints, edited_keypoints, source_motion, source_motion.with_suffix(".batch_contact_laplacian_proxy.npz"))
+    warnings = [
+        "batch_contact_laplacian generated an experimental body_pos_w proxy motion; joint/orientation fields are preserved",
+        *mesh_warnings,
+        *result.warnings,
+    ]
+    metadata = {
+        "source_plan": str(Path(source_plan_path).expanduser()) if source_plan_path is not None else plan.plan_id,
+        "source_plan_id": plan.plan_id,
+        "source_motion": str(source_motion),
+        "generation_mode": "lte_fullbody",
+        "fullbody_solver": "batch_contact_laplacian",
+        "proxy_kinematics": "body_pos_w_semantic_points",
+        "num_edits": len(edits),
+        "moving_contact_handle_count": sum(1 for handle in handles if handle.kind == "edited_contact"),
+        "fixed_contact_handle_count": sum(1 for handle in handles if handle.kind == "fixed_contact"),
+        "contact_laplacian_config": config.__dict__,
+        "solver_metadata": result.metadata,
+        "warnings": warnings,
+        "edits": [edit.to_dict() for edit in edits],
+    }
+    arrays["motion_edit_generation_metadata"] = _json_npz_value(metadata)
+    arrays["source_motion_path"] = np.asarray(str(source_motion), dtype=object)
+    arrays["source_contact_edit_plan"] = np.asarray(plan.plan_id, dtype=object)
+    for key in ("joint_pos", "joint_vel", "joint_names"):
+        if key in motion:
+            arrays[key] = np.asarray(motion[key])
+    return arrays, warnings, metadata
+
+
+def _contact_laplacian_handles_from_edits(
+    edits: list[ContactAnchorEditRecord],
+    keypoints: dict[str, np.ndarray],
+    *,
+    graph: Any,
+    config: BatchContactLaplacianConfig,
+) -> list[ContactHandleSpec]:
+    handles: list[ContactHandleSpec] = []
+    n_frames = len(next(iter(keypoints.values())))
+    edited_anchor_ids: set[str] = set()
+    zero_delta_anchor_ids: set[str] = set()
+    for edit in edits:
+        name = _resolve_lte_handle_name(edit.body, keypoints)
+        if name not in keypoints:
+            raise ValueError(f"{edit.edit_id}: batch contact-Laplacian edit body {edit.body!r} is not a supported semantic keypoint")
+        start, end = _edit_interval(edit, type("AnchorInterval", (), {"start_frame": 0, "end_frame": n_frames})())
+        start = max(0, min(n_frames, start))
+        end = max(start, min(n_frames, end))
+        if end <= start:
+            raise ValueError(f"{edit.edit_id}: empty batch contact-Laplacian interval [{start}, {end}]")
+        delta = _edit_delta(edit)
+        if float(np.linalg.norm(delta)) <= 1.0e-9:
+            zero_delta_anchor_ids.add(edit.anchor_id)
+            continue
+        frames = np.arange(start, end, dtype=np.int64)
+        handles.append(
+            ContactHandleSpec(
+                anchor_id=edit.anchor_id,
+                body=edit.body,
+                semantic_name=name,
+                frames=frames,
+                target_xyz=keypoints[name][frames] + delta[None, :],
+                kind="edited_contact",
+                weight=float(config.edit_contact_weight),
+                surface_id=edit.surface_id,
+                metadata={"edit_id": edit.edit_id},
+            )
+        )
+        edited_anchor_ids.add(edit.anchor_id)
+    for anchor in graph.anchors:
+        if anchor.anchor_id in edited_anchor_ids:
+            continue
+        name = _resolve_lte_handle_name(anchor.body, keypoints)
+        if name not in keypoints:
+            continue
+        start = max(0, min(n_frames, int(anchor.start_frame)))
+        end = max(start, min(n_frames, int(anchor.end_frame)))
+        if end <= start:
+            continue
+        frames = np.arange(start, end, dtype=np.int64)
+        handles.append(
+            ContactHandleSpec(
+                anchor_id=anchor.anchor_id,
+                body=anchor.body,
+                semantic_name=name,
+                frames=frames,
+                target_xyz=keypoints[name][frames],
+                kind="fixed_contact",
+                weight=float(config.fixed_contact_weight),
+                surface_id=anchor.surface_id,
+                object_id=anchor.object_id,
+                metadata={"zero_delta_edit": anchor.anchor_id in zero_delta_anchor_ids},
+            )
+        )
+    return handles
+
+
+def _read_contact_layer_surfaces(contact_layer_root: Path, motion_id: str) -> list[Any]:
+    path = contact_layer_root / "surfaces" / f"{motion_id}.jsonl"
+    if not path.exists():
+        return []
+    return read_contact_surfaces(path)
+
+
+def _interaction_mesh_from_motion_and_graph(
+    *,
+    graph: Any,
+    surfaces: list[Any],
+    robot_points: tuple[str, ...],
+) -> tuple[InteractionMeshSpec, list[str]]:
+    warnings: list[str] = []
+    points: list[np.ndarray] = []
+    surface_by_id = {surface.surface_id: surface for surface in surfaces}
+    used_surfaces: set[str] = set()
+    for anchor in graph.anchors:
+        surface = surface_by_id.get(anchor.surface_id or "")
+        polygon = None
+        if surface is not None and isinstance(surface.metadata, dict):
+            polygon = surface.metadata.get("polygon_world")
+        if polygon is not None and anchor.surface_id not in used_surfaces:
+            arr = np.asarray(polygon, dtype=np.float64)
+            if arr.ndim == 2 and arr.shape[1] == 3:
+                points.extend(arr)
+                used_surfaces.add(anchor.surface_id)
+                continue
+        if anchor.world_position is not None:
+            center = np.asarray(anchor.world_position, dtype=np.float64)
+            if center.shape == (3,):
+                points.append(center)
+    if not points:
+        warnings.append("interaction mesh has no surface/object points; using origin fallback")
+        points.append(np.zeros(3, dtype=np.float64))
+    object_points = _dedupe_points(np.asarray(points, dtype=np.float64))
+    return InteractionMeshSpec(robot_points=robot_points, object_points=object_points, knn_k=3), warnings
+
+
+def _dedupe_points(points: np.ndarray, eps: float = 1.0e-5) -> np.ndarray:
+    out: list[np.ndarray] = []
+    seen: set[tuple[int, int, int]] = set()
+    for point in np.asarray(points, dtype=np.float64).reshape(-1, 3):
+        key = tuple(np.round(point / eps).astype(int).tolist())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(point)
+    return np.asarray(out, dtype=np.float64)
 
 
 def _run_fullbody_ik_subprocess(
@@ -701,10 +903,6 @@ def apply_contact_edit_plan_to_motion(
             mesh_laplacian_weight=float(mesh_laplacian_weight),
         )
         if fullbody_solver == "batch_contact_laplacian":
-            warnings = [
-                "batch_contact_laplacian solver is implemented for synthetic kinematics tests, "
-                "but real motion generation requires a robot kinematics provider",
-            ]
             if dry_run:
                 return LteGenerationResult(
                     output_motion_path=out,
@@ -712,13 +910,55 @@ def apply_contact_edit_plan_to_motion(
                     output_segment_layer=output_segment_layer,
                     output_motion_version_id=output_motion_version_id,
                     warnings=[
-                        *warnings,
-                        f"would run full-trajectory batch contact-Laplacian iters={batch_config.num_iters} trust={batch_config.trust_region}",
+                        "would run experimental body_pos_w proxy batch contact-Laplacian",
+                        f"iters={batch_config.num_iters} trust={batch_config.trust_region} mesh_weight={batch_config.mesh_laplacian_weight}",
                     ],
                 )
-            raise NotImplementedError(
-                "batch_contact_laplacian requires a real robot kinematics provider for motion generation; "
-                "the solver is available for synthetic tests and dry-run diagnostics"
+            motion = _load_motion_npz(source_motion)
+            generated, warnings, _batch_metadata = _batch_contact_laplacian_proxy_motion(
+                motion=motion,
+                source_motion=source_motion,
+                graph=graph,
+                contact_layer_root=layers_root / (source_contact_layer or plan.source_contact_layer),
+                edits=edits,
+                config=batch_config,
+                source_plan_path=source_plan_path,
+                plan=plan,
+            )
+            out.parent.mkdir(parents=True, exist_ok=True)
+            np.savez(out, **generated)
+            edited_graph = _apply_anchor_edits_to_graph(graph, edits)
+            if output_contact_layer:
+                write_contact_layer(layers_root / output_contact_layer, edited_graph)
+            if output_segment_layer:
+                segments = _candidate_segments_from_graph(
+                    edited_graph,
+                    motion_path=str(out),
+                    motion_version_id=output_motion_version_id,
+                    plan_id=plan.plan_id,
+                    source=mode,
+                )
+                write_layer(layers_root / output_segment_layer / f"{edited_graph.motion_id}.jsonl", segments)
+            if register_motion_version:
+                if not output_motion_version_id:
+                    raise ValueError("--output-motion-version-id is required with --register-motion-version")
+                write_motion_version(
+                    MotionVersionRecord(
+                        motion_version_id=output_motion_version_id,
+                        motion_path=str(out),
+                        kind="augmented",
+                        base_motion_id=plan.source_motion_id,
+                        contact_layer=output_contact_layer,
+                        edit_plan_id=plan.plan_id,
+                        metadata={"source_contact_edit_plan": plan.plan_id, "generation_mode": mode, "fullbody_solver": fullbody_solver},
+                    )
+                )
+            return LteGenerationResult(
+                output_motion_path=out,
+                output_contact_layer=output_contact_layer,
+                output_segment_layer=output_segment_layer,
+                output_motion_version_id=output_motion_version_id,
+                warnings=warnings,
             )
         motion = _load_motion_npz(source_motion)
         original_keypoints = _semantic_keypoints_from_motion(motion)
