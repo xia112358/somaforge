@@ -59,7 +59,14 @@ uv pip install --python .venv/bin/python -e ".[viewer]"
 ~/motion_edit/motion-edit export-surface-binding-report --contact-layer contact/force_contact_bound --motion-id climb_00_z_scale_1.0 --output data/exports/surface_binding_reports/climb_00.json
 ~/motion_edit/motion-edit export-surface-binding-overlay --contact-layer contact/force_contact_bound --motion-id climb_00_z_scale_1.0 --output data/exports/surface_binding_overlays/climb_00.overlay.json
 ~/motion_edit/motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
-~/motion_edit/motion-edit generate-lte-augmentation --plan data/workbench/climb00_farther.json --output-motion data/exports/motions/climb00_farther.npz
+~/motion_edit/motion-edit generate-lte-augmentation \
+  --plan data/workbench/climb00_farther.json \
+  --output-motion data/motions/generated/climb00_farther.npz \
+  --output-contact-layer contact/climb00_farther \
+  --output-segment-layer candidates/climb00_farther \
+  --output-motion-version-id climb00_farther \
+  --register-motion-version \
+  --mode lte_windowed
 ~/motion_edit/motion-edit export-contact-overlay --source contact/force_contact --motion-id climb_00_z_scale_1.0 --output data/exports/contact_overlays/climb_00.json
 ~/motion_edit/motion-edit import-manual-cuts --segments-dir /path/to/data/motion_viewer/segments --layer-name current
 ~/motion_edit/motion-edit export-cutter-segments --source candidates/force_contact
@@ -241,17 +248,16 @@ The editor preparation is intentionally strict:
 
 The session includes a surface binding report, surface binding overlay, contact overlay, session state, request file, and pending edit file under `data/workbench/surface_sessions/<session_name>/`.
 
-The local adapter reads the existing overlay JSON and renders the motion root trace, robot playback, optional terrain/object URDF, `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects in Viser. Its GUI supports frame playback, anchor filtering, previous/next selection, first suspicious/unbound/edited selection, selected-anchor metadata, relative `du`/`dv` moves, step buttons, absolute target `u/v`, reject/clamp modes, undo/redo, reset/discard, reload, and explicit save.
+The local adapter reads the existing overlay JSON and renders the motion root trace, robot playback, optional terrain/object URDF, `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects in Viser. The bottom cutter-style timeline owns playback/scrubbing and contact interval selection. The right sidebar keeps file/session actions (`Load Motion`, reload, save, discard), selected-anchor metadata, previous/next selection, first unbound/edited selection, undo/redo, and reset.
 
 3D selection and handle editing are same-surface constrained. Anchor markers can be clicked in the 3D view when supported by the local Viser runtime. The selected anchor shows a handle with tangent axes, normal axis, and surface bounds. Dragging this handle is not a free 3D transform: the dragged world point is projected back into the anchor's original surface coordinates, any normal component is discarded, and the anchor keeps the same `surface_id` and `object_id`. Bounds are enforced by the current reject/clamp mode. A normal-only drag is ignored as a no-op.
 
 Interaction levels:
 
-- Level 1: local Viser direct editor. It renders the overlay, highlights the selected anchor, moves anchors from the Viser GUI, refreshes the overlay, supports undo/redo/reset, and saves from the Viser GUI.
+- Level 1: local Viser direct editor. It renders the overlay, highlights the selected anchor, moves anchors with same-surface constrained 3D handles, refreshes the overlay, supports undo/redo/reset, and saves from the Viser GUI.
 - Level 2: request bridge fallback. Run `surface-editor --edit-mode request`, click `Write move request`, then apply requests with `surface-editor-sync`.
-- Level 3: future true draggable 3D handles. Not implemented yet.
 
-The older external Holosoma viewer can still be used with `--external-viewer`, but it is no longer required for the surface overlay bridge. Direct draggable 3D handles are not claimed yet; the current in-viewer interaction is an explicit Viser control panel.
+The older external Holosoma viewer can still be used with `--external-viewer`, but it is no longer required for the surface overlay bridge. The local editor owns the surface overlay and same-surface anchor handle interactions.
 
 Edits remain anchor-level and surface-constrained. They use `move_contact_anchor_on_surface`, never allow normal displacement, never jump to another surface, and do not model full foot sole contact, toe/heel rolling, pressure, or physical sticking.
 
@@ -266,7 +272,7 @@ Edits remain anchor-level and surface-constrained. They use `move_contact_anchor
   --with-terrain
 ```
 
-In the Viser GUI, enter `anchor_id`, `du`, `dv`, and `mode`, click `Move anchor`, then click `Save edits`. No terminal sync is needed in default direct mode. `surface-editor-sync` remains available for request-mode fallback and debugging.
+In the Viser GUI, select an anchor from the bottom timeline or 3D view, drag its same-surface contact handle, then click `Save edits`. No terminal sync is needed in default direct mode. `surface-editor-sync` remains available for request-mode fallback and debugging.
 
 Practical in-viewer workflow:
 
@@ -302,10 +308,23 @@ Stage 2 generates augmented motion explicitly:
 
 ```bash
 ~/motion_edit/motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
-~/motion_edit/motion-edit generate-lte-augmentation --plan data/workbench/climb00_farther.json --output-motion data/exports/motions/climb00_farther.npz
+~/motion_edit/motion-edit generate-lte-augmentation \
+  --plan data/workbench/climb00_farther.json \
+  --output-motion data/motions/generated/climb00_farther.npz \
+  --output-contact-layer contact/climb00_farther \
+  --output-segment-layer candidates/climb00_farther \
+  --output-motion-version-id climb00_farther \
+  --register-motion-version \
+  --mode lte_windowed \
+  --falloff-before 20 \
+  --falloff-after 20 \
+  --global-weight 0.35 \
+  --fps 50
 ```
 
-Generation requires a `validated` or `locked` plan by default. The generation backend is currently a stub that raises a clear `NotImplementedError`; this keeps anchor dragging from accidentally producing augmented motions before the LTE/contact deformation backend is implemented.
+Generation requires a `validated` or `locked` plan by default. The first backend, `lte_windowed`, is a deterministic position-only reference deformation: it reads `body_pos_w`, moves the edited anchor body by the requested contact-anchor delta over the affected frames, applies smooth temporal falloff before/after the contact interval, optionally applies a smaller global drift to other bodies, and recomputes `body_lin_vel_w` when present. It preserves joint and orientation arrays for now and records warnings in `motion_edit_generation_metadata`; this is not full IK, not a physics solve, and not foot-sole contact modeling.
+
+The source `.npz`, source ContactLayer, and source canonical segmentation are not modified. `--output-contact-layer` writes a graph derived from the source ContactGraph with edited anchor positions. `--output-segment-layer` writes candidate segments for the generated motion. `--register-motion-version` registers the generated full trajectory as an augmented MotionVersion. Canonical segmentation for that new version is only built when `--build-canonical` is passed explicitly.
 
 ## OmniRetarget Compatibility
 

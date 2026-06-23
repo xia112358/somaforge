@@ -781,8 +781,37 @@ def _cmd_generate_lte_augmentation(args: argparse.Namespace) -> None:
     plan = read_contact_edit_plan(args.plan)
     if plan.status not in {"validated", "locked"} and not args.allow_draft:
         raise ValueError("contact edit plan must be validated or locked; pass --allow-draft to override")
-    output = apply_contact_edit_plan_to_motion(plan, output_motion_path=args.output_motion, mode=args.mode)
-    print(f"generated LTE augmentation {output}")
+    result = apply_contact_edit_plan_to_motion(
+        plan,
+        output_motion_path=args.output_motion,
+        mode=args.mode,
+        source_plan_path=args.plan,
+        source_contact_layer=args.source_contact_layer,
+        output_contact_layer=args.output_contact_layer,
+        output_segment_layer=args.output_segment_layer,
+        output_motion_version_id=args.output_motion_version_id,
+        falloff_before=args.falloff_before,
+        falloff_after=args.falloff_after,
+        global_weight=args.global_weight,
+        edited_body_weight=args.edited_body_weight,
+        fps=args.fps,
+        overwrite=args.overwrite,
+        dry_run=args.dry_run,
+        register_motion_version=args.register_motion_version,
+        build_canonical=args.build_canonical,
+        allow_draft=args.allow_draft,
+        allow_free=args.allow_free,
+    )
+    action = "dry-run LTE augmentation" if args.dry_run else "generated LTE augmentation"
+    print(f"{action} {result.output_motion_path}")
+    if result.output_contact_layer:
+        print(f"output contact layer: {result.output_contact_layer}")
+    if result.output_segment_layer:
+        print(f"output segment layer: {result.output_segment_layer}")
+    if result.output_motion_version_id:
+        print(f"output motion version: {result.output_motion_version_id}")
+    for warning in result.warnings or []:
+        print(f"warning: {warning}")
 
 
 def _cmd_register_motion_asset(args: argparse.Namespace) -> None:
@@ -1545,8 +1574,22 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("generate-lte-augmentation")
     p.add_argument("--plan", required=True)
     p.add_argument("--output-motion", required=True)
+    p.add_argument("--output-motion-version-id", default=None)
+    p.add_argument("--output-contact-layer", default=None)
+    p.add_argument("--output-segment-layer", default=None)
+    p.add_argument("--source-contact-layer", default=None)
     p.add_argument("--allow-draft", action="store_true")
-    p.add_argument("--mode", default="stub")
+    p.add_argument("--allow-free", action="store_true")
+    p.add_argument("--mode", choices=("lte_windowed", "lte_laplacian"), default="lte_windowed")
+    p.add_argument("--falloff-before", type=int, default=20)
+    p.add_argument("--falloff-after", type=int, default=20)
+    p.add_argument("--global-weight", type=float, default=0.35)
+    p.add_argument("--edited-body-weight", type=float, default=1.0)
+    p.add_argument("--fps", type=float, default=50.0)
+    p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--register-motion-version", action="store_true")
+    p.add_argument("--build-canonical", action="store_true")
+    p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=_cmd_generate_lte_augmentation)
 
     p = sub.add_parser("register-motion-asset")
