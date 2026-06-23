@@ -148,7 +148,7 @@ def _write_fullbody_lte_source(root: Path) -> tuple[Path, ContactEditPlan]:
     np.savez(
         motion,
         body_pos_w=body_pos,
-        body_quat_w=np.zeros((8, len(body_names), 4), dtype=np.float32),
+        body_quat_w=np.tile(np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32), (8, len(body_names), 1)),
         body_lin_vel_w=np.zeros_like(body_pos),
         body_names=body_names,
         joint_pos=joint_pos,
@@ -567,6 +567,12 @@ class ContactEditPlanTests(unittest.TestCase):
             self.assertTrue((intermediate / "fullbody_out.lte_keypoints.npz").exists())
             self.assertTrue((intermediate / "fullbody_out.taskspace_motion.npz").exists())
             self.assertEqual(run_mock.call_args.kwargs["check"], True)
+            cmd = run_mock.call_args.args[0]
+            self.assertIn("--contact-foot-orientation-weight", cmd)
+            self.assertIn("--contact-foot-toe-weight", cmd)
+            lte = np.load(intermediate / "fullbody_out.lte_keypoints.npz", allow_pickle=True)
+            self.assertIn("orientation_target_left_foot", lte.files)
+            self.assertIn("orientation_target_right_foot", lte.files)
             np.testing.assert_allclose(generated["joint_pos"], 9.0)
             self.assertIn("body_pos_w", generated.files)
             self.assertIn("lte_fullbody", generated["motion_edit_generation_metadata"].item())

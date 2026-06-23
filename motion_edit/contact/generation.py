@@ -137,6 +137,13 @@ def _index_by_alias(names: list[str], aliases: tuple[str, ...]) -> int:
     raise ValueError(f"cannot resolve any of {aliases}; available bodies={names}")
 
 
+def _index_by_alias_or_none(names: list[str], aliases: tuple[str, ...]) -> int | None:
+    try:
+        return _index_by_alias(names, aliases)
+    except ValueError:
+        return None
+
+
 def resolve_body_index(motion_data: dict[str, Any], body_name: str) -> int:
     names = _motion_strings(motion_data, BODY_NAME_KEYS)
     if not names:
@@ -370,7 +377,7 @@ def _merge_solver_keypoints(original: dict[str, np.ndarray], solver_edited: dict
     return edited
 
 
-def _save_lte_keypoints(path: Path, *, keypoints: dict[str, np.ndarray], motion: dict[str, Any], source_motion: Path, edits: list[ContactAnchorEditRecord]) -> None:
+def _save_lte_keypoints(path: Path, *, keypoints: dict[str, np.ndarray], motion: dict[str, Any], source_motion: Path, edits: list[ContactAnchorEditRecord], graph: Any | None = None) -> None:
     n_frames = len(next(iter(keypoints.values())))
     arrays: dict[str, Any] = {name: np.asarray(value, dtype=np.float64) for name, value in keypoints.items()}
     arrays["source_demo"] = np.asarray(str(source_motion.expanduser().resolve()))
@@ -380,8 +387,34 @@ def _save_lte_keypoints(path: Path, *, keypoints: dict[str, np.ndarray], motion:
     for name in LTE_FULLBODY_CONTACT_NAMES:
         arrays[f"contact_mask_{name}"] = _contact_mask_for_keypoint(motion, name, n_frames)
         arrays[f"contact_weight_{name}"] = _keypoint_contact_weights(motion, name, n_frames)
+    arrays.update(_foot_orientation_target_arrays(motion, n_frames))
+    if graph is not None:
+        foot_summaries = {
+            anchor.anchor_id: anchor.metadata.get("raw_contact_position_refinement", {}).get("foot_contact_summary")
+            for anchor in graph.anchors
+            if anchor.metadata.get("raw_contact_position_refinement", {}).get("foot_contact_summary") is not None
+        }
+        if foot_summaries:
+            arrays["motion_edit_foot_contact_summaries"] = _json_npz_value(foot_summaries)
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(path, **arrays)
+
+
+def _foot_orientation_target_arrays(motion: dict[str, Any], n_frames: int) -> dict[str, np.ndarray]:
+    if "body_quat_w" not in motion:
+        return {}
+    names = _motion_strings(motion, ("body_names", "body_name", "body_pos_w_names", "body_pos_names"))
+    if not names:
+        return {}
+    body_quat = np.asarray(motion["body_quat_w"], dtype=np.float64)
+    if body_quat.ndim != 3 or body_quat.shape[2] != 4:
+        return {}
+    out: dict[str, np.ndarray] = {}
+    for foot_name, link_name in (("left_foot", "left_ankle_roll_link"), ("right_foot", "right_ankle_roll_link")):
+        index = _index_by_alias_or_none(names, (link_name, f"{foot_name}_contact_point"))
+        if index is not None:
+            out[f"orientation_target_{foot_name}"] = body_quat[:n_frames, index, :4].copy()
+    return out
 
 
 def _semantic_body_weights(body_names: list[str], keypoint_names: list[str]) -> np.ndarray:
@@ -461,12 +494,28 @@ def _run_fullbody_ik_subprocess(
     ik_script: str | Path | None,
     ik_conda_env: str,
     ik_max_nfev: int | None,
+    foot_orientation_weight: float = 20.0,
+    contact_foot_orientation_weight: float = 80.0,
+    foot_toe_weight: float = 20.0,
+    contact_foot_toe_weight: float = 120.0,
 ) -> None:
     repo = Path(lte_repo_root or "/home/xiaz/lte").expanduser()
     script = Path(ik_script).expanduser() if ik_script else repo / "scripts" / "solve_lte_fullbody_ik.py"
     cmd = ["conda", "run", "-n", str(ik_conda_env), "python", str(script.resolve()), "--lte", str(lte_path.resolve()), "--out", str(ik_output_path.resolve())]
     if ik_max_nfev is not None:
         cmd.extend(["--max-nfev", str(int(ik_max_nfev))])
+    cmd.extend(
+        [
+            "--foot-orientation-weight",
+            str(float(foot_orientation_weight)),
+            "--contact-foot-orientation-weight",
+            str(float(contact_foot_orientation_weight)),
+            "--foot-toe-weight",
+            str(float(foot_toe_weight)),
+            "--contact-foot-toe-weight",
+            str(float(contact_foot_toe_weight)),
+        ]
+    )
     subprocess.run(cmd, cwd=str(repo), check=True)
 
 
@@ -660,7 +709,7 @@ def apply_contact_edit_plan_to_motion(
                 warnings=[f"would write LTE keypoints {lte_path}", f"would run fullbody IK to {ik_path}"],
             )
         work_dir.mkdir(parents=True, exist_ok=True)
-        _save_lte_keypoints(lte_path, keypoints=edited_keypoints, motion=motion, source_motion=source_motion, edits=edits)
+        _save_lte_keypoints(lte_path, keypoints=edited_keypoints, motion=motion, source_motion=source_motion, edits=edits, graph=graph)
         taskspace = _dense_taskspace_from_keypoints(motion, original_keypoints, edited_keypoints, source_motion, lte_path)
         np.savez(taskspace_path, **taskspace)
         _run_fullbody_ik_subprocess(
@@ -695,6 +744,13 @@ def apply_contact_edit_plan_to_motion(
             "moving_contact_handle_count": sum(1 for handle in handles if handle.get("kind") == "edited_contact"),
             "fixed_contact_handle_count": sum(1 for handle in handles if handle.get("kind") == "fixed_contact"),
             "zero_delta_fixed_handle_count": sum(1 for handle in handles if handle.get("zero_delta_edit")),
+            "foot_orientation_targets": [key for key in ("orientation_target_left_foot", "orientation_target_right_foot") if key in _foot_orientation_target_arrays(motion, len(next(iter(edited_keypoints.values()))))],
+            "foot_stabilization": {
+                "foot_orientation_weight": 20.0,
+                "contact_foot_orientation_weight": 80.0,
+                "foot_toe_weight": 20.0,
+                "contact_foot_toe_weight": 120.0,
+            },
             "warnings": warnings,
             "edits": [edit.to_dict() for edit in edits],
             "lte_debug": result.get("debug", {}),

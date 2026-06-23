@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,17 @@ PART_ALIASES = {
 
 UP_DOT_THRESHOLD = 0.5
 EDGE_DISTANCE_THRESHOLD = 0.05
+FOOT_PARTS = {"left_foot", "right_foot", "lf", "rf"}
+
+
+@dataclass(frozen=True)
+class _PreparedSurface:
+    record: ContactSurfaceRecord
+    origin: np.ndarray
+    normal: np.ndarray
+    tangent_u: np.ndarray
+    tangent_v: np.ndarray
+    polygon: list[tuple[float, float]]
 
 
 class RawContactMotion:
@@ -41,9 +52,35 @@ class RawContactMotion:
         self.raw_contact_count = np.asarray(self.data["raw_contact_count"], dtype=np.int64)
         self.raw_contact_point0_w = np.asarray(self.data["raw_contact_point0_w"], dtype=np.float64)
         self.raw_contact_point1_w = np.asarray(self.data["raw_contact_point1_w"], dtype=np.float64)
+        self.raw_contact_force_w = (
+            np.asarray(self.data["raw_contact_force_w"], dtype=np.float64)
+            if "raw_contact_force_w" in self.data
+            else None
+        )
+        self.raw_contact_shape1 = (
+            np.asarray(self.data["raw_contact_shape1"], dtype=np.int64)
+            if "raw_contact_shape1" in self.data
+            else None
+        )
         self.part_position_w = np.asarray(self.data["contact_force_part_position_w"], dtype=np.float64)
         self.part_order = [str(item).lower() for item in np.asarray(self.data["contact_force_part_order"]).tolist()]
         self.part_index_by_alias = _part_index_by_alias(self.part_order)
+        self.nearest_part_index, self.nearest_part_distance = self._compute_nearest_parts()
+
+    def _compute_nearest_parts(self) -> tuple[np.ndarray, np.ndarray]:
+        nearest = np.full(self.raw_contact_point1_w.shape[:2], -1, dtype=np.int16)
+        nearest_distance = np.full(self.raw_contact_point1_w.shape[:2], np.inf, dtype=np.float32)
+        for frame, raw_count in enumerate(self.raw_contact_count):
+            count = min(int(raw_count), self.raw_contact_point1_w.shape[1])
+            if count <= 0:
+                continue
+            robot_points = self.raw_contact_point1_w[frame, :count]
+            part_positions = self.part_position_w[frame]
+            distances = np.linalg.norm(robot_points[:, None, :] - part_positions[None, :, :], axis=-1)
+            frame_nearest = np.argmin(distances, axis=-1)
+            nearest[frame, :count] = frame_nearest.astype(np.int16)
+            nearest_distance[frame, :count] = distances[np.arange(count), frame_nearest].astype(np.float32)
+        return nearest, nearest_distance
 
 
 def _part_index_by_alias(part_order: list[str]) -> dict[str, int]:
@@ -65,7 +102,40 @@ def _anchor_part_index(anchor: ContactAnchorRecord, raw: RawContactMotion) -> in
     return None
 
 
-def _project_sample_to_surface(point: np.ndarray, surface: ContactSurfaceRecord, max_distance: float) -> tuple[np.ndarray, dict[str, Any]] | None:
+def _is_foot_anchor(anchor: ContactAnchorRecord) -> bool:
+    body = anchor.body.lower()
+    return body in FOOT_PARTS or "foot" in body or "ankle" in body
+
+
+def _prepare_surface(surface: ContactSurfaceRecord, *, require_polygon: bool) -> _PreparedSurface:
+    surface.validate()
+    polygon = (
+        surface_polygon_uv(
+            surface.metadata,
+            origin=surface.origin,
+            tangent_u=surface.tangent_u,
+            tangent_v=surface.tangent_v,
+        )
+        if require_polygon
+        else []
+    )
+    return _PreparedSurface(
+        record=surface,
+        origin=np.asarray(surface.origin, dtype=np.float64),
+        normal=np.asarray(surface.normal, dtype=np.float64),
+        tangent_u=np.asarray(surface.tangent_u, dtype=np.float64),
+        tangent_v=np.asarray(surface.tangent_v, dtype=np.float64),
+        polygon=polygon,
+    )
+
+
+def _project_sample_to_surface(
+    point: np.ndarray,
+    surface: ContactSurfaceRecord,
+    max_distance: float,
+    *,
+    require_polygon: bool = True,
+) -> tuple[np.ndarray, dict[str, Any]] | None:
     surface.validate()
     origin = np.asarray(surface.origin, dtype=np.float64)
     normal = np.asarray(surface.normal, dtype=np.float64)
@@ -78,24 +148,55 @@ def _project_sample_to_surface(point: np.ndarray, surface: ContactSurfaceRecord,
     local = projected - origin
     u = float(np.dot(local, tangent_u))
     v = float(np.dot(local, tangent_v))
-    polygon = surface_polygon_uv(
-        surface.metadata,
-        origin=surface.origin,
-        tangent_u=surface.tangent_u,
-        tangent_v=surface.tangent_v,
+    polygon = (
+        surface_polygon_uv(
+            surface.metadata,
+            origin=surface.origin,
+            tangent_u=surface.tangent_u,
+            tangent_v=surface.tangent_v,
+        )
+        if require_polygon
+        else []
     )
-    if surface.surface_type == "mesh_face" and not polygon:
+    if require_polygon and surface.surface_type == "mesh_face" and not polygon:
         return None
-    if polygon:
-        inside = point_in_polygon_uv((u, v), polygon)
-    else:
-        inside = _inside_bounds(u, v, surface.bounds)
+    inside = point_in_polygon_uv((u, v), polygon) if polygon else _inside_bounds(u, v, surface.bounds)
     if not inside:
         return None
     metadata = {
         "surface_id": surface.surface_id,
         "object_id": surface.object_id,
         "surface_type": surface.surface_type,
+        "signed_surface_distance": signed_distance,
+        "surface_coordinates": {"u": u, "v": v},
+    }
+    return projected, metadata
+
+
+def _project_sample_to_prepared_surface(
+    point: np.ndarray,
+    surface: _PreparedSurface,
+    max_distance: float,
+    *,
+    require_polygon: bool,
+) -> tuple[np.ndarray, dict[str, Any]] | None:
+    record = surface.record
+    signed_distance = float(np.dot(point - surface.origin, surface.normal))
+    if abs(signed_distance) > max_distance:
+        return None
+    projected = point - signed_distance * surface.normal
+    local = projected - surface.origin
+    u = float(np.dot(local, surface.tangent_u))
+    v = float(np.dot(local, surface.tangent_v))
+    if require_polygon and record.surface_type == "mesh_face" and not surface.polygon:
+        return None
+    inside = point_in_polygon_uv((u, v), surface.polygon) if surface.polygon else _inside_bounds(u, v, record.bounds)
+    if not inside:
+        return None
+    metadata = {
+        "surface_id": record.surface_id,
+        "object_id": record.object_id,
+        "surface_type": record.surface_type,
         "signed_surface_distance": signed_distance,
         "surface_coordinates": {"u": u, "v": v},
     }
@@ -191,6 +292,13 @@ def _classify_surface_candidates(
     max_surface_distance: float,
 ) -> dict[str, Any]:
     if accepted_count > 0:
+        if surfaces and len(surfaces) == 1:
+            surface = surfaces[0]
+            if surface.surface_id == "terrain_ground_z0":
+                return {"binding_candidate_class": "ground"}
+            if float(surface.normal[2]) > UP_DOT_THRESHOLD:
+                return {"binding_candidate_class": "top"}
+            return {"binding_candidate_class": "side_filtered"}
         accepted_relations = [
             relation
             for point in assigned_points
@@ -285,6 +393,11 @@ def estimate_anchor_position_from_raw_contacts(
         return None, metadata
 
     samples: list[np.ndarray] = []
+    accepted_robot_points: list[np.ndarray] = []
+    accepted_surface_points: list[np.ndarray] = []
+    accepted_forces: list[np.ndarray] = []
+    accepted_shapes: list[int] = []
+    accepted_frames: list[int] = []
     raw_samples = 0
     assigned_samples = 0
     rejected_surface_samples = 0
@@ -292,6 +405,13 @@ def estimate_anchor_position_from_raw_contacts(
     surface_hits: dict[str, int] = {}
     surface_sample_metadata: list[dict[str, Any]] = []
     assigned_surface_points: list[np.ndarray] = []
+    candidate_surfaces = _surfaces_for_anchor(anchor, surfaces)
+    require_surface_polygon = not bool(anchor.surface_id and candidate_surfaces)
+    prepared_surfaces = (
+        [_prepare_surface(surface, require_polygon=require_surface_polygon) for surface in candidate_surfaces]
+        if candidate_surfaces
+        else None
+    )
     for frame in range(start, end):
         count = int(raw.raw_contact_count[frame])
         if count <= 0:
@@ -301,31 +421,48 @@ def estimate_anchor_position_from_raw_contacts(
         for contact_index in range(count):
             raw_samples += 1
             robot_point = raw.raw_contact_point1_w[frame, contact_index]
-            distances = np.linalg.norm(part_positions - robot_point[None, :], axis=1)
-            nearest = int(np.argmin(distances))
-            nearest_distance = float(distances[nearest])
+            nearest = int(raw.nearest_part_index[frame, contact_index])
+            nearest_distance = float(raw.nearest_part_distance[frame, contact_index])
             if nearest != part_index or nearest_distance > max_part_distance:
                 continue
             assigned_samples += 1
             nearest_distances.append(nearest_distance)
             surface_point = raw.raw_contact_point0_w[frame, contact_index]
             assigned_surface_points.append(surface_point)
-            if surfaces:
+            if prepared_surfaces:
                 projected_candidates = [
                     candidate
-                    for surface in surfaces
-                    if (candidate := _project_sample_to_surface(surface_point, surface, max_surface_distance)) is not None
+                    for surface in prepared_surfaces
+                    if (
+                        candidate := _project_sample_to_prepared_surface(
+                            surface_point,
+                            surface,
+                            max_surface_distance,
+                            require_polygon=require_surface_polygon,
+                        )
+                    )
+                    is not None
                 ]
                 if not projected_candidates:
                     rejected_surface_samples += 1
                     continue
                 projected, sample_meta = min(projected_candidates, key=lambda item: abs(float(item[1]["signed_surface_distance"])))
                 samples.append(projected)
+                accepted_surface_points.append(projected)
                 surface_id = str(sample_meta["surface_id"])
                 surface_hits[surface_id] = surface_hits.get(surface_id, 0) + 1
                 surface_sample_metadata.append(sample_meta)
             else:
                 samples.append(surface_point)
+                accepted_surface_points.append(surface_point)
+            accepted_robot_points.append(robot_point)
+            accepted_forces.append(
+                np.asarray(raw.raw_contact_force_w[frame, contact_index], dtype=np.float64)
+                if raw.raw_contact_force_w is not None
+                else np.zeros(3, dtype=np.float64)
+            )
+            accepted_shapes.append(int(raw.raw_contact_shape1[frame, contact_index]) if raw.raw_contact_shape1 is not None else -1)
+            accepted_frames.append(frame)
 
     metadata.update(
         {
@@ -343,7 +480,7 @@ def estimate_anchor_position_from_raw_contacts(
         _classify_surface_candidates(
             assigned_points=assigned_surface_points,
             accepted_count=len(samples),
-            surfaces=surfaces,
+            surfaces=candidate_surfaces,
             max_surface_distance=max_surface_distance,
         )
     )
@@ -367,7 +504,126 @@ def estimate_anchor_position_from_raw_contacts(
     metadata["last_raw_contact_point0_w"] = positions[-1].tolist()
     if surface_sample_metadata:
         metadata["surface_sample_metadata"] = surface_sample_metadata[:10]
+    if _is_foot_anchor(anchor):
+        heel_toe = estimate_heel_toe_contact_summary(
+            anchor=anchor,
+            robot_points=accepted_robot_points,
+            surface_points=accepted_surface_points,
+            forces=accepted_forces,
+            shape_ids=accepted_shapes,
+            frames=accepted_frames,
+        )
+        if heel_toe is not None:
+            metadata["foot_contact_summary"] = heel_toe
     return position.tolist(), metadata
+
+
+def _surfaces_for_anchor(anchor: ContactAnchorRecord, surfaces: list[ContactSurfaceRecord] | None) -> list[ContactSurfaceRecord] | None:
+    if not surfaces:
+        return None
+    if anchor.surface_id:
+        selected = [surface for surface in surfaces if surface.surface_id == anchor.surface_id]
+        if selected:
+            return selected
+    return surfaces
+
+
+def estimate_heel_toe_contact_summary(
+    *,
+    anchor: ContactAnchorRecord,
+    robot_points: list[np.ndarray],
+    surface_points: list[np.ndarray],
+    forces: list[np.ndarray],
+    shape_ids: list[int],
+    frames: list[int],
+) -> dict[str, Any] | None:
+    if len(surface_points) < 2:
+        return None
+    surface_arr = np.asarray(surface_points, dtype=np.float64)
+    robot_arr = np.asarray(robot_points, dtype=np.float64)
+    force_arr = np.asarray(forces, dtype=np.float64) if forces else np.zeros_like(surface_arr)
+    rel = robot_arr - np.median(robot_arr, axis=0, keepdims=True)
+    axis = _principal_horizontal_axis(rel)
+    coord = rel @ axis
+    split = float(np.median(coord))
+    is_toe_positive = _toe_positive_for_body(anchor.body)
+    groups = {
+        "heel": coord <= split if is_toe_positive else coord >= split,
+        "toe": coord > split if is_toe_positive else coord < split,
+    }
+    contacts: dict[str, Any] = {}
+    for name, mask in groups.items():
+        if int(np.count_nonzero(mask)) == 0:
+            continue
+        contacts[name] = _foot_subcontact_stats(
+            name=name,
+            surface_points=surface_arr[mask],
+            robot_points=robot_arr[mask],
+            forces=force_arr[mask],
+            shape_ids=[shape_ids[index] for index, value in enumerate(mask) if bool(value)],
+            frames=[frames[index] for index, value in enumerate(mask) if bool(value)],
+            axis_coordinates=coord[mask],
+        )
+    if not contacts:
+        return None
+    return {
+        "schema_version": 1,
+        "method": "raw_contact_pca_heel_toe",
+        "binding_granularity": "heel_toe_point_contacts",
+        "axis_world": axis.tolist(),
+        "axis_split": split,
+        "toe_positive": is_toe_positive,
+        "sample_count": int(len(surface_points)),
+        "contacts": contacts,
+    }
+
+
+def _principal_horizontal_axis(points: np.ndarray) -> np.ndarray:
+    xy = np.asarray(points[:, :2], dtype=np.float64)
+    if xy.shape[0] < 2 or float(np.linalg.norm(xy)) <= 1.0e-12:
+        return np.asarray([1.0, 0.0, 0.0], dtype=np.float64)
+    centered = xy - np.mean(xy, axis=0, keepdims=True)
+    _, _, vh = np.linalg.svd(centered, full_matrices=False)
+    axis_xy = vh[0]
+    if float(np.linalg.norm(axis_xy)) <= 1.0e-12:
+        axis_xy = np.asarray([1.0, 0.0], dtype=np.float64)
+    axis = np.asarray([axis_xy[0], axis_xy[1], 0.0], dtype=np.float64)
+    axis /= np.linalg.norm(axis)
+    return axis
+
+
+def _toe_positive_for_body(body: str) -> bool:
+    # In the current G1 rollout convention, larger coordinate along the
+    # principal foot axis corresponds to the front/toe cluster. If future
+    # assets provide an explicit foot frame, this should use that frame.
+    return True
+
+
+def _foot_subcontact_stats(
+    *,
+    name: str,
+    surface_points: np.ndarray,
+    robot_points: np.ndarray,
+    forces: np.ndarray,
+    shape_ids: list[int],
+    frames: list[int],
+    axis_coordinates: np.ndarray,
+) -> dict[str, Any]:
+    unique_shapes = sorted({int(shape) for shape in shape_ids if int(shape) >= 0})
+    force_norm = np.linalg.norm(forces, axis=1) if len(forces) else np.asarray([], dtype=np.float64)
+    return {
+        "name": name,
+        "world_position": np.median(surface_points, axis=0).tolist(),
+        "robot_position_world": np.median(robot_points, axis=0).tolist(),
+        "sample_count": int(surface_points.shape[0]),
+        "frame_start": int(min(frames)) if frames else None,
+        "frame_end": int(max(frames) + 1) if frames else None,
+        "raw_shape_ids": unique_shapes,
+        "mean_force_w": np.mean(forces, axis=0).tolist() if len(forces) else [0.0, 0.0, 0.0],
+        "force_norm_mean": float(np.mean(force_norm)) if len(force_norm) else 0.0,
+        "axis_coordinate_median": float(np.median(axis_coordinates)),
+        "confidence": float(min(1.0, surface_points.shape[0] / 20.0)),
+    }
 
 
 def refine_contact_graph_anchor_positions_from_raw_contacts(
