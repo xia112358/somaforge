@@ -74,6 +74,7 @@ def contact_timeline_state(
         "pending_edit_count": len(controller.pending_edits()),
         "last_message": controller.state.last_message,
         "last_error": controller.state.last_error,
+        "recent_motions": controller.recent_motion_items() if hasattr(controller, "recent_motion_items") else [],
         "bodies": bodies,
         "anchors": anchors,
     }
@@ -91,10 +92,11 @@ html, body {{ margin: 0; height: 100%; background: #080b12; color: #e8ecf7; font
 #app {{ height: 100%; display: grid; grid-template-rows: minmax(0, 1fr) 286px; }}
 #viewer {{ width: 100%; height: 100%; border: 0; background: #05070c; }}
 #panel {{ border-top: 1px solid #26314a; background: #101622; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 8px; padding: 8px 12px 10px; box-sizing: border-box; min-height: 0; }}
-#top {{ display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; }}
+#top {{ display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; }}
 #title {{ font-size: 14px; font-weight: 650; }}
 #readout, #status, #hint {{ color: #95a6c8; font: 12px ui-monospace, monospace; overflow-wrap: anywhere; }}
 #controls {{ display: flex; gap: 8px; align-items: center; justify-content: flex-end; }}
+select {{ height: 30px; min-width: 220px; max-width: 320px; border: 1px solid #34415f; border-radius: 5px; background: #101827; color: #dce7ff; padding: 0 8px; }}
 button {{ height: 30px; border: 1px solid #34415f; border-radius: 5px; background: #172033; color: #dce7ff; padding: 0 10px; cursor: pointer; }}
 button.primary {{ background: #1d5f8f; border-color: #2b8eca; color: white; }}
 button.danger {{ background: #67212a; border-color: #a33a45; }}
@@ -122,6 +124,10 @@ button.danger {{ background: #67212a; border-color: #a33a45; }}
         <button id="play" class="primary">Play</button>
         <button id="prev">Prev</button>
         <button id="next">Next</button>
+        <select id="recent"></select>
+        <button id="openRecent">Open</button>
+        <button id="openLatest">Open latest</button>
+        <button id="reloadMotion">Reload</button>
         <button id="discard" class="danger">Discard</button>
       </div>
     </div>
@@ -138,6 +144,7 @@ const timeline = document.getElementById('timeline');
 const current = document.getElementById('current');
 const readout = document.getElementById('readout');
 const message = document.getElementById('message');
+const recentSelect = document.getElementById('recent');
 function clamp(x, lo, hi) {{ return Math.max(lo, Math.min(hi, x)); }}
 function railRect() {{
   const rect = timeline.getBoundingClientRect();
@@ -165,6 +172,15 @@ function render() {{
   document.getElementById('play').textContent = state.playing ? 'Pause' : 'Play';
   readout.textContent = `${{state.motion_name}}  frame=${{state.current_frame}}/${{Math.max(0, state.n_frames - 1)}}  anchors=${{state.anchors.length}}  pending=${{state.pending_edit_count}}  selected=${{state.selected_anchor_id || '-'}}`;
   message.textContent = state.last_error || state.last_message || '';
+  const selectedRecent = recentSelect.value;
+  recentSelect.innerHTML = '';
+  (state.recent_motions || []).forEach((item, index) => {{
+    const option = document.createElement('option');
+    option.value = String(index);
+    option.textContent = item.label || item.motion_path;
+    recentSelect.appendChild(option);
+  }});
+  if (selectedRecent && Number(selectedRecent) < recentSelect.options.length) recentSelect.value = selectedRecent;
   for (const el of [...timeline.querySelectorAll('.laneLabel,.anchorBlock,.tick')]) el.remove();
   for (const f of [0, Math.max(0, state.n_frames - 1)]) {{
     const t = document.createElement('div');
@@ -205,6 +221,9 @@ timeline.addEventListener('pointercancel', () => {{ dragging = false; }});
 document.getElementById('play').onclick = () => api('/api/play', {{playing: !state.playing}});
 document.getElementById('prev').onclick = () => api('/api/frame', {{frame: state.current_frame - 1}});
 document.getElementById('next').onclick = () => api('/api/frame', {{frame: state.current_frame + 1}});
+document.getElementById('openRecent').onclick = () => api('/api/open_recent', {{index: Number(recentSelect.value || 0)}});
+document.getElementById('openLatest').onclick = () => api('/api/open_latest', {{}});
+document.getElementById('reloadMotion').onclick = () => api('/api/reload_motion', {{}});
 document.getElementById('discard').onclick = () => api('/api/discard', {{}});
 window.addEventListener('keydown', event => {{
   if (!state) return;
@@ -276,6 +295,12 @@ def start_contact_timeline_wrapper(
                     controller.save()
                 elif path == "/api/discard":
                     controller.discard()
+                elif path == "/api/open_recent":
+                    controller.open_recent_motion(int(body.get("index", 0)))
+                elif path == "/api/open_latest":
+                    controller.open_latest_motion()
+                elif path == "/api/reload_motion":
+                    controller.reload_current_motion()
                 else:
                     controller.state.last_error = f"unknown timeline API path: {path}"
             except Exception as exc:

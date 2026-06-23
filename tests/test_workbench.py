@@ -73,6 +73,7 @@ from motion_edit.viewer.surface_overlay_player import (
 )
 from motion_edit.storage.schema import MotionAssetRecord
 from motion_edit.storage.io import write_motion_asset
+from motion_edit.workbench.recent import RecentMotionEntry, read_recent_motions, recent_entry_labels, upsert_recent_motion
 from motion_edit.workbench.surface_editor_session import read_pending_surface_edits
 
 
@@ -921,6 +922,9 @@ class SurfaceEditorSessionTests(unittest.TestCase):
             state = load_editor_state(session.session_dir / "session.json")
             controller = SurfaceEditorController.create(_FakeServer(), state)
             controller.select_anchor(graph.anchors[0].anchor_id)
+            controller.recent_motion_items = lambda: [  # type: ignore[method-assign]
+                {"label": "motion_a", "motion_path": str(root / "motion_a.npz"), "motion_id": "motion_a"}
+            ]
             payload = contact_timeline_state(
                 controller=controller,
                 playback=_FakePlayback(n_frames=4, frame=2),
@@ -933,6 +937,7 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertEqual(payload["bodies"], ["LF", "RH"])
         self.assertEqual(len(payload["anchors"]), 2)
         self.assertEqual(payload["anchors"][0]["status"], "selected")
+        self.assertEqual(payload["recent_motions"][0]["label"], "motion_a")
 
     def test_contact_timeline_html_embeds_viser_iframe_and_anchor_api(self) -> None:
         html = _timeline_html(viser_url="http://localhost:8084")
@@ -940,8 +945,29 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertIn("<iframe id=\"viewer\"", html)
         self.assertIn("http://localhost:8084", html)
         self.assertIn("/api/select_anchor", html)
+        self.assertIn("/api/open_recent", html)
+        self.assertIn("openLatest", html)
         self.assertIn("anchorBlock", html)
         self.assertIn("#bottom", html)
+
+    def test_recent_motions_upsert_prunes_and_deduplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "recent.json"
+            motion_a = root / "a.npz"
+            motion_b = root / "b.npz"
+            motion_a.write_bytes(b"a")
+            motion_b.write_bytes(b"b")
+
+            upsert_recent_motion(RecentMotionEntry(label="a", motion_path=str(motion_a), motion_id="a"), cache)
+            upsert_recent_motion(RecentMotionEntry(label="b", motion_path=str(motion_b), motion_id="b"), cache)
+            upsert_recent_motion(RecentMotionEntry(label="a2", motion_path=str(motion_a), motion_id="a"), cache)
+            motion_b.unlink()
+            entries = read_recent_motions(cache)
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].label, "a2")
+        self.assertEqual(recent_entry_labels(entries), ["a2"])
 
     def test_loaded_surface_editor_sidebar_restores_file_and_session_controls(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1001,7 +1027,7 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertIn("Motion", server.gui.folders)
         self.assertIn("Contact Anchor", server.gui.folders)
         self.assertIn("Augmentation", server.gui.folders)
-        self.assertIn("Load Motion Bundle...", server.gui.buttons)
+        self.assertNotIn("Load Motion Bundle...", server.gui.buttons)
         self.assertIn("Validate plan", server.gui.buttons)
         self.assertIn("Dry run fullbody LTE", server.gui.buttons)
         self.assertIn("Generate fullbody LTE", server.gui.buttons)

@@ -250,9 +250,11 @@ The session includes a surface binding report, surface binding overlay, contact 
 
 The local adapter reads the existing overlay JSON and renders the motion root trace, robot playback, optional terrain/object URDF, `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects in Viser. The bottom cutter-style timeline owns playback/scrubbing and contact interval selection. The right sidebar is organized around the current workflow:
 
-- `Motion`: current motion/session, overlay reload, and loading another registered motion bundle.
+- `Motion`: current motion/session, overlay reload, and status.
 - `Contact Anchor`: selected-anchor metadata only.
 - `Augmentation`: write/validate the ContactEditPlan, dry-run fullbody LTE, generate the augmented motion, reset the session, and optionally export a debug ContactLayer.
+
+The bottom timeline top bar owns motion switching. It includes a recent-motion dropdown plus `Open`, `Open latest`, and `Reload`. All entries are treated as regular motions with the same bundle-style fields; raw rollout and LTE-augmented outputs are not special UI modes. Generated motions are added to `data/workbench/recent_motions.json` after successful generation, so the next step is usually `Open latest`.
 
 3D selection and handle editing are same-surface constrained. Anchor markers can be clicked in the 3D view when supported by the local Viser runtime. The selected anchor shows a handle with tangent axes, normal axis, and surface bounds. Dragging this handle is not a free 3D transform: the dragged world point is projected back into the anchor's original surface coordinates, any normal component is discarded, and the anchor keeps the same `surface_id` and `object_id`. Bounds are enforced by the current reject/clamp mode. A normal-only drag is ignored as a no-op.
 
@@ -285,8 +287,9 @@ Practical in-viewer workflow:
 3. Move by 3D same-surface drag, `du`/`dv`, step buttons, or target `u/v`.
 4. Use `Reset session` or `Discard unsaved edits` if needed.
 5. Click `Validate plan`, then `Dry run fullbody LTE` or `Generate fullbody LTE`.
+6. Click `Open latest` in the bottom timeline bar to switch to the newly generated motion.
 
-Validation writes pending `ContactAnchorEditRecord` entries into the ContactEditPlan and marks a valid draft plan as `validated`; it does not export a ContactLayer. `Generate fullbody LTE` then creates a new augmented motion from that plan. `Export debug ContactLayer` is available for inspection, but it is not the main workflow. None of these actions modify the original motion `.npz` or mutate canonical segmentation by default.
+Validation writes pending `ContactAnchorEditRecord` entries into the ContactEditPlan and marks a valid draft plan as `validated`; it does not export a ContactLayer. `Generate fullbody LTE` then creates a new motion from that plan and records it in the recent-motion cache. `Export debug ContactLayer` is available for inspection, but it is not the main workflow. None of these actions modify the currently loaded motion `.npz` or mutate canonical segmentation by default.
 
 ## Contact Anchor Edit Plans
 

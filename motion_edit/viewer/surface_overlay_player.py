@@ -30,6 +30,7 @@ from motion_edit.workbench import (
     write_surface_editor_graph,
 )
 from motion_edit.workbench.contact_editor_setup import ContactEditorConfig, infer_terrain_urdf, prepare_contact_editor_session as prepare_contact_editor_workbench_session
+from motion_edit.workbench.recent import RecentMotionEntry, recent_entry_labels, read_recent_motions, upsert_recent_motion
 from motion_edit.workbench.surface_editor_session import SurfaceEditorSession
 
 
@@ -115,6 +116,12 @@ class SurfaceEditorController:
     drag_mode_getter: Any = None
     edit_mode: str = "direct"
     current_frame_getter: Any = None
+    timeline_port: int = 8094
+    default_mode: str = "reject"
+    show_only: str = "all"
+    fps: int = 50
+    robot_urdf: str | None = None
+    terrain_urdf: str | None = None
 
     @classmethod
     def create(cls, server: Any, state: SurfaceOverlayEditorState) -> "SurfaceEditorController":
@@ -450,6 +457,50 @@ class SurfaceEditorController:
                 edit_mode=self.edit_mode,
             )
         return self.last_overlay
+
+    def recent_motion_items(self) -> list[dict[str, Any]]:
+        items = read_recent_motions()
+        labels = recent_entry_labels(items)
+        return [
+            {
+                "index": index,
+                "label": labels[index],
+                "motion_path": item.motion_path,
+                "motion_id": item.motion_id,
+                "contact_layer": item.contact_layer,
+            }
+            for index, item in enumerate(items)
+        ]
+
+    def open_recent_motion(self, index: int) -> None:
+        items = read_recent_motions()
+        if not items:
+            raise ValueError("no recent motions")
+        if index < 0 or index >= len(items):
+            raise ValueError(f"recent motion index out of range: {index}")
+        _exec_loaded_editor_from_recent_entry(
+            items[index],
+            timeline_port=self.timeline_port,
+            edit_mode=self.edit_mode,
+            default_mode=self.default_mode,
+            show_only=self.show_only,
+            fps=self.fps,
+            robot_urdf=self.robot_urdf,
+        )
+
+    def open_latest_motion(self) -> None:
+        self.open_recent_motion(0)
+
+    def reload_current_motion(self) -> None:
+        _exec_loaded_editor_from_recent_entry(
+            _recent_entry_from_session(self.state.session, terrain_urdf=self.terrain_urdf),
+            timeline_port=self.timeline_port,
+            edit_mode=self.edit_mode,
+            default_mode=self.default_mode,
+            show_only=self.show_only,
+            fps=self.fps,
+            robot_urdf=self.robot_urdf,
+        )
 
 
 def load_editor_state(session_path: str | Path) -> SurfaceOverlayEditorState:
@@ -1010,6 +1061,94 @@ def _contact_editor_config_from_motion_asset(path: str | Path) -> ContactEditorC
     )
 
 
+def _recent_entry_from_motion_asset(path: str | Path) -> RecentMotionEntry:
+    selected_path = Path(path).expanduser()
+    record = read_motion_asset(selected_path.stem, selected_path)
+    derived = record.derived or {}
+    return RecentMotionEntry(
+        label=record.motion_asset_id,
+        motion_asset_path=str(selected_path),
+        motion_path=record.motion_path,
+        motion_id=record.motion_id or record.motion_asset_id,
+        terrain_urdf=record.terrain_urdf,
+        contact_layer=derived.get("bound_contact_layer") or derived.get("contact_layer"),
+        surface_catalog=record.surface_catalog_path,
+        edit_plan_path=derived.get("edit_plan_path"),
+        output_contact_layer=derived.get("output_contact_layer"),
+        metadata={"source": "motion_asset"},
+    )
+
+
+def _contact_editor_config_from_recent_entry(entry: RecentMotionEntry) -> ContactEditorConfig:
+    if entry.motion_asset_path:
+        try:
+            return _contact_editor_config_from_motion_asset(entry.motion_asset_path)
+        except Exception:
+            pass
+    if not entry.contact_layer:
+        raise ValueError(f"recent motion has no contact layer: {entry.label}")
+    return ContactEditorConfig(
+        motion=entry.motion_path,
+        motion_id=entry.motion_id,
+        source_contact_layer=entry.contact_layer,
+        session_name=f"{_safe_name(entry.label or entry.motion_id)}_contact_editor",
+        surface_catalog=entry.surface_catalog,
+        terrain_urdf=entry.terrain_urdf,
+        output_prefix=f"contact/{_safe_name(entry.label or entry.motion_id)}_contact_editor",
+        edit_plan=entry.edit_plan_path,
+        output_contact_layer=entry.output_contact_layer,
+        repo_root=None,
+        with_terrain=bool(entry.terrain_urdf),
+    )
+
+
+def _recent_entry_from_session(
+    session: SurfaceEditorSession,
+    *,
+    label: str | None = None,
+    terrain_urdf: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> RecentMotionEntry:
+    return RecentMotionEntry(
+        label=label or Path(session.motion_path).stem,
+        motion_path=session.motion_path,
+        motion_id=session.motion_id,
+        terrain_urdf=terrain_urdf,
+        contact_layer=session.contact_layer,
+        surface_catalog=session.surface_catalog,
+        edit_plan_path=session.edit_plan_path,
+        output_contact_layer=session.output_contact_layer,
+        metadata=metadata or {},
+    )
+
+
+def _recent_entry_from_generated_session(
+    session: SurfaceEditorSession,
+    *,
+    output_motion: str,
+    output_contact_layer: str | None,
+    output_segment_layer: str | None,
+    output_motion_version_id: str | None,
+    terrain_urdf: str | None = None,
+) -> RecentMotionEntry:
+    label = output_motion_version_id or Path(output_motion).stem
+    return RecentMotionEntry(
+        label=label,
+        motion_path=output_motion,
+        motion_id=output_motion_version_id or session.motion_id,
+        terrain_urdf=terrain_urdf,
+        contact_layer=output_contact_layer,
+        surface_catalog=session.surface_catalog,
+        edit_plan_path=session.edit_plan_path,
+        output_contact_layer=output_contact_layer,
+        metadata={
+            "kind": "lte_augmented",
+            "parent_motion_path": session.motion_path,
+            "output_segment_layer": output_segment_layer,
+        },
+    )
+
+
 def _loaded_editor_command_from_config(
     config: ContactEditorConfig,
     *,
@@ -1084,6 +1223,35 @@ def _exec_loaded_editor_from_motion_asset(
     os.execv(sys.executable, cmd)
 
 
+def _exec_loaded_editor_from_recent_entry(
+    entry: RecentMotionEntry,
+    *,
+    timeline_port: int,
+    edit_mode: str,
+    default_mode: str,
+    show_only: str,
+    fps: int,
+    robot_urdf: str | Path | None = None,
+) -> None:
+    config = _contact_editor_config_from_recent_entry(entry)
+    cmd, prepared = _loaded_editor_command_from_config(
+        config,
+        timeline_port=timeline_port,
+        edit_mode=edit_mode,
+        default_mode=default_mode,
+        show_only=show_only,
+        fps=fps,
+        robot_urdf=robot_urdf,
+    )
+    upsert_recent_motion(entry)
+    print(
+        "[surface editor] loaded recent motion "
+        f"{entry.label}: anchors={prepared.ready_anchor_count} session={prepared.session.session_dir}"
+    )
+    print(f"[surface editor] exec: {' '.join(cmd)}")
+    os.execv(sys.executable, cmd)
+
+
 def _add_loaded_editor_sidebar(
     server: Any,
     *,
@@ -1130,7 +1298,6 @@ def _add_loaded_editor_sidebar(
         frame_text = server.gui.add_text("frame", initial_value=_current_frame_text())
         frame_text.disabled = True
         status = server.gui.add_text("status", initial_value="ready", multiline=True)
-        load_motion_btn = server.gui.add_button("Load Motion Bundle...")
         reload_btn = server.gui.add_button("Reload overlay")
     status_refs["frame"] = frame_text
     status_refs["status"] = status
@@ -1161,27 +1328,6 @@ def _add_loaded_editor_sidebar(
         reset_btn = server.gui.add_button("Reset session")
         discard_btn = server.gui.add_button("Discard unsaved edits")
     status_refs["plan_info"] = plan_info
-
-    @load_motion_btn.on_click
-    def _(_) -> None:
-        try:
-            selected = _filtered_open_file_dialog(title="Load Motion", load_type="Motion")
-            if not selected:
-                _set_status("no motion selected")
-                return
-            _set_status(f"loading motion: {selected}")
-            _exec_loaded_editor_from_motion_asset(
-                selected,
-                timeline_port=int(args.timeline_port),
-                edit_mode=str(args.edit_mode),
-                default_mode=str(args.default_mode),
-                show_only=str(args.show_only),
-                fps=int(args.fps),
-                robot_urdf=args.robot_urdf,
-            )
-        except Exception as exc:
-            controller.state.last_error = str(exc)
-            _refresh_info()
 
     @reload_btn.on_click
     def _(_) -> None:
@@ -1214,17 +1360,32 @@ def _add_loaded_editor_sidebar(
         _refresh_info()
 
     def _run_generation(*, dry_run: bool) -> None:
+        generated_motion = str(output_motion.value).strip()
+        generated_contact_layer = str(output_contact_layer.value).strip() or None
+        generated_segment_layer = str(output_segment_layer.value).strip() or None
+        generated_motion_version_id = str(output_motion_version_id.value).strip() or None
         result = _generate_fullbody_lte_from_session(
             controller.state.session,
-            output_motion=str(output_motion.value).strip(),
-            output_motion_version_id=str(output_motion_version_id.value).strip() or None,
-            output_contact_layer=str(output_contact_layer.value).strip() or None,
-            output_segment_layer=str(output_segment_layer.value).strip() or None,
+            output_motion=generated_motion,
+            output_motion_version_id=generated_motion_version_id,
+            output_contact_layer=generated_contact_layer,
+            output_segment_layer=generated_segment_layer,
             intermediate_dir=str(intermediate_dir.value).strip() or None,
             dry_run=dry_run,
             overwrite=bool(overwrite.value),
             register_motion_version=bool(register_motion_version.value),
         )
+        if not dry_run:
+            upsert_recent_motion(
+                _recent_entry_from_generated_session(
+                    controller.state.session,
+                    output_motion=str(result.output_motion_path),
+                    output_contact_layer=generated_contact_layer,
+                    output_segment_layer=generated_segment_layer,
+                    output_motion_version_id=generated_motion_version_id,
+                    terrain_urdf=controller.terrain_urdf,
+                )
+            )
         action = "dry-run fullbody LTE" if dry_run else "generated fullbody LTE"
         warning_suffix = f" warnings={len(result.warnings or [])}" if result.warnings else ""
         _set_status(f"{action}: {result.output_motion_path}{warning_suffix}")
@@ -1689,6 +1850,20 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
     controller = SurfaceEditorController.create(server, state)
     controller.edit_mode = args.edit_mode
     controller.current_frame_getter = playback.frame if playback is not None else (lambda: 0)
+    controller.timeline_port = int(args.timeline_port)
+    controller.default_mode = str(args.default_mode)
+    controller.show_only = str(args.show_only)
+    controller.fps = int(args.fps or motion_fps)
+    controller.robot_urdf = args.robot_urdf
+    controller.terrain_urdf = args.object_urdf if args.with_terrain else None
+    upsert_recent_motion(
+        _recent_entry_from_session(
+            state.session,
+            label=Path(args.qpos_npz).stem,
+            terrain_urdf=controller.terrain_urdf,
+            metadata={"source": "loaded_editor"},
+        )
+    )
     if args.select_anchor:
         controller.select_anchor(args.select_anchor)
     anchor_ids = [str(anchor.get("anchor_id", "")) for anchor in controller.anchors() if anchor.get("anchor_id")]
