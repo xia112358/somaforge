@@ -5,6 +5,8 @@ from dataclasses import asdict
 from pathlib import Path
 
 from motion_edit.adapters.holosoma_npz import motion_length
+from motion_edit.contact.layers import read_contact_graph
+from motion_edit.contact.plans import ContactEditPlan, write_contact_edit_plan
 from motion_edit.contact.schema import ContactAnchorEditRecord
 from motion_edit.io import write_jsonl
 from motion_edit.paths import CATALOGS_ROOT, layer_dir
@@ -30,6 +32,24 @@ def _contact_lte_metadata(sample: dict) -> dict:
 
 def _sub3(a: list[float], b: list[float]) -> list[float]:
     return [a[index] - b[index] for index in range(3)]
+
+
+def _add3(a: list[float], b: list[float]) -> list[float]:
+    return [a[index] + b[index] for index in range(3)]
+
+
+def _legacy_catalog_samples(catalog_path: str | Path) -> tuple[Path, list[dict]]:
+    path = Path(catalog_path).expanduser().resolve()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return path, list(data.get("samples", []))
+
+
+def _sample_by_name(samples: list[dict], sample_name: str) -> dict:
+    for sample in samples:
+        if str(sample.get("sample")) == sample_name:
+            return sample
+    names = [str(sample.get("sample")) for sample in samples]
+    raise ValueError(f"sample {sample_name!r} not found in LTE catalog; available samples={names}")
 
 
 def _anchor_edit_from_sample(sample_name: str, contact_lte: dict) -> ContactAnchorEditRecord | None:
@@ -61,10 +81,94 @@ def _anchor_edit_from_sample(sample_name: str, contact_lte: dict) -> ContactAnch
     return record
 
 
+def contact_edit_plan_from_legacy_lte_sample(
+    catalog_path: str | Path,
+    *,
+    sample_name: str,
+    source_motion_path: str | Path,
+    source_motion_id: str,
+    source_contact_layer: str,
+    anchor_id: str,
+    body: str | None = None,
+    affected_frames: list[int] | None = None,
+    plan_id: str | None = None,
+    output_plan_path: str | Path | None = None,
+    layers_root: str | Path | None = None,
+    status: str = "validated",
+) -> ContactEditPlan:
+    catalog, samples = _legacy_catalog_samples(catalog_path)
+    sample = _sample_by_name(samples, sample_name)
+    terrain_shift = sample.get("terrain_shift")
+    if terrain_shift is None:
+        raise ValueError(f"LTE sample {sample_name!r} has no terrain_shift")
+    delta = [float(item) for item in terrain_shift]
+    if len(delta) != 3:
+        raise ValueError(f"LTE sample {sample_name!r} terrain_shift must have length 3")
+    if layers_root is None:
+        from motion_edit.paths import LAYERS_ROOT
+
+        layers_root = LAYERS_ROOT
+    graph = read_contact_graph(Path(layers_root) / source_contact_layer, source_motion_id)
+    anchors = {anchor.anchor_id: anchor for anchor in graph.anchors}
+    anchor = anchors.get(anchor_id)
+    if anchor is None:
+        raise ValueError(f"anchor {anchor_id!r} not found in source contact layer {source_contact_layer}")
+    old_world = anchor.world_position or [0.0, 0.0, 0.0]
+    new_world = _add3([float(item) for item in old_world], delta)
+    frames = affected_frames or [int(anchor.start_frame), int(anchor.end_frame)]
+    edit = ContactAnchorEditRecord(
+        edit_id=f"{sample_name}_legacy_lte_move_contact_anchor",
+        motion_id=source_motion_id,
+        anchor_id=anchor.anchor_id,
+        body=body or anchor.body,
+        old_world_position=[float(item) for item in old_world],
+        new_world_position=new_world,
+        requested_delta_world=delta,
+        delta_world=delta,
+        affected_frames=[int(frames[0]), int(frames[1])],
+        surface_id=anchor.surface_id,
+        surface_normal=anchor.surface_normal,
+        surface_coordinates_before=anchor.surface_coordinates,
+        constraint_mode="legacy_lte",
+        source="legacy_lte_catalog",
+        metadata={
+            "legacy_lte_sample": sample_name,
+            "catalog": str(catalog),
+            "fullbody_ik_motion": sample.get("fullbody_ik_motion"),
+            "taskspace_motion": sample.get("taskspace_motion"),
+            "keypoints": sample.get("keypoints"),
+            "terrain_shift": sample.get("terrain_shift"),
+            "distance_offset_m": sample.get("distance_offset_m"),
+            "height_offset_m": sample.get("height_offset_m"),
+        },
+    )
+    plan = ContactEditPlan(
+        plan_id=plan_id or f"{sample_name}_legacy_lte_plan",
+        source_motion_path=str(Path(source_motion_path).expanduser()),
+        source_motion_id=source_motion_id,
+        source_contact_layer=source_contact_layer,
+        edits=[edit.to_dict()],
+        status=status,  # type: ignore[arg-type]
+        metadata={
+            "legacy_lte": {
+                "catalog": str(catalog),
+                "sample": sample_name,
+                "fullbody_ik_motion": sample.get("fullbody_ik_motion"),
+                "taskspace_motion": sample.get("taskspace_motion"),
+                "keypoints": sample.get("keypoints"),
+                "terrain_shift": sample.get("terrain_shift"),
+                "distance_offset_m": sample.get("distance_offset_m"),
+                "height_offset_m": sample.get("height_offset_m"),
+            }
+        },
+    )
+    if output_plan_path is not None:
+        write_contact_edit_plan(output_plan_path, plan)
+    return plan
+
+
 def import_lte_catalog(catalog_path: str | Path, *, layer_name: str = "lte") -> tuple[int, int]:
-    path = Path(catalog_path).expanduser().resolve()
-    data = json.loads(path.read_text(encoding="utf-8"))
-    samples = data.get("samples", [])
+    path, samples = _legacy_catalog_samples(catalog_path)
     out_dir = CATALOGS_ROOT / "lte" / layer_name
     out_dir.mkdir(parents=True, exist_ok=True)
     motion_refs: list[MotionRef] = []

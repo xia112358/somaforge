@@ -324,6 +324,27 @@ Stage 2 generates augmented motion explicitly:
 
 Generation requires a `validated` or `locked` plan by default. The first backend, `lte_windowed`, is a deterministic position-only reference deformation: it reads `body_pos_w`, moves the edited anchor body by the requested contact-anchor delta over the affected frames, applies smooth temporal falloff before/after the contact interval, optionally applies a smaller global drift to other bodies, and recomputes `body_lin_vel_w` when present. It preserves joint and orientation arrays for now and records warnings in `motion_edit_generation_metadata`; this is not full IK, not a physics solve, and not foot-sole contact modeling.
 
+Legacy LTE catalogs can also be bridged into the same plan/generation workflow. `import-legacy-lte-plan` converts one old catalog sample into a `ContactEditPlan` using its `terrain_shift` as the contact-anchor delta and preserves the old `keypoints`, `taskspace_motion`, and `fullbody_ik_motion` paths as provenance:
+
+```bash
+~/motion_edit/motion-edit import-legacy-lte-plan \
+  --catalog /home/xiaz/lte/outputs/widthaway10_dh_aug_wbt14_5x5_mainline/catalog.json \
+  --sample aug_012_dp00cm_hp00cm \
+  --source-motion /path/to/source_motion.npz \
+  --motion-id climb_00_z_scale_1.0 \
+  --source-contact-layer contact/force_contact_bound \
+  --anchor-id <anchor_id> \
+  --output-plan data/workbench/widthaway10_10cm.json
+
+~/motion_edit/motion-edit generate-lte-augmentation \
+  --plan data/workbench/widthaway10_10cm.json \
+  --output-motion data/motions/generated/widthaway10_10cm.npz \
+  --output-contact-layer contact/widthaway10_10cm \
+  --mode lte_legacy_fullbody
+```
+
+`lte_legacy_fullbody` reuses the old catalog sample as the augmented full motion output and records that provenance in `motion_edit_generation_metadata`. When both old files are available, it uses `taskspace_motion` as the standard world-space motion container (`body_pos_w`, `body_quat_w`, `body_lin_vel_w`) and merges `joint_pos` / `joint_vel` / joint metadata from `fullbody_ik_motion`. This is the compatibility path for old LTE taskspace/fullbody-IK results; it is explicit and does not run automatically from the surface editor.
+
 The source `.npz`, source ContactLayer, and source canonical segmentation are not modified. `--output-contact-layer` writes a graph derived from the source ContactGraph with edited anchor positions. `--output-segment-layer` writes candidate segments for the generated motion. `--register-motion-version` registers the generated full trajectory as an augmented MotionVersion. Canonical segmentation for that new version is only built when `--build-canonical` is passed explicitly.
 
 ## OmniRetarget Compatibility

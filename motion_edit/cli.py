@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 
 from .adapters.omniretarget import detect_omniretarget_paths
-from .adapters.lte import import_lte_catalog
+from .adapters.lte import contact_edit_plan_from_legacy_lte_sample, import_lte_catalog
 from .curation import filter_segments, load_layer_segments, write_status_layer
 from .editing import clip_motion, splice_motions
 from .export import (
@@ -814,6 +814,27 @@ def _cmd_generate_lte_augmentation(args: argparse.Namespace) -> None:
         print(f"warning: {warning}")
 
 
+def _cmd_import_legacy_lte_plan(args: argparse.Namespace) -> None:
+    plan = contact_edit_plan_from_legacy_lte_sample(
+        args.catalog,
+        sample_name=args.sample,
+        source_motion_path=args.source_motion,
+        source_motion_id=args.motion_id,
+        source_contact_layer=args.source_contact_layer,
+        anchor_id=args.anchor_id,
+        body=args.body,
+        affected_frames=args.affected_frames,
+        plan_id=args.plan_id,
+        output_plan_path=args.output_plan,
+        layers_root=LAYERS_ROOT,
+        status=args.status,
+    )
+    print(
+        f"wrote legacy LTE edit plan {args.output_plan} "
+        f"sample={args.sample} edits={len(plan.edits)} status={plan.status}"
+    )
+
+
 def _cmd_register_motion_asset(args: argparse.Namespace) -> None:
     ensure_data_dirs()
     record = MotionAssetRecord(
@@ -1580,7 +1601,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--source-contact-layer", default=None)
     p.add_argument("--allow-draft", action="store_true")
     p.add_argument("--allow-free", action="store_true")
-    p.add_argument("--mode", choices=("lte_windowed", "lte_laplacian"), default="lte_windowed")
+    p.add_argument("--mode", choices=("lte_windowed", "lte_laplacian", "lte_legacy_fullbody"), default="lte_windowed")
     p.add_argument("--falloff-before", type=int, default=20)
     p.add_argument("--falloff-after", type=int, default=20)
     p.add_argument("--global-weight", type=float, default=0.35)
@@ -1591,6 +1612,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--build-canonical", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=_cmd_generate_lte_augmentation)
+
+    p = sub.add_parser("import-legacy-lte-plan")
+    p.add_argument("--catalog", required=True)
+    p.add_argument("--sample", required=True)
+    p.add_argument("--source-motion", required=True)
+    p.add_argument("--motion-id", required=True)
+    p.add_argument("--source-contact-layer", required=True)
+    p.add_argument("--anchor-id", required=True)
+    p.add_argument("--body", default=None)
+    p.add_argument("--affected-frames", nargs=2, type=int, default=None)
+    p.add_argument("--plan-id", default=None)
+    p.add_argument("--output-plan", required=True)
+    p.add_argument("--status", choices=("draft", "validated", "locked"), default="validated")
+    p.set_defaults(func=_cmd_import_legacy_lte_plan)
 
     p = sub.add_parser("register-motion-asset")
     p.add_argument("--motion-asset-id", required=True)
