@@ -555,18 +555,24 @@ class ContactEditPlanTests(unittest.TestCase):
                 )
                 return mock.Mock(returncode=0)
 
-            with mock.patch("motion_edit.contact.generation._import_legacy_lte_module", return_value=FakeLegacyLte):
-                with mock.patch("motion_edit.contact.generation.subprocess.run", side_effect=fake_run) as run_mock:
+            with mock.patch("motion_edit.generation.lte_fullbody._import_legacy_lte_module", return_value=FakeLegacyLte):
+                with mock.patch("motion_edit.generation.lte_fullbody.subprocess.run", side_effect=fake_run) as run_mock:
                     result = apply_contact_edit_plan_to_motion(
                         plan,
                         output_motion_path=output,
                         mode="lte_fullbody",
                         output_contact_layer="contact/fullbody_generated",
+                        output_segment_layer="candidates/fullbody_generated",
                         intermediate_dir=intermediate,
                         layers_root=root / "layers",
                     )
             generated = np.load(output, allow_pickle=True)
             edited_graph = cli.read_contact_graph(root / "layers" / "contact" / "fullbody_generated", "motion_a")
+            segments = read_layer(
+                root / "layers" / "candidates" / "fullbody_generated" / "motion_a.jsonl",
+                default_source="lte_fullbody",
+                default_status="candidate",
+            )
             self.assertEqual(result.output_motion_path, output)
             self.assertTrue((intermediate / "fullbody_out.lte_keypoints.npz").exists())
             self.assertTrue((intermediate / "fullbody_out.taskspace_motion.npz").exists())
@@ -581,6 +587,9 @@ class ContactEditPlanTests(unittest.TestCase):
             self.assertIn("body_pos_w", generated.files)
             self.assertIn("lte_fullbody", generated["motion_edit_generation_metadata"].item())
             self.assertEqual(edited_graph.anchors[0].world_position, [3.2, 0.0, 0.0])
+            self.assertTrue(segments)
+            self.assertTrue(all(segment.source == "lte_fullbody" for segment in segments))
+            self.assertTrue(all(segment.metadata.get("cut_source") == "lte_fullbody" for segment in segments))
 
     def test_lte_fullbody_dry_run_writes_no_intermediates(self) -> None:
         class FakeLegacyLte:
@@ -592,8 +601,8 @@ class ContactEditPlanTests(unittest.TestCase):
             root = Path(tmp)
             _motion, plan = _write_fullbody_lte_source(root)
             intermediate = root / "intermediate"
-            with mock.patch("motion_edit.contact.generation._import_legacy_lte_module", return_value=FakeLegacyLte):
-                with mock.patch("motion_edit.contact.generation.subprocess.run") as run_mock:
+            with mock.patch("motion_edit.generation.lte_fullbody._import_legacy_lte_module", return_value=FakeLegacyLte):
+                with mock.patch("motion_edit.generation.lte_fullbody.subprocess.run") as run_mock:
                     result = apply_contact_edit_plan_to_motion(
                         plan,
                         output_motion_path=root / "out.npz",
@@ -647,8 +656,8 @@ class ContactEditPlanTests(unittest.TestCase):
                 np.savez(ik_out, joint_pos=np.zeros((8, 10), dtype=np.float32), joint_vel=np.zeros((8, 10), dtype=np.float32))
                 return mock.Mock(returncode=0)
 
-            with mock.patch("motion_edit.contact.generation._import_legacy_lte_module", return_value=FakeLegacyLte):
-                with mock.patch("motion_edit.contact.generation.subprocess.run", side_effect=fake_run):
+            with mock.patch("motion_edit.generation.lte_fullbody._import_legacy_lte_module", return_value=FakeLegacyLte):
+                with mock.patch("motion_edit.generation.lte_fullbody.subprocess.run", side_effect=fake_run):
                     apply_contact_edit_plan_to_motion(
                         plan,
                         output_motion_path=root / "out.npz",
@@ -696,7 +705,7 @@ class ContactEditPlanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _source_motion, _plan_path, plan = _write_synthetic_motion_and_contact(root)
-            with mock.patch("motion_edit.contact.generation.write_motion_version") as write_version:
+            with mock.patch("motion_edit.generation.lte_fullbody.write_motion_version") as write_version:
                 apply_contact_edit_plan_to_motion(
                     plan,
                     output_motion_path=root / "versioned.npz",

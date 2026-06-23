@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 
 from motion_edit.contact.graph import ContactGraph
-from motion_edit.contact.generation import apply_contact_edit_plan_to_motion
+from motion_edit.generation import apply_contact_edit_plan_to_motion
 from motion_edit.contact.plans import ContactEditPlan, read_contact_edit_plan, validate_contact_edit_plan, write_contact_edit_plan
 from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord
 from motion_edit.paths import LAYERS_ROOT, MOTIONS_ROOT, WORKBENCH_ROOT
