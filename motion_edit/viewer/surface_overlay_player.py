@@ -570,6 +570,89 @@ class SurfaceEditorController:
         self.reload_motion_callback(_recent_entry_from_session(self.state.session, terrain_urdf=self.terrain_urdf))
 
 
+@dataclass
+class _ShellState:
+    last_message: str | None = "Load a motion bundle to start."
+    last_error: str | None = None
+    session: Any = None
+
+
+@dataclass
+class ContactEditorShellController:
+    current: SurfaceEditorController | None = None
+    state: _ShellState | SurfaceOverlayEditorState = field(default_factory=_ShellState)
+    selected_anchor_id: str | None = None
+
+    def set_current(self, controller: SurfaceEditorController) -> None:
+        self.current = controller
+        self.state = controller.state
+        self.selected_anchor_id = controller.selected_anchor_id
+
+    def graph(self) -> ContactGraph:
+        if self.current is None:
+            return ContactGraph(motion_id="not_loaded")
+        return self.current.graph()
+
+    def _anchor_obj(self, anchor_id: str | None = None) -> dict[str, Any] | None:
+        return self.current._anchor_obj(anchor_id) if self.current is not None else None
+
+    def pending_edits(self) -> list[ContactAnchorEditRecord]:
+        return self.current.pending_edits() if self.current is not None else []
+
+    def recent_motion_items(self) -> list[dict[str, Any]]:
+        if self.current is not None:
+            return self.current.recent_motion_items()
+        items = read_recent_motions()
+        labels = recent_entry_labels(items)
+        return [
+            {
+                "index": index,
+                "label": labels[index],
+                "motion_path": item.motion_path,
+                "motion_id": item.motion_id,
+                "contact_layer": item.contact_layer,
+            }
+            for index, item in enumerate(items)
+        ]
+
+    def select_anchor(self, anchor_id: str | None) -> str | None:
+        if self.current is None:
+            self.state.last_error = "load a motion before selecting anchors"
+            return None
+        result = self.current.select_anchor(anchor_id)
+        self.selected_anchor_id = self.current.selected_anchor_id
+        return result
+
+    def save(self) -> Path | None:
+        if self.current is None:
+            self.state.last_error = "load a motion before saving"
+            return None
+        return self.current.save()
+
+    def discard(self) -> None:
+        if self.current is None:
+            self.state.last_error = "load a motion before discarding"
+            return
+        self.current.discard()
+
+    def open_recent_motion(self, index: int) -> None:
+        if self.current is None:
+            self.state.last_error = "load a motion before switching recent motions"
+            return
+        self.current.open_recent_motion(index)
+        self.selected_anchor_id = self.current.selected_anchor_id
+
+    def open_latest_motion(self) -> None:
+        self.open_recent_motion(0)
+
+    def reload_current_motion(self) -> None:
+        if self.current is None:
+            self.state.last_error = "load a motion before reloading"
+            return
+        self.current.reload_current_motion()
+        self.selected_anchor_id = self.current.selected_anchor_id
+
+
 def load_editor_state(session_path: str | Path) -> SurfaceOverlayEditorState:
     path = Path(session_path).expanduser()
     session = read_surface_editor_session(path)
@@ -2098,16 +2181,26 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
 
 
 def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> None:
-    setup_port = int(args.viser_port or (args.timeline_port + 1))
-    _require_available_port(setup_port, label="contact editor setup")
-    server = viser.ViserServer(port=setup_port)
-    _assert_viser_port(server, setup_port)
+    viewer_port = int(args.viser_port or args.timeline_port)
+    shell_port = int(args.timeline_port + 1)
+    _require_available_port(viewer_port, label="internal Viser")
+    _require_available_port(shell_port, label="contact editor shell")
+    server = viser.ViserServer(port=viewer_port)
+    _assert_viser_port(server, viewer_port)
     server.gui.configure_theme(control_layout="fixed", control_width="large", dark_mode=True, show_logo=False, show_share_button=False)
     server.scene.add_grid("/grid", width=8.0, height=8.0, position=(0.0, 0.0, 0.0))
     playback_slot = ReloadablePlayback()
     motion_handles: list[Any] = []
     controller_box: dict[str, SurfaceEditorController | None] = {"controller": None}
-    timeline_started = {"value": False}
+    shell_controller = ContactEditorShellController()
+    start_contact_timeline_wrapper(
+        controller=shell_controller,
+        playback=playback_slot,
+        timeline_port=shell_port,
+        viser_port=viewer_port,
+        motion_name="not_loaded",
+        fps=int(args.fps),
+    )
 
     def _replace_motion_visuals(
         *,
@@ -2259,26 +2352,17 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
         controller.reload_overlay()
         _add_loaded_editor_sidebar(server, controller=controller, args=args, playback=playback_slot)
         controller_box["controller"] = controller
-        if not timeline_started["value"]:
-            start_contact_timeline_wrapper(
-                controller=controller,
-                playback=playback_slot,
-                timeline_port=int(args.timeline_port),
-                viser_port=setup_port,
-                motion_name=Path(config.motion).name,
-                fps=motion_fps,
-            )
-            timeline_started["value"] = True
+        shell_controller.set_current(controller)
         status.value = (
             f"Loaded {prepared.ready_anchor_count} anchors.\n"
             f"session={prepared.session.session_dir}\n"
             f"ready_layer={prepared.ready_layer}\n"
-            f"background timeline/api=http://localhost:{args.timeline_port}"
+            f"editor=http://localhost:{shell_port}"
         )
         print(
             "[contact editor] loaded in-process "
             f"motion={config.motion} anchors={prepared.ready_anchor_count} "
-            f"user_url=http://localhost:{setup_port} background_timeline=http://localhost:{args.timeline_port}"
+            f"user_url=http://localhost:{shell_port} internal_viser=http://localhost:{viewer_port}"
         )
 
     def _apply_selected_load_file(selected_type: str, selected_path: Path) -> None:
@@ -2374,8 +2458,8 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
             print(f"[contact editor setup] Load failed: {exc}", file=sys.stderr)
             _set_status(f"Load failed: {exc}")
 
-    print(f"[contact editor setup] Open Contact Editor: http://localhost:{setup_port}")
-    print(f"[contact editor setup] background timeline/api after load: http://localhost:{args.timeline_port}")
+    print(f"[contact editor setup] Open Contact Editor: http://localhost:{shell_port}")
+    print(f"[contact editor setup] internal Viser iframe: http://localhost:{viewer_port}")
     print("Fill setup fields in the Viser UI and click Load contact editor.")
     while True:
         time.sleep(0.2)
