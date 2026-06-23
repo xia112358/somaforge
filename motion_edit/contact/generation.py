@@ -38,6 +38,41 @@ BODY_NAME_KEYS = (
     "contact_part_order",
 )
 
+CONTACT_BODY_LINK_CANDIDATES = {
+    "lf": ("left_foot",),
+    "rf": ("right_foot",),
+    "lh": ("left_hand",),
+    "rh": ("right_hand",),
+    "lk": ("left_knee",),
+    "rk": ("right_knee",),
+    "left_foot": (
+        "left_ankle_roll_sphere_1_link",
+        "left_ankle_roll_sphere_2_link",
+        "left_ankle_roll_sphere_3_link",
+        "left_ankle_roll_sphere_4_link",
+        "left_ankle_roll_sphere_5_link",
+        "left_ankle_roll_link",
+        "left_ankle_pitch_link",
+    ),
+    "right_foot": (
+        "right_ankle_roll_sphere_1_link",
+        "right_ankle_roll_sphere_2_link",
+        "right_ankle_roll_sphere_3_link",
+        "right_ankle_roll_sphere_4_link",
+        "right_ankle_roll_sphere_5_link",
+        "right_ankle_roll_link",
+        "right_ankle_pitch_link",
+    ),
+    "left_hand": ("left_rubber_hand_link", "left_thumb_link", "left_pinky_link", "left_wrist_yaw_link"),
+    "right_hand": ("right_rubber_hand_link", "right_thumb_link", "right_pinky_link", "right_wrist_yaw_link"),
+    "left_knee": ("left_knee_link",),
+    "right_knee": ("right_knee_link",),
+    "left_hip": ("left_hip_yaw_link", "left_hip_roll_link", "left_hip_pitch_link"),
+    "right_hip": ("right_hip_yaw_link", "right_hip_roll_link", "right_hip_pitch_link"),
+    "torso": ("torso_link",),
+    "root": ("pelvis",),
+}
+
 
 def _decode_npz_string(value: Any) -> str:
     if isinstance(value, bytes):
@@ -80,6 +115,12 @@ def resolve_body_index(motion_data: dict[str, Any], body_name: str) -> int:
     lowered = [name.lower() for name in names]
     if body_name.lower() in lowered:
         return lowered.index(body_name.lower())
+    aliases = CONTACT_BODY_LINK_CANDIDATES.get(body_name.lower(), ())
+    for alias in aliases:
+        if alias in names:
+            return names.index(alias)
+        if alias.lower() in lowered:
+            return lowered.index(alias.lower())
     raise ValueError(f"cannot resolve body index for {body_name!r}; available bodies={names}")
 
 

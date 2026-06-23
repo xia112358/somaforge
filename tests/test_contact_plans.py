@@ -18,7 +18,7 @@ from motion_edit.contact import (
     write_contact_edit_plan,
     write_contact_layer,
 )
-from motion_edit.contact.generation import apply_contact_edit_plan_to_motion
+from motion_edit.contact.generation import apply_contact_edit_plan_to_motion, resolve_body_index
 from motion_edit.contact.schema import ContactAnchorEditRecord
 from motion_edit.layers import read_layer
 
@@ -383,6 +383,67 @@ class ContactEditPlanTests(unittest.TestCase):
             body_pos = np.load(output, allow_pickle=True)["body_pos_w"]
 
         np.testing.assert_allclose(body_pos[2:5, 0, 0], 0.3)
+
+    def test_resolve_body_index_maps_contact_parts_to_holosoma_links(self) -> None:
+        motion = {
+            "body_names": np.asarray(
+                [
+                    "world",
+                    "pelvis",
+                    "left_ankle_roll_sphere_1_link",
+                    "left_ankle_roll_link",
+                    "right_ankle_roll_sphere_1_link",
+                    "left_rubber_hand_link",
+                    "right_rubber_hand_link",
+                ],
+                dtype=object,
+            )
+        }
+
+        self.assertEqual(resolve_body_index(motion, "left_foot"), 2)
+        self.assertEqual(resolve_body_index(motion, "right_foot"), 4)
+        self.assertEqual(resolve_body_index(motion, "left_hand"), 5)
+        self.assertEqual(resolve_body_index(motion, "right_hand"), 6)
+
+    def test_generate_lte_augmentation_accepts_semantic_contact_body_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_motion, _plan_path, plan = _write_synthetic_motion_and_contact(root)
+            with np.load(source_motion, allow_pickle=True) as source:
+                payload = {key: source[key] for key in source.files}
+            body_pos = np.zeros((8, 3, 3), dtype=np.float32)
+            payload["body_pos_w"] = body_pos
+            payload["body_lin_vel_w"] = np.zeros_like(body_pos)
+            payload["body_quat_w"] = np.zeros((8, 3, 4), dtype=np.float32)
+            payload["body_quat_w"][..., 0] = 1.0
+            payload["body_names"] = np.asarray(
+                ["pelvis", "left_ankle_roll_sphere_1_link", "torso_link"],
+                dtype=object,
+            )
+            semantic_motion = root / "semantic_motion.npz"
+            np.savez(semantic_motion, **payload)
+            semantic_plan = ContactEditPlan(
+                plan_id=plan.plan_id,
+                source_motion_path=str(semantic_motion),
+                source_motion_id=plan.source_motion_id,
+                source_contact_layer=plan.source_contact_layer,
+                edits=plan.edits,
+                status=plan.status,
+            )
+            output = root / "semantic_out.npz"
+
+            apply_contact_edit_plan_to_motion(
+                semantic_plan,
+                output_motion_path=output,
+                falloff_before=0,
+                falloff_after=0,
+                global_weight=0.0,
+                layers_root=root / "layers",
+            )
+            generated = np.load(output, allow_pickle=True)["body_pos_w"]
+
+        np.testing.assert_allclose(generated[2:5, 1, 0], 0.2)
+        np.testing.assert_allclose(generated[:, 0, :], 0.0)
 
     def test_generate_lte_augmentation_can_register_motion_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
