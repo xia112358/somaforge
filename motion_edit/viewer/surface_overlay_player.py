@@ -2132,8 +2132,10 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
 
     state = load_editor_state(args.surface_editor_session)
     overlay = load_surface_overlay(args.surface_binding_overlay)
-    viewer_port = int(args.viser_port or (args.timeline_port + 1))
+    viewer_port = int(args.viser_port or args.timeline_port)
+    shell_port = int(args.timeline_port + 1)
     _require_available_port(viewer_port, label="internal Viser")
+    _require_available_port(shell_port, label="contact editor shell")
     server = viser.ViserServer(port=viewer_port)
     _assert_viser_port(server, viewer_port)
     server.gui.configure_theme(control_layout="fixed", control_width="large", dark_mode=True, show_logo=False, show_share_button=False)
@@ -2141,6 +2143,24 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
 
     playback_slot = ReloadablePlayback()
     motion_handles: list[Any] = []
+    controller = SurfaceEditorController.create(server, state)
+    controller.edit_mode = args.edit_mode
+    controller.current_frame_getter = playback_slot.frame
+    controller.timeline_port = shell_port
+    controller.default_mode = str(args.default_mode)
+    controller.show_only = str(args.show_only)
+    controller.fps = int(args.fps or 50)
+    controller.robot_urdf = args.robot_urdf
+    controller.terrain_urdf = args.object_urdf if args.with_terrain else None
+
+    start_contact_timeline_wrapper(
+        controller=controller,
+        playback=playback_slot,
+        timeline_port=shell_port,
+        viser_port=viewer_port,
+        motion_name=Path(args.qpos_npz).name,
+        fps=int(args.fps or 50),
+    )
 
     def _replace_motion_visuals(
         *,
@@ -2170,15 +2190,7 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
         object_urdf=args.object_urdf if args.with_terrain else None,
         fps_hint=int(args.fps or 0),
     )
-    controller = SurfaceEditorController.create(server, state)
-    controller.edit_mode = args.edit_mode
-    controller.current_frame_getter = playback_slot.frame
-    controller.timeline_port = int(args.timeline_port)
-    controller.default_mode = str(args.default_mode)
-    controller.show_only = str(args.show_only)
     controller.fps = int(args.fps or motion_fps)
-    controller.robot_urdf = args.robot_urdf
-    controller.terrain_urdf = args.object_urdf if args.with_terrain else None
 
     def _reload_entry_in_process(entry: RecentMotionEntry) -> None:
         config = _contact_editor_config_from_recent_entry(entry)
@@ -2225,14 +2237,6 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
 
     controller.reload_overlay()
     _add_loaded_editor_sidebar(server, controller=controller, args=args, playback=playback_slot)
-    start_contact_timeline_wrapper(
-        controller=controller,
-        playback=playback_slot,
-        timeline_port=int(args.timeline_port),
-        viser_port=viewer_port,
-        motion_name=Path(args.qpos_npz).name,
-        fps=int(args.fps or motion_fps),
-    )
 
     print(f"[surface editor] overlay={args.surface_binding_overlay}")
     print(f"[surface editor] session={args.surface_editor_session}")
@@ -2240,8 +2244,8 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
     print(f"[surface editor] edit_mode={args.edit_mode}")
     print(f"[surface editor] robot_urdf={args.robot_urdf or 'none'}")
     print(f"[surface editor] object_urdf={args.object_urdf if args.with_terrain else 'none'}")
-    print(f"[surface editor] Open Contact Editor: http://localhost:{viewer_port}")
-    print(f"[surface editor] background timeline/api=http://localhost:{args.timeline_port}")
+    print(f"[surface editor] Open Contact Editor: http://localhost:{shell_port}")
+    print(f"[surface editor] internal Viser: http://localhost:{viewer_port}")
     if anchor_ids:
         print(f"[surface editor] anchors={', '.join(anchor_ids[:20])}{' ...' if len(anchor_ids) > 20 else ''}")
     print("Close this process with Ctrl+C.")
