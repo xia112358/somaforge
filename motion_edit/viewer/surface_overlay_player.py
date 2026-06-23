@@ -854,6 +854,46 @@ def _default_generation_outputs(session: SurfaceEditorSession) -> dict[str, str]
     }
 
 
+def _next_available_motion_path(path: str | Path) -> Path:
+    candidate = Path(path).expanduser()
+    if not candidate.exists():
+        return candidate
+    stem = candidate.stem
+    suffix = candidate.suffix or ".npz"
+    for index in range(1, 10000):
+        numbered = candidate.with_name(f"{stem}_{index:03d}{suffix}")
+        if not numbered.exists():
+            return numbered
+    raise RuntimeError(f"could not find an available output path near {candidate}")
+
+
+def _avoid_generation_output_collision(inputs: dict[str, Any]) -> dict[str, Any]:
+    original_motion = Path(str(inputs["generated_motion"])).expanduser()
+    available_motion = _next_available_motion_path(original_motion)
+    if available_motion == original_motion:
+        return inputs
+
+    updated = dict(inputs)
+    original_stem = original_motion.stem
+    available_stem = available_motion.stem
+    updated["generated_motion"] = str(available_motion)
+
+    if not updated.get("generated_motion_version_id") or updated["generated_motion_version_id"] == original_stem:
+        updated["generated_motion_version_id"] = available_stem
+    if not updated.get("generated_contact_layer") or updated["generated_contact_layer"] == f"contact/{original_stem}":
+        updated["generated_contact_layer"] = f"contact/{available_stem}"
+    if not updated.get("generated_segment_layer") or updated["generated_segment_layer"] == f"candidates/{original_stem}":
+        updated["generated_segment_layer"] = f"candidates/{available_stem}"
+
+    intermediate = updated.get("intermediate_dir")
+    if intermediate:
+        intermediate_path = Path(str(intermediate)).expanduser()
+        if intermediate_path.exists():
+            updated["intermediate_dir"] = str(intermediate_path.with_name(available_stem))
+
+    return updated
+
+
 def _generate_fullbody_lte_from_session(
     session: SurfaceEditorSession,
     *,
@@ -1565,16 +1605,17 @@ def _add_loaded_editor_sidebar(
             register_motion_version=inputs["register_motion_version"],
         )
         if not dry_run:
-            upsert_recent_motion(
-                _recent_entry_from_generated_session(
-                    controller.state.session,
-                    output_motion=str(result.output_motion_path),
-                    output_contact_layer=inputs["generated_contact_layer"],
-                    output_segment_layer=inputs["generated_segment_layer"],
-                    output_motion_version_id=inputs["generated_motion_version_id"],
-                    terrain_urdf=controller.terrain_urdf,
-                )
+            generated_entry = _recent_entry_from_generated_session(
+                controller.state.session,
+                output_motion=str(result.output_motion_path),
+                output_contact_layer=inputs["generated_contact_layer"],
+                output_segment_layer=inputs["generated_segment_layer"],
+                output_motion_version_id=inputs["generated_motion_version_id"],
+                terrain_urdf=controller.terrain_urdf,
             )
+            upsert_recent_motion(generated_entry)
+            if callable(controller.reload_motion_callback):
+                controller.reload_motion_callback(generated_entry)
         action = "dry-run fullbody LTE" if dry_run else "generated fullbody LTE"
         warning_suffix = f" warnings={len(result.warnings or [])}" if result.warnings else ""
         _set_status(f"{action}: {result.output_motion_path}{warning_suffix}")
@@ -1595,6 +1636,16 @@ def _add_loaded_editor_sidebar(
             print(f"[surface editor] generation setup failed: {exc}")
             _refresh_info()
             return
+        if not dry_run and not inputs["overwrite"]:
+            resolved_inputs = _avoid_generation_output_collision(inputs)
+            if resolved_inputs != inputs:
+                inputs = resolved_inputs
+                output_motion.value = inputs["generated_motion"]
+                output_motion_version_id.value = inputs["generated_motion_version_id"] or ""
+                output_contact_layer.value = inputs["generated_contact_layer"] or ""
+                output_segment_layer.value = inputs["generated_segment_layer"] or ""
+                intermediate_dir.value = inputs["intermediate_dir"] or ""
+                _set_status(f"output existed; using next available motion: {inputs['generated_motion']}")
         action = "dry-run fullbody LTE" if dry_run else "generate fullbody LTE"
         generation_state.running = True
         generation_state.last_error = None
