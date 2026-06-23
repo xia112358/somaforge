@@ -4,6 +4,7 @@ import argparse
 import copy
 import json
 import os
+import socket
 import sys
 import threading
 import time
@@ -61,6 +62,35 @@ BODY_COLORS: dict[str, tuple[int, int, int]] = {
     "rk": (90, 220, 220),
     "right_knee": (90, 220, 220),
 }
+
+
+def _port_is_available(port: int, *, host: str = "127.0.0.1") -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, int(port)))
+        except OSError:
+            return False
+    return True
+
+
+def _require_available_port(port: int, *, label: str) -> None:
+    if not _port_is_available(port):
+        raise RuntimeError(
+            f"{label} port {port} is already in use; close the existing contact editor before starting a new one"
+        )
+
+
+def _assert_viser_port(server: Any, expected_port: int) -> None:
+    actual_port = int(getattr(server, "port", expected_port))
+    if actual_port != int(expected_port):
+        stop = getattr(server, "stop", None)
+        if callable(stop):
+            stop()
+        raise RuntimeError(
+            f"Viser moved from requested port {expected_port} to {actual_port}; "
+            "close the existing contact editor instead of using a new port"
+        )
 
 
 @dataclass
@@ -1951,7 +1981,9 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
     state = load_editor_state(args.surface_editor_session)
     overlay = load_surface_overlay(args.surface_binding_overlay)
     viewer_port = int(args.viser_port or (args.timeline_port + 1))
+    _require_available_port(viewer_port, label="internal Viser")
     server = viser.ViserServer(port=viewer_port)
+    _assert_viser_port(server, viewer_port)
     server.gui.configure_theme(control_layout="fixed", control_width="large", dark_mode=True, show_logo=False, show_share_button=False)
     server.scene.add_grid("/grid", width=8.0, height=8.0, position=(0.0, 0.0, 0.0))
 
@@ -2056,8 +2088,8 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
     print(f"[surface editor] edit_mode={args.edit_mode}")
     print(f"[surface editor] robot_urdf={args.robot_urdf or 'none'}")
     print(f"[surface editor] object_urdf={args.object_urdf if args.with_terrain else 'none'}")
-    print(f"[surface editor] timeline=http://localhost:{args.timeline_port}")
-    print(f"[surface editor] viser=http://localhost:{viewer_port}")
+    print(f"[surface editor] Open Contact Editor: http://localhost:{args.timeline_port}")
+    print(f"[surface editor] internal Viser port={viewer_port}")
     if anchor_ids:
         print(f"[surface editor] anchors={', '.join(anchor_ids[:20])}{' ...' if len(anchor_ids) > 20 else ''}")
     print("Close this process with Ctrl+C.")
@@ -2066,7 +2098,10 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
 
 
 def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> None:
-    server = viser.ViserServer(port=args.viser_port or args.timeline_port)
+    setup_port = int(args.viser_port or args.timeline_port)
+    _require_available_port(setup_port, label="contact editor setup")
+    server = viser.ViserServer(port=setup_port)
+    _assert_viser_port(server, setup_port)
     server.gui.configure_theme(control_layout="fixed", control_width="large", dark_mode=True, show_logo=False, show_share_button=False)
     server.scene.add_grid("/grid", width=8.0, height=8.0, position=(0.0, 0.0, 0.0))
     pending_exec: dict[str, list[str] | None] = {"cmd": None}
@@ -2109,12 +2144,14 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
         print(f"[contact editor setup] {text}")
 
     def _start_loaded_editor() -> None:
+        _set_status("loading contact editor: validating inputs...")
         if not str(motion.value).strip():
             raise ValueError("motion_npz is required")
         if not str(motion_id.value).strip():
             raise ValueError("motion_id is required")
         if not str(source_contact_layer.value).strip():
             raise ValueError("source_contact_layer is required")
+        _set_status("loading contact editor: preparing session and overlays...")
         config = ContactEditorConfig(
             motion=str(motion.value).strip(),
             motion_id=str(motion_id.value).strip(),
@@ -2143,6 +2180,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
             f"session={prepared.session.session_dir}\n"
             f"ready_layer={prepared.ready_layer}"
         )
+        _set_status("loading contact editor: launching viewer on the same entry port...")
         pending_exec["cmd"] = cmd
 
     def _apply_selected_load_file(selected_type: str, selected_path: Path) -> None:
@@ -2200,8 +2238,10 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
             if not selected:
                 _set_status(f"no {selected_type} selected")
                 return
+            _set_status(f"loading {selected_type}: {selected}")
             _apply_selected_load_file(selected_type, Path(selected))
         except Exception as exc:
+            print(f"[contact editor setup] browse failed: {exc}", file=sys.stderr)
             _set_status(f"browse failed: {exc}")
 
     @save_as_btn.on_click
@@ -2233,6 +2273,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
         try:
             _start_loaded_editor()
         except Exception as exc:
+            print(f"[contact editor setup] Load failed: {exc}", file=sys.stderr)
             _set_status(f"Load failed: {exc}")
 
     print(f"[contact editor setup] Open: http://localhost:{args.timeline_port}")
