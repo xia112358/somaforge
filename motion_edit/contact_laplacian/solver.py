@@ -1,3 +1,12 @@
+"""Whole-trajectory batch contact-Laplacian solver.
+
+This solver assembles one global trajectory least-squares problem over
+``q[0:T]`` and is currently validated with synthetic kinematics providers. It is
+kept as an experimental research backend; real motion generation should still
+use the production ``lte_fullbody`` subprocess path unless a real kinematics
+provider is supplied.
+"""
+
 from __future__ import annotations
 
 from typing import Sequence

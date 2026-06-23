@@ -1,3 +1,11 @@
+"""Handle-building helpers for the experimental batch contact-Laplacian path.
+
+The functions here convert ContactGraph/ContactEditPlan data into solver handle
+specs. They intentionally depend on an abstract kinematics provider; a real
+robot provider is still required before this path can replace the production IK
+subprocess generator.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
