@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,7 +9,6 @@ from unittest import mock
 import numpy as np
 
 from motion_edit import cli
-from motion_edit.adapters.lte import contact_edit_plan_from_legacy_lte_sample
 from motion_edit.contact import (
     ContactEditPlan,
     append_anchor_edit_to_plan,
@@ -526,75 +524,6 @@ class ContactEditPlanTests(unittest.TestCase):
         np.testing.assert_allclose(generated[2:5, 1, 0], 0.2)
         np.testing.assert_allclose(generated[:, 0, :], 0.0)
 
-    def test_legacy_lte_catalog_sample_can_generate_fullbody_motion(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            source_motion, _plan_path, _plan = _write_synthetic_motion_and_contact(root)
-            fullbody = root / "legacy_fullbody.npz"
-            taskspace = root / "legacy_taskspace.npz"
-            legacy_body_pos = np.zeros((8, 2, 3), dtype=np.float32)
-            legacy_body_pos[:, :, 0] = 7.0
-            legacy_joint_pos = np.full((8, 3), 3.0, dtype=np.float32)
-            np.savez(
-                fullbody,
-                joint_pos=legacy_joint_pos,
-                joint_vel=np.full((8, 3), 4.0, dtype=np.float32),
-                joint_names=np.asarray(["a", "b", "c"], dtype=object),
-            )
-            np.savez(
-                taskspace,
-                body_pos_w=legacy_body_pos,
-                body_names=np.asarray(["left_foot", "torso"], dtype=object),
-                fps=np.asarray(50.0),
-            )
-            catalog = root / "catalog.json"
-            catalog.write_text(
-                json.dumps(
-                    {
-                        "samples": [
-                            {
-                                "sample": "aug_10cm",
-                                "terrain_shift": [0.1, 0.0, 0.0],
-                                "distance_offset_m": 0.0,
-                                "height_offset_m": 0.0,
-                                "fullbody_ik_motion": str(fullbody),
-                                "taskspace_motion": str(taskspace),
-                                "keypoints": str(root / "keypoints.npz"),
-                            }
-                        ]
-                    }
-                ),
-                encoding="utf-8",
-            )
-            plan = contact_edit_plan_from_legacy_lte_sample(
-                catalog,
-                sample_name="aug_10cm",
-                source_motion_path=source_motion,
-                source_motion_id="motion_a",
-                source_contact_layer="contact/force_contact",
-                anchor_id="anchor_lf",
-                output_plan_path=root / "legacy_plan.json",
-                layers_root=root / "layers",
-            )
-            output = root / "legacy_generated.npz"
-
-            result = apply_contact_edit_plan_to_motion(
-                plan,
-                output_motion_path=output,
-                mode="lte_legacy_fullbody",
-                output_contact_layer="contact/legacy_generated",
-                layers_root=root / "layers",
-            )
-            generated = np.load(output, allow_pickle=True)
-            edited_graph = cli.read_contact_graph(root / "layers" / "contact" / "legacy_generated", "motion_a")
-
-        self.assertEqual(result.output_motion_path, output)
-        np.testing.assert_allclose(generated["body_pos_w"], legacy_body_pos)
-        np.testing.assert_allclose(generated["joint_pos"], legacy_joint_pos)
-        self.assertIn("lte_legacy_fullbody", generated["motion_edit_generation_metadata"].item())
-        self.assertEqual(plan.edits[0]["delta_world"], [0.1, 0.0, 0.0])
-        self.assertEqual(edited_graph.anchors[0].world_position, [0.1, 0.0, 0.0])
-
     def test_lte_fullbody_generates_taskspace_and_merges_ik_output(self) -> None:
         class FakeLegacyLte:
             @staticmethod
@@ -668,49 +597,6 @@ class ContactEditPlanTests(unittest.TestCase):
             self.assertFalse((root / "out.npz").exists())
             run_mock.assert_not_called()
             self.assertIn("would run fullbody IK", "\n".join(result.warnings or []))
-
-    def test_import_legacy_lte_plan_cli_writes_plan(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            source_motion, _plan_path, _plan = _write_synthetic_motion_and_contact(root)
-            fullbody = root / "legacy_fullbody.npz"
-            np.savez(fullbody, body_pos_w=np.zeros((8, 2, 3), dtype=np.float32))
-            catalog = root / "catalog.json"
-            catalog.write_text(
-                json.dumps(
-                    {
-                        "samples": [
-                            {
-                                "sample": "aug_cli",
-                                "terrain_shift": [0.1, 0.0, 0.0],
-                                "fullbody_ik_motion": str(fullbody),
-                            }
-                        ]
-                    }
-                ),
-                encoding="utf-8",
-            )
-            out_plan = root / "cli_plan.json"
-            with mock.patch.object(cli, "LAYERS_ROOT", root / "layers"):
-                cli._cmd_import_legacy_lte_plan(
-                    argparse.Namespace(
-                        catalog=str(catalog),
-                        sample="aug_cli",
-                        source_motion=str(source_motion),
-                        motion_id="motion_a",
-                        source_contact_layer="contact/force_contact",
-                        anchor_id="anchor_lf",
-                        body=None,
-                        affected_frames=None,
-                        plan_id="cli_plan",
-                        output_plan=str(out_plan),
-                        status="validated",
-                    )
-                )
-            plan = read_contact_edit_plan(out_plan)
-
-        self.assertEqual(plan.plan_id, "cli_plan")
-        self.assertEqual(plan.metadata["legacy_lte"]["fullbody_ik_motion"], str(fullbody))
 
     def test_generate_lte_augmentation_can_register_motion_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

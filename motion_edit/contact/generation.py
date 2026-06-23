@@ -421,50 +421,6 @@ def _run_fullbody_ik_subprocess(
     subprocess.run(cmd, cwd=str(repo), check=True)
 
 
-def _legacy_lte_paths(plan: ContactEditPlan) -> dict[str, Path]:
-    paths: dict[str, Path] = {}
-    legacy = plan.metadata.get("legacy_lte") if isinstance(plan.metadata, dict) else None
-    if isinstance(legacy, dict):
-        for key in ("fullbody_ik_motion", "taskspace_motion", "keypoints"):
-            if legacy.get(key):
-                paths[key] = Path(str(legacy[key])).expanduser()
-    for raw_edit in plan.edits:
-        metadata = raw_edit.get("metadata") if isinstance(raw_edit, dict) else None
-        if not isinstance(metadata, dict):
-            continue
-        for key in ("fullbody_ik_motion", "taskspace_motion", "keypoints"):
-            if key not in paths and metadata.get(key):
-                paths[key] = Path(str(metadata[key])).expanduser()
-    if "fullbody_ik_motion" not in paths and "taskspace_motion" not in paths:
-        raise ValueError("lte_legacy_fullbody requires legacy_lte.fullbody_ik_motion or taskspace_motion in the ContactEditPlan metadata")
-    return paths
-
-
-def _load_legacy_lte_motion_payload(paths: dict[str, Path]) -> tuple[dict[str, Any], list[str]]:
-    warnings: list[str] = []
-    base_path = paths.get("taskspace_motion") or paths.get("fullbody_ik_motion")
-    if base_path is None:
-        raise ValueError("legacy LTE motion paths are empty")
-    if not base_path.exists():
-        raise FileNotFoundError(base_path)
-    payload = _load_motion_npz(base_path)
-    fullbody_path = paths.get("fullbody_ik_motion")
-    if fullbody_path is not None:
-        if not fullbody_path.exists():
-            raise FileNotFoundError(fullbody_path)
-        fullbody = _load_motion_npz(fullbody_path)
-        for key in ("joint_pos", "joint_vel", "joint_names", "is_qpos"):
-            if key in fullbody:
-                payload[key] = fullbody[key]
-    if "taskspace_motion" in paths and "fullbody_ik_motion" in paths:
-        warnings.append("legacy taskspace motion reused with fullbody IK joint fields merged")
-    elif "fullbody_ik_motion" in paths:
-        warnings.append("legacy fullbody IK motion reused; no local LTE solve was run")
-    else:
-        warnings.append("legacy taskspace motion reused; no local LTE solve was run")
-    return payload, warnings
-
-
 def _apply_anchor_edits_to_graph(graph: Any, edits: list[ContactAnchorEditRecord]) -> Any:
     edits_by_anchor = {edit.anchor_id: edit for edit in edits}
     anchors = []
@@ -571,7 +527,7 @@ def apply_contact_edit_plan_to_motion(
     intermediate_dir: str | Path | None = None,
     layers_root: Path = LAYERS_ROOT,
 ) -> LteGenerationResult:
-    if mode not in {"lte_windowed", "lte_legacy_fullbody", "lte_fullbody"}:
+    if mode not in {"lte_windowed", "lte_fullbody"}:
         raise NotImplementedError(f"unsupported LTE generation mode: {mode}")
     if plan.status not in {"validated", "locked"} and not allow_draft:
         raise ValueError("contact edit plan must be validated or locked; pass allow_draft=True to override")
@@ -643,69 +599,6 @@ def apply_contact_edit_plan_to_motion(
             "warnings": warnings,
             "edits": [edit.to_dict() for edit in edits],
             "lte_debug": result.get("debug", {}),
-        }
-        generated["motion_edit_generation_metadata"] = _json_npz_value(metadata)
-        generated["source_motion_path"] = np.asarray(str(source_motion), dtype=object)
-        generated["source_contact_edit_plan"] = np.asarray(plan.plan_id, dtype=object)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(out, **generated)
-        edited_graph = _apply_anchor_edits_to_graph(graph, edits)
-        if output_contact_layer:
-            write_contact_layer(layers_root / output_contact_layer, edited_graph)
-        if output_segment_layer:
-            segments = _candidate_segments_from_graph(
-                edited_graph,
-                motion_path=str(out),
-                motion_version_id=output_motion_version_id,
-                plan_id=plan.plan_id,
-            )
-            write_layer(layers_root / output_segment_layer / f"{edited_graph.motion_id}.jsonl", segments)
-        if register_motion_version:
-            if not output_motion_version_id:
-                raise ValueError("--output-motion-version-id is required with --register-motion-version")
-            write_motion_version(
-                MotionVersionRecord(
-                    motion_version_id=output_motion_version_id,
-                    motion_path=str(out),
-                    kind="augmented",
-                    base_motion_id=plan.source_motion_id,
-                    contact_layer=output_contact_layer,
-                    edit_plan_id=plan.plan_id,
-                    metadata={"source_contact_edit_plan": plan.plan_id, "generation_mode": mode},
-                )
-            )
-        return LteGenerationResult(
-            output_motion_path=out,
-            output_contact_layer=output_contact_layer,
-            output_segment_layer=output_segment_layer,
-            output_motion_version_id=output_motion_version_id,
-            warnings=warnings,
-        )
-    if mode == "lte_legacy_fullbody":
-        legacy_paths = _legacy_lte_paths(plan)
-        base_motion_path = legacy_paths.get("taskspace_motion") or legacy_paths.get("fullbody_ik_motion")
-        if base_motion_path is None:
-            raise ValueError("legacy LTE motion paths are empty")
-        if dry_run:
-            return LteGenerationResult(
-                output_motion_path=out,
-                output_contact_layer=output_contact_layer,
-                output_segment_layer=output_segment_layer,
-                output_motion_version_id=output_motion_version_id,
-                warnings=["legacy LTE motion will be reused as the augmented motion"],
-            )
-        generated, warnings = _load_legacy_lte_motion_payload(legacy_paths)
-        metadata = {
-            "source_plan": str(Path(source_plan_path).expanduser()) if source_plan_path is not None else plan.plan_id,
-            "source_plan_id": plan.plan_id,
-            "source_motion": str(source_motion),
-            "generation_mode": mode,
-            "legacy_fullbody_ik_motion": str(legacy_paths["fullbody_ik_motion"]) if "fullbody_ik_motion" in legacy_paths else None,
-            "legacy_taskspace_motion": str(legacy_paths["taskspace_motion"]) if "taskspace_motion" in legacy_paths else None,
-            "legacy_keypoints": str(legacy_paths["keypoints"]) if "keypoints" in legacy_paths else None,
-            "num_edits": len(edits),
-            "warnings": warnings,
-            "edits": [edit.to_dict() for edit in edits],
         }
         generated["motion_edit_generation_metadata"] = _json_npz_value(metadata)
         generated["source_motion_path"] = np.asarray(str(source_motion), dtype=object)
