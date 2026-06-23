@@ -122,7 +122,6 @@ button.danger {{ background: #67212a; border-color: #a33a45; }}
         <button id="play" class="primary">Play</button>
         <button id="prev">Prev</button>
         <button id="next">Next</button>
-        <button id="save" class="primary">Save edits</button>
         <button id="discard" class="danger">Discard</button>
       </div>
     </div>
@@ -206,7 +205,6 @@ timeline.addEventListener('pointercancel', () => {{ dragging = false; }});
 document.getElementById('play').onclick = () => api('/api/play', {{playing: !state.playing}});
 document.getElementById('prev').onclick = () => api('/api/frame', {{frame: state.current_frame - 1}});
 document.getElementById('next').onclick = () => api('/api/frame', {{frame: state.current_frame + 1}});
-document.getElementById('save').onclick = () => api('/api/save', {{}});
 document.getElementById('discard').onclick = () => api('/api/discard', {{}});
 window.addEventListener('keydown', event => {{
   if (!state) return;

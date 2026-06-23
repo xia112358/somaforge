@@ -498,7 +498,7 @@ def _launch_surface_editor_for_args(args: argparse.Namespace, *, contact_layer: 
         print(f"sync pending viewer requests: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'}")
         print(f"save after sync: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'} --save")
     else:
-        print("direct edit mode: use Viser 'Move anchor' and 'Save edits'; no terminal sync is required")
+        print("direct edit mode: use Viser anchor editing, then Validate plan or Generate fullbody LTE; no terminal sync is required")
         print(f"request fallback remains available: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'}")
     process = launch_viewer(
         args.motion,

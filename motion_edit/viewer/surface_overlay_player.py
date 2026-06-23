@@ -14,7 +14,8 @@ from typing import Any
 import numpy as np
 
 from motion_edit.contact.graph import ContactGraph
-from motion_edit.contact.plans import read_contact_edit_plan, validate_contact_edit_plan, write_contact_edit_plan
+from motion_edit.contact.generation import apply_contact_edit_plan_to_motion
+from motion_edit.contact.plans import ContactEditPlan, read_contact_edit_plan, validate_contact_edit_plan, write_contact_edit_plan
 from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord
 from motion_edit.paths import LAYERS_ROOT, MOTIONS_ROOT, WORKBENCH_ROOT
 from motion_edit.storage.io import read_motion_asset
@@ -550,9 +551,9 @@ def save_editor_state(state: SurfaceOverlayEditorState, *, layers_root: Path = L
 
 def _session_plan_summary(session: SurfaceEditorSession) -> str:
     lines = [
-        f"output_contact_layer: {session.output_contact_layer or '-'}",
         f"edit_plan: {session.edit_plan_path or '-'}",
         f"pending_edits: {len(read_pending_surface_edits(session))}",
+        f"debug_contact_layer: {session.output_contact_layer or '-'}",
     ]
     if session.edit_plan_path:
         path = Path(session.edit_plan_path).expanduser()
@@ -567,17 +568,124 @@ def _session_plan_summary(session: SurfaceEditorSession) -> str:
     return "\n".join(lines)
 
 
-def _save_and_validate_plan(session: SurfaceEditorSession, *, layers_root: Path = LAYERS_ROOT) -> tuple[Path | None, list[str]]:
-    out = save_surface_editor_session(session, layers_root=layers_root)
+def _write_session_edits_to_plan(session: SurfaceEditorSession) -> Path:
     if not session.edit_plan_path:
         raise ValueError("edit_plan is not configured for this session")
     plan_path = Path(session.edit_plan_path).expanduser()
+    if plan_path.exists():
+        plan = read_contact_edit_plan(plan_path)
+    else:
+        plan = ContactEditPlan(
+            plan_id=plan_path.stem,
+            source_motion_path=session.motion_path,
+            source_motion_id=session.motion_id,
+            source_contact_layer=session.contact_layer,
+        )
+    existing_edits = list(plan.edits)
+    edit_index = {str(edit.get("edit_id")): index for index, edit in enumerate(existing_edits) if edit.get("edit_id")}
+    for edit in read_pending_surface_edits(session):
+        metadata = dict(edit.metadata)
+        metadata.update(
+            {
+                "session_name": session.session_name,
+                "overlay_path": str(session.overlay_path),
+                "report_path": str(session.report_path),
+                "binding_granularity": "anchor_point",
+            }
+        )
+        enriched = replace(edit, source="viser_surface_editor", metadata=metadata)
+        edit_dict = enriched.to_dict()
+        edit_id = str(edit_dict["edit_id"])
+        if edit_id in edit_index:
+            existing_edits[edit_index[edit_id]] = edit_dict
+        else:
+            edit_index[edit_id] = len(existing_edits)
+            existing_edits.append(edit_dict)
+    updated = ContactEditPlan(
+        plan_id=plan.plan_id,
+        source_motion_path=plan.source_motion_path or session.motion_path,
+        source_motion_id=plan.source_motion_id or session.motion_id,
+        source_contact_layer=plan.source_contact_layer or session.contact_layer,
+        source_segment_layer=plan.source_segment_layer,
+        edits=existing_edits,
+        status="draft" if plan.status == "validated" else plan.status,
+        output_motion_path=plan.output_motion_path,
+        output_contact_layer=plan.output_contact_layer,
+        output_segment_layer=plan.output_segment_layer,
+        metadata=dict(plan.metadata),
+    )
+    write_contact_edit_plan(plan_path, updated)
+    return plan_path
+
+
+def _validate_session_plan(session: SurfaceEditorSession, *, layers_root: Path = LAYERS_ROOT) -> tuple[Path, list[str]]:
+    _ = layers_root
+    plan_path = _write_session_edits_to_plan(session)
+    plan = read_contact_edit_plan(plan_path)
+    warnings = validate_contact_edit_plan(plan)
+    if plan.status == "draft":
+        plan = replace(plan, status="validated")
+    write_contact_edit_plan(plan_path, plan)
+    return plan_path, warnings
+
+
+def _save_and_validate_plan(session: SurfaceEditorSession, *, layers_root: Path = LAYERS_ROOT) -> tuple[Path | None, list[str]]:
+    out = save_surface_editor_session(session, layers_root=layers_root)
+    plan_path = Path(session.edit_plan_path).expanduser() if session.edit_plan_path else None
+    if plan_path is None:
+        raise ValueError("edit_plan is not configured for this session")
     plan = read_contact_edit_plan(plan_path)
     warnings = validate_contact_edit_plan(plan)
     if plan.status == "draft":
         plan = replace(plan, status="validated")
     write_contact_edit_plan(plan_path, plan)
     return out, warnings
+
+
+def _default_generation_outputs(session: SurfaceEditorSession) -> dict[str, str]:
+    stem = _safe_name(session.session_name or session.motion_id)
+    return {
+        "output_motion": str(Path("data/motions/generated") / f"{stem}_augmented.npz"),
+        "output_motion_version_id": f"{stem}_augmented",
+        "output_contact_layer": f"contact/{stem}_augmented",
+        "output_segment_layer": f"candidates/{stem}_augmented",
+        "intermediate_dir": str(Path("data/workbench/lte_intermediates") / stem),
+    }
+
+
+def _generate_fullbody_lte_from_session(
+    session: SurfaceEditorSession,
+    *,
+    output_motion: str,
+    output_motion_version_id: str | None = None,
+    output_contact_layer: str | None = None,
+    output_segment_layer: str | None = None,
+    intermediate_dir: str | None = None,
+    dry_run: bool = False,
+    overwrite: bool = False,
+    register_motion_version: bool = False,
+    lte_repo_root: str = "/home/xiaz/lte",
+    ik_conda_env: str = "env_pyroki_climb_projection",
+    layers_root: Path = LAYERS_ROOT,
+) -> Any:
+    plan_path, _warnings = _validate_session_plan(session, layers_root=layers_root)
+    plan = read_contact_edit_plan(plan_path)
+    return apply_contact_edit_plan_to_motion(
+        plan,
+        output_motion_path=output_motion,
+        mode="lte_fullbody",
+        source_plan_path=plan_path,
+        output_contact_layer=output_contact_layer,
+        output_segment_layer=output_segment_layer,
+        output_motion_version_id=output_motion_version_id,
+        overwrite=overwrite,
+        dry_run=dry_run,
+        register_motion_version=register_motion_version,
+        lte_repo_root=lte_repo_root,
+        ik_conda_env=ik_conda_env,
+        intermediate_dir=intermediate_dir,
+        layers_root=layers_root,
+    )
 
 
 def _open_file_dialog(*, title: str, filetypes: list[tuple[str, str]], initialdir: str | Path | None = None) -> str | None:
@@ -1042,11 +1150,21 @@ def _add_loaded_editor_sidebar(
     status_refs["selected_anchor"] = selected_anchor
     status_refs["anchor_info"] = anchor_info
 
-    with server.gui.add_folder("Plan / Save"):
+    defaults = _default_generation_outputs(controller.state.session)
+    with server.gui.add_folder("Augmentation"):
         plan_info = server.gui.add_text("plan", initial_value=_session_plan_summary(controller.state.session), multiline=True)
         plan_info.disabled = True
-        save_btn = server.gui.add_button("Save edits")
-        validate_btn = server.gui.add_button("Save + validate plan")
+        output_motion = server.gui.add_text("output_motion", initial_value=defaults["output_motion"])
+        output_motion_version_id = server.gui.add_text("motion_version_id", initial_value=defaults["output_motion_version_id"])
+        output_contact_layer = server.gui.add_text("generated_contact_layer", initial_value=defaults["output_contact_layer"])
+        output_segment_layer = server.gui.add_text("generated_segment_layer", initial_value=defaults["output_segment_layer"])
+        intermediate_dir = server.gui.add_text("intermediate_dir", initial_value=defaults["intermediate_dir"])
+        overwrite = server.gui.add_checkbox("overwrite output", initial_value=False)
+        register_motion_version = server.gui.add_checkbox("register motion version", initial_value=False)
+        validate_btn = server.gui.add_button("Validate plan")
+        dry_run_btn = server.gui.add_button("Dry run fullbody LTE")
+        generate_btn = server.gui.add_button("Generate fullbody LTE")
+        debug_export_btn = server.gui.add_button("Export debug ContactLayer")
         discard_btn = server.gui.add_button("Discard unsaved edits")
     status_refs["plan_info"] = plan_info
 
@@ -1080,11 +1198,11 @@ def _add_loaded_editor_sidebar(
             controller.state.last_error = str(exc)
         _refresh_info()
 
-    @save_btn.on_click
+    @debug_export_btn.on_click
     def _(_) -> None:
         try:
             out = controller.save()
-            _set_status(f"saved output contact layer: {out}")
+            _set_status(f"exported debug contact layer: {out}")
             plan_info.value = _session_plan_summary(controller.state.session)
         except Exception as exc:
             controller.state.last_error = str(exc)
@@ -1093,10 +1211,43 @@ def _add_loaded_editor_sidebar(
     @validate_btn.on_click
     def _(_) -> None:
         try:
-            out, warnings = _save_and_validate_plan(controller.state.session)
+            plan_path, warnings = _validate_session_plan(controller.state.session)
             suffix = f" warnings={len(warnings)}" if warnings else ""
-            _set_status(f"saved and validated plan; output contact layer: {out}{suffix}")
+            _set_status(f"validated plan: {plan_path}{suffix}")
             plan_info.value = _session_plan_summary(controller.state.session)
+        except Exception as exc:
+            controller.state.last_error = str(exc)
+        _refresh_info()
+
+    def _run_generation(*, dry_run: bool) -> None:
+        result = _generate_fullbody_lte_from_session(
+            controller.state.session,
+            output_motion=str(output_motion.value).strip(),
+            output_motion_version_id=str(output_motion_version_id.value).strip() or None,
+            output_contact_layer=str(output_contact_layer.value).strip() or None,
+            output_segment_layer=str(output_segment_layer.value).strip() or None,
+            intermediate_dir=str(intermediate_dir.value).strip() or None,
+            dry_run=dry_run,
+            overwrite=bool(overwrite.value),
+            register_motion_version=bool(register_motion_version.value),
+        )
+        action = "dry-run fullbody LTE" if dry_run else "generated fullbody LTE"
+        warning_suffix = f" warnings={len(result.warnings or [])}" if result.warnings else ""
+        _set_status(f"{action}: {result.output_motion_path}{warning_suffix}")
+        plan_info.value = _session_plan_summary(controller.state.session)
+
+    @dry_run_btn.on_click
+    def _(_) -> None:
+        try:
+            _run_generation(dry_run=True)
+        except Exception as exc:
+            controller.state.last_error = str(exc)
+        _refresh_info()
+
+    @generate_btn.on_click
+    def _(_) -> None:
+        try:
+            _run_generation(dry_run=False)
         except Exception as exc:
             controller.state.last_error = str(exc)
         _refresh_info()

@@ -53,8 +53,10 @@ from motion_edit.viewer.surface_overlay_player import (
     _layer_name_from_path,
     _anchor_positions_differ,
     _contact_editor_config_from_motion_asset,
+    _generate_fullbody_lte_from_session,
     _render_overlay,
     _save_and_validate_plan,
+    _validate_session_plan,
     _selected_tangent_arrows,
     _directory_contains_loadable_file,
     _filtered_picker_entries,
@@ -187,6 +189,9 @@ class _FakeGui:
     def add_text(self, label: str, initial_value="", multiline: bool = False):
         _ = multiline
         self.texts.append(label)
+        return _FakeGuiHandle(label, initial_value)
+
+    def add_checkbox(self, label: str, initial_value=False):
         return _FakeGuiHandle(label, initial_value)
 
 
@@ -995,14 +1000,16 @@ class SurfaceEditorSessionTests(unittest.TestCase):
 
         self.assertIn("Motion", server.gui.folders)
         self.assertIn("Contact Anchor", server.gui.folders)
-        self.assertIn("Plan / Save", server.gui.folders)
+        self.assertIn("Augmentation", server.gui.folders)
         self.assertIn("Load Motion Bundle...", server.gui.buttons)
-        self.assertIn("Save edits", server.gui.buttons)
-        self.assertIn("Save + validate plan", server.gui.buttons)
+        self.assertIn("Validate plan", server.gui.buttons)
+        self.assertIn("Dry run fullbody LTE", server.gui.buttons)
+        self.assertIn("Generate fullbody LTE", server.gui.buttons)
+        self.assertIn("Export debug ContactLayer", server.gui.buttons)
         self.assertIn("Undo", server.gui.buttons)
         self.assertIn("info", server.gui.texts)
 
-    def test_save_and_validate_plan_marks_draft_plan_validated(self) -> None:
+    def test_validate_session_plan_marks_draft_plan_validated_without_contact_layer_export(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             graph = contact_graph_from_masks(
@@ -1047,6 +1054,55 @@ class SurfaceEditorSessionTests(unittest.TestCase):
             )
             move_surface_editor_anchor(session, anchor_id=anchor.anchor_id, tangent_delta=[0.1, 0.0], mode="reject")
 
+            plan_path, warnings = _validate_session_plan(session, layers_root=root / "layers")
+            plan_path_2, warnings_2 = _validate_session_plan(session, layers_root=root / "layers")
+            plan = read_contact_edit_plan(plan_path)
+
+        self.assertEqual(plan_path_2, plan_path)
+        self.assertEqual(warnings, [])
+        self.assertEqual(warnings_2, [])
+        self.assertEqual(plan.status, "validated")
+        self.assertEqual(len(plan.edits), 1)
+        self.assertFalse((root / "layers" / "contact" / "edited").exists())
+
+    def test_debug_save_and_validate_still_exports_contact_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True], [True], [False]]),
+                body_pos_w=np.zeros((3, 1, 3), dtype=np.float32),
+                body_names=["LF"],
+            )
+            anchor = graph.anchors[0]
+            bound_anchor = type(anchor)(
+                **{
+                    **anchor.__dict__,
+                    "surface_id": "top",
+                    "surface_normal": [0.0, 0.0, 1.0],
+                    "surface_origin": [0.0, 0.0, 0.0],
+                    "surface_tangent_u": [1.0, 0.0, 0.0],
+                    "surface_tangent_v": [0.0, 1.0, 0.0],
+                    "surface_bounds": {"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+                    "surface_coordinates": {"u": 0.0, "v": 0.0},
+                }
+            )
+            graph = type(graph)(motion_id=graph.motion_id, events=graph.events, anchors=[bound_anchor], patches=graph.patches, transitions=graph.transitions)
+            write_contact_layer(root / "layers" / "contact" / "bound", graph)
+            plan_path = root / "plan.json"
+            session = prepare_surface_editor_session(
+                motion_path=str(root / "motion_a.npz"),
+                motion_id="motion_a",
+                contact_layer="contact/bound",
+                surface_catalog=None,
+                session_name="debug_validate_save",
+                edit_plan_path=str(plan_path),
+                output_contact_layer="contact/edited",
+                layers_root=root / "layers",
+                workbench_root=root / "workbench",
+            )
+            move_surface_editor_anchor(session, anchor_id=anchor.anchor_id, tangent_delta=[0.1, 0.0], mode="reject")
+
             out, warnings = _save_and_validate_plan(session, layers_root=root / "layers")
             plan = read_contact_edit_plan(plan_path)
 
@@ -1054,6 +1110,68 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertEqual(warnings, [])
         self.assertEqual(plan.status, "validated")
         self.assertEqual(len(plan.edits), 1)
+
+    def test_generate_fullbody_lte_from_session_writes_plan_then_calls_generator(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True], [True], [False]]),
+                body_pos_w=np.zeros((3, 1, 3), dtype=np.float32),
+                body_names=["LF"],
+            )
+            anchor = graph.anchors[0]
+            bound_anchor = type(anchor)(
+                **{
+                    **anchor.__dict__,
+                    "surface_id": "top",
+                    "surface_normal": [0.0, 0.0, 1.0],
+                    "surface_origin": [0.0, 0.0, 0.0],
+                    "surface_tangent_u": [1.0, 0.0, 0.0],
+                    "surface_tangent_v": [0.0, 1.0, 0.0],
+                    "surface_bounds": {"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+                    "surface_coordinates": {"u": 0.0, "v": 0.0},
+                }
+            )
+            graph = type(graph)(motion_id=graph.motion_id, events=graph.events, anchors=[bound_anchor], patches=graph.patches, transitions=graph.transitions)
+            write_contact_layer(root / "layers" / "contact" / "bound", graph)
+            plan_path = root / "plan.json"
+            session = prepare_surface_editor_session(
+                motion_path=str(root / "motion_a.npz"),
+                motion_id="motion_a",
+                contact_layer="contact/bound",
+                surface_catalog=None,
+                session_name="generate_lte",
+                edit_plan_path=str(plan_path),
+                output_contact_layer="contact/debug",
+                layers_root=root / "layers",
+                workbench_root=root / "workbench",
+            )
+            move_surface_editor_anchor(session, anchor_id=anchor.anchor_id, tangent_delta=[0.1, 0.0], mode="reject")
+            fake_result = type("FakeResult", (), {"output_motion_path": root / "out.npz", "warnings": []})()
+
+            with mock.patch("motion_edit.viewer.surface_overlay_player.apply_contact_edit_plan_to_motion", return_value=fake_result) as generate:
+                result = _generate_fullbody_lte_from_session(
+                    session,
+                    output_motion=str(root / "out.npz"),
+                    output_motion_version_id="motion_a_aug",
+                    output_contact_layer="contact/generated",
+                    output_segment_layer="candidates/generated",
+                    intermediate_dir=str(root / "intermediate"),
+                    dry_run=True,
+                    layers_root=root / "layers",
+                )
+            plan = read_contact_edit_plan(plan_path)
+
+        self.assertIs(result, fake_result)
+        self.assertEqual(plan.status, "validated")
+        self.assertEqual(len(plan.edits), 1)
+        self.assertFalse((root / "layers" / "contact" / "debug").exists())
+        kwargs = generate.call_args.kwargs
+        self.assertEqual(kwargs["mode"], "lte_fullbody")
+        self.assertTrue(kwargs["dry_run"])
+        self.assertEqual(kwargs["output_motion_version_id"], "motion_a_aug")
+        self.assertEqual(kwargs["output_contact_layer"], "contact/generated")
 
     def test_surface_overlay_direct_move_records_error_for_reject(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

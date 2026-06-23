@@ -252,13 +252,13 @@ The local adapter reads the existing overlay JSON and renders the motion root tr
 
 - `Motion`: current motion/session, overlay reload, and loading another registered motion bundle.
 - `Contact Anchor`: selected-anchor metadata, previous/next selection, first unbound/edited selection, undo/redo, and reset.
-- `Plan / Save`: save moved ContactLayer, append edits to the ContactEditPlan, and save+validate the plan for later fullbody LTE generation.
+- `Augmentation`: write/validate the ContactEditPlan, dry-run fullbody LTE, generate the augmented motion, and optionally export a debug ContactLayer.
 
 3D selection and handle editing are same-surface constrained. Anchor markers can be clicked in the 3D view when supported by the local Viser runtime. The selected anchor shows a handle with tangent axes, normal axis, and surface bounds. Dragging this handle is not a free 3D transform: the dragged world point is projected back into the anchor's original surface coordinates, any normal component is discarded, and the anchor keeps the same `surface_id` and `object_id`. Bounds are enforced by the current reject/clamp mode. A normal-only drag is ignored as a no-op.
 
 Interaction levels:
 
-- Level 1: local Viser direct editor. It renders the overlay, highlights the selected anchor, moves anchors with same-surface constrained 3D handles, refreshes the overlay, supports undo/redo/reset, and saves from the Viser GUI.
+- Level 1: local Viser direct editor. It renders the overlay, highlights the selected anchor, moves anchors with same-surface constrained 3D handles, refreshes the overlay, supports undo/redo/reset, validates the edit plan, and can launch fullbody LTE generation from the Viser GUI.
 - Level 2: request bridge fallback. Run `surface-editor --edit-mode request`, click `Write move request`, then apply requests with `surface-editor-sync`.
 
 The older external Holosoma viewer can still be used with `--external-viewer`, but it is no longer required for the surface overlay bridge. The local editor owns the surface overlay and same-surface anchor handle interactions.
@@ -276,7 +276,7 @@ Edits remain anchor-level and surface-constrained. They use `move_contact_anchor
   --with-terrain
 ```
 
-In the Viser GUI, select an anchor from the bottom timeline or 3D view, drag its same-surface contact handle, then click `Save edits` or `Save + validate plan`. No terminal sync is needed in default direct mode. `surface-editor-sync` remains available for request-mode fallback and debugging.
+In the Viser GUI, select an anchor from the bottom timeline or 3D view, drag its same-surface contact handle, then click `Validate plan`, `Dry run fullbody LTE`, or `Generate fullbody LTE`. No terminal sync is needed in default direct mode. `surface-editor-sync` remains available for request-mode fallback and debugging.
 
 Practical in-viewer workflow:
 
@@ -284,9 +284,9 @@ Practical in-viewer workflow:
 2. Inspect the selected anchor metadata and surface binding.
 3. Move by 3D same-surface drag, `du`/`dv`, step buttons, or target `u/v`.
 4. Use `Undo`, `Redo`, `Reset session`, or `Discard unsaved edits` if needed.
-5. Click `Save edits`, or `Save + validate plan` when the edit plan should be ready for `generate-lte-augmentation`.
+5. Click `Validate plan`, then `Dry run fullbody LTE` or `Generate fullbody LTE`.
 
-Saving writes a moved ContactLayer and appends `ContactAnchorEditRecord` entries to the edit plan if configured. `Save + validate plan` performs the same save and marks a valid draft plan as `validated`. Neither action modifies the original motion `.npz`, generates LTE augmented motion, or mutates canonical segmentation.
+Validation writes pending `ContactAnchorEditRecord` entries into the ContactEditPlan and marks a valid draft plan as `validated`; it does not export a ContactLayer. `Generate fullbody LTE` then creates a new augmented motion from that plan. `Export debug ContactLayer` is available for inspection, but it is not the main workflow. None of these actions modify the original motion `.npz` or mutate canonical segmentation by default.
 
 ## Contact Anchor Edit Plans
 
