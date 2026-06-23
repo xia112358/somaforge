@@ -948,6 +948,8 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertIn("http://localhost:8084", html)
         self.assertIn("/api/select_anchor", html)
         self.assertIn("/api/open_recent", html)
+        self.assertIn("recentSelect.onchange", html)
+        self.assertNotIn("openRecent", html)
         self.assertIn("openLatest", html)
         self.assertIn("anchorBlock", html)
         self.assertIn("#bottom", html)
