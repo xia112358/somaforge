@@ -315,14 +315,14 @@ Stage 2 generates augmented motion explicitly:
   --output-segment-layer candidates/climb00_farther \
   --output-motion-version-id climb00_farther \
   --register-motion-version \
-  --mode lte_windowed \
-  --falloff-before 20 \
-  --falloff-after 20 \
-  --global-weight 0.35 \
-  --fps 50
+  --mode lte_fullbody \
+  --lte-repo-root /home/xiaz/lte \
+  --ik-conda-env env_pyroki_climb_projection
 ```
 
-Generation requires a `validated` or `locked` plan by default. The first backend, `lte_windowed`, is a deterministic position-only reference deformation: it reads `body_pos_w`, moves the edited anchor body by the requested contact-anchor delta over the affected frames, applies smooth temporal falloff before/after the contact interval, optionally applies a smaller global drift to other bodies, and recomputes `body_lin_vel_w` when present. It preserves joint and orientation arrays for now and records warnings in `motion_edit_generation_metadata`; this is not full IK, not a physics solve, and not foot-sole contact modeling.
+Generation requires a `validated` or `locked` plan by default. The primary backend, `lte_fullbody`, follows the old LTE structure but is driven from motion_edit data: it extracts semantic keypoints from the source motion, applies ContactEditPlan handles through the LTE keypoint solver, writes LTE keypoints and a dense taskspace motion as intermediates, calls the full-body IK runner, and writes one final augmented motion `.npz`. This path is explicit; it does not run automatically from the surface editor.
+
+`lte_windowed` remains a lightweight diagnostic backend. It reads `body_pos_w`, moves the edited anchor body by the requested contact-anchor delta over the affected frames, applies smooth temporal falloff, and recomputes `body_lin_vel_w` when present. It preserves joint and orientation arrays and is not full IK.
 
 Legacy LTE catalogs can also be bridged into the same plan/generation workflow. `import-legacy-lte-plan` converts one old catalog sample into a `ContactEditPlan` using its `terrain_shift` as the contact-anchor delta and preserves the old `keypoints`, `taskspace_motion`, and `fullbody_ik_motion` paths as provenance:
 
@@ -343,7 +343,7 @@ Legacy LTE catalogs can also be bridged into the same plan/generation workflow. 
   --mode lte_legacy_fullbody
 ```
 
-`lte_legacy_fullbody` reuses the old catalog sample as the augmented full motion output and records that provenance in `motion_edit_generation_metadata`. When both old files are available, it uses `taskspace_motion` as the standard world-space motion container (`body_pos_w`, `body_quat_w`, `body_lin_vel_w`) and merges `joint_pos` / `joint_vel` / joint metadata from `fullbody_ik_motion`. This is the compatibility path for old LTE taskspace/fullbody-IK results; it is explicit and does not run automatically from the surface editor.
+`lte_legacy_fullbody` is only a compatibility path for already-generated old LTE samples. It reuses the old catalog sample as the augmented full motion output and records that provenance in `motion_edit_generation_metadata`. When both old files are available, it uses `taskspace_motion` as the standard world-space motion container (`body_pos_w`, `body_quat_w`, `body_lin_vel_w`) and merges `joint_pos` / `joint_vel` / joint metadata from `fullbody_ik_motion`.
 
 The source `.npz`, source ContactLayer, and source canonical segmentation are not modified. `--output-contact-layer` writes a graph derived from the source ContactGraph with edited anchor positions. `--output-segment-layer` writes candidate segments for the generated motion. `--register-motion-version` registers the generated full trajectory as an augmented MotionVersion. Canonical segmentation for that new version is only built when `--build-canonical` is passed explicitly.
 

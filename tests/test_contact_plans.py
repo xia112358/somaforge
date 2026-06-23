@@ -21,7 +21,8 @@ from motion_edit.contact import (
     write_contact_layer,
 )
 from motion_edit.contact.generation import apply_contact_edit_plan_to_motion, resolve_body_index
-from motion_edit.contact.schema import ContactAnchorEditRecord
+from motion_edit.contact.graph import ContactGraph
+from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord
 from motion_edit.layers import read_layer
 
 
@@ -118,6 +119,84 @@ def _write_synthetic_motion_and_contact(root: Path, *, plan_status: str = "valid
     plan_path = root / "plan.json"
     write_contact_edit_plan(plan_path, plan)
     return motion, plan_path, plan
+
+
+def _write_fullbody_lte_source(root: Path) -> tuple[Path, ContactEditPlan]:
+    motion = root / "fullbody_source.npz"
+    body_names = np.asarray(
+        [
+            "pelvis",
+            "left_hip_roll_link",
+            "left_knee_link",
+            "left_ankle_roll_link",
+            "right_hip_roll_link",
+            "right_knee_link",
+            "right_ankle_roll_link",
+            "torso_link",
+            "left_shoulder_roll_link",
+            "left_elbow_link",
+            "left_wrist_yaw_link",
+            "right_shoulder_roll_link",
+            "right_elbow_link",
+            "right_wrist_yaw_link",
+        ],
+        dtype=object,
+    )
+    body_pos = np.zeros((8, len(body_names), 3), dtype=np.float32)
+    for index in range(len(body_names)):
+        body_pos[:, index, 0] = float(index)
+    joint_pos = np.zeros((8, 10), dtype=np.float32)
+    joint_pos[:, 3] = 1.0
+    np.savez(
+        motion,
+        body_pos_w=body_pos,
+        body_quat_w=np.zeros((8, len(body_names), 4), dtype=np.float32),
+        body_lin_vel_w=np.zeros_like(body_pos),
+        body_names=body_names,
+        joint_pos=joint_pos,
+        joint_vel=np.zeros_like(joint_pos),
+        joint_names=np.asarray(["j0", "j1", "j2"], dtype=object),
+        fps=np.asarray(50.0),
+    )
+    anchor = ContactGraph(
+        motion_id="motion_a",
+        anchors=[
+            ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="anchor_lf",
+                body="left_foot",
+                start_frame=2,
+                end_frame=5,
+                world_position=[3.0, 0.0, 0.0],
+                surface_id="platform_top",
+                surface_normal=[0.0, 0.0, 1.0],
+                surface_coordinates={"u": 0.0, "v": 0.0},
+            )
+        ],
+    )
+    write_contact_layer(root / "layers" / "contact" / "force_contact", anchor)
+    edit = ContactAnchorEditRecord(
+        edit_id="fullbody_edit",
+        motion_id="motion_a",
+        anchor_id="anchor_lf",
+        body="left_foot",
+        old_world_position=[3.0, 0.0, 0.0],
+        new_world_position=[3.2, 0.0, 0.0],
+        delta_world=[0.2, 0.0, 0.0],
+        affected_frames=[2, 5],
+        surface_id="platform_top",
+        surface_normal=[0.0, 0.0, 1.0],
+        constraint_mode="reject",
+    )
+    plan = ContactEditPlan(
+        plan_id="fullbody_plan",
+        source_motion_path=str(motion),
+        source_motion_id="motion_a",
+        source_contact_layer="contact/force_contact",
+        edits=[edit.to_dict()],
+        status="validated",
+    )
+    return motion, plan
 
 
 class ContactEditPlanTests(unittest.TestCase):
@@ -515,6 +594,80 @@ class ContactEditPlanTests(unittest.TestCase):
         self.assertIn("lte_legacy_fullbody", generated["motion_edit_generation_metadata"].item())
         self.assertEqual(plan.edits[0]["delta_world"], [0.1, 0.0, 0.0])
         self.assertEqual(edited_graph.anchors[0].world_position, [0.1, 0.0, 0.0])
+
+    def test_lte_fullbody_generates_taskspace_and_merges_ik_output(self) -> None:
+        class FakeLegacyLte:
+            @staticmethod
+            def deform_demo_with_contact_handles_lte(keypoints, handles, weights=None, config=None):
+                edited = {name: value.copy() for name, value in keypoints.items()}
+                for handle in handles:
+                    frames = np.asarray(handle["frames"], dtype=np.int64)
+                    edited[handle["name"]][frames] = np.asarray(handle["target"], dtype=np.float64)
+                return {"edited_keypoints": edited, "debug": {"fake": True}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _motion, plan = _write_fullbody_lte_source(root)
+            output = root / "fullbody_out.npz"
+            intermediate = root / "intermediate"
+
+            def fake_run(cmd, cwd=None, check=False):
+                ik_out = Path(cmd[cmd.index("--out") + 1])
+                np.savez(
+                    ik_out,
+                    joint_pos=np.full((8, 10), 9.0, dtype=np.float32),
+                    joint_vel=np.full((8, 10), 2.0, dtype=np.float32),
+                    joint_names=np.asarray(["j0", "j1", "j2"], dtype=object),
+                    is_qpos=np.asarray(True),
+                )
+                return mock.Mock(returncode=0)
+
+            with mock.patch("motion_edit.contact.generation._import_legacy_lte_module", return_value=FakeLegacyLte):
+                with mock.patch("motion_edit.contact.generation.subprocess.run", side_effect=fake_run) as run_mock:
+                    result = apply_contact_edit_plan_to_motion(
+                        plan,
+                        output_motion_path=output,
+                        mode="lte_fullbody",
+                        output_contact_layer="contact/fullbody_generated",
+                        intermediate_dir=intermediate,
+                        layers_root=root / "layers",
+                    )
+            generated = np.load(output, allow_pickle=True)
+            edited_graph = cli.read_contact_graph(root / "layers" / "contact" / "fullbody_generated", "motion_a")
+            self.assertEqual(result.output_motion_path, output)
+            self.assertTrue((intermediate / "fullbody_out.lte_keypoints.npz").exists())
+            self.assertTrue((intermediate / "fullbody_out.taskspace_motion.npz").exists())
+            self.assertEqual(run_mock.call_args.kwargs["check"], True)
+            np.testing.assert_allclose(generated["joint_pos"], 9.0)
+            self.assertIn("body_pos_w", generated.files)
+            self.assertIn("lte_fullbody", generated["motion_edit_generation_metadata"].item())
+            self.assertEqual(edited_graph.anchors[0].world_position, [3.2, 0.0, 0.0])
+
+    def test_lte_fullbody_dry_run_writes_no_intermediates(self) -> None:
+        class FakeLegacyLte:
+            @staticmethod
+            def deform_demo_with_contact_handles_lte(keypoints, handles, weights=None, config=None):
+                return {"edited_keypoints": {name: value.copy() for name, value in keypoints.items()}, "debug": {}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _motion, plan = _write_fullbody_lte_source(root)
+            intermediate = root / "intermediate"
+            with mock.patch("motion_edit.contact.generation._import_legacy_lte_module", return_value=FakeLegacyLte):
+                with mock.patch("motion_edit.contact.generation.subprocess.run") as run_mock:
+                    result = apply_contact_edit_plan_to_motion(
+                        plan,
+                        output_motion_path=root / "out.npz",
+                        mode="lte_fullbody",
+                        dry_run=True,
+                        intermediate_dir=intermediate,
+                        layers_root=root / "layers",
+                    )
+
+            self.assertFalse(intermediate.exists())
+            self.assertFalse((root / "out.npz").exists())
+            run_mock.assert_not_called()
+            self.assertIn("would run fullbody IK", "\n".join(result.warnings or []))
 
     def test_import_legacy_lte_plan_cli_writes_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

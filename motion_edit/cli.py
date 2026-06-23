@@ -801,6 +801,11 @@ def _cmd_generate_lte_augmentation(args: argparse.Namespace) -> None:
         build_canonical=args.build_canonical,
         allow_draft=args.allow_draft,
         allow_free=args.allow_free,
+        lte_repo_root=args.lte_repo_root,
+        ik_script=args.ik_script,
+        ik_conda_env=args.ik_conda_env,
+        ik_max_nfev=args.ik_max_nfev,
+        intermediate_dir=args.intermediate_dir,
     )
     action = "dry-run LTE augmentation" if args.dry_run else "generated LTE augmentation"
     print(f"{action} {result.output_motion_path}")
@@ -1601,7 +1606,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--source-contact-layer", default=None)
     p.add_argument("--allow-draft", action="store_true")
     p.add_argument("--allow-free", action="store_true")
-    p.add_argument("--mode", choices=("lte_windowed", "lte_laplacian", "lte_legacy_fullbody"), default="lte_windowed")
+    p.add_argument("--mode", choices=("lte_windowed", "lte_laplacian", "lte_fullbody", "lte_legacy_fullbody"), default="lte_windowed")
     p.add_argument("--falloff-before", type=int, default=20)
     p.add_argument("--falloff-after", type=int, default=20)
     p.add_argument("--global-weight", type=float, default=0.35)
@@ -1611,6 +1616,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--register-motion-version", action="store_true")
     p.add_argument("--build-canonical", action="store_true")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--lte-repo-root", default="/home/xiaz/lte")
+    p.add_argument("--ik-script", default=None)
+    p.add_argument("--ik-conda-env", default="env_pyroki_climb_projection")
+    p.add_argument("--ik-max-nfev", type=int, default=None)
+    p.add_argument("--intermediate-dir", default=None)
     p.set_defaults(func=_cmd_generate_lte_augmentation)
 
     p = sub.add_parser("import-legacy-lte-plan")
