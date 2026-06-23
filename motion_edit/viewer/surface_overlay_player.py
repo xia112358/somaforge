@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 
 from motion_edit.contact.graph import ContactGraph
+from motion_edit.contact.plans import read_contact_edit_plan, validate_contact_edit_plan, write_contact_edit_plan
 from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord
 from motion_edit.paths import LAYERS_ROOT, MOTIONS_ROOT, WORKBENCH_ROOT
 from motion_edit.storage.io import read_motion_asset
@@ -547,6 +548,38 @@ def save_editor_state(state: SurfaceOverlayEditorState, *, layers_root: Path = L
     return out
 
 
+def _session_plan_summary(session: SurfaceEditorSession) -> str:
+    lines = [
+        f"output_contact_layer: {session.output_contact_layer or '-'}",
+        f"edit_plan: {session.edit_plan_path or '-'}",
+        f"pending_edits: {len(read_pending_surface_edits(session))}",
+    ]
+    if session.edit_plan_path:
+        path = Path(session.edit_plan_path).expanduser()
+        if path.exists():
+            try:
+                plan = read_contact_edit_plan(path)
+                lines.extend([f"plan_status: {plan.status}", f"plan_edits: {len(plan.edits)}"])
+            except Exception as exc:
+                lines.append(f"plan_error: {exc}")
+        else:
+            lines.append("plan_status: not written")
+    return "\n".join(lines)
+
+
+def _save_and_validate_plan(session: SurfaceEditorSession, *, layers_root: Path = LAYERS_ROOT) -> tuple[Path | None, list[str]]:
+    out = save_surface_editor_session(session, layers_root=layers_root)
+    if not session.edit_plan_path:
+        raise ValueError("edit_plan is not configured for this session")
+    plan_path = Path(session.edit_plan_path).expanduser()
+    plan = read_contact_edit_plan(plan_path)
+    warnings = validate_contact_edit_plan(plan)
+    if plan.status == "draft":
+        plan = replace(plan, status="validated")
+    write_contact_edit_plan(plan_path, plan)
+    return out, warnings
+
+
 def _open_file_dialog(*, title: str, filetypes: list[tuple[str, str]], initialdir: str | Path | None = None) -> str | None:
     try:
         import tkinter as tk
@@ -974,26 +1007,27 @@ def _add_loaded_editor_sidebar(
             info.value = controller.selected_info_text()
         if frame is not None:
             frame.value = _current_frame_text()
+        plan_info = status_refs.get("plan_info")
+        if plan_info is not None:
+            plan_info.value = _session_plan_summary(controller.state.session)
         status = status_refs.get("status")
         if status is not None:
             status.value = controller.state.last_error or controller.state.last_message or "ready"
 
-    with server.gui.add_folder("Motion / Session"):
+    with server.gui.add_folder("Motion"):
         current_motion = server.gui.add_text("motion", initial_value=str(args.qpos_npz or ""))
         current_motion.disabled = True
         current_session = server.gui.add_text("session", initial_value=str(args.surface_editor_session or ""))
         current_session.disabled = True
         frame_text = server.gui.add_text("frame", initial_value=_current_frame_text())
         frame_text.disabled = True
-        load_motion_btn = server.gui.add_button("Load Motion...")
-        reload_btn = server.gui.add_button("Reload current")
-        save_btn = server.gui.add_button("Save edits")
-        discard_btn = server.gui.add_button("Discard unsaved edits")
         status = server.gui.add_text("status", initial_value="ready", multiline=True)
+        load_motion_btn = server.gui.add_button("Load Motion Bundle...")
+        reload_btn = server.gui.add_button("Reload overlay")
     status_refs["frame"] = frame_text
     status_refs["status"] = status
 
-    with server.gui.add_folder("Selected Anchor"):
+    with server.gui.add_folder("Contact Anchor"):
         selected_anchor = server.gui.add_text("anchor_id", initial_value=controller.selected_anchor_id or "")
         selected_anchor.disabled = True
         anchor_info = server.gui.add_text("info", initial_value=controller.selected_info_text(), multiline=True)
@@ -1002,13 +1036,19 @@ def _add_loaded_editor_sidebar(
         next_btn = server.gui.add_button("Select next")
         first_unbound_btn = server.gui.add_button("First unbound")
         first_edited_btn = server.gui.add_button("First edited")
-    status_refs["selected_anchor"] = selected_anchor
-    status_refs["anchor_info"] = anchor_info
-
-    with server.gui.add_folder("Edit"):
         undo_btn = server.gui.add_button("Undo")
         redo_btn = server.gui.add_button("Redo")
         reset_btn = server.gui.add_button("Reset session")
+    status_refs["selected_anchor"] = selected_anchor
+    status_refs["anchor_info"] = anchor_info
+
+    with server.gui.add_folder("Plan / Save"):
+        plan_info = server.gui.add_text("plan", initial_value=_session_plan_summary(controller.state.session), multiline=True)
+        plan_info.disabled = True
+        save_btn = server.gui.add_button("Save edits")
+        validate_btn = server.gui.add_button("Save + validate plan")
+        discard_btn = server.gui.add_button("Discard unsaved edits")
+    status_refs["plan_info"] = plan_info
 
     @load_motion_btn.on_click
     def _(_) -> None:
@@ -1045,6 +1085,18 @@ def _add_loaded_editor_sidebar(
         try:
             out = controller.save()
             _set_status(f"saved output contact layer: {out}")
+            plan_info.value = _session_plan_summary(controller.state.session)
+        except Exception as exc:
+            controller.state.last_error = str(exc)
+        _refresh_info()
+
+    @validate_btn.on_click
+    def _(_) -> None:
+        try:
+            out, warnings = _save_and_validate_plan(controller.state.session)
+            suffix = f" warnings={len(warnings)}" if warnings else ""
+            _set_status(f"saved and validated plan; output contact layer: {out}{suffix}")
+            plan_info.value = _session_plan_summary(controller.state.session)
         except Exception as exc:
             controller.state.last_error = str(exc)
         _refresh_info()
@@ -1560,30 +1612,38 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
     server.scene.add_grid("/grid", width=8.0, height=8.0, position=(0.0, 0.0, 0.0))
     pending_exec: dict[str, list[str] | None] = {"cmd": None}
 
-    with server.gui.add_folder("Contact Editor Setup"):
+    with server.gui.add_folder("Load"):
         load_type = server.gui.add_dropdown("load_type", options=SETUP_LOAD_TYPES, initial_value=SETUP_LOAD_TYPES[0])
-        browse_btn = server.gui.add_button("Browse...")
+        browse_btn = server.gui.add_button("Load selected type...")
         save_type = server.gui.add_dropdown("save_type", options=SETUP_SAVE_TYPES, initial_value=SETUP_SAVE_TYPES[0])
-        save_as_btn = server.gui.add_button("Save As...")
+        save_as_btn = server.gui.add_button("Choose output...")
+
+    with server.gui.add_folder("Motion Bundle"):
         motion = server.gui.add_text("motion_npz", initial_value="")
         motion_id = server.gui.add_text("motion_id", initial_value="")
         source_contact_layer = server.gui.add_text("source_contact_layer", initial_value="")
         terrain_urdf = server.gui.add_text("terrain_urdf", initial_value="")
         surface_catalog = server.gui.add_text("surface_catalog", initial_value="")
+
+    with server.gui.add_folder("Session / Output"):
         session_name = server.gui.add_text("session_name", initial_value="contact_editor")
         output_prefix = server.gui.add_text("output_prefix", initial_value="")
         output_contact_layer = server.gui.add_text("output_contact_layer", initial_value="")
         edit_plan = server.gui.add_text("edit_plan", initial_value="")
+        load_btn = server.gui.add_button("Open contact editor")
+
+    with server.gui.add_folder("Viewer"):
         repo_root = server.gui.add_text("repo_root", initial_value="")
-        with_terrain = server.gui.add_checkbox("with_terrain", initial_value=True)
+        with_terrain = server.gui.add_checkbox("show terrain", initial_value=True)
         default_mode = server.gui.add_dropdown("mode", options=("reject", "clamp"), initial_value=args.default_mode)
         show_only = server.gui.add_dropdown(
             "show_only",
             options=("all", "bound", "edited", "clamped", "suspicious", "failed", "unbound"),
             initial_value=args.show_only,
         )
-        load_btn = server.gui.add_button("Load contact editor")
-        status = server.gui.add_text("status", initial_value="Fill paths, then Load contact editor.", multiline=True)
+
+    with server.gui.add_folder("Status"):
+        status = server.gui.add_text("status", initial_value="Load a motion bundle, then open contact editor.", multiline=True)
 
     def _set_status(text: str) -> None:
         status.value = text

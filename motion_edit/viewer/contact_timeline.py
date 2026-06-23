@@ -88,9 +88,9 @@ def _timeline_html(*, viser_url: str) -> str:
 <title>Motion Edit Contact Timeline</title>
 <style>
 html, body {{ margin: 0; height: 100%; background: #080b12; color: #e8ecf7; font-family: Inter, system-ui, sans-serif; overflow: hidden; }}
-#app {{ height: 100%; display: grid; grid-template-rows: minmax(0, 1fr) 248px; }}
+#app {{ height: 100%; display: grid; grid-template-rows: minmax(0, 1fr) 286px; }}
 #viewer {{ width: 100%; height: 100%; border: 0; background: #05070c; }}
-#panel {{ border-top: 1px solid #26314a; background: #101622; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 8px; padding: 8px 12px 10px; box-sizing: border-box; min-height: 0; }}
+#panel {{ border-top: 1px solid #26314a; background: #101622; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 8px; padding: 8px 12px 10px; box-sizing: border-box; min-height: 0; }}
 #top {{ display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; }}
 #title {{ font-size: 14px; font-weight: 650; }}
 #readout, #status, #hint {{ color: #95a6c8; font: 12px ui-monospace, monospace; overflow-wrap: anywhere; }}
@@ -107,7 +107,7 @@ button.danger {{ background: #67212a; border-color: #a33a45; }}
 .anchorBlock.selected {{ opacity: 1; border-color: #ffe083; box-shadow: 0 0 0 2px rgba(255, 211, 90, .28); }}
 .anchorBlock.edited {{ border-color: #82eb91; }}
 .tick {{ position: absolute; top: 4px; color: #7284a8; font: 10px ui-monospace, monospace; transform: translateX(-50%); }}
-#bottom {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 18px; }}
+#bottom {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 20px; }}
 #message {{ color: #95a6c8; font: 12px ui-monospace, monospace; }}
 </style>
 </head>
@@ -126,8 +126,8 @@ button.danger {{ background: #67212a; border-color: #a33a45; }}
         <button id="discard" class="danger">Discard</button>
       </div>
     </div>
-    <div id="bottom"><div id="hint">Drag/click timeline to scrub. Click contact blocks to select anchors. Space=play, Arrow=step.</div><div id="message"></div></div>
     <div id="timeline"><div id="rail"></div><div id="current"></div></div>
+    <div id="bottom"><div id="hint">Drag/click timeline to scrub. Click contact blocks to select anchors. Space=play, Arrow=step.</div><div id="message"></div></div>
   </div>
 </div>
 <script>

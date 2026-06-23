@@ -248,7 +248,11 @@ The editor preparation is intentionally strict:
 
 The session includes a surface binding report, surface binding overlay, contact overlay, session state, request file, and pending edit file under `data/workbench/surface_sessions/<session_name>/`.
 
-The local adapter reads the existing overlay JSON and renders the motion root trace, robot playback, optional terrain/object URDF, `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects in Viser. The bottom cutter-style timeline owns playback/scrubbing and contact interval selection. The right sidebar keeps file/session actions (`Load Motion`, reload, save, discard), selected-anchor metadata, previous/next selection, first unbound/edited selection, undo/redo, and reset.
+The local adapter reads the existing overlay JSON and renders the motion root trace, robot playback, optional terrain/object URDF, `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects in Viser. The bottom cutter-style timeline owns playback/scrubbing and contact interval selection. The right sidebar is organized around the current workflow:
+
+- `Motion`: current motion/session, overlay reload, and loading another registered motion bundle.
+- `Contact Anchor`: selected-anchor metadata, previous/next selection, first unbound/edited selection, undo/redo, and reset.
+- `Plan / Save`: save moved ContactLayer, append edits to the ContactEditPlan, and save+validate the plan for later fullbody LTE generation.
 
 3D selection and handle editing are same-surface constrained. Anchor markers can be clicked in the 3D view when supported by the local Viser runtime. The selected anchor shows a handle with tangent axes, normal axis, and surface bounds. Dragging this handle is not a free 3D transform: the dragged world point is projected back into the anchor's original surface coordinates, any normal component is discarded, and the anchor keeps the same `surface_id` and `object_id`. Bounds are enforced by the current reject/clamp mode. A normal-only drag is ignored as a no-op.
 
@@ -272,7 +276,7 @@ Edits remain anchor-level and surface-constrained. They use `move_contact_anchor
   --with-terrain
 ```
 
-In the Viser GUI, select an anchor from the bottom timeline or 3D view, drag its same-surface contact handle, then click `Save edits`. No terminal sync is needed in default direct mode. `surface-editor-sync` remains available for request-mode fallback and debugging.
+In the Viser GUI, select an anchor from the bottom timeline or 3D view, drag its same-surface contact handle, then click `Save edits` or `Save + validate plan`. No terminal sync is needed in default direct mode. `surface-editor-sync` remains available for request-mode fallback and debugging.
 
 Practical in-viewer workflow:
 
@@ -280,9 +284,9 @@ Practical in-viewer workflow:
 2. Inspect the selected anchor metadata and surface binding.
 3. Move by 3D same-surface drag, `du`/`dv`, step buttons, or target `u/v`.
 4. Use `Undo`, `Redo`, `Reset session`, or `Discard unsaved edits` if needed.
-5. Click `Save edits`.
+5. Click `Save edits`, or `Save + validate plan` when the edit plan should be ready for `generate-lte-augmentation`.
 
-Saving writes a moved ContactLayer and appends `ContactAnchorEditRecord` entries to the edit plan if configured. It does not modify the original motion `.npz`, does not generate LTE augmented motion, and does not mutate canonical segmentation.
+Saving writes a moved ContactLayer and appends `ContactAnchorEditRecord` entries to the edit plan if configured. `Save + validate plan` performs the same save and marks a valid draft plan as `validated`. Neither action modifies the original motion `.npz`, generates LTE augmented motion, or mutates canonical segmentation.
 
 ## Contact Anchor Edit Plans
 
@@ -321,8 +325,6 @@ Stage 2 generates augmented motion explicitly:
 ```
 
 Generation requires a `validated` or `locked` plan by default. The primary backend, `lte_fullbody`, follows the old LTE structure but is driven from motion_edit data: it extracts semantic keypoints from the source motion, applies ContactEditPlan handles through the LTE keypoint solver, writes LTE keypoints and a dense taskspace motion as intermediates, calls the full-body IK runner, and writes one final augmented motion `.npz`. This path is explicit; it does not run automatically from the surface editor.
-
-`lte_windowed` remains a lightweight diagnostic backend. It reads `body_pos_w`, moves the edited anchor body by the requested contact-anchor delta over the affected frames, applies smooth temporal falloff, and recomputes `body_lin_vel_w` when present. It preserves joint and orientation arrays and is not full IK.
 
 The source `.npz`, source ContactLayer, and source canonical segmentation are not modified. `--output-contact-layer` writes a graph derived from the source ContactGraph with edited anchor positions. `--output-segment-layer` writes candidate segments for the generated motion. `--register-motion-version` registers the generated full trajectory as an augmented MotionVersion. Canonical segmentation for that new version is only built when `--build-canonical` is passed explicitly.
 

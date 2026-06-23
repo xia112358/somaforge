@@ -54,6 +54,7 @@ from motion_edit.viewer.surface_overlay_player import (
     _anchor_positions_differ,
     _contact_editor_config_from_motion_asset,
     _render_overlay,
+    _save_and_validate_plan,
     _selected_tangent_arrows,
     _directory_contains_loadable_file,
     _filtered_picker_entries,
@@ -992,13 +993,67 @@ class SurfaceEditorSessionTests(unittest.TestCase):
 
             _add_loaded_editor_sidebar(server, controller=controller, args=args, playback=_FakePlayback())
 
-        self.assertIn("Motion / Session", server.gui.folders)
-        self.assertIn("Selected Anchor", server.gui.folders)
-        self.assertIn("Edit", server.gui.folders)
-        self.assertIn("Load Motion...", server.gui.buttons)
+        self.assertIn("Motion", server.gui.folders)
+        self.assertIn("Contact Anchor", server.gui.folders)
+        self.assertIn("Plan / Save", server.gui.folders)
+        self.assertIn("Load Motion Bundle...", server.gui.buttons)
         self.assertIn("Save edits", server.gui.buttons)
+        self.assertIn("Save + validate plan", server.gui.buttons)
         self.assertIn("Undo", server.gui.buttons)
         self.assertIn("info", server.gui.texts)
+
+    def test_save_and_validate_plan_marks_draft_plan_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            graph = contact_graph_from_masks(
+                motion_id="motion_a",
+                contact_mask=np.asarray([[True], [True], [False]]),
+                body_pos_w=np.zeros((3, 1, 3), dtype=np.float32),
+                body_names=["LF"],
+            )
+            anchor = graph.anchors[0]
+            graph = type(graph)(
+                motion_id=graph.motion_id,
+                events=graph.events,
+                anchors=[
+                    type(anchor)(
+                        **{
+                            **anchor.__dict__,
+                            "surface_id": "top",
+                            "surface_normal": [0.0, 0.0, 1.0],
+                            "surface_origin": [0.0, 0.0, 0.0],
+                            "surface_tangent_u": [1.0, 0.0, 0.0],
+                            "surface_tangent_v": [0.0, 1.0, 0.0],
+                            "surface_bounds": {"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+                            "surface_coordinates": {"u": 0.0, "v": 0.0},
+                        }
+                    )
+                ],
+                patches=graph.patches,
+                transitions=graph.transitions,
+            )
+            write_contact_layer(root / "layers" / "contact" / "bound", graph)
+            plan_path = root / "plan.json"
+            session = prepare_surface_editor_session(
+                motion_path=str(root / "motion_a.npz"),
+                motion_id="motion_a",
+                contact_layer="contact/bound",
+                surface_catalog=None,
+                session_name="validate_save",
+                edit_plan_path=str(plan_path),
+                output_contact_layer="contact/edited",
+                layers_root=root / "layers",
+                workbench_root=root / "workbench",
+            )
+            move_surface_editor_anchor(session, anchor_id=anchor.anchor_id, tangent_delta=[0.1, 0.0], mode="reject")
+
+            out, warnings = _save_and_validate_plan(session, layers_root=root / "layers")
+            plan = read_contact_edit_plan(plan_path)
+
+        self.assertEqual(out, root / "layers" / "contact" / "edited")
+        self.assertEqual(warnings, [])
+        self.assertEqual(plan.status, "validated")
+        self.assertEqual(len(plan.edits), 1)
 
     def test_surface_overlay_direct_move_records_error_for_reject(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
