@@ -2088,8 +2088,8 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
     print(f"[surface editor] edit_mode={args.edit_mode}")
     print(f"[surface editor] robot_urdf={args.robot_urdf or 'none'}")
     print(f"[surface editor] object_urdf={args.object_urdf if args.with_terrain else 'none'}")
-    print(f"[surface editor] Open Contact Editor: http://localhost:{args.timeline_port}")
-    print(f"[surface editor] internal Viser port={viewer_port}")
+    print(f"[surface editor] Open Contact Editor: http://localhost:{viewer_port}")
+    print(f"[surface editor] background timeline/api=http://localhost:{args.timeline_port}")
     if anchor_ids:
         print(f"[surface editor] anchors={', '.join(anchor_ids[:20])}{' ...' if len(anchor_ids) > 20 else ''}")
     print("Close this process with Ctrl+C.")
@@ -2098,13 +2098,40 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
 
 
 def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> None:
-    setup_port = int(args.viser_port or args.timeline_port)
+    setup_port = int(args.viser_port or (args.timeline_port + 1))
     _require_available_port(setup_port, label="contact editor setup")
     server = viser.ViserServer(port=setup_port)
     _assert_viser_port(server, setup_port)
     server.gui.configure_theme(control_layout="fixed", control_width="large", dark_mode=True, show_logo=False, show_share_button=False)
     server.scene.add_grid("/grid", width=8.0, height=8.0, position=(0.0, 0.0, 0.0))
-    pending_exec: dict[str, list[str] | None] = {"cmd": None}
+    playback_slot = ReloadablePlayback()
+    motion_handles: list[Any] = []
+    controller_box: dict[str, SurfaceEditorController | None] = {"controller": None}
+    timeline_started = {"value": False}
+
+    def _replace_motion_visuals(
+        *,
+        motion_path: str | Path,
+        robot_urdf: str | Path | None,
+        object_urdf: str | Path | None,
+        fps_hint: int,
+    ) -> int:
+        nonlocal motion_handles
+        _remove_handles(motion_handles)
+        motion_handles = []
+        qpos, motion_fps = load_motion_sequence(motion_path)
+        playback_handles, next_playback = _add_motion_playback(
+            server,
+            qpos=qpos,
+            fps=int(fps_hint or motion_fps),
+            robot_urdf=robot_urdf,
+            object_urdf=object_urdf,
+            show_gui=True,
+        )
+        motion_handles.extend(playback_handles)
+        motion_handles.extend(_add_motion_root_path(server, qpos))
+        playback_slot.replace(next_playback)
+        return int(fps_hint or motion_fps)
 
     with server.gui.add_folder("Load"):
         load_type = server.gui.add_dropdown("load_type", options=SETUP_LOAD_TYPES, initial_value=SETUP_LOAD_TYPES[0])
@@ -2167,21 +2194,92 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
             bind_mode=str(default_mode.value),
             fps=int(args.fps),
         )
-        cmd, prepared = _loaded_editor_command_from_config(
-            config,
-            timeline_port=args.timeline_port,
-            edit_mode=str(args.edit_mode),
-            default_mode=str(default_mode.value),
-            show_only=str(show_only.value),
-            fps=int(args.fps),
+        next_state, prepared, terrain_urdf_for_viewer = _prepared_state_from_config(config)
+        repo_path = Path(config.repo_root).expanduser() if config.repo_root else Path("/home/xiaz/holosoma_isaaclab3_newton")
+        robot_urdf = repo_path / "OmniRetarget_Dataset/models/g1/g1_29dof_spherehand.urdf"
+        object_urdf = config.terrain_urdf or terrain_urdf_for_viewer
+        _set_status("loading contact editor: rendering motion and contact anchors...")
+        motion_fps = _replace_motion_visuals(
+            motion_path=config.motion,
+            robot_urdf=robot_urdf if robot_urdf.exists() else None,
+            object_urdf=object_urdf if config.with_terrain else None,
+            fps_hint=int(args.fps or config.fps),
         )
+        existing = controller_box.get("controller")
+        if existing is not None:
+            _remove_handles(existing.render_handles)
+        controller = SurfaceEditorController.create(server, next_state)
+        controller.edit_mode = str(args.edit_mode)
+        controller.current_frame_getter = playback_slot.frame
+        controller.timeline_port = int(args.timeline_port)
+        controller.default_mode = str(default_mode.value)
+        controller.show_only = str(show_only.value)
+        controller.fps = motion_fps
+        controller.robot_urdf = str(robot_urdf) if robot_urdf.exists() else None
+        controller.terrain_urdf = str(object_urdf) if object_urdf and config.with_terrain else None
+
+        def _reload_entry_in_process(entry: RecentMotionEntry) -> None:
+            next_config = _contact_editor_config_from_recent_entry(entry)
+            next_state_inner, prepared_inner, terrain_inner = _prepared_state_from_config(next_config)
+            next_object_urdf = next_config.terrain_urdf or terrain_inner
+            next_fps = _replace_motion_visuals(
+                motion_path=next_config.motion,
+                robot_urdf=controller.robot_urdf,
+                object_urdf=next_object_urdf if next_config.with_terrain else None,
+                fps_hint=int(args.fps or next_config.fps),
+            )
+            controller.state = next_state_inner
+            controller.original_graph = copy.deepcopy(read_surface_editor_graph(next_state_inner.session))
+            controller.undo_stack.clear()
+            controller.redo_stack.clear()
+            controller.terrain_urdf = str(next_object_urdf) if next_object_urdf and next_config.with_terrain else None
+            controller.fps = next_fps
+            controller.selected_anchor_id = controller.default_anchor_id()
+            controller.state.selected_anchor_id = controller.selected_anchor_id
+            controller.state.last_message = f"loaded motion: {Path(next_config.motion).name}"
+            controller.state.last_error = None
+            controller.reload_overlay()
+            upsert_recent_motion(entry)
+            if callable(controller.on_change):
+                controller.on_change()
+            print(
+                "[contact editor] reloaded motion in-place "
+                f"{entry.label}: anchors={prepared_inner.ready_anchor_count} session={prepared_inner.session.session_dir}"
+            )
+
+        controller.reload_motion_callback = _reload_entry_in_process
+        upsert_recent_motion(
+            _recent_entry_from_session(
+                next_state.session,
+                label=Path(config.motion).stem,
+                terrain_urdf=controller.terrain_urdf,
+                metadata={"source": "contact_editor_setup"},
+            )
+        )
+        controller.reload_overlay()
+        _add_loaded_editor_sidebar(server, controller=controller, args=args, playback=playback_slot)
+        controller_box["controller"] = controller
+        if not timeline_started["value"]:
+            start_contact_timeline_wrapper(
+                controller=controller,
+                playback=playback_slot,
+                timeline_port=int(args.timeline_port),
+                viser_port=setup_port,
+                motion_name=Path(config.motion).name,
+                fps=motion_fps,
+            )
+            timeline_started["value"] = True
         status.value = (
-            f"Prepared {prepared.ready_anchor_count} anchors. Restarting loaded editor...\n"
+            f"Loaded {prepared.ready_anchor_count} anchors.\n"
             f"session={prepared.session.session_dir}\n"
-            f"ready_layer={prepared.ready_layer}"
+            f"ready_layer={prepared.ready_layer}\n"
+            f"background timeline/api=http://localhost:{args.timeline_port}"
         )
-        _set_status("loading contact editor: launching viewer on the same entry port...")
-        pending_exec["cmd"] = cmd
+        print(
+            "[contact editor] loaded in-process "
+            f"motion={config.motion} anchors={prepared.ready_anchor_count} "
+            f"user_url=http://localhost:{setup_port} background_timeline=http://localhost:{args.timeline_port}"
+        )
 
     def _apply_selected_load_file(selected_type: str, selected_path: Path) -> None:
         selected = str(selected_path)
@@ -2276,13 +2374,10 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
             print(f"[contact editor setup] Load failed: {exc}", file=sys.stderr)
             _set_status(f"Load failed: {exc}")
 
-    print(f"[contact editor setup] Open: http://localhost:{args.timeline_port}")
+    print(f"[contact editor setup] Open Contact Editor: http://localhost:{setup_port}")
+    print(f"[contact editor setup] background timeline/api after load: http://localhost:{args.timeline_port}")
     print("Fill setup fields in the Viser UI and click Load contact editor.")
     while True:
-        if pending_exec["cmd"] is not None:
-            cmd = pending_exec["cmd"]
-            print(f"[contact editor setup] exec: {' '.join(cmd)}")
-            os.execv(sys.executable, cmd)
         time.sleep(0.2)
 
 

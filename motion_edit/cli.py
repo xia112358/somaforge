@@ -570,7 +570,8 @@ def _cmd_contact_editor(args: argparse.Namespace) -> None:
             prefer_local_surface_editor=True,
         )
         print(f"viewer pid={process.pid}")
-        print(f"Open Motion Contact Editor: http://localhost:{args.timeline_port}")
+        print(f"Open Motion Contact Editor: http://localhost:{args.timeline_port + 1}")
+        print(f"background timeline/api after load: http://localhost:{args.timeline_port}")
         process.wait()
         return
     if loaded_registered_motion:
