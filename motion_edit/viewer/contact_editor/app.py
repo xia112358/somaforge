@@ -362,23 +362,18 @@ class SurfaceEditorController:
         patch_role = record.metadata.get("patch_role") or anchor.get("patch_role") or "-"
         lines = [
             f"anchor_id: {record.anchor_id}",
-            f"body: {record.body}",
-            f"patch_role: {patch_role}",
+            f"body: {record.body}  role: {patch_role}",
             f"frames: {record.start_frame} -> {record.end_frame}",
-            f"surface_id: {record.surface_id}",
-            f"object_id: {record.object_id}",
-            f"surface_type: {record.surface_type}",
-            f"world_position: {record.world_position}",
-            f"surface_coordinates: u={coords.get('u')} v={coords.get('v')}",
-            f"surface_bounds: {record.surface_bounds}",
+            f"surface: {record.surface_id}  object: {record.object_id}",
+            f"uv: u={coords.get('u')} v={coords.get('v')}",
             f"status: {anchor.get('status')}",
             f"warnings: {warnings}",
-            f"surface_binding_source: {record.surface_binding_source}",
-            "binding_granularity: anchor_point",
             f"pending_edits: {len(self.pending_edits())}",
-            f"last_message: {self.state.last_message or ''}",
-            f"last_error: {self.state.last_error or ''}",
         ]
+        if self.state.last_error:
+            lines.append(f"last_error: {self.state.last_error}")
+        elif self.state.last_message:
+            lines.append(f"last_message: {self.state.last_message}")
         return "\n".join(lines)
 
     def current_surface_uv(self) -> tuple[float, float] | None:
@@ -1574,20 +1569,6 @@ def _add_loaded_editor_sidebar(
             else:
                 generation_info.value = "idle"
 
-    with server.gui.add_folder("Motion"):
-        current_motion = server.gui.add_text("motion", initial_value=str(args.qpos_npz or ""))
-        current_motion.disabled = True
-        current_session = server.gui.add_text("session", initial_value=str(args.surface_editor_session or ""))
-        current_session.disabled = True
-        frame_text = server.gui.add_text("frame", initial_value=_current_frame_text())
-        frame_text.disabled = True
-        status = server.gui.add_text("status", initial_value="ready", multiline=True)
-        reload_btn = server.gui.add_button("Reload overlay")
-    status_refs["current_motion"] = current_motion
-    status_refs["current_session"] = current_session
-    status_refs["frame"] = frame_text
-    status_refs["status"] = status
-
     with server.gui.add_folder("Contact Anchor"):
         show_all_anchors = server.gui.add_checkbox("show all anchors", initial_value=controller.show_all_anchors)
         selected_anchor = server.gui.add_text("anchor_id", initial_value=controller.selected_anchor_id or "")
@@ -1605,56 +1586,13 @@ def _add_loaded_editor_sidebar(
         _refresh_info()
 
     defaults = _default_generation_outputs(controller.state.session)
-    with server.gui.add_folder("Augmentation"):
-        plan_info = server.gui.add_text("plan", initial_value=_session_plan_summary(controller.state.session), multiline=True)
-        plan_info.disabled = True
+    with server.gui.add_folder("Advanced / Generate"):
         output_motion = server.gui.add_text("output_motion", initial_value=defaults["output_motion"])
-        output_motion_version_id = server.gui.add_text("motion_version_id", initial_value=defaults["output_motion_version_id"])
-        output_contact_layer = server.gui.add_text("generated_contact_layer", initial_value=defaults["output_contact_layer"])
-        output_segment_layer = server.gui.add_text("generated_segment_layer", initial_value=defaults["output_segment_layer"])
-        intermediate_dir = server.gui.add_text("intermediate_dir", initial_value=defaults["intermediate_dir"])
         overwrite = server.gui.add_checkbox("overwrite output", initial_value=False)
-        register_motion_version = server.gui.add_checkbox("register motion version", initial_value=False)
-        validate_btn = server.gui.add_button("Validate plan")
-        dry_run_btn = server.gui.add_button("Dry run fullbody LTE")
         generate_btn = server.gui.add_button("Generate fullbody LTE")
         generation_info = server.gui.add_text("generation_status", initial_value="idle", multiline=True)
         generation_info.disabled = True
-        debug_export_btn = server.gui.add_button("Export debug ContactLayer")
-        reset_btn = server.gui.add_button("Reset session")
-        discard_btn = server.gui.add_button("Discard unsaved edits")
-    status_refs["plan_info"] = plan_info
     status_refs["generation_info"] = generation_info
-
-    @reload_btn.on_click
-    def _(_) -> None:
-        try:
-            controller.reload_overlay()
-            _set_status("reloaded current overlay")
-        except Exception as exc:
-            controller.state.last_error = str(exc)
-        _refresh_info()
-
-    @debug_export_btn.on_click
-    def _(_) -> None:
-        try:
-            out = controller.save()
-            _set_status(f"exported debug contact layer: {out}")
-            plan_info.value = _session_plan_summary(controller.state.session)
-        except Exception as exc:
-            controller.state.last_error = str(exc)
-        _refresh_info()
-
-    @validate_btn.on_click
-    def _(_) -> None:
-        try:
-            plan_path, warnings = _validate_session_plan(controller.state.session)
-            suffix = f" warnings={len(warnings)}" if warnings else ""
-            _set_status(f"validated plan: {plan_path}{suffix}")
-            plan_info.value = _session_plan_summary(controller.state.session)
-        except Exception as exc:
-            controller.state.last_error = str(exc)
-        _refresh_info()
 
     def _generation_inputs() -> dict[str, Any]:
         generated_motion = str(output_motion.value).strip()
@@ -1662,12 +1600,12 @@ def _add_loaded_editor_sidebar(
             raise ValueError("output_motion is required")
         return {
             "generated_motion": generated_motion,
-            "generated_contact_layer": str(output_contact_layer.value).strip() or None,
-            "generated_segment_layer": str(output_segment_layer.value).strip() or None,
-            "generated_motion_version_id": str(output_motion_version_id.value).strip() or None,
-            "intermediate_dir": str(intermediate_dir.value).strip() or None,
+            "generated_contact_layer": defaults["output_contact_layer"],
+            "generated_segment_layer": defaults["output_segment_layer"],
+            "generated_motion_version_id": defaults["output_motion_version_id"],
+            "intermediate_dir": defaults["intermediate_dir"],
             "overwrite": bool(overwrite.value),
-            "register_motion_version": bool(register_motion_version.value),
+            "register_motion_version": False,
         }
 
     def _run_generation(*, dry_run: bool, inputs: dict[str, Any]) -> None:
@@ -1697,7 +1635,6 @@ def _add_loaded_editor_sidebar(
         action = "dry-run fullbody LTE" if dry_run else "generated fullbody LTE"
         warning_suffix = f" warnings={len(result.warnings or [])}" if result.warnings else ""
         _set_status(f"{action}: {result.output_motion_path}{warning_suffix}")
-        plan_info.value = _session_plan_summary(controller.state.session)
         generation_state.last_output_motion = str(result.output_motion_path)
         generation_state.last_error = None
 
@@ -1719,10 +1656,6 @@ def _add_loaded_editor_sidebar(
             if resolved_inputs != inputs:
                 inputs = resolved_inputs
                 output_motion.value = inputs["generated_motion"]
-                output_motion_version_id.value = inputs["generated_motion_version_id"] or ""
-                output_contact_layer.value = inputs["generated_contact_layer"] or ""
-                output_segment_layer.value = inputs["generated_segment_layer"] or ""
-                intermediate_dir.value = inputs["intermediate_dir"] or ""
                 _set_status(f"output existed; using next available motion: {inputs['generated_motion']}")
         action = "dry-run fullbody LTE" if dry_run else "generate fullbody LTE"
         generation_state.running = True
@@ -1753,30 +1686,9 @@ def _add_loaded_editor_sidebar(
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    @dry_run_btn.on_click
-    def _(_) -> None:
-        _start_generation(dry_run=True)
-
     @generate_btn.on_click
     def _(_) -> None:
         _start_generation(dry_run=False)
-
-    @discard_btn.on_click
-    def _(_) -> None:
-        try:
-            controller.discard()
-            _set_status("discarded unsaved edits")
-        except Exception as exc:
-            controller.state.last_error = str(exc)
-        _refresh_info()
-
-    @reset_btn.on_click
-    def _(_) -> None:
-        try:
-            controller.reset()
-        except Exception as exc:
-            controller.state.last_error = str(exc)
-        _refresh_info()
 
     previous_on_change = controller.on_change
 
