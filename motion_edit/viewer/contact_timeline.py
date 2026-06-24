@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlparse
 
@@ -296,6 +298,10 @@ function vectorShort(value) {
   if (!Array.isArray(value)) return '';
   return value.map(v => Number(v).toFixed(3)).join(', ');
 }
+function canGenerate() {
+  const gen = state?.generation || {};
+  return Boolean(state?.layers?.edit_plan_path) && !gen.running;
+}
 async function api(path, body) {
   const res = await fetch(path, {method: body ? 'POST' : 'GET', headers: {'Content-Type': 'application/json'}, body: body ? JSON.stringify(body) : undefined});
   state = await res.json();
@@ -330,6 +336,8 @@ function scheduleFramePost(frame, commit=false) {
 function updateChrome() {
   if (!state) return;
   const frameText = `${state.current_frame} / ${Math.max(0, state.n_frames - 1)}`;
+  const gen = state.generation || {};
+  const ready = canGenerate();
   $('frame-chip').textContent = `frame ${frameText}`;
   $('timeline-readout').textContent = frameText;
   $('frame-input').value = state.current_frame;
@@ -343,6 +351,9 @@ function updateChrome() {
   $('status-right').textContent = `frame ${frameText} | selected ${shortAnchor(selectedAnchor())} | pending ${state.pending_edit_count || 0} | failed ${failed}`;
   $('viewport-frame').textContent = frameText;
   $('viewport-selected').textContent = shortAnchor(selectedAnchor());
+  $('generate-top').disabled = !ready;
+  $('generate-top').textContent = gen.running ? 'Generating...' : 'Generate';
+  $('generate-top').title = ready ? 'Generate fullbody LTE from the current edit plan' : (gen.running ? 'Generation is running' : 'No editable contact plan is loaded');
 }
 function renderLeftPanel() {
   const counts = state.binding_counts || {};
@@ -415,17 +426,19 @@ function renderInspector() {
 }
 function renderGenerationCard() {
   const gen = state.generation || {};
-  const disabledReason = state.pending_edit_count ? 'Save or validate pending edits before generation.' : 'Generation is controlled by the backend panel for now.';
+  const ready = canGenerate();
+  const disabledReason = gen.running ? 'Generation is running.' : (ready ? 'Ready to generate from the current edit plan.' : 'No editable contact plan is loaded.');
   $('generation-card').innerHTML = `<h3>Generation</h3>
     <div class="stack">
       <div class="kv">
         <div class="key">solver</div><div class="value">ik_subprocess</div>
         <div class="key">mesh</div><div class="value">configured in backend</div>
-        <div class="key">status</div><div class="copy-row"><div class="value copyable" title="${esc(gen.last_error || gen.last_output_motion || 'idle')}">${esc(gen.last_error || gen.last_output_motion || 'idle')}</div>${copyButton(gen.last_error || gen.last_output_motion || '')}</div>
+        <div class="key">status</div><div class="copy-row"><div class="value copyable" title="${esc(gen.last_error || gen.last_output_motion || 'idle')}">${esc(gen.running ? 'running' : (gen.last_error || gen.last_output_motion || 'idle'))}</div>${copyButton(gen.last_error || gen.last_output_motion || '')}</div>
         <div class="key">ready</div><div class="value muted">${esc(disabledReason)}</div>
       </div>
-      <button id="generate-disabled" class="primary" disabled title="${esc(disabledReason)}">Generate</button>
+      <button id="generate-run" class="primary" ${ready ? '' : 'disabled'} title="${esc(disabledReason)}">${gen.running ? 'Generating...' : 'Generate'}</button>
     </div>`;
+  $('generate-run').onclick = () => api('/api/generate', {});
   wireCopyButtons($('generation-card'));
 }
 function updatePlayhead() {
@@ -513,6 +526,7 @@ $('frame-input').onchange = () => api('/api/frame', {frame: Number($('frame-inpu
 $('snap-selected').onclick = () => { const a = selectedAnchor(); if (a) api('/api/frame', {frame: a.start_frame}); };
 $('prev-anchor').onclick = () => selectRelativeAnchor(-1);
 $('next-anchor').onclick = () => selectRelativeAnchor(1);
+$('generate-top').onclick = () => api('/api/generate', {});
 recentSelect.onchange = () => api('/api/open_recent', {index: Number(recentSelect.value || 0)});
 $('load-motion').onclick = () => api('/api/load_motion', {});
 $('discard').onclick = () => api('/api/discard', {});
@@ -552,7 +566,7 @@ def _timeline_html(*, viser_url: str) -> str:
       <span id="pending-chip">pending 0</span>
       <span id="failed-chip">failed 0</span>
       <button id="discard" class="danger">Discard</button>
-      <button id="generate-top" class="primary" disabled title="Generation is shown in the inspector; current backend button remains in Viser fallback.">Generate</button>
+      <button id="generate-top" class="primary" disabled title="No editable contact plan is loaded.">Generate</button>
     </div>
   </header>
   <main id="main">
@@ -613,6 +627,106 @@ def start_contact_timeline_wrapper(
     def state() -> dict[str, Any]:
         return contact_timeline_state(controller=controller, playback=playback, motion_name=motion_name, fps=fps)
 
+    def target_controller() -> Any:
+        return getattr(controller, "current", None) or controller
+
+    def generation_state(target: Any) -> Any:
+        state_obj = getattr(target, "state", None)
+        if state_obj is None:
+            return SimpleNamespace(running=False, last_output_motion=None, last_error="no editor state", last_started_at=None, last_finished_at=None)
+        gen = getattr(state_obj, "generation", None)
+        if gen is None:
+            gen = SimpleNamespace(running=False, last_output_motion=None, last_error=None, last_started_at=None, last_finished_at=None)
+            setattr(state_obj, "generation", gen)
+        return gen
+
+    def start_generation() -> None:
+        target = target_controller()
+        state_obj = getattr(target, "state", None)
+        session = getattr(state_obj, "session", None)
+        gen = generation_state(target)
+        if session is None:
+            if state_obj is not None:
+                state_obj.last_error = "load a motion before generating"
+            return
+        if bool(getattr(gen, "running", False)):
+            state_obj.last_error = "generation already running"
+            return
+
+        def set_status(message: str, *, error: bool = False) -> None:
+            if error:
+                state_obj.last_error = message
+            else:
+                state_obj.last_error = None
+                state_obj.last_message = message
+
+        try:
+            from motion_edit.viewer.contact_editor.app import (
+                _avoid_generation_output_collision,
+                _default_generation_outputs,
+                _generate_fullbody_lte_from_session,
+                _recent_entry_from_generated_session,
+            )
+            from motion_edit.workbench.recent import upsert_recent_motion
+        except Exception as exc:
+            set_status(f"generation backend unavailable: {exc}", error=True)
+            return
+
+        defaults = _default_generation_outputs(session)
+        inputs = _avoid_generation_output_collision(
+            {
+                "generated_motion": defaults["output_motion"],
+                "generated_contact_layer": defaults["output_contact_layer"],
+                "generated_segment_layer": defaults["output_segment_layer"],
+                "generated_motion_version_id": defaults["output_motion_version_id"],
+                "intermediate_dir": defaults["intermediate_dir"],
+                "overwrite": False,
+                "register_motion_version": False,
+            }
+        )
+        gen.running = True
+        gen.last_error = None
+        gen.last_output_motion = inputs["generated_motion"]
+        gen.last_started_at = time.time()
+        set_status(f"generate fullbody LTE started: {inputs['generated_motion']}")
+
+        def worker() -> None:
+            try:
+                result = _generate_fullbody_lte_from_session(
+                    session,
+                    output_motion=inputs["generated_motion"],
+                    output_motion_version_id=inputs["generated_motion_version_id"],
+                    output_contact_layer=inputs["generated_contact_layer"],
+                    output_segment_layer=inputs["generated_segment_layer"],
+                    intermediate_dir=inputs["intermediate_dir"],
+                    dry_run=False,
+                    overwrite=inputs["overwrite"],
+                    register_motion_version=inputs["register_motion_version"],
+                )
+                generated_entry = _recent_entry_from_generated_session(
+                    session,
+                    output_motion=str(result.output_motion_path),
+                    output_contact_layer=inputs["generated_contact_layer"],
+                    output_segment_layer=inputs["generated_segment_layer"],
+                    output_motion_version_id=inputs["generated_motion_version_id"],
+                    terrain_urdf=getattr(target, "terrain_urdf", None),
+                )
+                upsert_recent_motion(generated_entry)
+                if callable(getattr(target, "reload_motion_callback", None)):
+                    target.reload_motion_callback(generated_entry)
+                warning_suffix = f" warnings={len(result.warnings or [])}" if result.warnings else ""
+                gen.last_output_motion = str(result.output_motion_path)
+                gen.last_error = None
+                set_status(f"generated fullbody LTE: {result.output_motion_path}{warning_suffix}")
+            except Exception as exc:
+                gen.last_error = str(exc)
+                set_status(f"generate fullbody LTE failed: {exc}", error=True)
+            finally:
+                gen.running = False
+                gen.last_finished_at = time.time()
+
+        threading.Thread(target=worker, daemon=True).start()
+
     class TimelineHandler(BaseHTTPRequestHandler):
         def _send_json(self, payload: dict[str, Any]) -> None:
             data = json.dumps(payload).encode("utf-8")
@@ -654,6 +768,8 @@ def start_contact_timeline_wrapper(
                         playback.set_frame(int(body["frame"]))
                 elif path == "/api/save":
                     controller.save()
+                elif path == "/api/generate":
+                    start_generation()
                 elif path == "/api/discard":
                     controller.discard()
                 elif path == "/api/open_recent":
