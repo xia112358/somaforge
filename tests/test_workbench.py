@@ -916,6 +916,11 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertEqual(payload["bodies"], ["LF", "RH"])
         self.assertEqual(len(payload["anchors"]), 2)
         self.assertEqual(payload["anchors"][0]["status"], "selected")
+        self.assertEqual(payload["selected_anchor"]["anchor_id"], graph.anchors[0].anchor_id)
+        self.assertEqual(payload["selected_anchor"]["surface_id"], "top")
+        self.assertEqual(payload["binding_counts"]["anchor_count"], 2)
+        self.assertEqual(payload["binding_counts"]["failed_count"], 0)
+        self.assertEqual(payload["layers"]["contact_layer"], "contact/bound")
         self.assertEqual(payload["recent_motions"][0]["label"], "motion_a")
 
     def test_contact_timeline_html_embeds_viser_iframe_and_anchor_api(self) -> None:
@@ -923,6 +928,16 @@ class SurfaceEditorSessionTests(unittest.TestCase):
 
         self.assertIn("<iframe id=\"viewer\"", html)
         self.assertIn("http://localhost:8084", html)
+        self.assertIn("id=\"appbar\"", html)
+        self.assertIn("id=\"left-panel\"", html)
+        self.assertIn("id=\"viewer-panel\"", html)
+        self.assertIn("id=\"inspector-panel\"", html)
+        self.assertIn("id=\"timeline-panel\"", html)
+        self.assertIn("id=\"frame-ruler\"", html)
+        self.assertIn("track-header", html)
+        self.assertIn("id=\"playhead\"", html)
+        self.assertIn("id=\"selected-anchor-card\"", html)
+        self.assertIn("id=\"generation-card\"", html)
         self.assertIn("/api/select_anchor", html)
         self.assertIn("/api/open_recent", html)
         self.assertIn("recentSelect.onchange", html)
@@ -930,7 +945,6 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertNotIn("openLatest", html)
         self.assertNotIn("reloadMotion", html)
         self.assertIn("anchorBlock", html)
-        self.assertIn("#bottom", html)
 
     def test_recent_motions_upsert_prunes_and_deduplicates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
