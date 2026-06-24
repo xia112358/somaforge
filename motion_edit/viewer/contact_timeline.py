@@ -143,6 +143,11 @@ const boot = {state_json};
 document.getElementById('viewer').src = boot.viser_url;
 let state = null;
 let dragging = false;
+let pendingFrame = null;
+let pendingFrameTimer = null;
+let lastFramePostMs = 0;
+let framePostInFlight = false;
+const FRAME_POST_INTERVAL_MS = 50;
 const timeline = document.getElementById('timeline');
 const current = document.getElementById('current');
 const readout = document.getElementById('readout');
@@ -168,13 +173,62 @@ async function api(path, body) {{
   render();
   return state;
 }}
-async function refresh() {{ await api('/api/state'); }}
-function render() {{
+async function refresh() {{
+  if (dragging) return;
+  await api('/api/state');
+}}
+function updateFrameUi() {{
   if (!state) return;
   current.style.left = frameToX(state.current_frame) + 'px';
   document.getElementById('play').textContent = state.playing ? 'Pause' : 'Play';
   readout.textContent = `${{state.motion_name}}  frame=${{state.current_frame}}/${{Math.max(0, state.n_frames - 1)}}  anchors=${{state.anchors.length}}  pending=${{state.pending_edit_count}}  selected=${{state.selected_anchor_id || '-'}}`;
   message.textContent = state.last_error || state.last_message || '';
+}}
+function setLocalFrame(frame) {{
+  if (!state) return;
+  state.current_frame = clamp(frame, 0, Math.max(0, state.n_frames - 1));
+  updateFrameUi();
+}}
+async function postFrame(frame, commit=false) {{
+  if (framePostInFlight && !commit) return;
+  framePostInFlight = true;
+  try {{
+    const res = await fetch('/api/frame', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{frame}})
+    }});
+    const nextState = await res.json();
+    state = nextState;
+    if (dragging && !commit) {{
+      state.current_frame = frame;
+      updateFrameUi();
+    }} else {{
+      render();
+    }}
+  }} finally {{
+    framePostInFlight = false;
+  }}
+}}
+function scheduleFramePost(frame, commit=false) {{
+  pendingFrame = frame;
+  if (pendingFrameTimer !== null) {{
+    clearTimeout(pendingFrameTimer);
+    pendingFrameTimer = null;
+  }}
+  const now = performance.now();
+  const wait = commit ? 0 : Math.max(0, FRAME_POST_INTERVAL_MS - (now - lastFramePostMs));
+  pendingFrameTimer = setTimeout(() => {{
+    const frameToSend = pendingFrame;
+    pendingFrame = null;
+    pendingFrameTimer = null;
+    lastFramePostMs = performance.now();
+    postFrame(frameToSend, commit);
+  }}, wait);
+}}
+function render() {{
+  if (!state) return;
+  updateFrameUi();
   const selectedRecent = recentSelect.value;
   recentSelect.innerHTML = '';
   (state.recent_motions || []).forEach((item, index) => {{
@@ -216,11 +270,15 @@ function render() {{
     timeline.appendChild(el);
   }});
 }}
-function scrub(event) {{ api('/api/frame', {{frame: xToFrame(event.clientX)}}); }}
+function scrub(event, commit=false) {{
+  const frame = xToFrame(event.clientX);
+  setLocalFrame(frame);
+  scheduleFramePost(frame, commit);
+}}
 timeline.addEventListener('pointerdown', event => {{ dragging = true; timeline.setPointerCapture(event.pointerId); scrub(event); }});
 timeline.addEventListener('pointermove', event => {{ if (dragging) scrub(event); }});
-timeline.addEventListener('pointerup', () => {{ dragging = false; }});
-timeline.addEventListener('pointercancel', () => {{ dragging = false; }});
+timeline.addEventListener('pointerup', event => {{ if (dragging) scrub(event, true); dragging = false; }});
+timeline.addEventListener('pointercancel', event => {{ if (dragging) scrub(event, true); dragging = false; }});
 document.getElementById('play').onclick = () => api('/api/play', {{playing: !state.playing}});
 document.getElementById('prev').onclick = () => api('/api/frame', {{frame: state.current_frame - 1}});
 document.getElementById('next').onclick = () => api('/api/frame', {{frame: state.current_frame + 1}});

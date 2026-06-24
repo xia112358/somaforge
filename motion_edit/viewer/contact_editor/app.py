@@ -218,6 +218,7 @@ class SurfaceEditorController:
     robot_urdf: str | None = None
     terrain_urdf: str | None = None
     _last_anchor_render_frame: int | None = None
+    _last_anchor_render_time: float = 0.0
 
     @classmethod
     def create(cls, server: Any, state: SurfaceOverlayEditorState) -> "SurfaceEditorController":
@@ -581,6 +582,10 @@ class SurfaceEditorController:
         next_frame = int(frame)
         if self._last_anchor_render_frame == next_frame:
             return
+        now = time.perf_counter()
+        if now - self._last_anchor_render_time < 0.05:
+            return
+        self._last_anchor_render_time = now
         self.reload_overlay()
         if callable(self.on_change):
             self.on_change()
