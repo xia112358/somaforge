@@ -164,7 +164,7 @@ def _editor_shell_css() -> str:
   --orange: #ffad5c;
 }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: Inter, system-ui, sans-serif; overflow: hidden; }
-#app { height: 100%; display: grid; grid-template-rows: 34px minmax(0, 1fr) 300px; background: var(--bg); }
+#app { height: 100%; display: grid; grid-template-rows: 34px minmax(0, 1fr) 260px; background: var(--bg); }
 #appbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 0 10px; border-bottom: 1px solid var(--line); background: #0d1420; box-sizing: border-box; }
 #brand { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
 #title { font-size: 15px; font-weight: 700; white-space: nowrap; }
@@ -176,16 +176,16 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 #main { min-height: 0; display: grid; grid-template-columns: 260px minmax(0, 1fr) 340px; background: #05070c; }
 #left-panel, #inspector-panel { min-width: 0; overflow: auto; background: var(--panel); border-right: 1px solid var(--line); padding: 10px; box-sizing: border-box; }
 #inspector-panel { border-right: 0; border-left: 1px solid var(--line); }
-#viewer-panel { position: relative; min-width: 0; min-height: 0; background: #05070c; }
-#viewer { width: 100%; height: 100%; border: 0; background: #05070c; }
-.viewport-hud { position: absolute; left: 12px; top: 10px; display: flex; gap: 8px; pointer-events: none; opacity: .82; }
-.badge, .status-badge { border: 1px solid var(--line); border-radius: 999px; background: rgba(16, 23, 35, .88); color: #d7e2f5; padding: 3px 8px; font-size: 11px; white-space: nowrap; }
+#viewer-panel { position: relative; min-width: 0; min-height: 0; background: #05070c; overflow: hidden; }
+#viewer { width: calc(100% + 250px); height: 100%; border: 0; background: #05070c; }
+.viewport-hud { position: absolute; left: 12px; top: 10px; display: flex; gap: 8px; pointer-events: none; opacity: .78; }
+.badge, .status-badge { border: 1px solid var(--line); border-radius: 999px; background: rgba(16, 23, 35, .88); color: #d7e2f5; padding: 2px 7px; font-size: 11px; white-space: nowrap; }
 .status-badge.edited { border-color: rgba(126, 224, 140, .65); color: var(--green); }
 .status-badge.failed, .badge.failed { border-color: rgba(255, 107, 114, .7); color: var(--red); }
 .status-badge.clamped, .status-badge.suspicious, .badge.clamped { border-color: rgba(255, 173, 92, .75); color: var(--orange); }
 .card { border: 1px solid var(--line); border-radius: 7px; background: var(--panel-2); padding: 10px; margin-bottom: 10px; }
 .card h3 { margin: 0 0 8px; font-size: 12px; color: #dbe6fa; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.kv { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 6px 8px; font: 12px Inter, system-ui, sans-serif; color: #c5d1e8; }
+.kv { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 6px 8px; font: 12px Inter, system-ui, sans-serif; color: #c5d1e8; }
 .kv .key { color: var(--muted); }
 .kv .value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, monospace; }
 .copyable { user-select: text; cursor: text; }
@@ -195,7 +195,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 .text-block { margin: 0; max-height: 96px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; font: 11px ui-monospace, monospace; color: #c8d5ee; }
 .event-card { border: 1px solid #25324b; border-radius: 6px; background: #0e1624; padding: 7px; display: grid; gap: 3px; }
 .event-title { font-size: 12px; color: #dce7ff; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.event-meta { color: var(--muted); font: 11px ui-monospace, monospace; overflow-wrap: anywhere; }
+.event-meta { color: var(--muted); font: 11px ui-monospace, monospace; overflow-wrap: anywhere; line-height: 1.35; }
 .muted { color: var(--muted); }
 .warn { color: var(--orange); }
 .error { color: var(--red); }
@@ -206,17 +206,17 @@ button.danger { background: #67212a; border-color: #a33a45; color: #ffe9ed; }
 button.ghost { background: #121927; }
 button:disabled { opacity: .48; cursor: default; }
 .stack { display: grid; gap: 7px; }
-.row { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.row { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; min-width: 0; }
 .row > * { min-width: 0; }
 .full { width: 100%; }
 #timeline-panel { min-height: 0; border-top: 1px solid var(--line); background: #0d1420; display: grid; grid-template-rows: 40px minmax(0, 1fr) 24px; }
-#timeline-toolbar { display: grid; grid-template-columns: 260px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 5px 12px; border-bottom: 1px solid #1e2a40; box-sizing: border-box; }
+#timeline-toolbar { display: grid; grid-template-columns: 245px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 5px 12px; border-bottom: 1px solid #1e2a40; box-sizing: border-box; }
 #timeline-title-group { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 #timeline-title { font-size: 12px; font-weight: 650; color: #dce7ff; white-space: nowrap; }
 #timeline-readout { color: var(--muted); font: 11px ui-monospace, monospace; white-space: nowrap; }
 #timeline-hint { color: var(--muted); font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #timeline-controls { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
-#transport-controls { display: flex; gap: 6px; align-items: center; padding-right: 8px; margin-right: 4px; border-right: 1px solid #26334d; }
+#transport-controls { display: flex; gap: 6px; align-items: center; }
 #frame-input { width: 82px; font-family: ui-monospace, monospace; }
 #timeline-scroll { min-height: 0; overflow: auto hidden; }
 #timeline { position: relative; min-width: 900px; height: 100%; background: #08101b; user-select: none; }
@@ -249,6 +249,8 @@ let pendingFrame = null;
 let pendingFrameTimer = null;
 let lastFramePostMs = 0;
 let framePostInFlight = false;
+let playbackAnimId = null;
+let playbackAnimMs = null;
 const FRAME_POST_INTERVAL_MS = 50;
 const timeline = document.getElementById('timeline');
 const timelineScroll = document.getElementById('timeline-scroll');
@@ -287,6 +289,7 @@ function xToFrame(clientX) {
   const ratio = clamp((clientX - rect.left - railLeft() + timelineScroll.scrollLeft) / railWidth(), 0, 1);
   return Math.round(ratio * Math.max(0, state.n_frames - 1));
 }
+function shownFrame() { return Math.round(Number(state?.current_frame || 0)); }
 function selectedAnchor() { return state?.selected_anchor || null; }
 function statusClass(status) { return String(status || 'bound').replace(/[^a-zA-Z0-9_-]/g, '_'); }
 function shortAnchor(anchor) {
@@ -298,9 +301,43 @@ function vectorShort(value) {
   if (!Array.isArray(value)) return '';
   return value.map(v => Number(v).toFixed(3)).join(', ');
 }
+function eventFromMessage(message, kind='info') {
+  const text = String(message || '');
+  const body = (text.match(/anchor_(left_foot|right_foot|left_hand|right_hand)|\b(left_foot|right_foot|left_hand|right_hand)\b/) || []).find(Boolean) || 'anchor';
+  const delta = text.match(/delta=\[([^\]]+)\]/);
+  if (text.startsWith('moved ')) {
+    return {kind, title: `Moved ${body}`, body: delta ? `delta=(${delta[1]})` : text};
+  }
+  return {kind, title: kind === 'error' ? 'Error' : 'Event', body: text};
+}
 function canGenerate() {
   const gen = state?.generation || {};
   return Boolean(state?.layers?.edit_plan_path) && !gen.running;
+}
+function syncPlaybackAnimation() {
+  if (!state?.playing || dragging) {
+    if (playbackAnimId !== null) cancelAnimationFrame(playbackAnimId);
+    playbackAnimId = null;
+    playbackAnimMs = null;
+    return;
+  }
+  if (playbackAnimId !== null) return;
+  playbackAnimMs = performance.now();
+  playbackAnimId = requestAnimationFrame(localPlaybackTick);
+}
+function localPlaybackTick(now) {
+  if (!state?.playing || dragging) {
+    playbackAnimId = null;
+    playbackAnimMs = null;
+    return;
+  }
+  const maxFrame = Math.max(0, Number(state.n_frames || 1) - 1);
+  const dt = playbackAnimMs === null ? 0 : Math.max(0, (now - playbackAnimMs) / 1000.0);
+  playbackAnimMs = now;
+  state.current_frame = Math.min(maxFrame, Number(state.current_frame || 0) + dt * Number(state.fps || 50));
+  updateChrome();
+  updatePlayhead();
+  playbackAnimId = requestAnimationFrame(localPlaybackTick);
 }
 async function api(path, body) {
   const res = await fetch(path, {method: body ? 'POST' : 'GET', headers: {'Content-Type': 'application/json'}, body: body ? JSON.stringify(body) : undefined});
@@ -335,12 +372,12 @@ function scheduleFramePost(frame, commit=false) {
 }
 function updateChrome() {
   if (!state) return;
-  const frameText = `${state.current_frame} / ${Math.max(0, state.n_frames - 1)}`;
+  const frameText = `${shownFrame()} / ${Math.max(0, state.n_frames - 1)}`;
   const gen = state.generation || {};
   const ready = canGenerate();
   $('frame-chip').textContent = `frame ${frameText}`;
   $('timeline-readout').textContent = frameText;
-  $('frame-input').value = state.current_frame;
+  $('frame-input').value = shownFrame();
   $('play').textContent = state.playing ? 'Pause' : 'Play';
   $('motion-title').textContent = state.motion_name || '-';
   $('pending-chip').textContent = `pending ${state.pending_edit_count || 0}`;
@@ -379,8 +416,8 @@ function renderLeftPanel() {
     <span class="badge failed">failed ${counts.failed_count || 0}</span>
     <span class="badge clamped">clamped ${counts.clamped_count || 0}</span>`;
   const events = [];
-  if (state.last_error) events.push({kind: 'error', title: 'Error', body: state.last_error});
-  if (state.last_message) events.push({kind: 'info', title: 'Recent event', body: state.last_message});
+  if (state.last_error) events.push(eventFromMessage(state.last_error, 'error'));
+  if (state.last_message) events.push(eventFromMessage(state.last_message, 'info'));
   $('warning-list').innerHTML = events.length
     ? events.map(item => `<div class="event-card ${item.kind}"><div class="event-title"><span>${esc(item.title)}</span>${copyButton(item.body)}</div><div class="event-meta" title="${attr(item.body)}">${esc(item.body)}</div></div>`).join('')
     : '<div class="muted">No warnings.</div>';
@@ -398,27 +435,19 @@ function renderInspector() {
   $('selected-anchor-card').innerHTML = `<h3>Selected Anchor <span class="status-badge ${statusClass(anchor.status)}">${esc(anchor.status)}</span></h3>
     <div class="kv">
       <div class="key">label</div><div class="value" title="${esc(anchor.anchor_id)}">${esc(shortAnchor(anchor))}</div>
-      <div class="key">id</div><div class="copy-row"><div class="value copyable" title="${esc(anchor.anchor_id)}">${esc(anchor.anchor_id)}</div>${copyButton(anchor.anchor_id)}</div>
       <div class="key">frames</div><div class="value">${anchor.start_frame} -> ${anchor.end_frame}</div>
       <div class="key">duration</div><div class="value">${duration} frames</div>
     </div>`;
-  const coords = anchor.surface_coordinates || {};
   $('surface-card').innerHTML = `<h3>Surface Binding</h3>
     <div class="kv">
       <div class="key">surface</div><div class="copy-row"><div class="value copyable" title="${esc(anchor.surface_id)}">${esc(anchor.surface_id || '-')}</div>${copyButton(anchor.surface_id)}</div>
-      <div class="key">object</div><div class="copy-row"><div class="value copyable" title="${esc(anchor.object_id)}">${esc(anchor.object_id || '-')}</div>${copyButton(anchor.object_id)}</div>
-      <div class="key">type</div><div class="value">${esc(anchor.surface_type || '-')}</div>
-      <div class="key">u/v</div><div class="value">${coords.u ?? '-'} / ${coords.v ?? '-'}</div>
-      <div class="key">failure</div><div class="copy-row"><div class="value copyable">${esc(anchor.failure_reason || '-')}</div>${copyButton(anchor.failure_reason)}</div>
+      ${anchor.failure_reason ? `<div class="key">failure</div><div class="copy-row"><div class="value copyable">${esc(anchor.failure_reason)}</div>${copyButton(anchor.failure_reason)}</div>` : ''}
     </div>`;
   const edit = anchor.latest_edit || {};
   $('edit-card').innerHTML = `<h3>Edit</h3>
     <div class="kv">
       ${edit.delta_world ? `
-        <div class="key">old</div><div class="copy-row"><div class="value copyable" title="${esc(JSON.stringify(edit.old_world_position || anchor.world_position || []))}">${esc(vectorShort(edit.old_world_position || anchor.world_position || []))}</div>${copyButton(JSON.stringify(edit.old_world_position || anchor.world_position || []))}</div>
-        <div class="key">new</div><div class="copy-row"><div class="value copyable" title="${esc(JSON.stringify(edit.new_world_position || []))}">${esc(vectorShort(edit.new_world_position || []))}</div>${copyButton(JSON.stringify(edit.new_world_position || []))}</div>
         <div class="key">delta</div><div class="copy-row"><div class="value copyable" title="${esc(JSON.stringify(edit.delta_world))}">${esc(vectorShort(edit.delta_world))}</div>${copyButton(JSON.stringify(edit.delta_world))}</div>
-        <div class="key">tangent</div><div class="copy-row"><div class="value copyable" title="${esc(JSON.stringify(edit.tangent_delta || []))}">${esc(vectorShort(edit.tangent_delta || []))}</div>${copyButton(JSON.stringify(edit.tangent_delta || []))}</div>
         <div class="key">mode</div><div class="value">${esc(edit.constraint_mode || '-')}</div>
       ` : '<div class="key">status</div><div class="value muted">No edit applied yet.</div>'}
     </div>`;
@@ -432,7 +461,6 @@ function renderGenerationCard() {
     <div class="stack">
       <div class="kv">
         <div class="key">solver</div><div class="value">ik_subprocess</div>
-        <div class="key">mesh</div><div class="value">configured in backend</div>
         <div class="key">status</div><div class="copy-row"><div class="value copyable" title="${esc(gen.last_error || gen.last_output_motion || 'idle')}">${esc(gen.running ? 'running' : (gen.last_error || gen.last_output_motion || 'idle'))}</div>${copyButton(gen.last_error || gen.last_output_motion || '')}</div>
         <div class="key">ready</div><div class="value muted">${esc(disabledReason)}</div>
       </div>
@@ -446,7 +474,7 @@ function updatePlayhead() {
   const x = frameToX(state.current_frame);
   playhead.style.left = x + 'px';
   playheadLabel.style.left = x + 'px';
-  playheadLabel.textContent = String(state.current_frame);
+  playheadLabel.textContent = String(shownFrame());
 }
 function bodyOrder(body) {
   const order = ['right_foot', 'left_foot', 'right_hand', 'left_hand'];
@@ -513,35 +541,27 @@ function render() {
   renderInspector();
   renderGenerationCard();
   renderTimeline();
+  syncPlaybackAnimation();
 }
 function scrub(event, commit=false) { const frame = xToFrame(event.clientX); setLocalFrame(frame); scheduleFramePost(frame, commit); }
-timeline.addEventListener('pointerdown', event => { dragging = true; timeline.setPointerCapture(event.pointerId); scrub(event); });
+timeline.addEventListener('pointerdown', event => { dragging = true; timeline.setPointerCapture(event.pointerId); scrub(event); syncPlaybackAnimation(); });
 timeline.addEventListener('pointermove', event => { if (dragging) scrub(event); });
-timeline.addEventListener('pointerup', event => { if (dragging) scrub(event, true); dragging = false; });
-timeline.addEventListener('pointercancel', event => { if (dragging) scrub(event, true); dragging = false; });
+timeline.addEventListener('pointerup', event => { if (dragging) scrub(event, true); dragging = false; syncPlaybackAnimation(); });
+timeline.addEventListener('pointercancel', event => { if (dragging) scrub(event, true); dragging = false; syncPlaybackAnimation(); });
 $('play').onclick = () => api('/api/play', {playing: !state.playing});
-$('prev').onclick = () => api('/api/frame', {frame: state.current_frame - 1});
-$('next').onclick = () => api('/api/frame', {frame: state.current_frame + 1});
+$('prev').onclick = () => api('/api/frame', {frame: shownFrame() - 1});
+$('next').onclick = () => api('/api/frame', {frame: shownFrame() + 1});
 $('frame-input').onchange = () => api('/api/frame', {frame: Number($('frame-input').value || 0)});
 $('snap-selected').onclick = () => { const a = selectedAnchor(); if (a) api('/api/frame', {frame: a.start_frame}); };
-$('prev-anchor').onclick = () => selectRelativeAnchor(-1);
-$('next-anchor').onclick = () => selectRelativeAnchor(1);
 $('generate-top').onclick = () => api('/api/generate', {});
 recentSelect.onchange = () => api('/api/open_recent', {index: Number(recentSelect.value || 0)});
 $('load-motion').onclick = () => api('/api/load_motion', {});
 $('discard').onclick = () => api('/api/discard', {});
-function selectRelativeAnchor(offset) {
-  if (!state?.anchors?.length) return;
-  const ids = state.anchors.map(a => a.anchor_id);
-  const current = Math.max(0, ids.indexOf(state.selected_anchor_id));
-  const next = state.anchors[(current + offset + state.anchors.length) % state.anchors.length];
-  api('/api/select_anchor', {anchor_id: next.anchor_id, frame: next.start_frame});
-}
 window.addEventListener('keydown', event => {
   if (!state) return;
   if (event.code === 'Space') { event.preventDefault(); api('/api/play', {playing: !state.playing}); }
-  if (event.code === 'ArrowLeft') api('/api/frame', {frame: state.current_frame - (event.shiftKey ? 10 : 1)});
-  if (event.code === 'ArrowRight') api('/api/frame', {frame: state.current_frame + (event.shiftKey ? 10 : 1)});
+  if (event.code === 'ArrowLeft') api('/api/frame', {frame: shownFrame() - (event.shiftKey ? 10 : 1)});
+  if (event.code === 'ArrowRight') api('/api/frame', {frame: shownFrame() + (event.shiftKey ? 10 : 1)});
 });
 refresh();
 setInterval(refresh, 500);
@@ -600,8 +620,6 @@ def _timeline_html(*, viser_url: str) -> str:
           <span id="frame-chip">frame -</span>
         </div>
         <button id="snap-selected" class="ghost">Snap selected</button>
-        <button id="prev-anchor" class="ghost">Prev anchor</button>
-        <button id="next-anchor" class="ghost">Next anchor</button>
       </div>
     </div>
     <div id="timeline-scroll"><div id="timeline"><div id="frame-ruler"></div><div id="track-area"></div><div id="playhead"></div><div id="playhead-label"></div></div></div>
@@ -766,6 +784,8 @@ def start_contact_timeline_wrapper(
                     controller.select_anchor(anchor_id)
                     if playback is not None and "frame" in body:
                         playback.set_frame(int(body["frame"]))
+                elif path == "/api/frame" and playback is None:
+                    pass
                 elif path == "/api/save":
                     controller.save()
                 elif path == "/api/generate":
