@@ -92,6 +92,38 @@ def _part_index_by_alias(part_order: list[str]) -> dict[str, int]:
     return out
 
 
+def _drop_short_near_duplicate_subanchors(
+    anchors: list[ContactAnchorRecord],
+    *,
+    min_duration: int = 5,
+    max_distance: float = 0.03,
+) -> list[ContactAnchorRecord]:
+    if len(anchors) <= 1:
+        return anchors
+    ordered = sorted(anchors, key=lambda item: (item.start_frame, item.end_frame, item.anchor_id))
+    kept: list[ContactAnchorRecord] = []
+    for index, anchor in enumerate(ordered):
+        duration = int(anchor.end_frame) - int(anchor.start_frame)
+        previous_anchor = kept[-1] if kept else None
+        next_anchor = ordered[index + 1] if index + 1 < len(ordered) else None
+        if duration < min_duration and (
+            _near_anchor(anchor, previous_anchor, max_distance=max_distance)
+            or _near_anchor(anchor, next_anchor, max_distance=max_distance)
+        ):
+            continue
+        kept.append(anchor)
+    return kept
+
+
+def _near_anchor(left: ContactAnchorRecord, right: ContactAnchorRecord | None, *, max_distance: float) -> bool:
+    if right is None or left.body != right.body or left.surface_id != right.surface_id:
+        return False
+    if left.world_position is None or right.world_position is None:
+        return False
+    distance = float(np.linalg.norm(np.asarray(left.world_position, dtype=np.float64) - np.asarray(right.world_position, dtype=np.float64)))
+    return distance <= max_distance
+
+
 def _anchor_part_index(anchor: ContactAnchorRecord, raw: RawContactMotion) -> int | None:
     body = anchor.body.lower()
     if body in raw.part_index_by_alias:
@@ -805,7 +837,7 @@ def _subanchors_from_foot_contact_summary(
                 metadata=metadata,
             )
         )
-    return out
+    return _drop_short_near_duplicate_subanchors(out)
 
 
 def _smooth_foot_role_intervals(
