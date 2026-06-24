@@ -32,6 +32,7 @@ from motion_edit.contact import (
     read_contact_transitions,
     refine_contact_graph_anchor_positions_from_raw_contacts,
     segment_from_contact_transition,
+    split_foot_contact_anchors,
     surface_compatible_with_body,
     transitions_from_proto_indices,
     write_contact_surfaces,
@@ -709,6 +710,56 @@ class ContactEventTests(unittest.TestCase):
         self.assertEqual(summary["contacts"]["heel"]["raw_shape_ids"], [39, 40])
         self.assertEqual(summary["contacts"]["toe"]["raw_shape_ids"], [44, 45])
 
+    def test_split_foot_contact_anchors_from_raw_heel_toe_summary(self) -> None:
+        graph = contact_graph_from_masks(
+            motion_id="motion_a",
+            contact_mask=np.asarray([[True], [True], [True], [True], [False]]),
+            body_pos_w=np.zeros((5, 1, 3), dtype=float),
+            body_names=["left_foot"],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            motion = Path(tmp) / "motion.npz"
+            np.savez(
+                motion,
+                raw_contact_count=np.asarray([1, 1, 2, 2, 0], dtype=np.int32),
+                raw_contact_point0_w=np.asarray(
+                    [
+                        [[0.12, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                        [[0.13, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                        [[-0.10, 0.0, 0.0], [0.14, 0.0, 0.0]],
+                        [[-0.11, 0.0, 0.0], [0.13, 0.0, 0.0]],
+                        [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                    ],
+                    dtype=np.float32,
+                ),
+                raw_contact_point1_w=np.asarray(
+                    [
+                        [[0.12, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                        [[0.13, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                        [[-0.10, 0.0, 0.0], [0.14, 0.0, 0.0]],
+                        [[-0.11, 0.0, 0.0], [0.13, 0.0, 0.0]],
+                        [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                    ],
+                    dtype=np.float32,
+                ),
+                raw_contact_force_w=np.ones((5, 2, 3), dtype=np.float32),
+                raw_contact_shape1=np.asarray([[45, 0], [45, 0], [39, 45], [39, 45], [0, 0]], dtype=np.int32),
+                contact_force_part_position_w=np.zeros((5, 1, 3), dtype=np.float32),
+                contact_force_part_order=np.asarray(["LF"]),
+                raw_contact_source=np.asarray("newton_raw_rigid_contacts"),
+            )
+            refined = refine_contact_graph_anchor_positions_from_raw_contacts(graph, motion)
+        split = split_foot_contact_anchors(refined)
+
+        self.assertEqual(len(split.anchors), 2)
+        by_role = {anchor.metadata["patch_role"]: anchor for anchor in split.anchors}
+        self.assertEqual(by_role["toe"].start_frame, 0)
+        self.assertEqual(by_role["toe"].end_frame, 4)
+        self.assertEqual(by_role["heel"].start_frame, 2)
+        self.assertEqual(by_role["heel"].end_frame, 4)
+        self.assertGreater(by_role["toe"].world_position[0], by_role["heel"].world_position[0])
+        self.assertEqual(by_role["toe"].metadata["parent_anchor_id"], refined.anchors[0].anchor_id)
+
     def test_refine_anchor_position_cli_writes_contact_layer(self) -> None:
         graph = contact_graph_from_masks(
             motion_id="motion_a",
@@ -811,6 +862,36 @@ class ContactEventTests(unittest.TestCase):
         self.assertEqual(merged.anchors[0].metadata["merged_anchor_ids"], ["a0", "a1"])
         self.assertEqual(len(events), 1)
         self.assertEqual(merged.anchors[1].anchor_id, "a2")
+
+    def test_merge_nearby_contact_anchors_does_not_merge_different_patch_roles(self) -> None:
+        anchors = [
+            ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="toe",
+                body="left_foot",
+                start_frame=0,
+                end_frame=10,
+                world_position=[0.0, 0.0, 0.0],
+                metadata={"patch_role": "toe", "raw_contact_position_refinement": {"binding_candidate_class": "top"}},
+            ),
+            ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="heel",
+                body="left_foot",
+                start_frame=11,
+                end_frame=20,
+                world_position=[0.01, 0.0, 0.0],
+                metadata={"patch_role": "heel", "raw_contact_position_refinement": {"binding_candidate_class": "top"}},
+            ),
+        ]
+        graph = contact_graph_from_masks(motion_id="motion_a", contact_mask=np.asarray([[False]]), body_names=["left_foot"])
+        graph = graph.__class__(motion_id="motion_a", anchors=anchors)
+
+        merged, events = merge_nearby_contact_anchors(graph, max_gap=3, max_distance=0.06)
+
+        self.assertEqual([anchor.anchor_id for anchor in merged.anchors], ["toe", "heel"])
+        self.assertEqual(events, [])
+
 
     def test_merge_contact_anchors_cli_writes_layer_and_events(self) -> None:
         anchors = [

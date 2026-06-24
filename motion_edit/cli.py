@@ -32,6 +32,7 @@ from .contact import (
     read_contact_edit_plan,
     read_contact_surfaces,
     refine_contact_graph_anchor_positions_from_raw_contacts,
+    split_foot_contact_anchors,
     validate_contact_edit_plan,
     write_contact_edit_plan,
     write_contact_layer,
@@ -409,7 +410,29 @@ def _prepare_contact_editor_layer(args: argparse.Namespace) -> tuple[str, str]:
     visible_layer = f"{prefix}_editor_visible"
     ready_layer = f"{prefix}_editor_ready"
 
+    surface_catalog = _resolve_surface_catalog(
+        motion_id=args.motion_id,
+        surface_catalog=args.surface_catalog,
+        terrain_urdf=args.terrain_urdf,
+        include_side_surfaces=False,
+        include_ground=True,
+        ground_z=args.ground_z,
+        ground_half_extent=args.ground_half_extent,
+    )
+    surfaces = _filter_surfaces_for_binding(read_contact_surfaces(surface_catalog), include_side_surfaces=False)
     graph = read_contact_graph(LAYERS_ROOT / source_layer, args.motion_id)
+    try:
+        graph = refine_contact_graph_anchor_positions_from_raw_contacts(
+            graph,
+            args.motion,
+            surfaces=surfaces,
+            max_surface_distance=args.max_surface_distance,
+        )
+    except Exception as exc:
+        message = str(exc)
+        if "missing raw contact fields" not in message and "Failed to interpret file" not in message:
+            raise
+    graph = split_foot_contact_anchors(graph)
     merged_graph, merge_events = merge_nearby_contact_anchors(
         graph,
         max_gap=args.merge_max_gap,
@@ -431,16 +454,6 @@ def _prepare_contact_editor_layer(args: argparse.Namespace) -> tuple[str, str]:
     if filter_events:
         write_jsonl(visible_root / "edits" / f"{args.motion_id}.filter_events.jsonl", filter_events)
 
-    surface_catalog = _resolve_surface_catalog(
-        motion_id=args.motion_id,
-        surface_catalog=args.surface_catalog,
-        terrain_urdf=args.terrain_urdf,
-        include_side_surfaces=False,
-        include_ground=True,
-        ground_z=args.ground_z,
-        ground_half_extent=args.ground_half_extent,
-    )
-    surfaces = _filter_surfaces_for_binding(read_contact_surfaces(surface_catalog), include_side_surfaces=False)
     bound_anchors = bind_anchors_to_surfaces(
         visible_graph.anchors,
         surfaces,

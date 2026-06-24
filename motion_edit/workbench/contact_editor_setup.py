@@ -9,6 +9,8 @@ from motion_edit.contact import (
     filter_short_raw_missing_anchors,
     merge_nearby_contact_anchors,
     read_contact_surfaces,
+    refine_contact_graph_anchor_positions_from_raw_contacts,
+    split_foot_contact_anchors,
     write_contact_layer,
     write_contact_surfaces,
 )
@@ -177,7 +179,20 @@ def prepare_contact_editor_session(
     visible_layer = f"{prefix}_editor_visible"
     ready_layer = f"{prefix}_editor_ready"
 
+    surfaces = filter_surfaces_for_binding(read_contact_surfaces(surface_catalog), include_side_surfaces=False)
     graph = read_contact_graph(layers_root / source_layer, config.motion_id)
+    try:
+        graph = refine_contact_graph_anchor_positions_from_raw_contacts(
+            graph,
+            config.motion,
+            surfaces=surfaces,
+            max_surface_distance=config.max_surface_distance,
+        )
+    except Exception as exc:
+        message = str(exc)
+        if "missing raw contact fields" not in message and "Failed to interpret file" not in message:
+            raise
+    graph = split_foot_contact_anchors(graph)
     merged_graph, merge_events = merge_nearby_contact_anchors(
         graph,
         max_gap=config.merge_max_gap,
@@ -199,7 +214,6 @@ def prepare_contact_editor_session(
     if filter_events:
         write_jsonl(visible_root / "edits" / f"{config.motion_id}.filter_events.jsonl", filter_events)
 
-    surfaces = filter_surfaces_for_binding(read_contact_surfaces(surface_catalog), include_side_surfaces=False)
     bound_anchors = bind_anchors_to_surfaces(
         visible_graph.anchors,
         surfaces,

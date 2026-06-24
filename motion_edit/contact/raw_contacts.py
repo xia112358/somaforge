@@ -545,7 +545,7 @@ def estimate_heel_toe_contact_summary(
     rel = robot_arr - np.median(robot_arr, axis=0, keepdims=True)
     axis = _principal_horizontal_axis(rel)
     coord = rel @ axis
-    split = float(np.median(coord))
+    split = _largest_gap_split(coord)
     is_toe_positive = _toe_positive_for_body(anchor.body)
     groups = {
         "heel": coord <= split if is_toe_positive else coord >= split,
@@ -589,7 +589,20 @@ def _principal_horizontal_axis(points: np.ndarray) -> np.ndarray:
         axis_xy = np.asarray([1.0, 0.0], dtype=np.float64)
     axis = np.asarray([axis_xy[0], axis_xy[1], 0.0], dtype=np.float64)
     axis /= np.linalg.norm(axis)
+    if axis[0] < 0.0 or (abs(float(axis[0])) <= 1.0e-9 and axis[1] < 0.0):
+        axis = -axis
     return axis
+
+
+def _largest_gap_split(values: np.ndarray) -> float:
+    ordered = np.sort(np.asarray(values, dtype=np.float64))
+    if ordered.size < 2:
+        return float(np.median(ordered)) if ordered.size else 0.0
+    gaps = np.diff(ordered)
+    index = int(np.argmax(gaps))
+    if float(gaps[index]) <= 1.0e-9:
+        return float(np.median(ordered))
+    return float(0.5 * (ordered[index] + ordered[index + 1]))
 
 
 def _toe_positive_for_body(body: str) -> bool:
@@ -660,3 +673,75 @@ def refine_contact_graph_anchor_positions_from_raw_contacts(
             )
         )
     return replace(graph, anchors=anchors, patches=patches_from_anchors(anchors))
+
+
+def split_foot_contact_anchors(graph: ContactGraph, *, source: str = "raw_contact_heel_toe_split") -> ContactGraph:
+    """Split foot anchors with raw heel/toe summaries into editable sub-anchors.
+
+    The main contact mask stays fixed to the six canonical parts. This only
+    creates multiple anchors for one foot when raw rigid contacts show distinct
+    heel/toe contact patches over different frame intervals.
+    """
+
+    anchors: list[ContactAnchorRecord] = []
+    for anchor in graph.anchors:
+        refinement = anchor.metadata.get("raw_contact_position_refinement")
+        summary = refinement.get("foot_contact_summary") if isinstance(refinement, dict) else None
+        contacts = summary.get("contacts") if isinstance(summary, dict) else None
+        if not _is_foot_anchor(anchor) or not isinstance(contacts, dict):
+            anchors.append(anchor)
+            continue
+        subanchors = _subanchors_from_foot_contact_summary(anchor, contacts=contacts, source=source)
+        anchors.extend(subanchors or [anchor])
+    anchors = sorted(anchors, key=lambda item: (item.start_frame, item.end_frame, item.body, item.anchor_id))
+    return replace(graph, anchors=anchors, patches=patches_from_anchors(anchors))
+
+
+def _subanchors_from_foot_contact_summary(
+    anchor: ContactAnchorRecord,
+    *,
+    contacts: dict[str, Any],
+    source: str,
+) -> list[ContactAnchorRecord]:
+    out: list[ContactAnchorRecord] = []
+    for patch_role in ("toe", "heel"):
+        stats = contacts.get(patch_role)
+        if not isinstance(stats, dict):
+            continue
+        start = stats.get("frame_start")
+        end = stats.get("frame_end")
+        position = stats.get("world_position")
+        if start is None or end is None or position is None:
+            continue
+        start_frame = max(int(anchor.start_frame), int(start))
+        end_frame = min(int(anchor.end_frame), int(end))
+        if end_frame <= start_frame:
+            continue
+        metadata = dict(anchor.metadata)
+        metadata["patch_role"] = patch_role
+        metadata["parent_anchor_id"] = anchor.anchor_id
+        metadata["foot_subcontact"] = stats
+        splits = list(metadata.get("foot_contact_splits") or [])
+        splits.append(
+            {
+                "source": source,
+                "parent_anchor_id": anchor.anchor_id,
+                "patch_role": patch_role,
+                "old_bounds": {"start_frame": anchor.start_frame, "end_frame": anchor.end_frame},
+                "new_bounds": {"start_frame": start_frame, "end_frame": end_frame},
+            }
+        )
+        metadata["foot_contact_splits"] = splits
+        out.append(
+            replace(
+                anchor,
+                anchor_id=f"{anchor.motion_id}_anchor_{anchor.body}_{patch_role}_{start_frame:06d}_{end_frame:06d}",
+                start_frame=start_frame,
+                end_frame=end_frame,
+                world_position=[float(item) for item in position],
+                position_source=f"{source}_{patch_role}",
+                source=source,
+                metadata=metadata,
+            )
+        )
+    return out

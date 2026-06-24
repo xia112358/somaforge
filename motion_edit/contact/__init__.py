@@ -27,6 +27,7 @@ from .raw_contacts import (
     RawContactMotion,
     estimate_anchor_position_from_raw_contacts,
     refine_contact_graph_anchor_positions_from_raw_contacts,
+    split_foot_contact_anchors,
 )
 from .schema import (
     ContactAnchorRecord,
@@ -86,6 +87,7 @@ __all__ = [
     "read_contact_graph",
     "estimate_anchor_position_from_raw_contacts",
     "refine_contact_graph_anchor_positions_from_raw_contacts",
+    "split_foot_contact_anchors",
     "segment_from_contact_transition",
     "surface_compatible_with_body",
     "transitions_from_event_pairs",

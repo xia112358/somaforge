@@ -222,6 +222,8 @@ def _should_merge_anchor_pair(
 ) -> bool:
     if left.body != right.body:
         return False
+    if _patch_role(left) != _patch_role(right):
+        return False
     if right.start_frame < left.end_frame:
         return False
     gap = right.start_frame - left.end_frame
@@ -242,6 +244,11 @@ def _binding_candidate_class(anchor: ContactAnchorRecord) -> str | None:
     if isinstance(refinement, dict) and refinement.get("binding_candidate_class"):
         return str(refinement["binding_candidate_class"])
     return None
+
+
+def _patch_role(anchor: ContactAnchorRecord) -> str | None:
+    value = anchor.metadata.get("patch_role")
+    return str(value) if value is not None else None
 
 
 def _anchor_distance(left: ContactAnchorRecord, right: ContactAnchorRecord) -> float | None:
