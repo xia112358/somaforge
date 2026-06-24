@@ -166,7 +166,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 #appbar { display: grid; grid-template-columns: 340px minmax(0, 1fr) 430px; gap: 12px; align-items: center; padding: 0 12px; border-bottom: 1px solid var(--line); background: #0d1420; box-sizing: border-box; }
 #brand { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
 #title { font-size: 15px; font-weight: 700; white-space: nowrap; }
-#motion-title { color: var(--muted); font: 12px ui-monospace, monospace; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#motion-title { color: var(--muted); font: 12px ui-monospace, monospace; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; user-select: text; }
 #transport, #app-actions { display: flex; gap: 8px; align-items: center; justify-content: center; min-width: 0; }
 #app-actions { justify-content: flex-end; }
 #frame-chip, #pending-chip { border: 1px solid var(--line); border-radius: 5px; background: #121b2a; color: #cdd9f0; padding: 5px 8px; font: 12px ui-monospace, monospace; white-space: nowrap; }
@@ -185,6 +185,10 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 .kv { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 5px 8px; font: 12px ui-monospace, monospace; color: #c5d1e8; }
 .kv .key { color: var(--muted); }
 .kv .value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.copyable { user-select: text; cursor: text; }
+.copy-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+.copy-btn { height: 22px; padding: 0 7px; font-size: 11px; border-radius: 4px; }
+.text-block { margin: 0; max-height: 96px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; font: 11px ui-monospace, monospace; color: #c8d5ee; }
 .muted { color: var(--muted); }
 .warn { color: var(--orange); }
 .error { color: var(--red); }
@@ -219,7 +223,7 @@ button:disabled { opacity: .48; cursor: default; }
 .tick { position: absolute; top: 6px; color: #7184a8; font: 10px ui-monospace, monospace; transform: translateX(-50%); }
 .minorTick { position: absolute; top: 18px; width: 1px; height: 8px; background: rgba(113, 132, 168, .45); }
 #statusbar { display: flex; align-items: center; justify-content: space-between; padding: 0 12px; border-top: 1px solid #1e2a40; color: #9fb0d0; font: 11px ui-monospace, monospace; overflow: hidden; }
-#status-left, #status-right { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#status-left, #status-right { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; user-select: text; }
 """
 
 
@@ -243,6 +247,27 @@ const recentSelect = document.getElementById('recent');
 function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
 function $(id) { return document.getElementById(id); }
 function esc(value) { return String(value ?? '').replace(/[&<>\"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch])); }
+function attr(value) { return esc(value).replace(/'/g, '&#39;'); }
+function copyButton(value, label='Copy') { return `<button class="copy-btn ghost" data-copy="${attr(value ?? '')}">${label}</button>`; }
+function wireCopyButtons(root=document) {
+  root.querySelectorAll('[data-copy]').forEach(button => {
+    button.onclick = event => {
+      event.stopPropagation();
+      const text = button.getAttribute('data-copy') || '';
+      navigator.clipboard?.writeText(text).then(() => {
+        button.textContent = 'Copied';
+        setTimeout(() => { button.textContent = 'Copy'; }, 800);
+      }).catch(() => {
+        const area = document.createElement('textarea');
+        area.value = text;
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand('copy');
+        area.remove();
+      });
+    };
+  });
+}
 function railWidth() { return Math.max(1, (timeline.clientWidth - 136) * zoom); }
 function railLeft() { return 120; }
 function frameToX(frame) { return railLeft() + (frame / Math.max(1, state.n_frames - 1)) * railWidth(); }
@@ -311,9 +336,9 @@ function renderLeftPanel() {
   if (selectedRecent && Number(selectedRecent) < recentSelect.options.length) recentSelect.value = selectedRecent;
   $('layer-summary').innerHTML = `
     <div class="kv">
-      <div class="key">source</div><div class="value" title="${esc(layers.contact_layer)}">${esc(layers.contact_layer || '-')}</div>
-      <div class="key">output</div><div class="value" title="${esc(layers.output_contact_layer)}">${esc(layers.output_contact_layer || '-')}</div>
-      <div class="key">session</div><div class="value" title="${esc(layers.session_dir)}">${esc(layers.session_dir || '-')}</div>
+      <div class="key">source</div><div class="copy-row"><div class="value copyable" title="${esc(layers.contact_layer)}">${esc(layers.contact_layer || '-')}</div>${copyButton(layers.contact_layer)}</div>
+      <div class="key">output</div><div class="copy-row"><div class="value copyable" title="${esc(layers.output_contact_layer)}">${esc(layers.output_contact_layer || '-')}</div>${copyButton(layers.output_contact_layer)}</div>
+      <div class="key">session</div><div class="copy-row"><div class="value copyable" title="${esc(layers.session_dir)}">${esc(layers.session_dir || '-')}</div>${copyButton(layers.session_dir)}</div>
     </div>`;
   $('binding-summary').innerHTML = `
     <span class="badge">anchors ${counts.anchor_count || 0}</span>
@@ -321,7 +346,10 @@ function renderLeftPanel() {
     <span class="badge failed">failed ${counts.failed_count || 0}</span>
     <span class="badge clamped">clamped ${counts.clamped_count || 0}</span>`;
   const errors = [state.last_error, state.last_message].filter(Boolean);
-  $('warning-list').innerHTML = errors.length ? errors.map(item => `<div class="${state.last_error ? 'error' : 'muted'}">${esc(item)}</div>`).join('') : '<div class="muted">No warnings.</div>';
+  $('warning-list').innerHTML = errors.length
+    ? errors.map(item => `<div class="copy-row"><pre class="text-block ${state.last_error ? 'error' : ''}">${esc(item)}</pre>${copyButton(item)}</div>`).join('')
+    : '<div class="muted">No warnings.</div>';
+  wireCopyButtons($('left-panel'));
 }
 function renderInspector() {
   const anchor = selectedAnchor();
@@ -334,7 +362,7 @@ function renderInspector() {
   const duration = Math.max(0, (anchor.end_frame || 0) - (anchor.start_frame || 0) + 1);
   $('selected-anchor-card').innerHTML = `<h3>Selected Anchor <span class="status-badge ${statusClass(anchor.status)}">${esc(anchor.status)}</span></h3>
     <div class="kv">
-      <div class="key">id</div><div class="value" title="${esc(anchor.anchor_id)}">${esc(anchor.anchor_id)}</div>
+      <div class="key">id</div><div class="copy-row"><div class="value copyable" title="${esc(anchor.anchor_id)}">${esc(anchor.anchor_id)}</div>${copyButton(anchor.anchor_id)}</div>
       <div class="key">body</div><div class="value">${esc(anchor.body)}</div>
       <div class="key">frames</div><div class="value">${anchor.start_frame} -> ${anchor.end_frame}</div>
       <div class="key">duration</div><div class="value">${duration} frames</div>
@@ -342,21 +370,22 @@ function renderInspector() {
   const coords = anchor.surface_coordinates || {};
   $('surface-card').innerHTML = `<h3>Surface Binding</h3>
     <div class="kv">
-      <div class="key">surface</div><div class="value" title="${esc(anchor.surface_id)}">${esc(anchor.surface_id || '-')}</div>
-      <div class="key">object</div><div class="value" title="${esc(anchor.object_id)}">${esc(anchor.object_id || '-')}</div>
+      <div class="key">surface</div><div class="copy-row"><div class="value copyable" title="${esc(anchor.surface_id)}">${esc(anchor.surface_id || '-')}</div>${copyButton(anchor.surface_id)}</div>
+      <div class="key">object</div><div class="copy-row"><div class="value copyable" title="${esc(anchor.object_id)}">${esc(anchor.object_id || '-')}</div>${copyButton(anchor.object_id)}</div>
       <div class="key">type</div><div class="value">${esc(anchor.surface_type || '-')}</div>
       <div class="key">u/v</div><div class="value">${coords.u ?? '-'} / ${coords.v ?? '-'}</div>
-      <div class="key">failure</div><div class="value">${esc(anchor.failure_reason || '-')}</div>
+      <div class="key">failure</div><div class="copy-row"><div class="value copyable">${esc(anchor.failure_reason || '-')}</div>${copyButton(anchor.failure_reason)}</div>
     </div>`;
   const edit = anchor.latest_edit || {};
   $('edit-card').innerHTML = `<h3>Edit</h3>
     <div class="kv">
-      <div class="key">old</div><div class="value" title="${esc(JSON.stringify(edit.old_world_position || anchor.world_position || []))}">${esc(JSON.stringify(edit.old_world_position || '-'))}</div>
-      <div class="key">new</div><div class="value" title="${esc(JSON.stringify(edit.new_world_position || []))}">${esc(JSON.stringify(edit.new_world_position || '-'))}</div>
-      <div class="key">delta</div><div class="value">${esc(JSON.stringify(edit.delta_world || '-'))}</div>
-      <div class="key">tangent</div><div class="value">${esc(JSON.stringify(edit.tangent_delta || '-'))}</div>
+      <div class="key">old</div><div class="copy-row"><div class="value copyable" title="${esc(JSON.stringify(edit.old_world_position || anchor.world_position || []))}">${esc(JSON.stringify(edit.old_world_position || '-'))}</div>${copyButton(JSON.stringify(edit.old_world_position || anchor.world_position || []))}</div>
+      <div class="key">new</div><div class="copy-row"><div class="value copyable" title="${esc(JSON.stringify(edit.new_world_position || []))}">${esc(JSON.stringify(edit.new_world_position || '-'))}</div>${copyButton(JSON.stringify(edit.new_world_position || []))}</div>
+      <div class="key">delta</div><div class="copy-row"><div class="value copyable">${esc(JSON.stringify(edit.delta_world || '-'))}</div>${copyButton(JSON.stringify(edit.delta_world || ''))}</div>
+      <div class="key">tangent</div><div class="copy-row"><div class="value copyable">${esc(JSON.stringify(edit.tangent_delta || '-'))}</div>${copyButton(JSON.stringify(edit.tangent_delta || ''))}</div>
       <div class="key">mode</div><div class="value">${esc(edit.constraint_mode || '-')}</div>
     </div>`;
+  wireCopyButtons($('inspector-panel'));
 }
 function renderGenerationCard() {
   const gen = state.generation || {};
@@ -365,10 +394,11 @@ function renderGenerationCard() {
       <div class="kv">
         <div class="key">solver</div><div class="value">ik_subprocess</div>
         <div class="key">mesh</div><div class="value">configured in backend</div>
-        <div class="key">status</div><div class="value">${esc(gen.last_error || gen.last_output_motion || 'idle')}</div>
+        <div class="key">status</div><div class="copy-row"><div class="value copyable" title="${esc(gen.last_error || gen.last_output_motion || 'idle')}">${esc(gen.last_error || gen.last_output_motion || 'idle')}</div>${copyButton(gen.last_error || gen.last_output_motion || '')}</div>
       </div>
       <button id="generate-disabled" class="primary" disabled title="Use the Viser-side Generate button for now.">Generate</button>
     </div>`;
+  wireCopyButtons($('generation-card'));
 }
 function updatePlayhead() {
   if (!state) return;

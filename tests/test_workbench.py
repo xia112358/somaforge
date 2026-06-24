@@ -938,6 +938,8 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertIn("id=\"playhead\"", html)
         self.assertIn("id=\"selected-anchor-card\"", html)
         self.assertIn("id=\"generation-card\"", html)
+        self.assertIn("copyable", html)
+        self.assertIn("data-copy", html)
         self.assertIn("/api/select_anchor", html)
         self.assertIn("/api/open_recent", html)
         self.assertIn("/api/load_motion", html)
