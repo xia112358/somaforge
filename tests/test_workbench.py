@@ -76,6 +76,7 @@ from motion_edit.viewer.surface_overlay_player import (
 from motion_edit.storage.schema import MotionAssetRecord
 from motion_edit.storage.io import write_motion_asset
 from motion_edit.workbench.recent import RecentMotionEntry, read_recent_motions, recent_entry_labels, upsert_recent_motion
+from motion_edit.workbench.contact_editor_setup import ContactEditorConfig, prepare_contact_editor_session as prepare_contact_editor_workbench_session
 from motion_edit.workbench.surface_editor_session import read_pending_surface_edits
 
 
@@ -580,11 +581,14 @@ class SurfaceEditorSessionTests(unittest.TestCase):
                         },
                     )()
                 )
-                ready = read_contact_graph(root / "layers" / "contact" / "editor_editor_ready", "motion_a")
 
         launch_mock.assert_called_once()
-        self.assertEqual([anchor.anchor_id for anchor in ready.anchors], ["top"])
-        self.assertEqual(ready.anchors[0].surface_id, "terrain_ground_z0")
+        self.assertEqual(launch_mock.call_args.kwargs["surface_binding_overlay"], "__setup__")
+        defaults = launch_mock.call_args.kwargs["contact_editor_defaults"]
+        self.assertEqual(defaults["motion"], str(motion))
+        self.assertEqual(defaults["motion_id"], "motion_a")
+        self.assertEqual(defaults["source_contact_layer"], "contact/source")
+        self.assertEqual(defaults["surface_catalog"], str(surface_catalog))
         self.assertEqual(launch_mock.call_args.kwargs["surface_editor_edit_mode"], "direct")
 
     def test_contact_editor_refuses_unbound_editor_ready_layer(self) -> None:
@@ -615,51 +619,20 @@ class SurfaceEditorSessionTests(unittest.TestCase):
             )
             surface_catalog = root / "surfaces.jsonl"
             write_contact_surfaces(surface_catalog, [surface])
-            with (
-                mock.patch.object(cli, "LAYERS_ROOT", root / "layers"),
-                mock.patch.object(cli, "WORKBENCH_ROOT", root / "workbench"),
-                mock.patch.object(cli, "launch_viewer") as launch_mock,
-            ):
-                with self.assertRaisesRegex(ValueError, "not fully bound"):
-                    cli._cmd_contact_editor(
-                        type(
-                            "Args",
-                            (),
-                            {
-                                "motion": str(motion),
-                                "motion_id": "motion_a",
-                                "source_contact_layer": "contact/source",
-                                "surface_catalog": str(surface_catalog),
-                                "terrain_urdf": None,
-                                "include_side_surfaces": False,
-                                "no_ground": False,
-                                "ground_z": 0.0,
-                                "ground_half_extent": 10.0,
-                                "output_prefix": "contact/editor",
-                                "session_name": "contact_editor",
-                                "edit_plan": None,
-                                "output_contact_layer": None,
-                                "repo_root": None,
-                                "conda_env": "hsretargeting",
-                                "timeline_port": 8094,
-                                "fps": 50,
-                                "with_terrain": False,
-                                "save_on_exit": False,
-                                "edit_mode": "direct",
-                                "step_size": 0.02,
-                                "default_mode": "reject",
-                                "show_only": "all",
-                                "select_anchor": None,
-                                "external_viewer": False,
-                                "merge_max_gap": 3,
-                                "merge_max_distance": 0.06,
-                                "max_surface_distance": 0.08,
-                                "bind_mode": "reject",
-                            },
-                        )()
-                    )
-
-        launch_mock.assert_not_called()
+            with self.assertRaisesRegex(ValueError, "not fully bound"):
+                prepare_contact_editor_workbench_session(
+                    ContactEditorConfig(
+                        motion=str(motion),
+                        motion_id="motion_a",
+                        source_contact_layer="contact/source",
+                        surface_catalog=str(surface_catalog),
+                        session_name="contact_editor",
+                        output_prefix="contact/editor",
+                        max_surface_distance=0.08,
+                    ),
+                    layers_root=root / "layers",
+                    workbench_root=root / "workbench",
+                )
 
     def test_surface_editor_move_anchor_cli_updates_session_and_can_save(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

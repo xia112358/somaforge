@@ -58,6 +58,7 @@ def launch_viewer(
     surface_editor_default_mode: str = "reject",
     surface_editor_show_only: str = "all",
     surface_editor_select_anchor: str | None = None,
+    contact_editor_defaults: dict[str, str] | None = None,
     prefer_local_surface_editor: bool = True,
 ) -> subprocess.Popen:
     if surface_binding_overlay is not None and prefer_local_surface_editor:
@@ -91,6 +92,12 @@ def launch_viewer(
         ]
         if setup_mode:
             cmd.append("--setup-mode")
+            for key, value in (contact_editor_defaults or {}).items():
+                if key == "with_terrain":
+                    if value:
+                        cmd.append("--setup-with-terrain")
+                elif value:
+                    cmd.extend([f"--setup-{key.replace('_', '-')}", str(value)])
         else:
             cmd.extend(
                 [

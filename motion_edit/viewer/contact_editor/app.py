@@ -2305,22 +2305,22 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
         save_as_btn = server.gui.add_button("Choose output...")
 
     with server.gui.add_folder("Motion Bundle"):
-        motion = server.gui.add_text("motion_npz", initial_value="")
-        motion_id = server.gui.add_text("motion_id", initial_value="")
-        source_contact_layer = server.gui.add_text("source_contact_layer", initial_value="")
-        terrain_urdf = server.gui.add_text("terrain_urdf", initial_value="")
-        surface_catalog = server.gui.add_text("surface_catalog", initial_value="")
+        motion = server.gui.add_text("motion_npz", initial_value=str(args.setup_motion or ""))
+        motion_id = server.gui.add_text("motion_id", initial_value=str(args.setup_motion_id or ""))
+        source_contact_layer = server.gui.add_text("source_contact_layer", initial_value=str(args.setup_source_contact_layer or ""))
+        terrain_urdf = server.gui.add_text("terrain_urdf", initial_value=str(args.setup_terrain_urdf or ""))
+        surface_catalog = server.gui.add_text("surface_catalog", initial_value=str(args.setup_surface_catalog or ""))
 
     with server.gui.add_folder("Session / Output"):
-        session_name = server.gui.add_text("session_name", initial_value="contact_editor")
-        output_prefix = server.gui.add_text("output_prefix", initial_value="")
-        output_contact_layer = server.gui.add_text("output_contact_layer", initial_value="")
-        edit_plan = server.gui.add_text("edit_plan", initial_value="")
+        session_name = server.gui.add_text("session_name", initial_value=str(args.setup_session_name or "contact_editor"))
+        output_prefix = server.gui.add_text("output_prefix", initial_value=str(args.setup_output_prefix or ""))
+        output_contact_layer = server.gui.add_text("output_contact_layer", initial_value=str(args.setup_output_contact_layer or ""))
+        edit_plan = server.gui.add_text("edit_plan", initial_value=str(args.setup_edit_plan or ""))
         load_btn = server.gui.add_button("Open contact editor")
 
     with server.gui.add_folder("Viewer"):
-        repo_root = server.gui.add_text("repo_root", initial_value="")
-        with_terrain = server.gui.add_checkbox("show terrain", initial_value=True)
+        repo_root = server.gui.add_text("repo_root", initial_value=str(args.setup_repo_root or ""))
+        with_terrain = server.gui.add_checkbox("show terrain", initial_value=bool(args.setup_with_terrain))
         default_mode = server.gui.add_dropdown("mode", options=("reject", "clamp"), initial_value=args.default_mode)
         show_only = server.gui.add_dropdown(
             "show_only",
@@ -2539,6 +2539,12 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
 
     print(f"[contact editor setup] Open Contact Editor: http://localhost:{shell_port}")
     print("Fill setup fields in the Viser UI and click Load contact editor.")
+    if str(args.setup_motion or "").strip():
+        try:
+            _start_loaded_editor()
+        except Exception as exc:
+            print(f"[contact editor setup] auto-load failed: {exc}", file=sys.stderr)
+            _set_status(f"auto-load failed: {exc}")
     while True:
         time.sleep(0.2)
 
@@ -2546,6 +2552,17 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Local Viser surface binding overlay player.")
     parser.add_argument("--setup-mode", action="store_true")
+    parser.add_argument("--setup-motion", default="")
+    parser.add_argument("--setup-motion-id", default="")
+    parser.add_argument("--setup-source-contact-layer", default="")
+    parser.add_argument("--setup-terrain-urdf", default="")
+    parser.add_argument("--setup-surface-catalog", default="")
+    parser.add_argument("--setup-session-name", default="")
+    parser.add_argument("--setup-output-prefix", default="")
+    parser.add_argument("--setup-output-contact-layer", default="")
+    parser.add_argument("--setup-edit-plan", default="")
+    parser.add_argument("--setup-repo-root", default="")
+    parser.add_argument("--setup-with-terrain", action="store_true")
     parser.add_argument("--qpos-npz", default=None)
     parser.add_argument("--surface-binding-overlay", default=None)
     parser.add_argument("--surface-editor-session", default=None)

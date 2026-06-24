@@ -564,74 +564,52 @@ def _apply_motion_asset_defaults_to_contact_editor_args(args: argparse.Namespace
 def _cmd_contact_editor(args: argparse.Namespace) -> None:
     ensure_data_dirs()
     loaded_registered_motion = _apply_motion_asset_defaults_to_contact_editor_args(args)
-    if args.motion is None:
-        process = launch_viewer(
-            "",
-            timeline_port=args.timeline_port,
-            fps=args.fps,
-            surface_binding_overlay="__setup__",
-            surface_editor_session="__setup__",
-            surface_editor_requests="__setup__",
-            surface_editor_edit_mode=args.edit_mode,
-            surface_editor_default_mode=args.default_mode,
-            surface_editor_show_only=args.show_only,
-            prefer_local_surface_editor=True,
-        )
-        print(f"viewer pid={process.pid}")
-        print(f"Open Motion Contact Editor: http://localhost:{args.timeline_port + 1}")
-        process.wait()
-        return
     if loaded_registered_motion:
         print(f"loaded registered motion {args.motion_asset_id or args.motion_id}")
-    if not args.motion_id:
+    if args.motion is not None and not args.motion_id:
         raise ValueError("--motion-id is required when motion is provided")
-    if not args.source_contact_layer:
+    if args.motion is not None and not args.source_contact_layer:
         raise ValueError("--source-contact-layer is required when motion is provided")
     if args.include_side_surfaces:
         raise ValueError("contact-editor does not allow side surfaces; use surface-editor only for debug")
     if args.no_ground:
         raise ValueError("contact-editor requires ground surface support")
-    if args.surface_catalog is None and args.terrain_urdf is None and args.with_terrain:
+    if args.motion is not None and args.surface_catalog is None and args.terrain_urdf is None and args.with_terrain:
         paths = detect_omniretarget_paths(args.motion, repo_root=args.repo_root)
         if paths.terrain_urdf is None:
             raise ValueError("--with-terrain could not resolve a terrain URDF; pass --surface-catalog or --terrain-urdf")
         args.terrain_urdf = str(paths.terrain_urdf)
-    if args.output_contact_layer is None:
+    if args.motion is not None and args.output_contact_layer is None:
         args.output_contact_layer = f"contact/{args.session_name}_editor_ready_edited"
-    prepared = prepare_contact_editor_workbench_session(
-        ContactEditorConfig(
-            motion=args.motion,
-            motion_id=args.motion_id,
-            source_contact_layer=args.source_contact_layer,
-            session_name=args.session_name,
-            surface_catalog=args.surface_catalog,
-            terrain_urdf=args.terrain_urdf,
-            output_prefix=args.output_prefix,
-            edit_plan=args.edit_plan,
-            output_contact_layer=args.output_contact_layer,
-            repo_root=args.repo_root,
-            with_terrain=args.with_terrain,
-            ground_z=args.ground_z,
-            ground_half_extent=args.ground_half_extent,
-            merge_max_gap=args.merge_max_gap,
-            merge_max_distance=args.merge_max_distance,
-            max_surface_distance=args.max_surface_distance,
-            bind_mode=args.bind_mode,
-            fps=args.fps,
-        ),
-        layers_root=LAYERS_ROOT,
-        workbench_root=WORKBENCH_ROOT,
+    defaults = {
+        "motion": args.motion or "",
+        "motion_id": args.motion_id or "",
+        "source_contact_layer": args.source_contact_layer or "",
+        "terrain_urdf": args.terrain_urdf or "",
+        "surface_catalog": args.surface_catalog or "",
+        "session_name": args.session_name or "",
+        "output_prefix": args.output_prefix or "",
+        "output_contact_layer": args.output_contact_layer or "",
+        "edit_plan": args.edit_plan or "",
+        "repo_root": args.repo_root or "",
+        "with_terrain": args.with_terrain,
+    }
+    process = launch_viewer(
+        "",
+        timeline_port=args.timeline_port,
+        fps=args.fps,
+        surface_binding_overlay="__setup__",
+        surface_editor_session="__setup__",
+        surface_editor_requests="__setup__",
+        surface_editor_edit_mode=args.edit_mode,
+        surface_editor_default_mode=args.default_mode,
+        surface_editor_show_only=args.show_only,
+        contact_editor_defaults=defaults,
+        prefer_local_surface_editor=True,
     )
-    print(
-        "prepared contact editor layer "
-        f"source={args.source_contact_layer} ready={prepared.ready_layer}"
-    )
-    print(
-        f"contact-editor anchors source={prepared.source_anchor_count} merged={prepared.merged_anchor_count} "
-        f"visible={prepared.visible_anchor_count} ready={prepared.ready_anchor_count} "
-        f"filtered={prepared.filtered_count} bound={prepared.bound_count}"
-    )
-    _launch_surface_editor_for_args(args, contact_layer=prepared.ready_layer, surface_catalog=prepared.surface_catalog)
+    print(f"viewer pid={process.pid}")
+    print(f"Open Motion Contact Editor: http://localhost:{args.timeline_port + 1}")
+    process.wait()
 
 
 def _cmd_create_box_surface_catalog(args: argparse.Namespace) -> None:
