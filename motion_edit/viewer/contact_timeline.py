@@ -162,27 +162,27 @@ def _editor_shell_css() -> str:
   --orange: #ffad5c;
 }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: Inter, system-ui, sans-serif; overflow: hidden; }
-#app { height: 100%; display: grid; grid-template-rows: 42px minmax(0, 1fr) 310px; background: var(--bg); }
-#appbar { display: grid; grid-template-columns: 340px minmax(0, 1fr) 430px; gap: 12px; align-items: center; padding: 0 12px; border-bottom: 1px solid var(--line); background: #0d1420; box-sizing: border-box; }
+#app { height: 100%; display: grid; grid-template-rows: 34px minmax(0, 1fr) 300px; background: var(--bg); }
+#appbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 0 10px; border-bottom: 1px solid var(--line); background: #0d1420; box-sizing: border-box; }
 #brand { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
 #title { font-size: 15px; font-weight: 700; white-space: nowrap; }
 #motion-title { color: var(--muted); font: 12px ui-monospace, monospace; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; user-select: text; }
-#transport, #app-actions { display: flex; gap: 8px; align-items: center; justify-content: center; min-width: 0; }
-#app-actions { justify-content: flex-end; }
-#frame-chip, #pending-chip { border: 1px solid var(--line); border-radius: 999px; background: #121b2a; color: #cdd9f0; padding: 4px 8px; font: 12px ui-monospace, monospace; white-space: nowrap; }
+#app-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; min-width: 0; }
+#frame-chip, #pending-chip, #failed-chip { border: 1px solid var(--line); border-radius: 999px; background: #121b2a; color: #cdd9f0; padding: 4px 8px; font: 12px ui-monospace, monospace; white-space: nowrap; }
 #pending-chip { border-color: rgba(255, 212, 95, .45); color: var(--accent); }
+#failed-chip { display: none; border-color: rgba(255, 107, 114, .55); color: var(--red); }
 #main { min-height: 0; display: grid; grid-template-columns: 260px minmax(0, 1fr) 340px; background: #05070c; }
 #left-panel, #inspector-panel { min-width: 0; overflow: auto; background: var(--panel); border-right: 1px solid var(--line); padding: 10px; box-sizing: border-box; }
 #inspector-panel { border-right: 0; border-left: 1px solid var(--line); }
 #viewer-panel { position: relative; min-width: 0; min-height: 0; background: #05070c; }
 #viewer { width: 100%; height: 100%; border: 0; background: #05070c; }
-.viewport-hud { position: absolute; left: 12px; top: 10px; display: flex; gap: 8px; pointer-events: none; }
+.viewport-hud { position: absolute; left: 12px; top: 10px; display: flex; gap: 8px; pointer-events: none; opacity: .82; }
 .badge, .status-badge { border: 1px solid var(--line); border-radius: 999px; background: rgba(16, 23, 35, .88); color: #d7e2f5; padding: 3px 8px; font-size: 11px; white-space: nowrap; }
 .status-badge.edited { border-color: rgba(126, 224, 140, .65); color: var(--green); }
-.status-badge.failed { border-color: rgba(255, 107, 114, .7); color: var(--red); }
-.status-badge.clamped, .status-badge.suspicious { border-color: rgba(255, 173, 92, .75); color: var(--orange); }
+.status-badge.failed, .badge.failed { border-color: rgba(255, 107, 114, .7); color: var(--red); }
+.status-badge.clamped, .status-badge.suspicious, .badge.clamped { border-color: rgba(255, 173, 92, .75); color: var(--orange); }
 .card { border: 1px solid var(--line); border-radius: 7px; background: var(--panel-2); padding: 10px; margin-bottom: 10px; }
-.card h3 { margin: 0 0 8px; font-size: 12px; letter-spacing: 0; color: #dbe6fa; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.card h3 { margin: 0 0 8px; font-size: 12px; color: #dbe6fa; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .kv { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 6px 8px; font: 12px Inter, system-ui, sans-serif; color: #c5d1e8; }
 .kv .key { color: var(--muted); }
 .kv .value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, monospace; }
@@ -191,6 +191,9 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 .copy-btn { height: 21px; padding: 0 6px; font-size: 10px; border-radius: 4px; opacity: 0; transition: opacity .12s ease; }
 .copy-row:hover .copy-btn, .card:hover .copy-btn, .copy-btn:focus { opacity: .75; }
 .text-block { margin: 0; max-height: 96px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; font: 11px ui-monospace, monospace; color: #c8d5ee; }
+.event-card { border: 1px solid #25324b; border-radius: 6px; background: #0e1624; padding: 7px; display: grid; gap: 3px; }
+.event-title { font-size: 12px; color: #dce7ff; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.event-meta { color: var(--muted); font: 11px ui-monospace, monospace; overflow-wrap: anywhere; }
 .muted { color: var(--muted); }
 .warn { color: var(--orange); }
 .error { color: var(--red); }
@@ -204,10 +207,15 @@ button:disabled { opacity: .48; cursor: default; }
 .row { display: flex; gap: 8px; align-items: center; min-width: 0; }
 .row > * { min-width: 0; }
 .full { width: 100%; }
-#timeline-panel { min-height: 0; border-top: 1px solid var(--line); background: #0d1420; display: grid; grid-template-rows: 34px minmax(0, 1fr) 24px; }
-#timeline-toolbar { display: grid; grid-template-columns: 220px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 5px 12px; border-bottom: 1px solid #1e2a40; box-sizing: border-box; }
-#timeline-title { font-size: 12px; font-weight: 650; color: #dce7ff; }
+#timeline-panel { min-height: 0; border-top: 1px solid var(--line); background: #0d1420; display: grid; grid-template-rows: 40px minmax(0, 1fr) 24px; }
+#timeline-toolbar { display: grid; grid-template-columns: 260px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 5px 12px; border-bottom: 1px solid #1e2a40; box-sizing: border-box; }
+#timeline-title-group { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+#timeline-title { font-size: 12px; font-weight: 650; color: #dce7ff; white-space: nowrap; }
+#timeline-readout { color: var(--muted); font: 11px ui-monospace, monospace; white-space: nowrap; }
+#timeline-hint { color: var(--muted); font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #timeline-controls { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
+#transport-controls { display: flex; gap: 6px; align-items: center; padding-right: 8px; margin-right: 4px; border-right: 1px solid #26334d; }
+#frame-input { width: 82px; font-family: ui-monospace, monospace; }
 #timeline-scroll { min-height: 0; overflow: auto hidden; }
 #timeline { position: relative; min-width: 900px; height: 100%; background: #08101b; user-select: none; }
 #frame-ruler { position: absolute; left: 120px; right: 16px; top: 0; height: 28px; border-bottom: 1px solid #23304a; }
@@ -247,7 +255,7 @@ const playheadLabel = document.getElementById('playhead-label');
 const recentSelect = document.getElementById('recent');
 function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
 function $(id) { return document.getElementById(id); }
-function esc(value) { return String(value ?? '').replace(/[&<>\"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch])); }
+function esc(value) { return String(value ?? '').replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch])); }
 function attr(value) { return esc(value).replace(/'/g, '&#39;'); }
 function copyButton(value, label='Copy') { return `<button class="copy-btn ghost" data-copy="${attr(value ?? '')}">${label}</button>`; }
 function wireCopyButtons(root=document) {
@@ -279,6 +287,15 @@ function xToFrame(clientX) {
 }
 function selectedAnchor() { return state?.selected_anchor || null; }
 function statusClass(status) { return String(status || 'bound').replace(/[^a-zA-Z0-9_-]/g, '_'); }
+function shortAnchor(anchor) {
+  if (!anchor) return '-';
+  const body = anchor.body || 'anchor';
+  return `${body} · ${anchor.start_frame ?? '-'}-${anchor.end_frame ?? '-'}`;
+}
+function vectorShort(value) {
+  if (!Array.isArray(value)) return '';
+  return value.map(v => Number(v).toFixed(3)).join(', ');
+}
 async function api(path, body) {
   const res = await fetch(path, {method: body ? 'POST' : 'GET', headers: {'Content-Type': 'application/json'}, body: body ? JSON.stringify(body) : undefined});
   state = await res.json();
@@ -314,14 +331,18 @@ function updateChrome() {
   if (!state) return;
   const frameText = `${state.current_frame} / ${Math.max(0, state.n_frames - 1)}`;
   $('frame-chip').textContent = `frame ${frameText}`;
+  $('timeline-readout').textContent = frameText;
   $('frame-input').value = state.current_frame;
   $('play').textContent = state.playing ? 'Pause' : 'Play';
   $('motion-title').textContent = state.motion_name || '-';
   $('pending-chip').textContent = `pending ${state.pending_edit_count || 0}`;
+  const failed = state.binding_counts?.failed_count || 0;
+  $('failed-chip').textContent = `failed ${failed}`;
+  $('failed-chip').style.display = failed ? 'inline-block' : 'none';
   $('status-left').textContent = state.last_error ? `Error: ${state.last_error}` : (state.last_message || 'Ready');
-  $('status-right').textContent = `frame ${frameText} | selected ${state.selected_anchor_id || '-'} | pending ${state.pending_edit_count || 0} | failed ${state.binding_counts?.failed_count || 0}`;
+  $('status-right').textContent = `frame ${frameText} | selected ${shortAnchor(selectedAnchor())} | pending ${state.pending_edit_count || 0} | failed ${failed}`;
   $('viewport-frame').textContent = frameText;
-  $('viewport-selected').textContent = state.selected_anchor_id || 'no anchor';
+  $('viewport-selected').textContent = shortAnchor(selectedAnchor());
 }
 function renderLeftPanel() {
   const counts = state.binding_counts || {};
@@ -346,9 +367,11 @@ function renderLeftPanel() {
     <span class="badge">bound ${counts.bound_count || 0}</span>
     <span class="badge failed">failed ${counts.failed_count || 0}</span>
     <span class="badge clamped">clamped ${counts.clamped_count || 0}</span>`;
-  const errors = [state.last_error, state.last_message].filter(Boolean);
-  $('warning-list').innerHTML = errors.length
-    ? errors.map(item => `<div class="copy-row"><pre class="text-block ${state.last_error ? 'error' : ''}">${esc(item)}</pre>${copyButton(item)}</div>`).join('')
+  const events = [];
+  if (state.last_error) events.push({kind: 'error', title: 'Error', body: state.last_error});
+  if (state.last_message) events.push({kind: 'info', title: 'Recent event', body: state.last_message});
+  $('warning-list').innerHTML = events.length
+    ? events.map(item => `<div class="event-card ${item.kind}"><div class="event-title"><span>${esc(item.title)}</span>${copyButton(item.body)}</div><div class="event-meta" title="${attr(item.body)}">${esc(item.body)}</div></div>`).join('')
     : '<div class="muted">No warnings.</div>';
   wireCopyButtons($('left-panel'));
 }
@@ -363,8 +386,8 @@ function renderInspector() {
   const duration = Math.max(0, (anchor.end_frame || 0) - (anchor.start_frame || 0) + 1);
   $('selected-anchor-card').innerHTML = `<h3>Selected Anchor <span class="status-badge ${statusClass(anchor.status)}">${esc(anchor.status)}</span></h3>
     <div class="kv">
+      <div class="key">label</div><div class="value" title="${esc(anchor.anchor_id)}">${esc(shortAnchor(anchor))}</div>
       <div class="key">id</div><div class="copy-row"><div class="value copyable" title="${esc(anchor.anchor_id)}">${esc(anchor.anchor_id)}</div>${copyButton(anchor.anchor_id)}</div>
-      <div class="key">body</div><div class="value">${esc(anchor.body)}</div>
       <div class="key">frames</div><div class="value">${anchor.start_frame} -> ${anchor.end_frame}</div>
       <div class="key">duration</div><div class="value">${duration} frames</div>
     </div>`;
@@ -381,10 +404,10 @@ function renderInspector() {
   $('edit-card').innerHTML = `<h3>Edit</h3>
     <div class="kv">
       ${edit.delta_world ? `
-        <div class="key">old</div><div class="copy-row"><div class="value copyable" title="${esc(JSON.stringify(edit.old_world_position || anchor.world_position || []))}">${esc(JSON.stringify(edit.old_world_position || '-'))}</div>${copyButton(JSON.stringify(edit.old_world_position || anchor.world_position || []))}</div>
-        <div class="key">new</div><div class="copy-row"><div class="value copyable" title="${esc(JSON.stringify(edit.new_world_position || []))}">${esc(JSON.stringify(edit.new_world_position || '-'))}</div>${copyButton(JSON.stringify(edit.new_world_position || []))}</div>
-        <div class="key">delta</div><div class="copy-row"><div class="value copyable">${esc(JSON.stringify(edit.delta_world))}</div>${copyButton(JSON.stringify(edit.delta_world))}</div>
-        <div class="key">tangent</div><div class="copy-row"><div class="value copyable">${esc(JSON.stringify(edit.tangent_delta || []))}</div>${copyButton(JSON.stringify(edit.tangent_delta || []))}</div>
+        <div class="key">old</div><div class="copy-row"><div class="value copyable" title="${esc(JSON.stringify(edit.old_world_position || anchor.world_position || []))}">${esc(vectorShort(edit.old_world_position || anchor.world_position || []))}</div>${copyButton(JSON.stringify(edit.old_world_position || anchor.world_position || []))}</div>
+        <div class="key">new</div><div class="copy-row"><div class="value copyable" title="${esc(JSON.stringify(edit.new_world_position || []))}">${esc(vectorShort(edit.new_world_position || []))}</div>${copyButton(JSON.stringify(edit.new_world_position || []))}</div>
+        <div class="key">delta</div><div class="copy-row"><div class="value copyable" title="${esc(JSON.stringify(edit.delta_world))}">${esc(vectorShort(edit.delta_world))}</div>${copyButton(JSON.stringify(edit.delta_world))}</div>
+        <div class="key">tangent</div><div class="copy-row"><div class="value copyable" title="${esc(JSON.stringify(edit.tangent_delta || []))}">${esc(vectorShort(edit.tangent_delta || []))}</div>${copyButton(JSON.stringify(edit.tangent_delta || []))}</div>
         <div class="key">mode</div><div class="value">${esc(edit.constraint_mode || '-')}</div>
       ` : '<div class="key">status</div><div class="value muted">No edit applied yet.</div>'}
     </div>`;
@@ -392,14 +415,16 @@ function renderInspector() {
 }
 function renderGenerationCard() {
   const gen = state.generation || {};
+  const disabledReason = state.pending_edit_count ? 'Save or validate pending edits before generation.' : 'Generation is controlled by the backend panel for now.';
   $('generation-card').innerHTML = `<h3>Generation</h3>
     <div class="stack">
       <div class="kv">
         <div class="key">solver</div><div class="value">ik_subprocess</div>
         <div class="key">mesh</div><div class="value">configured in backend</div>
         <div class="key">status</div><div class="copy-row"><div class="value copyable" title="${esc(gen.last_error || gen.last_output_motion || 'idle')}">${esc(gen.last_error || gen.last_output_motion || 'idle')}</div>${copyButton(gen.last_error || gen.last_output_motion || '')}</div>
+        <div class="key">ready</div><div class="value muted">${esc(disabledReason)}</div>
       </div>
-      <button id="generate-disabled" class="primary" disabled title="Use the Viser-side Generate button for now.">Generate</button>
+      <button id="generate-disabled" class="primary" disabled title="${esc(disabledReason)}">Generate</button>
     </div>`;
   wireCopyButtons($('generation-card'));
 }
@@ -523,15 +548,9 @@ def _timeline_html(*, viser_url: str) -> str:
 <div id="app">
   <header id="appbar">
     <div id="brand"><div id="title">Motion Edit</div><div id="motion-title"></div></div>
-    <div id="transport">
-      <button id="prev" class="ghost">Prev</button>
-      <button id="play" class="primary">Play</button>
-      <button id="next" class="ghost">Next</button>
-      <input id="frame-input" type="number" min="0" value="0" />
-      <span id="frame-chip">frame -</span>
-    </div>
     <div id="app-actions">
       <span id="pending-chip">pending 0</span>
+      <span id="failed-chip">failed 0</span>
       <button id="discard" class="danger">Discard</button>
       <button id="generate-top" class="primary" disabled title="Generation is shown in the inspector; current backend button remains in Viser fallback.">Generate</button>
     </div>
@@ -541,7 +560,7 @@ def _timeline_html(*, viser_url: str) -> str:
       <section class="card"><h3>Motion</h3><div class="stack"><select id="recent" class="full"></select><button id="load-motion" class="primary">Load Motion...</button><div class="muted">Opens the local motion file picker.</div></div></section>
       <section class="card"><h3>Layers</h3><div id="layer-summary"></div></section>
       <section class="card"><h3>Filters</h3><div class="stack"><button class="ghost" disabled>Filters coming next</button><div id="binding-summary" class="row"></div></div></section>
-      <section class="card"><h3>Warnings</h3><div id="warning-list"></div></section>
+      <section class="card"><h3>Events / Warnings</h3><div id="warning-list"></div></section>
     </aside>
     <section id="viewer-panel">
       <iframe id="viewer"></iframe>
@@ -556,9 +575,16 @@ def _timeline_html(*, viser_url: str) -> str:
   </main>
   <section id="timeline-panel">
     <div id="timeline-toolbar">
-      <div id="timeline-title">Contact Sequencer</div>
-      <div class="muted">Click blocks to select. Drag empty timeline to scrub.</div>
+      <div id="timeline-title-group"><div id="timeline-title">Contact Sequencer</div><div id="timeline-readout">-</div></div>
+      <div id="timeline-hint">Click blocks to select. Drag empty timeline to scrub.</div>
       <div id="timeline-controls">
+        <div id="transport-controls">
+          <button id="prev" class="ghost">Prev</button>
+          <button id="play" class="primary">Play</button>
+          <button id="next" class="ghost">Next</button>
+          <input id="frame-input" type="number" min="0" value="0" />
+          <span id="frame-chip">frame -</span>
+        </div>
         <button id="snap-selected" class="ghost">Snap selected</button>
         <button id="prev-anchor" class="ghost">Prev anchor</button>
         <button id="next-anchor" class="ghost">Next anchor</button>
