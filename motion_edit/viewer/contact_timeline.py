@@ -237,7 +237,6 @@ let pendingFrame = null;
 let pendingFrameTimer = null;
 let lastFramePostMs = 0;
 let framePostInFlight = false;
-let zoom = 1.0;
 const FRAME_POST_INTERVAL_MS = 50;
 const timeline = document.getElementById('timeline');
 const timelineScroll = document.getElementById('timeline-scroll');
@@ -268,7 +267,7 @@ function wireCopyButtons(root=document) {
     };
   });
 }
-function railWidth() { return Math.max(1, (timeline.clientWidth - 136) * zoom); }
+function railWidth() { return Math.max(1, timeline.clientWidth - 136); }
 function railLeft() { return 120; }
 function frameToX(frame) { return railLeft() + (frame / Math.max(1, state.n_frames - 1)) * railWidth(); }
 function xToFrame(clientX) {
@@ -415,7 +414,7 @@ function bodyOrder(body) {
 }
 function renderTimeline() {
   const bodies = [...(state.bodies || [])].sort((a, b) => bodyOrder(a) - bodyOrder(b) || String(a).localeCompare(String(b)));
-  const minWidth = Math.max(900, railLeft() + 16 + railWidth());
+  const minWidth = Math.max(900, timelineScroll.clientWidth);
   timeline.style.width = `${minWidth}px`;
   for (const el of [...timeline.querySelectorAll('.track-header,.track-line,.anchorBlock,.tick,.minorTick')]) el.remove();
   const majorCount = 8;
@@ -478,14 +477,10 @@ timeline.addEventListener('pointerdown', event => { dragging = true; timeline.se
 timeline.addEventListener('pointermove', event => { if (dragging) scrub(event); });
 timeline.addEventListener('pointerup', event => { if (dragging) scrub(event, true); dragging = false; });
 timeline.addEventListener('pointercancel', event => { if (dragging) scrub(event, true); dragging = false; });
-timeline.addEventListener('wheel', event => { if (!event.ctrlKey && !event.metaKey) return; event.preventDefault(); zoom = clamp(zoom * (event.deltaY < 0 ? 1.18 : 0.85), 0.45, 5); renderTimeline(); }, {passive: false});
 $('play').onclick = () => api('/api/play', {playing: !state.playing});
 $('prev').onclick = () => api('/api/frame', {frame: state.current_frame - 1});
 $('next').onclick = () => api('/api/frame', {frame: state.current_frame + 1});
 $('frame-input').onchange = () => api('/api/frame', {frame: Number($('frame-input').value || 0)});
-$('fit').onclick = () => { zoom = 1.0; renderTimeline(); };
-$('zoom-out').onclick = () => { zoom = clamp(zoom * 0.8, 0.45, 5); renderTimeline(); };
-$('zoom-in').onclick = () => { zoom = clamp(zoom * 1.25, 0.45, 5); renderTimeline(); };
 $('snap-selected').onclick = () => { const a = selectedAnchor(); if (a) api('/api/frame', {frame: a.start_frame}); };
 $('prev-anchor').onclick = () => selectRelativeAnchor(-1);
 $('next-anchor').onclick = () => selectRelativeAnchor(1);
@@ -560,9 +555,6 @@ def _timeline_html(*, viser_url: str) -> str:
       <div id="timeline-title">Contact Sequencer</div>
       <div class="muted">Click blocks to select. Drag empty timeline to scrub.</div>
       <div id="timeline-controls">
-        <button id="fit" class="ghost">Fit</button>
-        <button id="zoom-out" class="ghost">-</button>
-        <button id="zoom-in" class="ghost">+</button>
         <button id="snap-selected" class="ghost">Snap selected</button>
         <button id="prev-anchor" class="ghost">Prev anchor</button>
         <button id="next-anchor" class="ghost">Next anchor</button>
