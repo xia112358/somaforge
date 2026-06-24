@@ -216,7 +216,8 @@ button:disabled { opacity: .48; cursor: default; }
 #timeline-readout { color: var(--muted); font: 11px ui-monospace, monospace; white-space: nowrap; }
 #timeline-hint { color: var(--muted); font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #timeline-controls { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
-#transport-controls { display: flex; gap: 6px; align-items: center; }
+#transport-controls { display: flex; gap: 6px; align-items: center; padding-right: 8px; margin-right: 4px; border-right: 1px solid #26334d; }
+#anchor-nav-controls { display: flex; gap: 6px; align-items: center; }
 #frame-input { width: 82px; font-family: ui-monospace, monospace; }
 #timeline-scroll { min-height: 0; overflow: auto hidden; }
 #timeline { position: relative; min-width: 900px; height: 100%; background: #08101b; user-select: none; }
@@ -549,14 +550,21 @@ timeline.addEventListener('pointermove', event => { if (dragging) scrub(event); 
 timeline.addEventListener('pointerup', event => { if (dragging) scrub(event, true); dragging = false; syncPlaybackAnimation(); });
 timeline.addEventListener('pointercancel', event => { if (dragging) scrub(event, true); dragging = false; syncPlaybackAnimation(); });
 $('play').onclick = () => api('/api/play', {playing: !state.playing});
-$('prev').onclick = () => api('/api/frame', {frame: shownFrame() - 1});
-$('next').onclick = () => api('/api/frame', {frame: shownFrame() + 1});
 $('frame-input').onchange = () => api('/api/frame', {frame: Number($('frame-input').value || 0)});
 $('snap-selected').onclick = () => { const a = selectedAnchor(); if (a) api('/api/frame', {frame: a.start_frame}); };
+$('prev-anchor').onclick = () => selectRelativeAnchor(-1);
+$('next-anchor').onclick = () => selectRelativeAnchor(1);
 $('generate-top').onclick = () => api('/api/generate', {});
 recentSelect.onchange = () => api('/api/open_recent', {index: Number(recentSelect.value || 0)});
 $('load-motion').onclick = () => api('/api/load_motion', {});
 $('discard').onclick = () => api('/api/discard', {});
+function selectRelativeAnchor(offset) {
+  if (!state?.anchors?.length) return;
+  const ids = state.anchors.map(a => a.anchor_id);
+  const current = Math.max(0, ids.indexOf(state.selected_anchor_id));
+  const next = state.anchors[(current + offset + state.anchors.length) % state.anchors.length];
+  api('/api/select_anchor', {anchor_id: next.anchor_id, frame: next.start_frame});
+}
 window.addEventListener('keydown', event => {
   if (!state) return;
   if (event.code === 'Space') { event.preventDefault(); api('/api/play', {playing: !state.playing}); }
@@ -613,13 +621,15 @@ def _timeline_html(*, viser_url: str) -> str:
       <div id="timeline-hint">Click blocks to select. Drag empty timeline to scrub.</div>
       <div id="timeline-controls">
         <div id="transport-controls">
-          <button id="prev" class="ghost">Prev</button>
           <button id="play" class="primary">Play</button>
-          <button id="next" class="ghost">Next</button>
           <input id="frame-input" type="number" min="0" value="0" />
           <span id="frame-chip">frame -</span>
         </div>
-        <button id="snap-selected" class="ghost">Snap selected</button>
+        <div id="anchor-nav-controls">
+          <button id="snap-selected" class="ghost">Snap selected</button>
+          <button id="prev-anchor" class="ghost">Prev anchor</button>
+          <button id="next-anchor" class="ghost">Next anchor</button>
+        </div>
       </div>
     </div>
     <div id="timeline-scroll"><div id="timeline"><div id="frame-ruler"></div><div id="track-area"></div><div id="playhead"></div><div id="playhead-label"></div></div></div>
