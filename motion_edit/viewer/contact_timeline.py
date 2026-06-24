@@ -42,16 +42,14 @@ def contact_timeline_state(
     graph = controller.graph()
     n_frames = playback.n_frames if playback is not None else max((anchor.end_frame for anchor in graph.anchors), default=0) + 1
     current_frame = playback.frame() if playback is not None else 0
-    anchors = []
-    bodies: list[str] = []
-    status_counts: dict[str, int] = {}
-    selected_anchor: dict[str, Any] | None = None
     pending_edits = controller.pending_edits()
+    bodies: list[str] = []
+    anchors: list[dict[str, Any]] = []
+    selected_anchor: dict[str, Any] | None = None
+    status_counts: dict[str, int] = {}
 
     def _edit_value(edit: Any, key: str) -> Any:
-        if isinstance(edit, dict):
-            return edit.get(key)
-        return getattr(edit, key, None)
+        return edit.get(key) if isinstance(edit, dict) else getattr(edit, key, None)
 
     def _latest_edit(anchor_id: str) -> dict[str, Any] | None:
         for edit in reversed(pending_edits):
@@ -76,8 +74,6 @@ def contact_timeline_state(
             status = str(obj.get("status") or status)
             if anchor.anchor_id == controller.selected_anchor_id:
                 status = "selected"
-        warnings = obj.get("warnings", []) if isinstance(obj, dict) else []
-        latest_edit = _latest_edit(anchor.anchor_id)
         item = {
             "anchor_id": anchor.anchor_id,
             "body": anchor.body,
@@ -92,26 +88,27 @@ def contact_timeline_state(
             "surface_binding_source": anchor.surface_binding_source,
             "failure_reason": anchor.metadata.get("surface_binding_failure_reason"),
             "status": status,
-            "warnings": warnings,
-            "latest_edit": latest_edit,
+            "warnings": obj.get("warnings", []) if isinstance(obj, dict) else [],
+            "latest_edit": _latest_edit(anchor.anchor_id),
             "color": _body_color_hex(anchor.body),
         }
         status_counts[status] = status_counts.get(status, 0) + 1
         anchors.append(item)
         if anchor.anchor_id == controller.selected_anchor_id:
             selected_anchor = item
-    current_motion_name = motion_name
+
     session = getattr(getattr(controller, "state", None), "session", None)
+    current_motion_name = motion_name
+    layer_info: dict[str, str] = {}
     if session is not None:
         current_motion_name = str(getattr(session, "motion_path", motion_name)).split("/")[-1]
-    layer_info = {}
-    if session is not None:
         layer_info = {
             "contact_layer": str(getattr(session, "contact_layer", "") or ""),
             "output_contact_layer": str(getattr(session, "output_contact_layer", "") or ""),
             "edit_plan_path": str(getattr(session, "edit_plan_path", "") or ""),
             "session_dir": str(getattr(session, "session_dir", "") or ""),
         }
+
     generation = getattr(getattr(controller, "state", None), "generation", None)
     generation_info = {
         "running": bool(getattr(generation, "running", False)) if generation is not None else False,
@@ -127,7 +124,7 @@ def contact_timeline_state(
         "current_frame": current_frame,
         "playing": bool(playback.playing["value"]) if playback is not None else False,
         "selected_anchor_id": controller.selected_anchor_id,
-        "pending_edit_count": len(controller.pending_edits()),
+        "pending_edit_count": len(pending_edits),
         "last_message": controller.state.last_message,
         "last_error": controller.state.last_error,
         "recent_motions": controller.recent_motion_items() if hasattr(controller, "recent_motion_items") else [],
@@ -154,7 +151,6 @@ def _editor_shell_css() -> str:
   --bg: #070a10;
   --panel: #101723;
   --panel-2: #0b111b;
-  --panel-3: #151d2b;
   --line: #27344d;
   --muted: #8fa1c3;
   --text: #e7edf9;
@@ -164,13 +160,13 @@ def _editor_shell_css() -> str:
   --orange: #ffad5c;
 }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: Inter, system-ui, sans-serif; overflow: hidden; }
-#app { height: 100%; display: grid; grid-template-rows: 34px minmax(0, 1fr) 260px; background: var(--bg); }
+#app { height: 100%; display: grid; grid-template-rows: 34px minmax(0, 1fr) 240px; background: var(--bg); }
 #appbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 0 10px; border-bottom: 1px solid var(--line); background: #0d1420; box-sizing: border-box; }
 #brand { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
 #title { font-size: 15px; font-weight: 700; white-space: nowrap; }
 #motion-title { color: var(--muted); font: 12px ui-monospace, monospace; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; user-select: text; }
 #app-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; min-width: 0; }
-#frame-chip, #pending-chip, #failed-chip { border: 1px solid var(--line); border-radius: 999px; background: #121b2a; color: #cdd9f0; padding: 4px 8px; font: 12px ui-monospace, monospace; white-space: nowrap; }
+#pending-chip, #failed-chip { border: 1px solid var(--line); border-radius: 999px; background: #121b2a; color: #cdd9f0; padding: 4px 8px; font: 12px ui-monospace, monospace; white-space: nowrap; }
 #pending-chip { border-color: rgba(255, 212, 95, .45); color: var(--accent); }
 #failed-chip { display: none; border-color: rgba(255, 107, 114, .55); color: var(--red); }
 #main { min-height: 0; display: grid; grid-template-columns: 260px minmax(0, 1fr) 340px; background: #05070c; }
@@ -178,7 +174,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 #inspector-panel { border-right: 0; border-left: 1px solid var(--line); }
 #viewer-panel { position: relative; min-width: 0; min-height: 0; background: #05070c; overflow: hidden; }
 #viewer { width: calc(100% + 250px); height: 100%; border: 0; background: #05070c; }
-.viewport-hud { position: absolute; left: 12px; top: 10px; display: flex; gap: 8px; pointer-events: none; opacity: .78; }
+.viewport-hud { position: absolute; left: 12px; top: 10px; display: flex; gap: 8px; pointer-events: none; opacity: .72; }
 .badge, .status-badge { border: 1px solid var(--line); border-radius: 999px; background: rgba(16, 23, 35, .88); color: #d7e2f5; padding: 2px 7px; font-size: 11px; white-space: nowrap; }
 .status-badge.edited { border-color: rgba(126, 224, 140, .65); color: var(--green); }
 .status-badge.failed, .badge.failed { border-color: rgba(255, 107, 114, .7); color: var(--red); }
@@ -192,12 +188,16 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 .copy-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
 .copy-btn { height: 21px; padding: 0 6px; font-size: 10px; border-radius: 4px; opacity: 0; transition: opacity .12s ease; }
 .copy-row:hover .copy-btn, .card:hover .copy-btn, .copy-btn:focus { opacity: .75; }
-.text-block { margin: 0; max-height: 96px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; font: 11px ui-monospace, monospace; color: #c8d5ee; }
 .event-card { border: 1px solid #25324b; border-radius: 6px; background: #0e1624; padding: 7px; display: grid; gap: 3px; }
 .event-title { font-size: 12px; color: #dce7ff; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .event-meta { color: var(--muted); font: 11px ui-monospace, monospace; overflow-wrap: anywhere; line-height: 1.35; }
+.mini-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.mini-stat { border: 1px solid #25324b; border-radius: 6px; background: #0e1624; padding: 5px 7px; }
+.mini-stat-label { color: var(--muted); font-size: 10px; }
+.mini-stat-value { color: #dce7ff; font: 12px ui-monospace, monospace; }
+.mini-stat.failed .mini-stat-value { color: var(--red); }
+.mini-stat.clamped .mini-stat-value { color: var(--orange); }
 .muted { color: var(--muted); }
-.warn { color: var(--orange); }
 .error { color: var(--red); }
 select, button, input { height: 28px; border: 1px solid #34415f; border-radius: 5px; background: #111a29; color: #dce7ff; padding: 0 8px; box-sizing: border-box; }
 button { cursor: pointer; }
@@ -207,14 +207,12 @@ button.ghost { background: #121927; }
 button:disabled { opacity: .48; cursor: default; }
 .stack { display: grid; gap: 7px; }
 .row { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; min-width: 0; }
-.row > * { min-width: 0; }
 .full { width: 100%; }
-#timeline-panel { min-height: 0; border-top: 1px solid var(--line); background: #0d1420; display: grid; grid-template-rows: 40px minmax(0, 1fr) 24px; }
-#timeline-toolbar { display: grid; grid-template-columns: 245px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 5px 12px; border-bottom: 1px solid #1e2a40; box-sizing: border-box; }
+#timeline-panel { min-height: 0; border-top: 1px solid var(--line); background: #0d1420; display: grid; grid-template-rows: 36px minmax(0, 1fr) 24px; }
+#timeline-toolbar { display: grid; grid-template-columns: 245px minmax(0, 1fr); gap: 10px; align-items: center; padding: 4px 12px; border-bottom: 1px solid #1e2a40; box-sizing: border-box; }
 #timeline-title-group { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 #timeline-title { font-size: 12px; font-weight: 650; color: #dce7ff; white-space: nowrap; }
 #timeline-readout { color: var(--muted); font: 11px ui-monospace, monospace; white-space: nowrap; }
-#timeline-hint { color: var(--muted); font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #timeline-controls { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
 #transport-controls { display: flex; gap: 6px; align-items: center; padding-right: 8px; margin-right: 4px; border-right: 1px solid #26334d; }
 #anchor-nav-controls { display: flex; gap: 6px; align-items: center; }
@@ -295,8 +293,7 @@ function selectedAnchor() { return state?.selected_anchor || null; }
 function statusClass(status) { return String(status || 'bound').replace(/[^a-zA-Z0-9_-]/g, '_'); }
 function shortAnchor(anchor) {
   if (!anchor) return '-';
-  const body = anchor.body || 'anchor';
-  return `${body} · ${anchor.start_frame ?? '-'}-${anchor.end_frame ?? '-'}`;
+  return `${anchor.body || 'anchor'} · ${anchor.start_frame ?? '-'}-${anchor.end_frame ?? '-'}`;
 }
 function vectorShort(value) {
   if (!Array.isArray(value)) return '';
@@ -306,9 +303,7 @@ function eventFromMessage(message, kind='info') {
   const text = String(message || '');
   const body = (text.match(/anchor_(left_foot|right_foot|left_hand|right_hand)|\b(left_foot|right_foot|left_hand|right_hand)\b/) || []).find(Boolean) || 'anchor';
   const delta = text.match(/delta=\[([^\]]+)\]/);
-  if (text.startsWith('moved ')) {
-    return {kind, title: `Moved ${body}`, body: delta ? `delta=(${delta[1]})` : text};
-  }
+  if (text.startsWith('moved ')) return {kind, title: `Moved ${body}`, body: delta ? `delta=(${delta[1]})` : text};
   return {kind, title: kind === 'error' ? 'Error' : 'Event', body: text};
 }
 function canGenerate() {
@@ -376,7 +371,6 @@ function updateChrome() {
   const frameText = `${shownFrame()} / ${Math.max(0, state.n_frames - 1)}`;
   const gen = state.generation || {};
   const ready = canGenerate();
-  $('frame-chip').textContent = `frame ${frameText}`;
   $('timeline-readout').textContent = frameText;
   $('frame-input').value = shownFrame();
   $('play').textContent = state.playing ? 'Pause' : 'Play';
@@ -385,9 +379,10 @@ function updateChrome() {
   const failed = state.binding_counts?.failed_count || 0;
   $('failed-chip').textContent = `failed ${failed}`;
   $('failed-chip').style.display = failed ? 'inline-block' : 'none';
-  $('status-left').textContent = state.last_error ? `Error: ${state.last_error}` : (state.last_message || 'Ready');
-  $('status-right').textContent = `frame ${frameText} | selected ${shortAnchor(selectedAnchor())} | pending ${state.pending_edit_count || 0} | failed ${failed}`;
-  $('viewport-frame').textContent = frameText;
+  const hint = 'Click blocks to select · drag empty timeline to scrub';
+  const message = state.last_message && state.last_message !== 'Ready' ? state.last_message : hint;
+  $('status-left').textContent = state.last_error ? `Error: ${state.last_error}` : message;
+  $('status-right').textContent = `selected ${shortAnchor(selectedAnchor())} | pending ${state.pending_edit_count || 0} | failed ${failed}`;
   $('viewport-selected').textContent = shortAnchor(selectedAnchor());
   $('generate-top').disabled = !ready;
   $('generate-top').textContent = gen.running ? 'Generating...' : 'Generate';
@@ -412,10 +407,12 @@ function renderLeftPanel() {
       <div class="key">session</div><div class="copy-row"><div class="value copyable" title="${esc(layers.session_dir)}">${esc(layers.session_dir || '-')}</div>${copyButton(layers.session_dir)}</div>
     </div>`;
   $('binding-summary').innerHTML = `
-    <span class="badge">anchors ${counts.anchor_count || 0}</span>
-    <span class="badge">bound ${counts.bound_count || 0}</span>
-    <span class="badge failed">failed ${counts.failed_count || 0}</span>
-    <span class="badge clamped">clamped ${counts.clamped_count || 0}</span>`;
+    <div class="mini-stats">
+      <div class="mini-stat"><div class="mini-stat-label">anchors</div><div class="mini-stat-value">${counts.anchor_count || 0}</div></div>
+      <div class="mini-stat"><div class="mini-stat-label">bound</div><div class="mini-stat-value">${counts.bound_count || 0}</div></div>
+      <div class="mini-stat failed"><div class="mini-stat-label">failed</div><div class="mini-stat-value">${counts.failed_count || 0}</div></div>
+      <div class="mini-stat clamped"><div class="mini-stat-label">clamped</div><div class="mini-stat-value">${counts.clamped_count || 0}</div></div>
+    </div>`;
   const events = [];
   if (state.last_error) events.push(eventFromMessage(state.last_error, 'error'));
   if (state.last_message) events.push(eventFromMessage(state.last_message, 'info'));
@@ -442,6 +439,7 @@ function renderInspector() {
   $('surface-card').innerHTML = `<h3>Surface Binding</h3>
     <div class="kv">
       <div class="key">surface</div><div class="copy-row"><div class="value copyable" title="${esc(anchor.surface_id)}">${esc(anchor.surface_id || '-')}</div>${copyButton(anchor.surface_id)}</div>
+      <div class="key">object</div><div class="copy-row"><div class="value copyable" title="${esc(anchor.object_id)}">${esc(anchor.object_id || '-')}</div>${copyButton(anchor.object_id)}</div>
       ${anchor.failure_reason ? `<div class="key">failure</div><div class="copy-row"><div class="value copyable">${esc(anchor.failure_reason)}</div>${copyButton(anchor.failure_reason)}</div>` : ''}
     </div>`;
   const edit = anchor.latest_edit || {};
@@ -457,17 +455,14 @@ function renderInspector() {
 function renderGenerationCard() {
   const gen = state.generation || {};
   const ready = canGenerate();
-  const disabledReason = gen.running ? 'Generation is running.' : (ready ? 'Ready to generate from the current edit plan.' : 'No editable contact plan is loaded.');
+  const status = gen.running ? 'running' : (gen.last_error ? 'failed' : (gen.last_output_motion ? 'done' : 'idle'));
+  const readyText = gen.running ? 'running' : (ready ? 'yes' : 'no');
   $('generation-card').innerHTML = `<h3>Generation</h3>
-    <div class="stack">
-      <div class="kv">
-        <div class="key">solver</div><div class="value">ik_subprocess</div>
-        <div class="key">status</div><div class="copy-row"><div class="value copyable" title="${esc(gen.last_error || gen.last_output_motion || 'idle')}">${esc(gen.running ? 'running' : (gen.last_error || gen.last_output_motion || 'idle'))}</div>${copyButton(gen.last_error || gen.last_output_motion || '')}</div>
-        <div class="key">ready</div><div class="value muted">${esc(disabledReason)}</div>
-      </div>
-      <button id="generate-run" class="primary" ${ready ? '' : 'disabled'} title="${esc(disabledReason)}">${gen.running ? 'Generating...' : 'Generate'}</button>
+    <div class="kv">
+      <div class="key">solver</div><div class="value">ik_subprocess</div>
+      <div class="key">status</div><div class="copy-row"><div class="value copyable" title="${esc(gen.last_error || gen.last_output_motion || status)}">${esc(status)}</div>${copyButton(gen.last_error || gen.last_output_motion || '')}</div>
+      <div class="key">ready</div><div class="value muted">${esc(readyText)}</div>
     </div>`;
-  $('generate-run').onclick = () => api('/api/generate', {});
   wireCopyButtons($('generation-card'));
 }
 function updatePlayhead() {
@@ -601,12 +596,12 @@ def _timeline_html(*, viser_url: str) -> str:
     <aside id="left-panel">
       <section class="card"><h3>Motion</h3><div class="stack"><select id="recent" class="full"></select><button id="load-motion" class="primary">Load Motion...</button><div class="muted">Opens the local motion file picker.</div></div></section>
       <section class="card"><h3>Layers</h3><div id="layer-summary"></div></section>
-      <section class="card"><h3>Filters</h3><div class="stack"><button class="ghost" disabled>Filters coming next</button><div id="binding-summary" class="row"></div></div></section>
+      <section class="card"><h3>Binding</h3><div id="binding-summary"></div></section>
       <section class="card"><h3>Events / Warnings</h3><div id="warning-list"></div></section>
     </aside>
     <section id="viewer-panel">
       <iframe id="viewer"></iframe>
-      <div class="viewport-hud"><span id="viewport-frame" class="badge">-</span><span id="viewport-selected" class="badge">no anchor</span></div>
+      <div class="viewport-hud"><span id="viewport-selected" class="badge">no anchor</span></div>
     </section>
     <aside id="inspector-panel">
       <section id="selected-anchor-card" class="card"></section>
@@ -618,12 +613,10 @@ def _timeline_html(*, viser_url: str) -> str:
   <section id="timeline-panel">
     <div id="timeline-toolbar">
       <div id="timeline-title-group"><div id="timeline-title">Contact Sequencer</div><div id="timeline-readout">-</div></div>
-      <div id="timeline-hint">Click blocks to select. Drag empty timeline to scrub.</div>
       <div id="timeline-controls">
         <div id="transport-controls">
           <button id="play" class="primary">Play</button>
           <input id="frame-input" type="number" min="0" value="0" />
-          <span id="frame-chip">frame -</span>
         </div>
         <div id="anchor-nav-controls">
           <button id="snap-selected" class="ghost">Snap selected</button>
@@ -794,8 +787,6 @@ def start_contact_timeline_wrapper(
                     controller.select_anchor(anchor_id)
                     if playback is not None and "frame" in body:
                         playback.set_frame(int(body["frame"]))
-                elif path == "/api/frame" and playback is None:
-                    pass
                 elif path == "/api/save":
                     controller.save()
                 elif path == "/api/generate":
