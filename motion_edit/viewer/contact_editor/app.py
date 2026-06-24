@@ -64,6 +64,17 @@ BODY_COLORS: dict[str, tuple[int, int, int]] = {
     "right_knee": (90, 220, 220),
 }
 
+FOOT_PATCH_ROLE_COLORS: dict[str, tuple[int, int, int]] = {
+    "toe": (255, 185, 70),
+    "heel": (105, 175, 255),
+}
+
+FOOT_PATCH_ROLE_RADII: dict[str, float] = {
+    "toe": 0.032,
+    "heel": 0.04,
+    "sole": 0.052,
+}
+
 
 def _port_is_available(port: int, *, host: str = "127.0.0.1") -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -342,9 +353,11 @@ class SurfaceEditorController:
             return "No anchor selected."
         warnings = anchor.get("warnings") or []
         coords = anchor.get("surface_coordinates") or record.surface_coordinates or {}
+        patch_role = record.metadata.get("patch_role") or anchor.get("patch_role") or "-"
         lines = [
             f"anchor_id: {record.anchor_id}",
             f"body: {record.body}",
+            f"patch_role: {patch_role}",
             f"frames: {record.start_frame} -> {record.end_frame}",
             f"surface_id: {record.surface_id}",
             f"object_id: {record.object_id}",
@@ -1741,6 +1754,9 @@ def _anchor_color(obj: dict[str, Any]) -> tuple[int, int, int]:
     status = str(obj.get("status", ""))
     if status in STATUS_COLOR_OVERRIDES:
         return _color(status)
+    role = str(obj.get("patch_role") or "").lower()
+    if role in FOOT_PATCH_ROLE_COLORS:
+        return FOOT_PATCH_ROLE_COLORS[role]
     explicit = obj.get("color")
     if isinstance(explicit, list) and len(explicit) == 3:
         return tuple(int(value) for value in explicit)
@@ -1751,6 +1767,11 @@ def _anchor_color(obj: dict[str, Any]) -> tuple[int, int, int]:
     return _color(status)
 
 
+def _anchor_patch_radius(record: ContactAnchorRecord) -> float:
+    role = str(record.metadata.get("patch_role") or "").lower()
+    return FOOT_PATCH_ROLE_RADII.get(role, 0.045)
+
+
 def _remove_handles(handles: list[Any]) -> None:
     for handle in handles:
         remove = getattr(handle, "remove", None)
@@ -1758,9 +1779,16 @@ def _remove_handles(handles: list[Any]) -> None:
             remove()
 
 
-def _anchor_patch_mesh(record: ContactAnchorRecord, *, radius: float = 0.045, normal_offset: float = 0.002, segments: int = 24) -> tuple[np.ndarray, np.ndarray] | None:
+def _anchor_patch_mesh(
+    record: ContactAnchorRecord,
+    *,
+    radius: float | None = None,
+    normal_offset: float = 0.002,
+    segments: int = 24,
+) -> tuple[np.ndarray, np.ndarray] | None:
     if record.world_position is None or record.surface_tangent_u is None or record.surface_tangent_v is None:
         return None
+    radius = _anchor_patch_radius(record) if radius is None else radius
     center = np.asarray(record.world_position, dtype=float)
     tangent_u = np.asarray(record.surface_tangent_u, dtype=float)
     tangent_v = np.asarray(record.surface_tangent_v, dtype=float)

@@ -1832,6 +1832,14 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertEqual(left, (60, 140, 255))
         self.assertEqual(right, (255, 120, 65))
         self.assertEqual(suspicious, (255, 120, 95))
+        self.assertEqual(
+            _anchor_color({"type": "anchor_point", "body": "left_foot", "patch_role": "toe", "status": "bound"}),
+            (255, 185, 70),
+        )
+        self.assertEqual(
+            _anchor_color({"type": "anchor_point", "body": "left_foot", "patch_role": "heel", "status": "bound"}),
+            (105, 175, 255),
+        )
 
     def test_setup_layer_name_from_path_uses_layers_relative_name(self) -> None:
         layer_file = Path("data/layers/contact/example/motion_a.jsonl")

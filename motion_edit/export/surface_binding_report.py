@@ -103,9 +103,11 @@ def _anchor_status(anchor: ContactAnchorRecord) -> str:
 def _anchor_report(anchor: ContactAnchorRecord) -> dict[str, Any]:
     binding = _latest_binding(anchor)
     status = _anchor_status(anchor)
+    patch_role = anchor.metadata.get("patch_role")
     return {
         "anchor_id": anchor.anchor_id,
         "body": anchor.body,
+        "patch_role": patch_role,
         "start_frame": anchor.start_frame,
         "end_frame": anchor.end_frame,
         "world_position": anchor.world_position,
@@ -232,11 +234,15 @@ def _anchor_overlay_objects(anchor: ContactAnchorRecord) -> list[dict[str, Any]]
     status = _anchor_status(anchor)
     binding = _latest_binding(anchor)
     position = anchor.world_position
+    patch_role = anchor.metadata.get("patch_role")
     objects = [
         {
             "type": "anchor_point",
             "anchor_id": anchor.anchor_id,
             "body": anchor.body,
+            "patch_role": patch_role,
+            "start_frame": anchor.start_frame,
+            "end_frame": anchor.end_frame,
             "position": position,
             "surface_id": anchor.surface_id,
             "status": status,
