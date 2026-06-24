@@ -934,6 +934,7 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertIn("id=\"inspector-panel\"", html)
         self.assertIn("id=\"timeline-panel\"", html)
         self.assertIn("id=\"frame-ruler\"", html)
+        self.assertIn("id=\"status-bar\"", html)
         self.assertIn("track-header", html)
         self.assertIn("id=\"playhead\"", html)
         self.assertIn("id=\"selected-anchor-card\"", html)

@@ -169,7 +169,8 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 #motion-title { color: var(--muted); font: 12px ui-monospace, monospace; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; user-select: text; }
 #transport, #app-actions { display: flex; gap: 8px; align-items: center; justify-content: center; min-width: 0; }
 #app-actions { justify-content: flex-end; }
-#frame-chip, #pending-chip { border: 1px solid var(--line); border-radius: 5px; background: #121b2a; color: #cdd9f0; padding: 5px 8px; font: 12px ui-monospace, monospace; white-space: nowrap; }
+#frame-chip, #pending-chip { border: 1px solid var(--line); border-radius: 999px; background: #121b2a; color: #cdd9f0; padding: 4px 8px; font: 12px ui-monospace, monospace; white-space: nowrap; }
+#pending-chip { border-color: rgba(255, 212, 95, .45); color: var(--accent); }
 #main { min-height: 0; display: grid; grid-template-columns: 260px minmax(0, 1fr) 340px; background: #05070c; }
 #left-panel, #inspector-panel { min-width: 0; overflow: auto; background: var(--panel); border-right: 1px solid var(--line); padding: 10px; box-sizing: border-box; }
 #inspector-panel { border-right: 0; border-left: 1px solid var(--line); }
@@ -181,13 +182,14 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 .status-badge.failed { border-color: rgba(255, 107, 114, .7); color: var(--red); }
 .status-badge.clamped, .status-badge.suspicious { border-color: rgba(255, 173, 92, .75); color: var(--orange); }
 .card { border: 1px solid var(--line); border-radius: 7px; background: var(--panel-2); padding: 10px; margin-bottom: 10px; }
-.card h3 { margin: 0 0 8px; font-size: 12px; letter-spacing: 0; color: #dbe6fa; }
-.kv { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 5px 8px; font: 12px ui-monospace, monospace; color: #c5d1e8; }
+.card h3 { margin: 0 0 8px; font-size: 12px; letter-spacing: 0; color: #dbe6fa; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.kv { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 6px 8px; font: 12px Inter, system-ui, sans-serif; color: #c5d1e8; }
 .kv .key { color: var(--muted); }
-.kv .value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kv .value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, monospace; }
 .copyable { user-select: text; cursor: text; }
 .copy-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
-.copy-btn { height: 22px; padding: 0 7px; font-size: 11px; border-radius: 4px; }
+.copy-btn { height: 21px; padding: 0 6px; font-size: 10px; border-radius: 4px; opacity: 0; transition: opacity .12s ease; }
+.copy-row:hover .copy-btn, .card:hover .copy-btn, .copy-btn:focus { opacity: .75; }
 .text-block { margin: 0; max-height: 96px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; font: 11px ui-monospace, monospace; color: #c8d5ee; }
 .muted { color: var(--muted); }
 .warn { color: var(--orange); }
@@ -202,27 +204,27 @@ button:disabled { opacity: .48; cursor: default; }
 .row { display: flex; gap: 8px; align-items: center; min-width: 0; }
 .row > * { min-width: 0; }
 .full { width: 100%; }
-#timeline-panel { min-height: 0; border-top: 1px solid var(--line); background: #0d1420; display: grid; grid-template-rows: 36px minmax(0, 1fr) 24px; }
-#timeline-toolbar { display: grid; grid-template-columns: 240px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px 12px; border-bottom: 1px solid #1e2a40; box-sizing: border-box; }
+#timeline-panel { min-height: 0; border-top: 1px solid var(--line); background: #0d1420; display: grid; grid-template-rows: 34px minmax(0, 1fr) 24px; }
+#timeline-toolbar { display: grid; grid-template-columns: 220px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 5px 12px; border-bottom: 1px solid #1e2a40; box-sizing: border-box; }
 #timeline-title { font-size: 12px; font-weight: 650; color: #dce7ff; }
 #timeline-controls { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
 #timeline-scroll { min-height: 0; overflow: auto hidden; }
 #timeline { position: relative; min-width: 900px; height: 100%; background: #08101b; user-select: none; }
 #frame-ruler { position: absolute; left: 120px; right: 16px; top: 0; height: 28px; border-bottom: 1px solid #23304a; }
 #track-area { position: absolute; left: 0; right: 0; top: 28px; bottom: 0; }
-#playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); z-index: 8; box-shadow: 0 0 0 1px rgba(255, 212, 95, .18); }
+#playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); z-index: 8; box-shadow: 0 0 0 1px rgba(255, 212, 95, .24), 0 0 12px rgba(255, 212, 95, .18); }
 #playhead-label { position: absolute; top: 2px; transform: translateX(-50%); background: #231e0b; color: var(--accent); border: 1px solid rgba(255, 212, 95, .38); border-radius: 4px; padding: 1px 5px; font: 10px ui-monospace, monospace; z-index: 9; }
-.track-header { position: absolute; left: 0; width: 112px; height: 24px; padding: 5px 8px 0 0; box-sizing: border-box; text-align: right; color: #aab8d6; font: 11px ui-monospace, monospace; border-right: 1px solid #23304a; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.track-header { position: absolute; left: 0; width: 112px; height: 24px; padding: 5px 8px 0 0; box-sizing: border-box; text-align: right; color: #aab8d6; font: 11px ui-monospace, monospace; border-right: 1px solid #23304a; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; background: #08101b; z-index: 5; }
 .track-line { position: absolute; left: 120px; right: 16px; height: 1px; background: rgba(64, 78, 112, .35); }
-.anchorBlock { position: absolute; height: 17px; border-radius: 4px; opacity: .78; cursor: pointer; border: 1px solid rgba(255,255,255,.2); box-sizing: border-box; }
+.anchorBlock { position: absolute; height: 17px; border-radius: 4px; opacity: .72; cursor: pointer; border: 1px solid rgba(255,255,255,.18); box-sizing: border-box; }
 .anchorBlock:hover { opacity: 1; transform: translateY(-1px); }
-.anchorBlock.selected { opacity: 1; border-color: #ffe083; box-shadow: 0 0 0 2px rgba(255, 211, 90, .26); }
-.anchorBlock.edited { border-color: var(--green); }
+.anchorBlock.selected { opacity: 1; border-color: #ffe083; box-shadow: 0 0 0 2px rgba(255, 211, 90, .42); z-index: 6; }
+.anchorBlock.edited { border-color: var(--green); box-shadow: inset 0 -3px 0 rgba(126, 224, 140, .9); }
 .anchorBlock.failed { border-color: var(--red); background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.18) 0 4px, transparent 4px 8px); }
-.anchorBlock.clamped, .anchorBlock.suspicious { border-color: var(--orange); }
+.anchorBlock.clamped, .anchorBlock.suspicious { border-color: var(--orange); box-shadow: inset 0 -3px 0 rgba(255, 173, 92, .9); }
 .tick { position: absolute; top: 6px; color: #7184a8; font: 10px ui-monospace, monospace; transform: translateX(-50%); }
 .minorTick { position: absolute; top: 18px; width: 1px; height: 8px; background: rgba(113, 132, 168, .45); }
-#statusbar { display: flex; align-items: center; justify-content: space-between; padding: 0 12px; border-top: 1px solid #1e2a40; color: #9fb0d0; font: 11px ui-monospace, monospace; overflow: hidden; }
+#status-bar { display: flex; align-items: center; justify-content: space-between; padding: 0 12px; border-top: 1px solid #1e2a40; color: #9fb0d0; font: 11px ui-monospace, monospace; overflow: hidden; }
 #status-left, #status-right { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; user-select: text; }
 """
 
@@ -316,8 +318,8 @@ function updateChrome() {
   $('play').textContent = state.playing ? 'Pause' : 'Play';
   $('motion-title').textContent = state.motion_name || '-';
   $('pending-chip').textContent = `pending ${state.pending_edit_count || 0}`;
-  $('status-left').textContent = state.last_error || state.last_message || 'Ready';
-  $('status-right').textContent = `frame ${frameText} | selected ${state.selected_anchor_id || '-'} | failed ${state.binding_counts?.failed_count || 0}`;
+  $('status-left').textContent = state.last_error ? `Error: ${state.last_error}` : (state.last_message || 'Ready');
+  $('status-right').textContent = `frame ${frameText} | selected ${state.selected_anchor_id || '-'} | pending ${state.pending_edit_count || 0} | failed ${state.binding_counts?.failed_count || 0}`;
   $('viewport-frame').textContent = frameText;
   $('viewport-selected').textContent = state.selected_anchor_id || 'no anchor';
 }
@@ -378,11 +380,13 @@ function renderInspector() {
   const edit = anchor.latest_edit || {};
   $('edit-card').innerHTML = `<h3>Edit</h3>
     <div class="kv">
-      <div class="key">old</div><div class="copy-row"><div class="value copyable" title="${esc(JSON.stringify(edit.old_world_position || anchor.world_position || []))}">${esc(JSON.stringify(edit.old_world_position || '-'))}</div>${copyButton(JSON.stringify(edit.old_world_position || anchor.world_position || []))}</div>
-      <div class="key">new</div><div class="copy-row"><div class="value copyable" title="${esc(JSON.stringify(edit.new_world_position || []))}">${esc(JSON.stringify(edit.new_world_position || '-'))}</div>${copyButton(JSON.stringify(edit.new_world_position || []))}</div>
-      <div class="key">delta</div><div class="copy-row"><div class="value copyable">${esc(JSON.stringify(edit.delta_world || '-'))}</div>${copyButton(JSON.stringify(edit.delta_world || ''))}</div>
-      <div class="key">tangent</div><div class="copy-row"><div class="value copyable">${esc(JSON.stringify(edit.tangent_delta || '-'))}</div>${copyButton(JSON.stringify(edit.tangent_delta || ''))}</div>
-      <div class="key">mode</div><div class="value">${esc(edit.constraint_mode || '-')}</div>
+      ${edit.delta_world ? `
+        <div class="key">old</div><div class="copy-row"><div class="value copyable" title="${esc(JSON.stringify(edit.old_world_position || anchor.world_position || []))}">${esc(JSON.stringify(edit.old_world_position || '-'))}</div>${copyButton(JSON.stringify(edit.old_world_position || anchor.world_position || []))}</div>
+        <div class="key">new</div><div class="copy-row"><div class="value copyable" title="${esc(JSON.stringify(edit.new_world_position || []))}">${esc(JSON.stringify(edit.new_world_position || '-'))}</div>${copyButton(JSON.stringify(edit.new_world_position || []))}</div>
+        <div class="key">delta</div><div class="copy-row"><div class="value copyable">${esc(JSON.stringify(edit.delta_world))}</div>${copyButton(JSON.stringify(edit.delta_world))}</div>
+        <div class="key">tangent</div><div class="copy-row"><div class="value copyable">${esc(JSON.stringify(edit.tangent_delta || []))}</div>${copyButton(JSON.stringify(edit.tangent_delta || []))}</div>
+        <div class="key">mode</div><div class="value">${esc(edit.constraint_mode || '-')}</div>
+      ` : '<div class="key">status</div><div class="value muted">No edit applied yet.</div>'}
     </div>`;
   wireCopyButtons($('inspector-panel'));
 }
@@ -536,7 +540,7 @@ def _timeline_html(*, viser_url: str) -> str:
     <aside id="left-panel">
       <section class="card"><h3>Motion</h3><div class="stack"><select id="recent" class="full"></select><button id="load-motion" class="primary">Load Motion...</button><div class="muted">Opens the local motion file picker.</div></div></section>
       <section class="card"><h3>Layers</h3><div id="layer-summary"></div></section>
-      <section class="card"><h3>Filters</h3><div class="stack"><button class="ghost" disabled>Body/status filters in next pass</button><div id="binding-summary" class="row"></div></div></section>
+      <section class="card"><h3>Filters</h3><div class="stack"><button class="ghost" disabled>Filters coming next</button><div id="binding-summary" class="row"></div></div></section>
       <section class="card"><h3>Warnings</h3><div id="warning-list"></div></section>
     </aside>
     <section id="viewer-panel">
@@ -561,7 +565,7 @@ def _timeline_html(*, viser_url: str) -> str:
       </div>
     </div>
     <div id="timeline-scroll"><div id="timeline"><div id="frame-ruler"></div><div id="track-area"></div><div id="playhead"></div><div id="playhead-label"></div></div></div>
-    <div id="statusbar"><div id="status-left">Ready</div><div id="status-right"></div></div>
+    <div id="status-bar"><div id="status-left">Ready</div><div id="status-right"></div></div>
   </section>
 </div>
 <script>{script}</script>
