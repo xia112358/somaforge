@@ -1640,6 +1640,71 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         np.testing.assert_allclose(moved.world_position, [0.2, 0.0, 0.0])
         self.assertEqual(len(pending), 1)
 
+    def test_surface_editor_render_defaults_to_current_frame_anchors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            anchors = [
+                ContactAnchorRecord(
+                    motion_id="motion_a",
+                    anchor_id="active",
+                    body="left_foot",
+                    start_frame=0,
+                    end_frame=2,
+                    world_position=[0.0, 0.0, 0.0],
+                    surface_id="top",
+                    surface_normal=[0.0, 0.0, 1.0],
+                    surface_origin=[0.0, 0.0, 0.0],
+                    surface_tangent_u=[1.0, 0.0, 0.0],
+                    surface_tangent_v=[0.0, 1.0, 0.0],
+                    surface_bounds={"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+                    surface_coordinates={"u": 0.0, "v": 0.0},
+                ),
+                ContactAnchorRecord(
+                    motion_id="motion_a",
+                    anchor_id="inactive",
+                    body="left_foot",
+                    start_frame=5,
+                    end_frame=7,
+                    world_position=[0.2, 0.0, 0.0],
+                    surface_id="top",
+                    surface_normal=[0.0, 0.0, 1.0],
+                    surface_origin=[0.0, 0.0, 0.0],
+                    surface_tangent_u=[1.0, 0.0, 0.0],
+                    surface_tangent_v=[0.0, 1.0, 0.0],
+                    surface_bounds={"u": [-1.0, 1.0], "v": [-1.0, 1.0]},
+                    surface_coordinates={"u": 0.2, "v": 0.0},
+                ),
+            ]
+            graph = type(contact_graph_from_masks(motion_id="motion_a", contact_mask=None))(motion_id="motion_a", anchors=anchors)
+            write_contact_layer(root / "layers" / "contact" / "bound", graph)
+            session = prepare_surface_editor_session(
+                motion_path=str(root / "motion_a.npz"),
+                motion_id="motion_a",
+                contact_layer="contact/bound",
+                surface_catalog=None,
+                session_name="surface_current_frame",
+                layers_root=root / "layers",
+                workbench_root=root / "workbench",
+            )
+            state = load_editor_state(session.session_dir / "session.json")
+            overlay = load_surface_overlay(session.overlay_path)
+            server = _FakeServer()
+            controller = SurfaceEditorController.create(server, state)
+            controller.current_frame_getter = lambda: 1
+            controller.selected_anchor_id = "active"
+
+            _render_overlay(server, overlay, selected_anchor_id="active", controller=controller, edit_mode="direct")
+            rendered = "\n".join(server.scene.handles)
+            self.assertIn("active_patch", rendered)
+            self.assertNotIn("inactive_patch", rendered)
+
+            server = _FakeServer()
+            controller.show_all_anchors = True
+            _render_overlay(server, overlay, selected_anchor_id="active", controller=controller, edit_mode="direct")
+            rendered = "\n".join(server.scene.handles)
+            self.assertIn("active_patch", rendered)
+            self.assertIn("inactive_patch", rendered)
+
     def test_surface_editor_drag_update_does_not_commit_or_rerender(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

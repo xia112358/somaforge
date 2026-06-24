@@ -114,6 +114,7 @@ class MotionPlaybackController:
     frame_slider: Any
     frame_text: Any
     stop_callback: Any | None = None
+    frame_change_callback: Any | None = None
 
     def frame(self) -> int:
         return int(np.clip(round(float(self.current_frame["value"])), 0, max(0, self.n_frames - 1)))
@@ -124,6 +125,8 @@ class MotionPlaybackController:
         self.frame_slider.value = next_frame
         self.apply_frame(next_frame)
         self.frame_text.value = f"{next_frame} / {max(0, self.n_frames - 1)}"
+        if callable(self.frame_change_callback):
+            self.frame_change_callback(next_frame)
 
     def step(self, amount: int) -> None:
         self.set_frame(self.frame() + int(amount))
@@ -210,9 +213,11 @@ class SurfaceEditorController:
     timeline_port: int = 8094
     default_mode: str = "reject"
     show_only: str = "all"
+    show_all_anchors: bool = False
     fps: int = 50
     robot_urdf: str | None = None
     terrain_urdf: str | None = None
+    _last_anchor_render_frame: int | None = None
 
     @classmethod
     def create(cls, server: Any, state: SurfaceOverlayEditorState) -> "SurfaceEditorController":
@@ -538,6 +543,8 @@ class SurfaceEditorController:
 
     def reload_overlay(self) -> dict[str, Any]:
         self.state.render_generation += 1
+        if callable(self.current_frame_getter):
+            self._last_anchor_render_frame = int(self.current_frame_getter())
         self.last_overlay = load_surface_overlay(self.state.overlay_path)
         if self.server is not None:
             _remove_handles(self.render_handles)
@@ -550,6 +557,33 @@ class SurfaceEditorController:
                 edit_mode=self.edit_mode,
             )
         return self.last_overlay
+
+    def should_render_anchor(self, anchor_id: str, obj: dict[str, Any]) -> bool:
+        if self.show_all_anchors:
+            return True
+        if self.selected_anchor_id and anchor_id == self.selected_anchor_id:
+            return True
+        if not callable(self.current_frame_getter):
+            return True
+        current_frame = int(self.current_frame_getter())
+        start = obj.get("start_frame")
+        end = obj.get("end_frame")
+        if start is None or end is None:
+            record = self._anchor_record(anchor_id)
+            if record is None:
+                return True
+            start, end = record.start_frame, record.end_frame
+        return int(start) <= current_frame <= int(end)
+
+    def on_frame_changed(self, frame: int) -> None:
+        if self.show_all_anchors:
+            return
+        next_frame = int(frame)
+        if self._last_anchor_render_frame == next_frame:
+            return
+        self.reload_overlay()
+        if callable(self.on_change):
+            self.on_change()
 
     def recent_motion_items(self) -> list[dict[str, Any]]:
         items = read_recent_motions()
@@ -1550,12 +1584,20 @@ def _add_loaded_editor_sidebar(
     status_refs["status"] = status
 
     with server.gui.add_folder("Contact Anchor"):
+        show_all_anchors = server.gui.add_checkbox("show all anchors", initial_value=controller.show_all_anchors)
         selected_anchor = server.gui.add_text("anchor_id", initial_value=controller.selected_anchor_id or "")
         selected_anchor.disabled = True
         anchor_info = server.gui.add_text("info", initial_value=controller.selected_info_text(), multiline=True)
         anchor_info.disabled = True
     status_refs["selected_anchor"] = selected_anchor
     status_refs["anchor_info"] = anchor_info
+
+    @show_all_anchors.on_update
+    def _(_) -> None:
+        controller.show_all_anchors = bool(show_all_anchors.value)
+        controller.reload_overlay()
+        _set_status("showing all anchors" if controller.show_all_anchors else "showing anchors active at current frame")
+        _refresh_info()
 
     defaults = _default_generation_outputs(controller.state.session)
     with server.gui.add_folder("Augmentation"):
@@ -1859,6 +1901,8 @@ def _render_overlay(
         elif obj_type == "anchor_point":
             color = _anchor_color(obj)
             anchor_id = str(obj.get("anchor_id", ""))
+            if controller is not None and not controller.should_render_anchor(anchor_id, obj):
+                continue
             anchor_name = _safe_name(anchor_id or "anchor")
             record = controller._anchor_record(anchor_id) if controller is not None else None
             original_record = controller._original_anchor_record(anchor_id) if controller is not None else None
@@ -2105,6 +2149,8 @@ def _add_motion_playback(
         current_frame["value"] = float(frame)
         _apply_frame(frame)
         frame_text.value = f"{frame} / {max(0, n_frames - 1)}"
+        if callable(playback.frame_change_callback):
+            playback.frame_change_callback(frame)
 
     @play_btn.on_click
     def _(_) -> None:
@@ -2139,6 +2185,8 @@ def _add_motion_playback(
             frame_slider.value = frame
             _apply_frame(frame)
             frame_text.value = f"{frame} / {max(0, n_frames - 1)}"
+            if callable(playback.frame_change_callback):
+                playback.frame_change_callback(frame)
             time.sleep(0.01)
 
     _apply_frame(0)
@@ -2210,6 +2258,7 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
         )
         motion_handles.extend(playback_handles)
         motion_handles.extend(_add_motion_root_path(server, qpos))
+        next_playback.frame_change_callback = controller.on_frame_changed
         playback_slot.replace(next_playback)
         return int(fps_hint or motion_fps)
 
@@ -2323,6 +2372,9 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
         )
         motion_handles.extend(playback_handles)
         motion_handles.extend(_add_motion_root_path(server, qpos))
+        active_controller = controller_box.get("controller")
+        if active_controller is not None:
+            next_playback.frame_change_callback = active_controller.on_frame_changed
         playback_slot.replace(next_playback)
         return int(fps_hint or motion_fps)
 
@@ -2388,6 +2440,8 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
         controller.fps = motion_fps
         controller.robot_urdf = str(robot_urdf) if robot_urdf.exists() else None
         controller.terrain_urdf = str(object_urdf) if object_urdf and config.with_terrain else None
+        if playback_slot.current is not None:
+            playback_slot.current.frame_change_callback = controller.on_frame_changed
 
         def _reload_entry_in_process(entry: RecentMotionEntry) -> None:
             next_config = _contact_editor_config_from_recent_entry(entry)
@@ -2405,6 +2459,8 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
             controller.redo_stack.clear()
             controller.terrain_urdf = str(next_object_urdf) if next_object_urdf and next_config.with_terrain else None
             controller.fps = next_fps
+            if playback_slot.current is not None:
+                playback_slot.current.frame_change_callback = controller.on_frame_changed
             controller.selected_anchor_id = controller.default_anchor_id()
             controller.state.selected_anchor_id = controller.selected_anchor_id
             controller.state.last_message = f"loaded motion: {Path(next_config.motion).name}"
