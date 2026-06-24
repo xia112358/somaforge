@@ -460,6 +460,7 @@ $('snap-selected').onclick = () => { const a = selectedAnchor(); if (a) api('/ap
 $('prev-anchor').onclick = () => selectRelativeAnchor(-1);
 $('next-anchor').onclick = () => selectRelativeAnchor(1);
 recentSelect.onchange = () => api('/api/open_recent', {index: Number(recentSelect.value || 0)});
+$('load-motion').onclick = () => api('/api/load_motion', {});
 $('discard').onclick = () => api('/api/discard', {});
 function selectRelativeAnchor(offset) {
   if (!state?.anchors?.length) return;
@@ -508,7 +509,7 @@ def _timeline_html(*, viser_url: str) -> str:
   </header>
   <main id="main">
     <aside id="left-panel">
-      <section class="card"><h3>Motion</h3><div class="stack"><select id="recent" class="full"></select><div class="muted">Use the Contact Editor Load panel for new files.</div></div></section>
+      <section class="card"><h3>Motion</h3><div class="stack"><select id="recent" class="full"></select><button id="load-motion" class="primary">Load Motion...</button><div class="muted">Opens the local motion file picker.</div></div></section>
       <section class="card"><h3>Layers</h3><div id="layer-summary"></div></section>
       <section class="card"><h3>Filters</h3><div class="stack"><button class="ghost" disabled>Body/status filters in next pass</button><div id="binding-summary" class="row"></div></div></section>
       <section class="card"><h3>Warnings</h3><div id="warning-list"></div></section>
@@ -605,6 +606,11 @@ def start_contact_timeline_wrapper(
                     controller.discard()
                 elif path == "/api/open_recent":
                     controller.open_recent_motion(int(body.get("index", 0)))
+                elif path == "/api/load_motion":
+                    if hasattr(controller, "open_load_dialog"):
+                        controller.open_load_dialog()
+                    else:
+                        controller.state.last_error = "load dialog is unavailable in this editor mode"
                 elif path == "/api/open_latest":
                     controller.open_latest_motion()
                 elif path == "/api/reload_motion":

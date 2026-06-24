@@ -940,6 +940,8 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertIn("id=\"generation-card\"", html)
         self.assertIn("/api/select_anchor", html)
         self.assertIn("/api/open_recent", html)
+        self.assertIn("/api/load_motion", html)
+        self.assertIn("id=\"load-motion\"", html)
         self.assertIn("recentSelect.onchange", html)
         self.assertNotIn("openRecent", html)
         self.assertNotIn("openLatest", html)
@@ -1181,6 +1183,16 @@ class SurfaceEditorSessionTests(unittest.TestCase):
             shell.open_recent_motion(0)
 
         self.assertEqual(loaded, [entry])
+        self.assertIsNone(shell.state.last_error)
+
+    def test_contact_editor_shell_load_dialog_callback(self) -> None:
+        called: list[bool] = []
+        shell = ContactEditorShellController()
+        shell.load_dialog_callback = lambda: called.append(True)
+
+        shell.open_load_dialog()
+
+        self.assertEqual(called, [True])
         self.assertIsNone(shell.state.last_error)
 
     def test_generated_recent_entry_preserves_source_motion_id_for_contact_lookup(self) -> None:

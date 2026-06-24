@@ -631,6 +631,7 @@ class ContactEditorShellController:
     state: _ShellState | SurfaceOverlayEditorState = field(default_factory=_ShellState)
     selected_anchor_id: str | None = None
     load_recent_callback: Any = None
+    load_dialog_callback: Any = None
 
     def set_current(self, controller: SurfaceEditorController) -> None:
         self.current = controller
@@ -708,6 +709,15 @@ class ContactEditorShellController:
 
     def open_latest_motion(self) -> None:
         self.open_recent_motion(0)
+
+    def open_load_dialog(self) -> None:
+        if callable(self.load_dialog_callback):
+            self.load_dialog_callback()
+            if self.current is not None:
+                self.state = self.current.state
+                self.selected_anchor_id = self.current.selected_anchor_id
+            return
+        self.state.last_error = "load dialog is unavailable in this editor mode"
 
     def reload_current_motion(self) -> None:
         if self.current is None:
@@ -2131,7 +2141,7 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
     _require_available_port(shell_port, label="contact editor shell")
     server = viser.ViserServer(port=viewer_port)
     _assert_viser_port(server, viewer_port)
-    server.gui.configure_theme(control_layout="fixed", control_width="large", dark_mode=True, show_logo=False, show_share_button=False)
+    server.gui.configure_theme(control_layout="collapsible", control_width="small", dark_mode=True, show_logo=False, show_share_button=False)
     server.scene.add_grid("/grid", width=8.0, height=8.0, position=(0.0, 0.0, 0.0))
 
     playback_slot = ReloadablePlayback()
@@ -2253,7 +2263,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
     _require_available_port(shell_port, label="contact editor shell")
     server = viser.ViserServer(port=viewer_port)
     _assert_viser_port(server, viewer_port)
-    server.gui.configure_theme(control_layout="fixed", control_width="large", dark_mode=True, show_logo=False, show_share_button=False)
+    server.gui.configure_theme(control_layout="collapsible", control_width="small", dark_mode=True, show_logo=False, show_share_button=False)
     server.scene.add_grid("/grid", width=8.0, height=8.0, position=(0.0, 0.0, 0.0))
     playback_slot = ReloadablePlayback()
     motion_handles: list[Any] = []
@@ -2420,7 +2430,6 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
             f"editor=http://localhost:{shell_port}"
         )
         _remove_setup_details()
-        _add_loaded_editor_sidebar(server, controller=controller, args=args, playback=playback_slot)
         controller_box["controller"] = controller
         shell_controller.set_current(controller)
         print(
@@ -2500,8 +2509,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
         else:
             raise ValueError(f"unknown load type: {selected_type}")
 
-    @browse_btn.on_click
-    def _(_) -> None:
+    def _open_load_dialog(_) -> None:
         try:
             selected_type = "Motion"
             selected = _filtered_open_file_dialog(
@@ -2516,6 +2524,9 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
         except Exception as exc:
             print(f"[contact editor setup] browse failed: {exc}", file=sys.stderr)
             _set_status(f"browse failed: {exc}")
+
+    browse_btn.on_click(_open_load_dialog)
+    shell_controller.load_dialog_callback = lambda: _open_load_dialog(None)
 
     @load_btn.on_click
     def _(_) -> None:
