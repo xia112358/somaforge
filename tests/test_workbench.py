@@ -176,6 +176,10 @@ class _FakeFolder:
     def __exit__(self, *_args):
         return False
 
+    def remove(self) -> None:
+        if self.name in self.gui.folders:
+            self.gui.folders.remove(self.name)
+
 
 class _FakeGui:
     def __init__(self) -> None:
@@ -923,7 +927,8 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertIn("/api/open_recent", html)
         self.assertIn("recentSelect.onchange", html)
         self.assertNotIn("openRecent", html)
-        self.assertIn("openLatest", html)
+        self.assertNotIn("openLatest", html)
+        self.assertNotIn("reloadMotion", html)
         self.assertIn("anchorBlock", html)
         self.assertIn("#bottom", html)
 

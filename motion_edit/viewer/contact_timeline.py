@@ -129,8 +129,6 @@ button.danger {{ background: #67212a; border-color: #a33a45; }}
         <button id="prev">Prev</button>
         <button id="next">Next</button>
         <select id="recent"></select>
-        <button id="openLatest">Open latest</button>
-        <button id="reloadMotion">Reload</button>
         <button id="discard" class="danger">Discard</button>
       </div>
     </div>
@@ -283,8 +281,6 @@ document.getElementById('play').onclick = () => api('/api/play', {{playing: !sta
 document.getElementById('prev').onclick = () => api('/api/frame', {{frame: state.current_frame - 1}});
 document.getElementById('next').onclick = () => api('/api/frame', {{frame: state.current_frame + 1}});
 recentSelect.onchange = () => api('/api/open_recent', {{index: Number(recentSelect.value || 0)}});
-document.getElementById('openLatest').onclick = () => api('/api/open_latest', {{}});
-document.getElementById('reloadMotion').onclick = () => api('/api/reload_motion', {{}});
 document.getElementById('discard').onclick = () => api('/api/discard', {{}});
 window.addEventListener('keydown', event => {{
   if (!state) return;

@@ -2295,27 +2295,41 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
         playback_slot.replace(next_playback)
         return int(fps_hint or motion_fps)
 
-    with server.gui.add_folder("Load"):
+    setup_gui_handles: list[Any] = []
+
+    def _setup_folder(name: str) -> Any:
+        handle = server.gui.add_folder(name)
+        setup_gui_handles.append(handle)
+        return handle
+
+    def _remove_setup_gui() -> None:
+        while setup_gui_handles:
+            handle = setup_gui_handles.pop()
+            remove = getattr(handle, "remove", None)
+            if callable(remove):
+                remove()
+
+    with _setup_folder("Load"):
         load_type = server.gui.add_dropdown("load_type", options=SETUP_LOAD_TYPES, initial_value=SETUP_LOAD_TYPES[0])
         browse_btn = server.gui.add_button("Load selected type...")
         save_type = server.gui.add_dropdown("save_type", options=SETUP_SAVE_TYPES, initial_value=SETUP_SAVE_TYPES[0])
         save_as_btn = server.gui.add_button("Choose output...")
 
-    with server.gui.add_folder("Motion Bundle"):
+    with _setup_folder("Motion Bundle"):
         motion = server.gui.add_text("motion_npz", initial_value=str(args.setup_motion or ""))
         motion_id = server.gui.add_text("motion_id", initial_value=str(args.setup_motion_id or ""))
         source_contact_layer = server.gui.add_text("source_contact_layer", initial_value=str(args.setup_source_contact_layer or ""))
         terrain_urdf = server.gui.add_text("terrain_urdf", initial_value=str(args.setup_terrain_urdf or ""))
         surface_catalog = server.gui.add_text("surface_catalog", initial_value=str(args.setup_surface_catalog or ""))
 
-    with server.gui.add_folder("Session / Output"):
+    with _setup_folder("Session / Output"):
         session_name = server.gui.add_text("session_name", initial_value=str(args.setup_session_name or "contact_editor"))
         output_prefix = server.gui.add_text("output_prefix", initial_value=str(args.setup_output_prefix or ""))
         output_contact_layer = server.gui.add_text("output_contact_layer", initial_value=str(args.setup_output_contact_layer or ""))
         edit_plan = server.gui.add_text("edit_plan", initial_value=str(args.setup_edit_plan or ""))
         load_btn = server.gui.add_button("Open contact editor")
 
-    with server.gui.add_folder("Viewer"):
+    with _setup_folder("Viewer"):
         repo_root = server.gui.add_text("repo_root", initial_value=str(args.setup_repo_root or ""))
         with_terrain = server.gui.add_checkbox("show terrain", initial_value=bool(args.setup_with_terrain))
         default_mode = server.gui.add_dropdown("mode", options=("reject", "clamp"), initial_value=args.default_mode)
@@ -2325,7 +2339,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
             initial_value=args.show_only,
         )
 
-    with server.gui.add_folder("Status"):
+    with _setup_folder("Status"):
         status = server.gui.add_text("status", initial_value="Load a motion bundle, then open contact editor.", multiline=True)
 
     def _set_status(text: str) -> None:
@@ -2402,15 +2416,16 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
             )
         )
         controller.reload_overlay()
-        _add_loaded_editor_sidebar(server, controller=controller, args=args, playback=playback_slot)
-        controller_box["controller"] = controller
-        shell_controller.set_current(controller)
         status.value = (
             f"Loaded {prepared.ready_anchor_count} anchors.\n"
             f"session={prepared.session.session_dir}\n"
             f"ready_layer={prepared.ready_layer}\n"
             f"editor=http://localhost:{shell_port}"
         )
+        _remove_setup_gui()
+        _add_loaded_editor_sidebar(server, controller=controller, args=args, playback=playback_slot)
+        controller_box["controller"] = controller
+        shell_controller.set_current(controller)
         print(
             "[contact editor] loaded in-process "
             f"motion={config.motion} anchors={prepared.ready_anchor_count} "
