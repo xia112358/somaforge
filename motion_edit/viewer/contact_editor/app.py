@@ -2295,41 +2295,39 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
         playback_slot.replace(next_playback)
         return int(fps_hint or motion_fps)
 
-    setup_gui_handles: list[Any] = []
+    setup_detail_handles: list[Any] = []
 
-    def _setup_folder(name: str) -> Any:
+    def _setup_detail_folder(name: str) -> Any:
         handle = server.gui.add_folder(name)
-        setup_gui_handles.append(handle)
+        setup_detail_handles.append(handle)
         return handle
 
-    def _remove_setup_gui() -> None:
-        while setup_gui_handles:
-            handle = setup_gui_handles.pop()
+    def _remove_setup_details() -> None:
+        while setup_detail_handles:
+            handle = setup_detail_handles.pop()
             remove = getattr(handle, "remove", None)
             if callable(remove):
                 remove()
 
-    with _setup_folder("Load"):
+    with server.gui.add_folder("Load"):
         load_type = server.gui.add_dropdown("load_type", options=SETUP_LOAD_TYPES, initial_value=SETUP_LOAD_TYPES[0])
         browse_btn = server.gui.add_button("Load selected type...")
-        save_type = server.gui.add_dropdown("save_type", options=SETUP_SAVE_TYPES, initial_value=SETUP_SAVE_TYPES[0])
-        save_as_btn = server.gui.add_button("Choose output...")
 
-    with _setup_folder("Motion Bundle"):
+    with _setup_detail_folder("Motion Bundle"):
         motion = server.gui.add_text("motion_npz", initial_value=str(args.setup_motion or ""))
         motion_id = server.gui.add_text("motion_id", initial_value=str(args.setup_motion_id or ""))
         source_contact_layer = server.gui.add_text("source_contact_layer", initial_value=str(args.setup_source_contact_layer or ""))
         terrain_urdf = server.gui.add_text("terrain_urdf", initial_value=str(args.setup_terrain_urdf or ""))
         surface_catalog = server.gui.add_text("surface_catalog", initial_value=str(args.setup_surface_catalog or ""))
 
-    with _setup_folder("Session / Output"):
+    with _setup_detail_folder("Session / Output"):
         session_name = server.gui.add_text("session_name", initial_value=str(args.setup_session_name or "contact_editor"))
         output_prefix = server.gui.add_text("output_prefix", initial_value=str(args.setup_output_prefix or ""))
         output_contact_layer = server.gui.add_text("output_contact_layer", initial_value=str(args.setup_output_contact_layer or ""))
         edit_plan = server.gui.add_text("edit_plan", initial_value=str(args.setup_edit_plan or ""))
         load_btn = server.gui.add_button("Open contact editor")
 
-    with _setup_folder("Viewer"):
+    with _setup_detail_folder("Viewer"):
         repo_root = server.gui.add_text("repo_root", initial_value=str(args.setup_repo_root or ""))
         with_terrain = server.gui.add_checkbox("show terrain", initial_value=bool(args.setup_with_terrain))
         default_mode = server.gui.add_dropdown("mode", options=("reject", "clamp"), initial_value=args.default_mode)
@@ -2339,7 +2337,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
             initial_value=args.show_only,
         )
 
-    with _setup_folder("Status"):
+    with _setup_detail_folder("Status"):
         status = server.gui.add_text("status", initial_value="Load a motion bundle, then open contact editor.", multiline=True)
 
     def _set_status(text: str) -> None:
@@ -2422,7 +2420,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
             f"ready_layer={prepared.ready_layer}\n"
             f"editor=http://localhost:{shell_port}"
         )
-        _remove_setup_gui()
+        _remove_setup_details()
         _add_loaded_editor_sidebar(server, controller=controller, args=args, playback=playback_slot)
         controller_box["controller"] = controller
         shell_controller.set_current(controller)
@@ -2518,30 +2516,6 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
         except Exception as exc:
             print(f"[contact editor setup] browse failed: {exc}", file=sys.stderr)
             _set_status(f"browse failed: {exc}")
-
-    @save_as_btn.on_click
-    def _(_) -> None:
-        try:
-            selected_type = str(save_type.value)
-            config = _setup_save_dialog_config(selected_type)
-            selected = _save_file_dialog(
-                title=config["title"],
-                defaultextension=config["defaultextension"],
-                filetypes=config["filetypes"],
-                initialdir=config["initialdir"],
-            )
-            if not selected:
-                return
-            if selected_type == "Output Contact Layer":
-                output_contact_layer.value = _layer_name_from_path(selected)
-                _set_status(f"output contact layer: {output_contact_layer.value}")
-            elif selected_type == "Edit Plan":
-                edit_plan.value = selected
-                _set_status(f"edit plan: {selected}")
-            else:
-                raise ValueError(f"unknown save type: {selected_type}")
-        except Exception as exc:
-            _set_status(f"save picker failed: {exc}")
 
     @load_btn.on_click
     def _(_) -> None:
