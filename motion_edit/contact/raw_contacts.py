@@ -547,10 +547,19 @@ def estimate_heel_toe_contact_summary(
     coord = rel @ axis
     split = _largest_gap_split(coord)
     is_toe_positive = _toe_positive_for_body(anchor.body)
+    role_by_sample = np.asarray(
+        [
+            _shape_heel_toe_role(shape)
+            or ("toe" if (value > split if is_toe_positive else value < split) else "heel")
+            for value, shape in zip(coord, shape_ids)
+        ],
+        dtype=object,
+    )
     groups = {
-        "heel": coord <= split if is_toe_positive else coord >= split,
-        "toe": coord > split if is_toe_positive else coord < split,
+        "heel": role_by_sample == "heel",
+        "toe": role_by_sample == "toe",
     }
+    intervals = _foot_role_intervals(role_by_sample.tolist(), frames)
     contacts: dict[str, Any] = {}
     for name, mask in groups.items():
         if int(np.count_nonzero(mask)) == 0:
@@ -574,6 +583,7 @@ def estimate_heel_toe_contact_summary(
         "axis_split": split,
         "toe_positive": is_toe_positive,
         "sample_count": int(len(surface_points)),
+        "intervals": intervals,
         "contacts": contacts,
     }
 
@@ -605,11 +615,47 @@ def _largest_gap_split(values: np.ndarray) -> float:
     return float(0.5 * (ordered[index] + ordered[index + 1]))
 
 
+def _foot_role_intervals(sample_roles: list[str], frames: list[int]) -> list[dict[str, Any]]:
+    roles_by_frame: dict[int, set[str]] = {}
+    for role, frame in zip(sample_roles, frames):
+        roles_by_frame.setdefault(int(frame), set()).add(str(role))
+    intervals: list[dict[str, Any]] = []
+    active_role: str | None = None
+    active_start: int | None = None
+    previous_frame: int | None = None
+    for frame in sorted(roles_by_frame):
+        frame_roles = roles_by_frame[frame]
+        role = "sole" if "toe" in frame_roles and "heel" in frame_roles else next(iter(frame_roles))
+        if active_role is None:
+            active_role = role
+            active_start = frame
+        elif role != active_role or previous_frame is None or frame > previous_frame + 1:
+            intervals.append({"patch_role": active_role, "frame_start": active_start, "frame_end": int(previous_frame) + 1})
+            active_role = role
+            active_start = frame
+        previous_frame = frame
+    if active_role is not None and active_start is not None and previous_frame is not None:
+        intervals.append({"patch_role": active_role, "frame_start": active_start, "frame_end": int(previous_frame) + 1})
+    return intervals
+
+
 def _toe_positive_for_body(body: str) -> bool:
     # In the current G1 rollout convention, larger coordinate along the
     # principal foot axis corresponds to the front/toe cluster. If future
     # assets provide an explicit foot frame, this should use that frame.
     return True
+
+
+def _shape_heel_toe_role(shape_id: int) -> str | None:
+    # Current G1 foot contact spheres are ordered from heel/midfoot to toe.
+    # Raw Newton contact shape IDs are more stable than PCA sign for deciding
+    # whether a short foot subcontact is toe-first or heel-first.
+    shape = int(shape_id)
+    if shape in {43, 44, 45}:
+        return "toe"
+    if shape in {39, 40, 41, 42}:
+        return "heel"
+    return None
 
 
 def _foot_subcontact_stats(
@@ -704,13 +750,28 @@ def _subanchors_from_foot_contact_summary(
     source: str,
 ) -> list[ContactAnchorRecord]:
     out: list[ContactAnchorRecord] = []
-    for patch_role in ("toe", "heel"):
-        stats = contacts.get(patch_role)
+    intervals = anchor.metadata.get("raw_contact_position_refinement", {}).get("foot_contact_summary", {}).get("intervals")
+    if not isinstance(intervals, list):
+        intervals = []
+    if not intervals:
+        intervals = [
+            {"patch_role": role, "frame_start": stats.get("frame_start"), "frame_end": stats.get("frame_end")}
+            for role in ("toe", "heel")
+            if isinstance((stats := contacts.get(role)), dict)
+        ]
+    intervals = _smooth_foot_role_intervals(intervals, anchor_start=anchor.start_frame, anchor_end=anchor.end_frame)
+    for interval in intervals:
+        if not isinstance(interval, dict):
+            continue
+        patch_role = str(interval.get("patch_role") or "")
+        if patch_role not in {"toe", "heel", "sole"}:
+            continue
+        stats = _stats_for_patch_role(contacts, patch_role)
         if not isinstance(stats, dict):
             continue
-        start = stats.get("frame_start")
-        end = stats.get("frame_end")
-        position = stats.get("world_position")
+        start = interval.get("frame_start")
+        end = interval.get("frame_end")
+        position = _position_for_patch_role(contacts, patch_role)
         if start is None or end is None or position is None:
             continue
         start_frame = max(int(anchor.start_frame), int(start))
@@ -745,3 +806,146 @@ def _subanchors_from_foot_contact_summary(
             )
         )
     return out
+
+
+def _smooth_foot_role_intervals(
+    intervals: list[dict[str, Any]],
+    *,
+    anchor_start: int,
+    anchor_end: int,
+    min_duration: int = 3,
+    min_keep_duration: int = 2,
+    max_same_role_gap: int = 3,
+) -> list[dict[str, Any]]:
+    cleaned = []
+    for interval in intervals:
+        role = interval.get("patch_role")
+        start = interval.get("frame_start")
+        end = interval.get("frame_end")
+        if role is None or start is None or end is None:
+            continue
+        start_i = max(int(anchor_start), int(start))
+        end_i = min(int(anchor_end), int(end))
+        if end_i <= start_i:
+            continue
+        if end_i - start_i < min_keep_duration:
+            continue
+        cleaned.append({"patch_role": str(role), "frame_start": start_i, "frame_end": end_i})
+    merged: list[dict[str, Any]] = []
+    for interval in sorted(cleaned, key=lambda item: (int(item["frame_start"]), int(item["frame_end"]), str(item["patch_role"]))):
+        if (
+            merged
+            and merged[-1]["patch_role"] == interval["patch_role"]
+            and int(interval["frame_start"]) - int(merged[-1]["frame_end"]) <= max_same_role_gap
+        ):
+            merged[-1]["frame_end"] = max(int(merged[-1]["frame_end"]), int(interval["frame_end"]))
+        else:
+            merged.append(dict(interval))
+    compressed = _compress_sole_dominant_intervals(merged, min_keep_duration=min_keep_duration)
+    if compressed is not None:
+        return compressed
+    if len(merged) <= 1:
+        return merged
+    out: list[dict[str, Any]] = []
+    for index, interval in enumerate(merged):
+        duration = int(interval["frame_end"]) - int(interval["frame_start"])
+        touches_anchor_boundary = int(interval["frame_start"]) <= int(anchor_start) or int(interval["frame_end"]) >= int(anchor_end)
+        if duration >= min_duration or interval["patch_role"] == "sole" or touches_anchor_boundary:
+            out.append(interval)
+            continue
+        previous_interval = out[-1] if out else None
+        next_interval = merged[index + 1] if index + 1 < len(merged) else None
+        target = previous_interval if previous_interval is not None else None
+        if next_interval is not None and (
+            target is None
+            or int(next_interval["frame_start"]) - int(interval["frame_end"])
+            < int(interval["frame_start"]) - int(target["frame_end"])
+        ):
+            target = next_interval
+        if target is None:
+            out.append(interval)
+        elif target is previous_interval:
+            target["frame_end"] = max(int(target["frame_end"]), int(interval["frame_end"]))
+        else:
+            target["frame_start"] = min(int(target["frame_start"]), int(interval["frame_start"]))
+    return sorted(out, key=lambda item: (int(item["frame_start"]), int(item["frame_end"]), str(item["patch_role"])))
+
+
+def _compress_sole_dominant_intervals(intervals: list[dict[str, Any]], *, min_keep_duration: int) -> list[dict[str, Any]] | None:
+    sole_intervals = [item for item in intervals if item.get("patch_role") == "sole"]
+    if not sole_intervals:
+        return None
+    sole_start = min(int(item["frame_start"]) for item in sole_intervals)
+    sole_end = max(int(item["frame_end"]) for item in sole_intervals)
+    out: list[dict[str, Any]] = []
+    prefix = _dominant_nonsole_interval(intervals, end_before=sole_start)
+    if prefix is not None and int(prefix["frame_end"]) - int(prefix["frame_start"]) >= min_keep_duration:
+        out.append(prefix)
+    out.append({"patch_role": "sole", "frame_start": sole_start, "frame_end": sole_end})
+    suffix = _dominant_nonsole_interval(intervals, start_after=sole_end)
+    if suffix is not None and int(suffix["frame_end"]) - int(suffix["frame_start"]) >= min_keep_duration:
+        out.append(suffix)
+    return out
+
+
+def _dominant_nonsole_interval(
+    intervals: list[dict[str, Any]],
+    *,
+    end_before: int | None = None,
+    start_after: int | None = None,
+) -> dict[str, Any] | None:
+    selected = []
+    for item in intervals:
+        if item.get("patch_role") == "sole":
+            continue
+        start = int(item["frame_start"])
+        end = int(item["frame_end"])
+        if end_before is not None and end > end_before:
+            continue
+        if start_after is not None and start < start_after:
+            continue
+        selected.append(item)
+    if not selected:
+        return None
+    durations: dict[str, int] = {}
+    for item in selected:
+        role = str(item["patch_role"])
+        durations[role] = durations.get(role, 0) + int(item["frame_end"]) - int(item["frame_start"])
+    role = max(durations.items(), key=lambda item: item[1])[0]
+    role_items = [item for item in selected if item.get("patch_role") == role]
+    return {
+        "patch_role": role,
+        "frame_start": min(int(item["frame_start"]) for item in role_items),
+        "frame_end": max(int(item["frame_end"]) for item in role_items),
+    }
+
+
+def _stats_for_patch_role(contacts: dict[str, Any], patch_role: str) -> dict[str, Any] | None:
+    if patch_role in {"toe", "heel"}:
+        stats = contacts.get(patch_role)
+        return stats if isinstance(stats, dict) else None
+    toe = contacts.get("toe")
+    heel = contacts.get("heel")
+    if not isinstance(toe, dict) or not isinstance(heel, dict):
+        return None
+    return {
+        "name": "sole",
+        "toe": toe,
+        "heel": heel,
+        "sample_count": int(toe.get("sample_count", 0)) + int(heel.get("sample_count", 0)),
+        "confidence": min(float(toe.get("confidence", 0.0)), float(heel.get("confidence", 0.0))),
+    }
+
+
+def _position_for_patch_role(contacts: dict[str, Any], patch_role: str) -> list[float] | None:
+    if patch_role in {"toe", "heel"}:
+        stats = contacts.get(patch_role)
+        position = stats.get("world_position") if isinstance(stats, dict) else None
+        return [float(item) for item in position] if position is not None else None
+    toe = contacts.get("toe")
+    heel = contacts.get("heel")
+    toe_position = toe.get("world_position") if isinstance(toe, dict) else None
+    heel_position = heel.get("world_position") if isinstance(heel, dict) else None
+    if toe_position is None or heel_position is None:
+        return None
+    return [(float(toe_position[index]) + float(heel_position[index])) * 0.5 for index in range(3)]

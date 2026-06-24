@@ -754,10 +754,10 @@ class ContactEventTests(unittest.TestCase):
         self.assertEqual(len(split.anchors), 2)
         by_role = {anchor.metadata["patch_role"]: anchor for anchor in split.anchors}
         self.assertEqual(by_role["toe"].start_frame, 0)
-        self.assertEqual(by_role["toe"].end_frame, 4)
-        self.assertEqual(by_role["heel"].start_frame, 2)
-        self.assertEqual(by_role["heel"].end_frame, 4)
-        self.assertGreater(by_role["toe"].world_position[0], by_role["heel"].world_position[0])
+        self.assertEqual(by_role["toe"].end_frame, 2)
+        self.assertEqual(by_role["sole"].start_frame, 2)
+        self.assertEqual(by_role["sole"].end_frame, 4)
+        self.assertGreater(by_role["toe"].world_position[0], by_role["sole"].world_position[0])
         self.assertEqual(by_role["toe"].metadata["parent_anchor_id"], refined.anchors[0].anchor_id)
 
     def test_refine_anchor_position_cli_writes_contact_layer(self) -> None:
