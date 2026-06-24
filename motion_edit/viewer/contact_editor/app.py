@@ -2310,8 +2310,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
                 remove()
 
     with server.gui.add_folder("Load"):
-        load_type = server.gui.add_dropdown("load_type", options=SETUP_LOAD_TYPES, initial_value=SETUP_LOAD_TYPES[0])
-        browse_btn = server.gui.add_button("Load selected type...")
+        browse_btn = server.gui.add_button("Load motion...")
 
     with _setup_detail_folder("Motion Bundle"):
         motion = server.gui.add_text("motion_npz", initial_value=str(args.setup_motion or ""))
@@ -2487,6 +2486,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
             if not str(session_name.value).strip() or str(session_name.value) == "contact_editor":
                 session_name.value = f"{selected_path.stem}_contact_editor"
             _set_status(f"selected motion: {selected}")
+            _start_loaded_editor()
         elif selected_type == "Contact Layer":
             source_contact_layer.value = _layer_name_from_path(selected_path)
             _set_status(f"selected contact layer: {source_contact_layer.value}")
@@ -2503,15 +2503,15 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
     @browse_btn.on_click
     def _(_) -> None:
         try:
-            selected_type = str(load_type.value)
+            selected_type = "Motion"
             selected = _filtered_open_file_dialog(
-                title=f"Load {selected_type}",
+                title="Load motion",
                 load_type=selected_type,
             )
             if not selected:
-                _set_status(f"no {selected_type} selected")
+                _set_status("no motion selected")
                 return
-            _set_status(f"loading {selected_type}: {selected}")
+            _set_status(f"loading motion: {selected}")
             _apply_selected_load_file(selected_type, Path(selected))
         except Exception as exc:
             print(f"[contact editor setup] browse failed: {exc}", file=sys.stderr)
