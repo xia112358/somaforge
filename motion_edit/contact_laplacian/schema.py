@@ -6,22 +6,77 @@ from typing import Any, Literal
 import numpy as np
 
 
+# The batch backend is intended to solve one deformation field with two
+# Laplacian families: temporal offset propagation and spatial body/interaction
+# preservation. Contact handles are the constraints; the pose prior is only a
+# weak gauge term and first-difference q smoothing is disabled by default.
+DUAL_LAPLACIAN_DEFAULT_WEIGHTS = {
+    "edit_contact_weight": 1000.0,
+    "fixed_contact_weight": 1000.0,
+    "temporal_laplacian_weight": 40.0,
+    "body_relative_weight": 10.0,
+    "q_prior_weight": 0.02,
+    "q_smooth_weight": 0.0,
+    "mesh_laplacian_weight": 1.0,
+}
+
+# Older generation callers explicitly supplied these values instead of relying
+# on BatchContactLaplacianConfig defaults. Detect that exact legacy signature so
+# existing UI/CLI call sites automatically receive the corrected core profile
+# without adding another user-facing optimization mode.
+_LEGACY_GENERATION_WEIGHT_SIGNATURE = (
+    1000.0,
+    1000.0,
+    10.0,
+    10.0,
+    1.0,
+    1.0,
+    0.0,
+)
+
+
 @dataclass(frozen=True)
 class BatchContactLaplacianConfig:
-    num_iters: int = 5
+    num_iters: int = 8
     damping: float = 1.0e-4
     trust_region: float = 0.05
-    edit_contact_weight: float = 1000.0
-    fixed_contact_weight: float = 1000.0
-    temporal_laplacian_weight: float = 10.0
-    body_relative_weight: float = 10.0
-    q_prior_weight: float = 1.0
-    q_smooth_weight: float = 1.0
-    mesh_laplacian_weight: float = 0.0
+    edit_contact_weight: float = DUAL_LAPLACIAN_DEFAULT_WEIGHTS["edit_contact_weight"]
+    fixed_contact_weight: float = DUAL_LAPLACIAN_DEFAULT_WEIGHTS["fixed_contact_weight"]
+    temporal_laplacian_weight: float = DUAL_LAPLACIAN_DEFAULT_WEIGHTS["temporal_laplacian_weight"]
+    body_relative_weight: float = DUAL_LAPLACIAN_DEFAULT_WEIGHTS["body_relative_weight"]
+    q_prior_weight: float = DUAL_LAPLACIAN_DEFAULT_WEIGHTS["q_prior_weight"]
+    q_smooth_weight: float = DUAL_LAPLACIAN_DEFAULT_WEIGHTS["q_smooth_weight"]
+    mesh_laplacian_weight: float = DUAL_LAPLACIAN_DEFAULT_WEIGHTS["mesh_laplacian_weight"]
     finite_difference_eps: float = 1.0e-4
     line_search_max_steps: int = 8
     relative_cost_tolerance: float = 1.0e-8
     step_tolerance: float = 1.0e-10
+
+    def __post_init__(self) -> None:
+        signature = (
+            float(self.edit_contact_weight),
+            float(self.fixed_contact_weight),
+            float(self.temporal_laplacian_weight),
+            float(self.body_relative_weight),
+            float(self.q_prior_weight),
+            float(self.q_smooth_weight),
+            float(self.mesh_laplacian_weight),
+        )
+        if signature == _LEGACY_GENERATION_WEIGHT_SIGNATURE:
+            for key, value in DUAL_LAPLACIAN_DEFAULT_WEIGHTS.items():
+                object.__setattr__(self, key, float(value))
+        for name in (
+            "edit_contact_weight",
+            "fixed_contact_weight",
+            "temporal_laplacian_weight",
+            "body_relative_weight",
+            "q_prior_weight",
+            "q_smooth_weight",
+            "mesh_laplacian_weight",
+        ):
+            value = float(getattr(self, name))
+            if value < 0.0 or not np.isfinite(value):
+                raise ValueError(f"{name} must be finite and nonnegative")
 
 
 @dataclass(frozen=True)
