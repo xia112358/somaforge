@@ -252,6 +252,7 @@ let lastFramePostMs = 0;
 let framePostInFlight = false;
 let playbackAnimId = null;
 let playbackAnimMs = null;
+let recentSignature = '';
 const FRAME_POST_INTERVAL_MS = 50;
 const timeline = document.getElementById('timeline');
 const playhead = document.getElementById('playhead');
@@ -315,6 +316,22 @@ function updateTimelineHeight() {
   const tracks = Math.max(4, Number(state?.bodies?.length || 0));
   const height = Math.min(300, Math.max(188, 92 + tracks * 26));
   document.documentElement.style.setProperty('--timeline-height', `${height}px`);
+}
+function renderRecentMotions() {
+  const items = state?.recent_motions || [];
+  const signature = JSON.stringify(items.map(item => [item.label || '', item.motion_path || '', item.motion_id || '', item.contact_layer || '']));
+  if (signature === recentSignature) return;
+  if (document.activeElement === recentSelect && recentSelect.options.length > 0) return;
+  const previous = recentSelect.value;
+  recentSelect.innerHTML = '';
+  items.forEach((item, index) => {
+    const option = document.createElement('option');
+    option.value = String(index);
+    option.textContent = item.label || item.motion_path || `motion ${index}`;
+    recentSelect.appendChild(option);
+  });
+  if (previous && Number(previous) < recentSelect.options.length) recentSelect.value = previous;
+  recentSignature = signature;
 }
 function syncPlaybackAnimation() {
   if (!state?.playing || dragging) {
@@ -396,15 +413,7 @@ function updateChrome() {
 function renderLeftPanel() {
   const counts = state.binding_counts || {};
   const layers = state.layers || {};
-  const selectedRecent = recentSelect.value;
-  recentSelect.innerHTML = '';
-  (state.recent_motions || []).forEach((item, index) => {
-    const option = document.createElement('option');
-    option.value = String(index);
-    option.textContent = item.label || item.motion_path;
-    recentSelect.appendChild(option);
-  });
-  if (selectedRecent && Number(selectedRecent) < recentSelect.options.length) recentSelect.value = selectedRecent;
+  renderRecentMotions();
   $('layer-summary').innerHTML = `
     <div class="kv">
       <div class="key">source</div><div class="copy-row"><div class="value copyable" title="${esc(layers.contact_layer)}">${esc(layers.contact_layer || '-')}</div>${copyButton(layers.contact_layer)}</div>
