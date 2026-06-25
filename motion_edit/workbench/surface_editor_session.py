@@ -186,6 +186,43 @@ def write_pending_surface_edits(session: SurfaceEditorSession, edits: Iterable[C
     write_contact_jsonl(session.pending_edits_path, list(edits))
 
 
+def _enrich_session_edit(session: SurfaceEditorSession, edit: ContactAnchorEditRecord) -> ContactAnchorEditRecord:
+    metadata = dict(edit.metadata)
+    metadata.update(
+        {
+            "session_name": session.session_name,
+            "overlay_path": str(session.overlay_path),
+            "report_path": str(session.report_path),
+            "binding_granularity": "anchor_point",
+        }
+    )
+    return replace(edit, source="viser_surface_editor", metadata=metadata)
+
+
+def sync_pending_surface_edits_to_plan(session: SurfaceEditorSession) -> Path | None:
+    """Synchronize current pending surface edits into the session ContactEditPlan.
+
+    The plan is the generation source of truth, so direct drag edits must reach
+    it before the user presses Generate. Edits are coalesced to one final move per
+    anchor, and ``append_anchor_edit_to_plan`` upserts by anchor to avoid stale
+    duplicate moves from earlier drags.
+    """
+
+    if not session.edit_plan_path:
+        return None
+    plan_path = Path(session.edit_plan_path).expanduser()
+    for edit in coalesce_pending_surface_edits(session):
+        append_anchor_edit_to_plan(
+            plan_path,
+            _enrich_session_edit(session, edit),
+            plan_id=plan_path.stem,
+            source_motion_path=session.motion_path,
+            source_motion_id=session.motion_id,
+            source_contact_layer=session.contact_layer,
+        )
+    return plan_path
+
+
 def move_surface_editor_anchor(
     session: SurfaceEditorSession,
     *,
@@ -215,6 +252,7 @@ def move_surface_editor_anchor(
     moved_graph = replace(moved_graph, anchors=edited_anchors, patches=patches_from_anchors(edited_anchors))
     write_surface_editor_graph(session, moved_graph)
     write_pending_surface_edits(session, [*read_pending_surface_edits(session), edit])
+    sync_pending_surface_edits_to_plan(session)
     return moved_graph, edit
 
 
@@ -351,25 +389,8 @@ def save_surface_editor_session(
             write_contact_surfaces(out_layer / "surfaces" / f"{session.motion_id}.jsonl", surfaces)
     plan_path = edit_plan_path or session.edit_plan_path
     if plan_path:
-        for edit in coalesce_pending_surface_edits(session):
-            metadata = dict(edit.metadata)
-            metadata.update(
-                {
-                    "session_name": session.session_name,
-                    "overlay_path": str(session.overlay_path),
-                    "report_path": str(session.report_path),
-                    "binding_granularity": "anchor_point",
-                }
-            )
-            enriched = replace(edit, source="viser_surface_editor", metadata=metadata)
-            append_anchor_edit_to_plan(
-                plan_path,
-                enriched,
-                plan_id=Path(plan_path).stem,
-                source_motion_path=session.motion_path,
-                source_motion_id=session.motion_id,
-                source_contact_layer=session.contact_layer,
-            )
+        plan_session = replace(session, edit_plan_path=str(plan_path))
+        sync_pending_surface_edits_to_plan(plan_session)
     _write_json(
         session.state_path,
         {
