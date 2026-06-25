@@ -17,17 +17,19 @@ class RecentMotionEntry:
     label: str
     motion_path: str
     motion_id: str
+    motion_asset_id: str | None = None
     motion_asset_path: str | None = None
     terrain_urdf: str | None = None
     contact_layer: str | None = None
     surface_catalog: str | None = None
     edit_plan_path: str | None = None
     output_contact_layer: str | None = None
+    output_segment_layer: str | None = None
     last_opened_at: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def key(self) -> str:
-        return self.motion_asset_path or self.motion_path
+        return self.motion_asset_path or self.motion_asset_id or self.motion_path
 
     def exists(self) -> bool:
         if self.motion_asset_path and Path(self.motion_asset_path).expanduser().exists():
@@ -100,4 +102,3 @@ def recent_entry_labels(entries: list[RecentMotionEntry]) -> list[str]:
         used.add(label)
         labels.append(label)
     return labels
-
