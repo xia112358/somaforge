@@ -19,7 +19,8 @@ from motion_edit.generation import apply_contact_edit_plan_to_motion
 from motion_edit.contact.plans import ContactEditPlan, read_contact_edit_plan, validate_contact_edit_plan, write_contact_edit_plan
 from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord
 from motion_edit.paths import LAYERS_ROOT, MOTIONS_ROOT, WORKBENCH_ROOT
-from motion_edit.storage.io import read_motion_asset
+from motion_edit.storage.io import read_motion_asset, write_motion_asset
+from motion_edit.storage.schema import MotionAssetRecord
 from motion_edit.viewer.contact_timeline import start_contact_timeline_wrapper
 from motion_edit.workbench import (
     coalesce_pending_surface_edits,
@@ -1307,7 +1308,7 @@ def _contact_editor_config_from_motion_asset(path: str | Path) -> ContactEditorC
     selected_path = Path(path).expanduser()
     record = read_motion_asset(selected_path.stem, selected_path)
     derived = record.derived or {}
-    source_contact_layer = derived.get("bound_contact_layer") or derived.get("contact_layer")
+    source_contact_layer = record.source_contact_layer
     if not source_contact_layer:
         raise ValueError(f"motion has no derived contact layer: {record.motion_asset_id}")
     return ContactEditorConfig(
@@ -1318,11 +1319,12 @@ def _contact_editor_config_from_motion_asset(path: str | Path) -> ContactEditorC
         surface_catalog=record.surface_catalog_path,
         terrain_urdf=record.terrain_urdf,
         output_prefix=f"contact/{record.motion_asset_id}_contact_editor",
-        edit_plan=derived.get("edit_plan_path"),
-        output_contact_layer=derived.get("output_contact_layer"),
+        edit_plan=record.edit_plan_path,
+        output_contact_layer=record.output_contact_layer,
         repo_root=None,
         with_terrain=bool(record.terrain_urdf),
         fps=int(record.fps or 50),
+        prebound_contact_layer=bool(record.bound_contact_layer or derived.get("prebound_contact_layer")),
     )
 
 
@@ -1336,10 +1338,11 @@ def _recent_entry_from_motion_asset(path: str | Path) -> RecentMotionEntry:
         motion_path=record.motion_path,
         motion_id=record.motion_id or record.motion_asset_id,
         terrain_urdf=record.terrain_urdf,
-        contact_layer=derived.get("bound_contact_layer") or derived.get("contact_layer"),
+        contact_layer=record.source_contact_layer,
         surface_catalog=record.surface_catalog_path,
-        edit_plan_path=derived.get("edit_plan_path"),
-        output_contact_layer=derived.get("output_contact_layer"),
+        edit_plan_path=record.edit_plan_path,
+        output_contact_layer=record.output_contact_layer,
+        output_segment_layer=record.output_segment_layer,
         metadata={"source": "motion_asset"},
     )
 
@@ -1364,6 +1367,11 @@ def _contact_editor_config_from_recent_entry(entry: RecentMotionEntry) -> Contac
         output_contact_layer=entry.output_contact_layer,
         repo_root=None,
         with_terrain=bool(entry.terrain_urdf),
+        prebound_contact_layer=bool(
+            entry.metadata.get("prebound_contact_layer")
+            or entry.metadata.get("kind") == "lte_augmented"
+            or (entry.output_contact_layer and entry.contact_layer == entry.output_contact_layer)
+        ),
     )
 
 
@@ -1395,23 +1403,68 @@ def _recent_entry_from_generated_session(
     output_segment_layer: str | None,
     output_motion_version_id: str | None,
     terrain_urdf: str | None = None,
+    motion_asset_path: str | None = None,
+    motion_asset_id: str | None = None,
 ) -> RecentMotionEntry:
-    label = output_motion_version_id or Path(output_motion).stem
+    label = motion_asset_id or output_motion_version_id or Path(output_motion).stem
     return RecentMotionEntry(
         label=label,
         motion_path=output_motion,
         motion_id=session.motion_id,
+        motion_asset_id=motion_asset_id,
+        motion_asset_path=motion_asset_path,
         terrain_urdf=terrain_urdf,
         contact_layer=output_contact_layer,
         surface_catalog=session.surface_catalog,
         edit_plan_path=session.edit_plan_path,
         output_contact_layer=output_contact_layer,
+        output_segment_layer=output_segment_layer,
         metadata={
             "kind": "lte_augmented",
             "parent_motion_path": session.motion_path,
             "output_segment_layer": output_segment_layer,
+            "prebound_contact_layer": bool(output_contact_layer),
         },
     )
+
+
+def _write_generated_motion_asset_from_session(
+    session: SurfaceEditorSession,
+    *,
+    output_motion: str,
+    output_contact_layer: str | None,
+    output_segment_layer: str | None,
+    output_motion_version_id: str | None,
+    terrain_urdf: str | None = None,
+) -> Path:
+    asset_id = output_motion_version_id or Path(output_motion).stem
+    record = MotionAssetRecord(
+        motion_asset_id=asset_id,
+        motion_path=output_motion,
+        source="motion_edit_lte_fullbody",
+        motion_id=session.motion_id,
+        terrain_urdf=terrain_urdf,
+        surface_catalog_path=session.surface_catalog,
+        contact_layer=output_contact_layer,
+        bound_contact_layer=output_contact_layer,
+        edit_plan_path=session.edit_plan_path,
+        output_contact_layer=output_contact_layer,
+        output_segment_layer=output_segment_layer,
+        derived={
+            "contact_layer": output_contact_layer,
+            "bound_contact_layer": output_contact_layer,
+            "edit_plan_path": session.edit_plan_path,
+            "output_contact_layer": output_contact_layer,
+            "output_segment_layer": output_segment_layer,
+            "prebound_contact_layer": bool(output_contact_layer),
+        },
+        metadata={
+            "kind": "lte_augmented",
+            "parent_motion_path": session.motion_path,
+            "prebound_contact_layer": bool(output_contact_layer),
+        },
+    )
+    return write_motion_asset(record)
 
 
 def _loaded_editor_command_from_config(
@@ -1631,6 +1684,14 @@ def _add_loaded_editor_sidebar(
             register_motion_version=inputs["register_motion_version"],
         )
         if not dry_run:
+            motion_asset_path = _write_generated_motion_asset_from_session(
+                controller.state.session,
+                output_motion=str(result.output_motion_path),
+                output_contact_layer=inputs["generated_contact_layer"],
+                output_segment_layer=inputs["generated_segment_layer"],
+                output_motion_version_id=inputs["generated_motion_version_id"],
+                terrain_urdf=controller.terrain_urdf,
+            )
             generated_entry = _recent_entry_from_generated_session(
                 controller.state.session,
                 output_motion=str(result.output_motion_path),
@@ -1638,6 +1699,8 @@ def _add_loaded_editor_sidebar(
                 output_segment_layer=inputs["generated_segment_layer"],
                 output_motion_version_id=inputs["generated_motion_version_id"],
                 terrain_urdf=controller.terrain_urdf,
+                motion_asset_path=str(motion_asset_path),
+                motion_asset_id=inputs["generated_motion_version_id"] or Path(result.output_motion_path).stem,
             )
             upsert_recent_motion(generated_entry)
             if callable(controller.reload_motion_callback):

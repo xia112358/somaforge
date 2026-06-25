@@ -43,6 +43,7 @@ class ContactEditorConfig:
     max_surface_distance: float = 0.08
     bind_mode: str = "reject"
     fps: int = 50
+    prebound_contact_layer: bool = False
 
 
 @dataclass(frozen=True)
@@ -181,6 +182,36 @@ def prepare_contact_editor_session(
 
     surfaces = filter_surfaces_for_binding(read_contact_surfaces(surface_catalog), include_side_surfaces=False)
     graph = read_contact_graph(layers_root / source_layer, config.motion_id)
+    if config.prebound_contact_layer:
+        counts = surface_binding_counts(graph)
+        if counts["unbound_count"] or counts["failed_count"]:
+            raise ValueError(
+                "contact-editor refused to open because prebound contact layer is not fully bound: "
+                f"anchors={counts['anchor_count']} bound={counts['bound_count']} "
+                f"unbound={counts['unbound_count']} failed={counts['failed_count']}"
+            )
+        session = prepare_surface_editor_session(
+            motion_path=config.motion,
+            motion_id=config.motion_id,
+            contact_layer=source_layer,
+            surface_catalog=str(surface_catalog),
+            session_name=config.session_name,
+            edit_plan_path=config.edit_plan,
+            output_contact_layer=config.output_contact_layer or f"{source_layer}_edited",
+            layers_root=layers_root,
+            workbench_root=workbench_root,
+        )
+        return PreparedContactEditor(
+            session=session,
+            ready_layer=source_layer,
+            surface_catalog=str(surface_catalog),
+            source_anchor_count=len(graph.anchors),
+            merged_anchor_count=len(graph.anchors),
+            visible_anchor_count=len(graph.anchors),
+            ready_anchor_count=len(graph.anchors),
+            filtered_count=0,
+            bound_count=counts["bound_count"],
+        )
     try:
         graph = refine_contact_graph_anchor_positions_from_raw_contacts(
             graph,

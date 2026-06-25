@@ -55,6 +55,7 @@ from motion_edit.viewer.surface_overlay_player import (
     _contact_editor_config_from_motion_asset,
     _generate_fullbody_lte_from_session,
     _recent_entry_from_generated_session,
+    _write_generated_motion_asset_from_session,
     _render_overlay,
     _save_and_validate_plan,
     _validate_session_plan,
@@ -1225,6 +1226,42 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertEqual(entry.motion_id, "source_motion")
         self.assertEqual(entry.contact_layer, "contact/generated")
 
+    def test_generated_recent_entry_can_point_to_generated_motion_asset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = prepare_surface_editor_session(
+                motion_path=str(root / "source.npz"),
+                motion_id="source_motion",
+                contact_layer="contact/source",
+                surface_catalog=str(root / "surfaces.jsonl"),
+                session_name="generated_asset_recent",
+                edit_plan_path=str(root / "plan.json"),
+                output_contact_layer="contact/debug",
+                layers_root=root / "layers",
+                workbench_root=root / "workbench",
+            )
+            asset_path = _write_generated_motion_asset_from_session(
+                session,
+                output_motion=str(root / "generated.npz"),
+                output_contact_layer="contact/generated",
+                output_segment_layer="candidates/generated",
+                output_motion_version_id="generated_motion_version",
+            )
+            entry = _recent_entry_from_generated_session(
+                session,
+                output_motion=str(root / "generated.npz"),
+                output_contact_layer="contact/generated",
+                output_segment_layer="candidates/generated",
+                output_motion_version_id="generated_motion_version",
+                motion_asset_path=str(asset_path),
+                motion_asset_id="generated_motion_version",
+            )
+
+        self.assertEqual(entry.motion_asset_path, str(asset_path))
+        self.assertEqual(entry.motion_asset_id, "generated_motion_version")
+        self.assertEqual(entry.contact_layer, "contact/generated")
+        self.assertTrue(entry.metadata["prebound_contact_layer"])
+
     def test_debug_save_and_validate_still_exports_contact_layer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1986,6 +2023,29 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertEqual(config.motion_id, "climb_01_z_scale_1.0")
         self.assertEqual(config.source_contact_layer, "contact/raw_contact_29")
         self.assertEqual(config.session_name, "climb_01_raw_contact_29_contact_editor")
+
+    def test_motion_asset_config_uses_prebound_generated_contact_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            record = MotionAssetRecord(
+                motion_asset_id="generated_motion",
+                motion_path=str(root / "generated.npz"),
+                source="motion_edit_lte_fullbody",
+                motion_id="climb_01_z_scale_1.0",
+                surface_catalog_path=str(root / "surfaces.jsonl"),
+                contact_layer="contact/generated",
+                bound_contact_layer="contact/generated",
+                edit_plan_path=str(root / "plan.json"),
+                output_contact_layer="contact/generated",
+                output_segment_layer="candidates/generated",
+            )
+            path = root / "generated_motion.json"
+            write_motion_asset(record, path)
+            config = _contact_editor_config_from_motion_asset(path)
+
+        self.assertEqual(config.source_contact_layer, "contact/generated")
+        self.assertEqual(config.output_contact_layer, "contact/generated")
+        self.assertTrue(config.prebound_contact_layer)
 
     def test_filtered_picker_hides_directories_without_loadable_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
