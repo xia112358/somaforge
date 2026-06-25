@@ -19,6 +19,9 @@ class BatchContactLaplacianConfig:
     q_smooth_weight: float = 1.0
     mesh_laplacian_weight: float = 0.0
     finite_difference_eps: float = 1.0e-4
+    line_search_max_steps: int = 8
+    relative_cost_tolerance: float = 1.0e-8
+    step_tolerance: float = 1.0e-10
 
 
 @dataclass(frozen=True)
