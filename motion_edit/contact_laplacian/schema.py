@@ -20,19 +20,10 @@ DUAL_LAPLACIAN_DEFAULT_WEIGHTS = {
     "mesh_laplacian_weight": 1.0,
 }
 
-# Older generation callers explicitly supplied these values instead of relying
-# on BatchContactLaplacianConfig defaults. Detect that exact legacy signature so
-# existing UI/CLI call sites automatically receive the corrected core profile
-# without adding another user-facing optimization mode.
-_LEGACY_GENERATION_WEIGHT_SIGNATURE = (
-    1000.0,
-    1000.0,
-    10.0,
-    10.0,
-    1.0,
-    1.0,
-    0.0,
-)
+# Older generation callers explicitly supplied these temporal/prior defaults.
+# The mesh weight was sometimes overridden independently, so migration detects
+# the old temporal core rather than requiring an exact seven-value tuple.
+_LEGACY_TEMPORAL_CORE_SIGNATURE = (10.0, 10.0, 1.0, 1.0)
 
 
 @dataclass(frozen=True)
@@ -53,18 +44,21 @@ class BatchContactLaplacianConfig:
     step_tolerance: float = 1.0e-10
 
     def __post_init__(self) -> None:
-        signature = (
-            float(self.edit_contact_weight),
-            float(self.fixed_contact_weight),
+        temporal_core = (
             float(self.temporal_laplacian_weight),
             float(self.body_relative_weight),
             float(self.q_prior_weight),
             float(self.q_smooth_weight),
-            float(self.mesh_laplacian_weight),
         )
-        if signature == _LEGACY_GENERATION_WEIGHT_SIGNATURE:
-            for key, value in DUAL_LAPLACIAN_DEFAULT_WEIGHTS.items():
-                object.__setattr__(self, key, float(value))
+        if temporal_core == _LEGACY_TEMPORAL_CORE_SIGNATURE:
+            object.__setattr__(self, "temporal_laplacian_weight", DUAL_LAPLACIAN_DEFAULT_WEIGHTS["temporal_laplacian_weight"])
+            object.__setattr__(self, "body_relative_weight", DUAL_LAPLACIAN_DEFAULT_WEIGHTS["body_relative_weight"])
+            object.__setattr__(self, "q_prior_weight", DUAL_LAPLACIAN_DEFAULT_WEIGHTS["q_prior_weight"])
+            object.__setattr__(self, "q_smooth_weight", DUAL_LAPLACIAN_DEFAULT_WEIGHTS["q_smooth_weight"])
+            if float(self.mesh_laplacian_weight) == 0.0:
+                object.__setattr__(self, "mesh_laplacian_weight", DUAL_LAPLACIAN_DEFAULT_WEIGHTS["mesh_laplacian_weight"])
+            if int(self.num_iters) == 5:
+                object.__setattr__(self, "num_iters", 8)
         for name in (
             "edit_contact_weight",
             "fixed_contact_weight",
