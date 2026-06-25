@@ -2,18 +2,21 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import os
 import socket
 import sys
 import threading
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from motion_edit.contact import read_contact_surfaces
 from motion_edit.contact.graph import ContactGraph
 from motion_edit.generation import apply_contact_edit_plan_to_motion
 from motion_edit.contact.plans import ContactEditPlan, read_contact_edit_plan, validate_contact_edit_plan, write_contact_edit_plan
@@ -2036,16 +2039,132 @@ def load_motion_sequence(path: str | Path) -> tuple[np.ndarray, int]:
     return np.asarray(qpos, dtype=np.float32), fps
 
 
-def _add_static_urdf(server: Any, *, root_name: str, urdf_path: str | Path) -> list[Any]:
+def _surface_catalog_mesh_paths(surface_catalog: str | Path | None) -> dict[str, Path]:
+    if surface_catalog is None:
+        return {}
+    try:
+        surfaces = read_contact_surfaces(surface_catalog)
+    except Exception:
+        return {}
+    paths: dict[str, Path] = {}
+    for surface in surfaces:
+        mesh_path = surface.metadata.get("mesh_path") if isinstance(surface.metadata, dict) else None
+        if not mesh_path:
+            continue
+        path = Path(str(mesh_path)).expanduser()
+        if path.exists():
+            paths[path.name] = path.resolve()
+    return paths
+
+
+def _patched_terrain_urdf_for_viewer(urdf_path: str | Path, surface_catalog: str | Path | None) -> Path:
+    urdf = Path(urdf_path).expanduser().resolve()
+    replacements = _surface_catalog_mesh_paths(surface_catalog)
+    if not replacements:
+        return urdf
+    tree = ET.parse(urdf)
+    root = tree.getroot()
+    changed = False
+    for mesh in root.findall(".//mesh"):
+        filename = mesh.attrib.get("filename")
+        if not filename:
+            continue
+        mesh_path = Path(filename)
+        resolved = mesh_path if mesh_path.is_absolute() else urdf.parent / mesh_path
+        if resolved.exists():
+            continue
+        replacement = replacements.get(mesh_path.name)
+        if replacement is None:
+            continue
+        mesh.attrib["filename"] = str(replacement)
+        changed = True
+    if not changed:
+        return urdf
+    digest = hashlib.sha1((str(urdf) + json.dumps({k: str(v) for k, v in sorted(replacements.items())})).encode("utf-8")).hexdigest()[:12]
+    out = Path("/tmp") / "motion_edit_terrain_urdf_cache" / f"{urdf.stem}_{digest}.urdf"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tree.write(out, encoding="utf-8", xml_declaration=True)
+    return out
+
+
+def _surface_polygon_mesh(surface: Any) -> tuple[np.ndarray, np.ndarray] | None:
+    polygon = surface.metadata.get("polygon_world") if isinstance(surface.metadata, dict) else None
+    if polygon:
+        vertices = np.asarray(polygon, dtype=np.float32)
+    elif surface.surface_id != "terrain_ground_z0" and surface.bounds:
+        corners = []
+        u_bounds = surface.bounds.get("u") if isinstance(surface.bounds, dict) else None
+        v_bounds = surface.bounds.get("v") if isinstance(surface.bounds, dict) else None
+        if not u_bounds or not v_bounds:
+            return None
+        origin = np.asarray(surface.origin, dtype=float)
+        tangent_u = np.asarray(surface.tangent_u, dtype=float)
+        tangent_v = np.asarray(surface.tangent_v, dtype=float)
+        for u, v in ((u_bounds[0], v_bounds[0]), (u_bounds[1], v_bounds[0]), (u_bounds[1], v_bounds[1]), (u_bounds[0], v_bounds[1])):
+            corners.append(origin + tangent_u * float(u) + tangent_v * float(v))
+        vertices = np.asarray(corners, dtype=np.float32)
+    else:
+        return None
+    if vertices.ndim != 2 or vertices.shape[0] < 3 or vertices.shape[1] != 3:
+        return None
+    faces = np.asarray([[0, index, index + 1] for index in range(1, vertices.shape[0] - 1)], dtype=np.uint32)
+    return vertices, faces
+
+
+def _add_surface_catalog_terrain(server: Any, *, surface_catalog: str | Path | None, root_name: str = "/object") -> list[Any]:
+    if surface_catalog is None or not hasattr(server.scene, "add_mesh_simple"):
+        return []
+    try:
+        surfaces = read_contact_surfaces(surface_catalog)
+    except Exception as exc:
+        print(f"[surface editor] terrain surface fallback unavailable: {exc}")
+        return []
+    handles: list[Any] = []
+    for surface in surfaces:
+        if surface.surface_id == "terrain_ground_z0":
+            continue
+        mesh = _surface_polygon_mesh(surface)
+        if mesh is None:
+            continue
+        vertices, faces = mesh
+        handle = server.scene.add_mesh_simple(
+            f"{root_name}/surface_catalog/{_safe_name(surface.surface_id)}",
+            vertices=vertices,
+            faces=faces,
+            color=(76, 178, 230),
+            opacity=0.42,
+            side="double",
+        )
+        handles.append(handle)
+    if handles:
+        print(f"[surface editor] rendered terrain from surface catalog: {surface_catalog}")
+    return handles
+
+
+def _add_static_urdf(
+    server: Any,
+    *,
+    root_name: str,
+    urdf_path: str | Path,
+    surface_catalog: str | Path | None = None,
+) -> list[Any]:
     try:
         import yourdfpy  # type: ignore[import-untyped]
         from viser.extras import ViserUrdf  # type: ignore[import-not-found]
     except ImportError:
-        return []
+        return _add_surface_catalog_terrain(server, surface_catalog=surface_catalog, root_name=root_name)
     root = server.scene.add_frame(root_name, show_axes=False)
-    urdf = yourdfpy.URDF.load(str(urdf_path), load_meshes=True, build_scene_graph=True)
-    viser_urdf = ViserUrdf(server, urdf_or_path=urdf, root_node_name=root_name)
-    return [root, viser_urdf]
+    try:
+        patched_urdf = _patched_terrain_urdf_for_viewer(urdf_path, surface_catalog)
+        urdf = yourdfpy.URDF.load(str(patched_urdf), load_meshes=True, build_scene_graph=True)
+        viser_urdf = ViserUrdf(server, urdf_or_path=urdf, root_node_name=root_name)
+        if patched_urdf != Path(urdf_path).expanduser().resolve():
+            print(f"[surface editor] patched terrain URDF mesh paths for viewer: {patched_urdf}")
+        return [root, viser_urdf]
+    except Exception as exc:
+        print(f"[surface editor] terrain URDF render failed: {exc}")
+        handles = _add_surface_catalog_terrain(server, surface_catalog=surface_catalog, root_name=root_name)
+        return [root, *handles]
 
 
 def _add_motion_playback(
@@ -2055,13 +2174,14 @@ def _add_motion_playback(
     fps: int,
     robot_urdf: str | Path | None,
     object_urdf: str | Path | None = None,
+    object_surface_catalog: str | Path | None = None,
     show_gui: bool = True,
 ) -> tuple[list[Any], MotionPlaybackController | None]:
     handles: list[Any] = []
     if object_urdf:
         object_path = Path(object_urdf)
         if object_path.exists():
-            handles.extend(_add_static_urdf(server, root_name="/object", urdf_path=object_path))
+            handles.extend(_add_static_urdf(server, root_name="/object", urdf_path=object_path, surface_catalog=object_surface_catalog))
     if robot_urdf is None or not Path(robot_urdf).exists():
         print("[surface editor] robot_urdf missing; showing root trace only")
         return handles, None
@@ -2232,6 +2352,7 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
         *,
         motion_path: str | Path,
         object_urdf: str | Path | None,
+        object_surface_catalog: str | Path | None,
         fps_hint: int,
     ) -> int:
         nonlocal motion_handles
@@ -2244,6 +2365,7 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
             fps=int(fps_hint or motion_fps),
             robot_urdf=args.robot_urdf,
             object_urdf=object_urdf,
+            object_surface_catalog=object_surface_catalog,
             show_gui=False,
         )
         motion_handles.extend(playback_handles)
@@ -2255,6 +2377,7 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
     motion_fps = _replace_motion_visuals(
         motion_path=args.qpos_npz,
         object_urdf=args.object_urdf if args.with_terrain else None,
+        object_surface_catalog=state.session.surface_catalog,
         fps_hint=int(args.fps or 0),
     )
     controller.fps = int(args.fps or motion_fps)
@@ -2266,6 +2389,7 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
         next_fps = _replace_motion_visuals(
             motion_path=config.motion,
             object_urdf=object_urdf if config.with_terrain else None,
+            object_surface_catalog=next_state.session.surface_catalog,
             fps_hint=int(args.fps or config.fps),
         )
         controller.state = next_state
@@ -2346,6 +2470,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
         motion_path: str | Path,
         robot_urdf: str | Path | None,
         object_urdf: str | Path | None,
+        object_surface_catalog: str | Path | None,
         fps_hint: int,
     ) -> int:
         nonlocal motion_handles
@@ -2358,6 +2483,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
             fps=int(fps_hint or motion_fps),
             robot_urdf=robot_urdf,
             object_urdf=object_urdf,
+            object_surface_catalog=object_surface_catalog,
             show_gui=False,
         )
         motion_handles.extend(playback_handles)
@@ -2427,6 +2553,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
             motion_path=config.motion,
             robot_urdf=robot_urdf if robot_urdf.exists() else None,
             object_urdf=object_urdf if config.with_terrain else None,
+            object_surface_catalog=next_state.session.surface_catalog,
             fps_hint=int(args.fps or config.fps),
         )
         existing = controller_box.get("controller")
@@ -2452,6 +2579,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
                 motion_path=next_config.motion,
                 robot_urdf=controller.robot_urdf,
                 object_urdf=next_object_urdf if next_config.with_terrain else None,
+                object_surface_catalog=next_state_inner.session.surface_catalog,
                 fps_hint=int(args.fps or next_config.fps),
             )
             controller.state = next_state_inner

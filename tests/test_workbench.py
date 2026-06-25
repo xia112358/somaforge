@@ -54,6 +54,7 @@ from motion_edit.viewer.surface_overlay_player import (
     _anchor_positions_differ,
     _contact_editor_config_from_motion_asset,
     _generate_fullbody_lte_from_session,
+    _patched_terrain_urdf_for_viewer,
     _recent_entry_from_generated_session,
     _write_generated_motion_asset_from_session,
     _render_overlay,
@@ -2046,6 +2047,51 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertEqual(config.source_contact_layer, "contact/generated")
         self.assertEqual(config.output_contact_layer, "contact/generated")
         self.assertTrue(config.prebound_contact_layer)
+
+    def test_terrain_urdf_patch_uses_surface_catalog_mesh_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            urdf = root / "terrain.urdf"
+            urdf.write_text(
+                """<?xml version=\"1.0\"?>
+<robot name=\"terrain\">
+  <link name=\"box\">
+    <visual>
+      <geometry><mesh filename=\"box_models/box1.obj\" scale=\"1 1 1\"/></geometry>
+    </visual>
+  </link>
+</robot>
+""",
+                encoding="utf-8",
+            )
+            real_mesh = root / "catalog_meshes" / "box1.obj"
+            real_mesh.parent.mkdir()
+            real_mesh.write_text("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", encoding="utf-8")
+            catalog = root / "surfaces.jsonl"
+            write_contact_surfaces(
+                catalog,
+                [
+                    ContactSurfaceRecord(
+                        motion_id="motion_a",
+                        surface_id="box_top",
+                        object_id="box",
+                        surface_type="mesh_face",
+                        origin=[0.0, 0.0, 0.0],
+                        normal=[0.0, 0.0, 1.0],
+                        tangent_u=[1.0, 0.0, 0.0],
+                        tangent_v=[0.0, 1.0, 0.0],
+                        bounds={"u": [0.0, 1.0], "v": [0.0, 1.0]},
+                        metadata={"mesh_path": str(real_mesh)},
+                    )
+                ],
+            )
+
+            patched = _patched_terrain_urdf_for_viewer(urdf, catalog)
+
+        self.assertNotEqual(patched, urdf.resolve())
+        text = patched.read_text(encoding="utf-8")
+        self.assertIn(str(real_mesh.resolve()), text)
+        self.assertNotIn("box_models/box1.obj", text)
 
     def test_filtered_picker_hides_directories_without_loadable_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
