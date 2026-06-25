@@ -40,7 +40,9 @@ def contact_timeline_state(
     fps: int,
 ) -> dict[str, Any]:
     graph = controller.graph()
-    n_frames = playback.n_frames if playback is not None else max((anchor.end_frame for anchor in graph.anchors), default=0) + 1
+    n_frames = playback.n_frames if playback is not None else max(
+        (anchor.end_frame for anchor in graph.anchors), default=0
+    ) + 1
     current_frame = playback.frame() if playback is not None else 0
     pending_edits = controller.pending_edits()
     bodies: list[str] = []
@@ -68,12 +70,9 @@ def contact_timeline_state(
     for anchor in graph.anchors:
         if anchor.body not in bodies:
             bodies.append(anchor.body)
-        status = "selected" if anchor.anchor_id == controller.selected_anchor_id else "bound"
         obj = controller._anchor_obj(anchor.anchor_id)
-        if obj is not None:
-            status = str(obj.get("status") or status)
-            if anchor.anchor_id == controller.selected_anchor_id:
-                status = "selected"
+        status = str(obj.get("status") or "bound") if isinstance(obj, dict) else "bound"
+        selected = anchor.anchor_id == controller.selected_anchor_id
         item = {
             "anchor_id": anchor.anchor_id,
             "body": anchor.body,
@@ -88,13 +87,14 @@ def contact_timeline_state(
             "surface_binding_source": anchor.surface_binding_source,
             "failure_reason": anchor.metadata.get("surface_binding_failure_reason"),
             "status": status,
+            "selected": selected,
             "warnings": obj.get("warnings", []) if isinstance(obj, dict) else [],
             "latest_edit": _latest_edit(anchor.anchor_id),
             "color": _body_color_hex(anchor.body),
         }
         status_counts[status] = status_counts.get(status, 0) + 1
         anchors.append(item)
-        if anchor.anchor_id == controller.selected_anchor_id:
+        if selected:
             selected_anchor = item
 
     session = getattr(getattr(controller, "state", None), "session", None)
@@ -116,6 +116,8 @@ def contact_timeline_state(
         "last_error": getattr(generation, "last_error", None) if generation is not None else None,
         "last_finished_at": getattr(generation, "last_finished_at", None) if generation is not None else None,
     }
+    failed_count = status_counts.get("failed", 0)
+    unbound_count = status_counts.get("unbound", 0)
     return {
         "schema_version": 1,
         "motion_name": current_motion_name,
@@ -133,9 +135,9 @@ def contact_timeline_state(
         "selected_anchor": selected_anchor,
         "binding_counts": {
             "anchor_count": len(anchors),
-            "bound_count": status_counts.get("bound", 0) + status_counts.get("selected", 0) + status_counts.get("edited", 0),
-            "failed_count": status_counts.get("failed", 0),
-            "unbound_count": status_counts.get("unbound", 0),
+            "bound_count": max(0, len(anchors) - failed_count - unbound_count),
+            "failed_count": failed_count,
+            "unbound_count": unbound_count,
             "clamped_count": status_counts.get("clamped", 0),
             "low_confidence_count": status_counts.get("suspicious", 0),
         },
@@ -158,9 +160,10 @@ def _editor_shell_css() -> str:
   --green: #7ee08c;
   --red: #ff6b72;
   --orange: #ffad5c;
+  --timeline-height: 196px;
 }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: Inter, system-ui, sans-serif; overflow: hidden; }
-#app { height: 100%; display: grid; grid-template-rows: 34px minmax(0, 1fr) 240px; background: var(--bg); }
+#app { height: 100%; display: grid; grid-template-rows: 34px minmax(0, 1fr) var(--timeline-height); background: var(--bg); }
 #appbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 0 10px; border-bottom: 1px solid var(--line); background: #0d1420; box-sizing: border-box; }
 #brand { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
 #title { font-size: 15px; font-weight: 700; white-space: nowrap; }
@@ -174,11 +177,12 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 #inspector-panel { border-right: 0; border-left: 1px solid var(--line); }
 #viewer-panel { position: relative; min-width: 0; min-height: 0; background: #05070c; overflow: hidden; }
 #viewer { width: calc(100% + 250px); height: 100%; border: 0; background: #05070c; }
-.viewport-hud { position: absolute; left: 12px; top: 10px; display: flex; gap: 8px; pointer-events: none; opacity: .72; }
+.viewport-hud { position: absolute; left: 12px; top: 10px; pointer-events: none; opacity: .68; }
 .badge, .status-badge { border: 1px solid var(--line); border-radius: 999px; background: rgba(16, 23, 35, .88); color: #d7e2f5; padding: 2px 7px; font-size: 11px; white-space: nowrap; }
+.status-badge.bound { color: #9bcfff; }
 .status-badge.edited { border-color: rgba(126, 224, 140, .65); color: var(--green); }
-.status-badge.failed, .badge.failed { border-color: rgba(255, 107, 114, .7); color: var(--red); }
-.status-badge.clamped, .status-badge.suspicious, .badge.clamped { border-color: rgba(255, 173, 92, .75); color: var(--orange); }
+.status-badge.failed { border-color: rgba(255, 107, 114, .7); color: var(--red); }
+.status-badge.clamped, .status-badge.suspicious { border-color: rgba(255, 173, 92, .75); color: var(--orange); }
 .card { border: 1px solid var(--line); border-radius: 7px; background: var(--panel-2); padding: 10px; margin-bottom: 10px; }
 .card h3 { margin: 0 0 8px; font-size: 12px; color: #dbe6fa; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .kv { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 6px 8px; font: 12px Inter, system-ui, sans-serif; color: #c5d1e8; }
@@ -195,8 +199,8 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 .mini-stat { border: 1px solid #25324b; border-radius: 6px; background: #0e1624; padding: 5px 7px; }
 .mini-stat-label { color: var(--muted); font-size: 10px; }
 .mini-stat-value { color: #dce7ff; font: 12px ui-monospace, monospace; }
-.mini-stat.failed .mini-stat-value { color: var(--red); }
-.mini-stat.clamped .mini-stat-value { color: var(--orange); }
+.mini-stat.failed-active .mini-stat-value { color: var(--red); }
+.mini-stat.clamped-active .mini-stat-value { color: var(--orange); }
 .muted { color: var(--muted); }
 .error { color: var(--red); }
 select, button, input { height: 28px; border: 1px solid #34415f; border-radius: 5px; background: #111a29; color: #dce7ff; padding: 0 8px; box-sizing: border-box; }
@@ -206,19 +210,17 @@ button.danger { background: #67212a; border-color: #a33a45; color: #ffe9ed; }
 button.ghost { background: #121927; }
 button:disabled { opacity: .48; cursor: default; }
 .stack { display: grid; gap: 7px; }
-.row { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; min-width: 0; }
 .full { width: 100%; }
-#timeline-panel { min-height: 0; border-top: 1px solid var(--line); background: #0d1420; display: grid; grid-template-rows: 36px minmax(0, 1fr) 24px; }
-#timeline-toolbar { display: grid; grid-template-columns: 245px minmax(0, 1fr); gap: 10px; align-items: center; padding: 4px 12px; border-bottom: 1px solid #1e2a40; box-sizing: border-box; }
+#timeline-panel { min-height: 0; border-top: 1px solid var(--line); background: #0d1420; display: grid; grid-template-rows: 36px minmax(0, 1fr) 22px; }
+#timeline-toolbar { display: grid; grid-template-columns: 245px minmax(180px, 1fr) auto; gap: 10px; align-items: center; padding: 4px 12px; border-bottom: 1px solid #1e2a40; box-sizing: border-box; }
 #timeline-title-group { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 #timeline-title { font-size: 12px; font-weight: 650; color: #dce7ff; white-space: nowrap; }
 #timeline-readout { color: var(--muted); font: 11px ui-monospace, monospace; white-space: nowrap; }
-#timeline-controls { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
-#transport-controls { display: flex; gap: 6px; align-items: center; padding-right: 8px; margin-right: 4px; border-right: 1px solid #26334d; }
-#anchor-nav-controls { display: flex; gap: 6px; align-items: center; }
+#transport-controls { display: flex; gap: 6px; align-items: center; justify-self: center; }
+#anchor-nav-controls { display: flex; gap: 6px; align-items: center; justify-self: end; }
 #frame-input { width: 82px; font-family: ui-monospace, monospace; }
-#timeline-scroll { min-height: 0; overflow: auto hidden; }
-#timeline { position: relative; min-width: 900px; height: 100%; background: #08101b; user-select: none; }
+#timeline-scroll { min-height: 0; overflow: hidden; }
+#timeline { position: relative; width: 100%; min-width: 0; height: 100%; background: #08101b; user-select: none; }
 #frame-ruler { position: absolute; left: 120px; right: 16px; top: 0; height: 28px; border-bottom: 1px solid #23304a; }
 #track-area { position: absolute; left: 0; right: 0; top: 28px; bottom: 0; }
 #playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); z-index: 8; box-shadow: 0 0 0 1px rgba(255, 212, 95, .24), 0 0 12px rgba(255, 212, 95, .18); }
@@ -233,13 +235,13 @@ button:disabled { opacity: .48; cursor: default; }
 .anchorBlock.clamped, .anchorBlock.suspicious { border-color: var(--orange); box-shadow: inset 0 -3px 0 rgba(255, 173, 92, .9); }
 .tick { position: absolute; top: 6px; color: #7184a8; font: 10px ui-monospace, monospace; transform: translateX(-50%); }
 .minorTick { position: absolute; top: 18px; width: 1px; height: 8px; background: rgba(113, 132, 168, .45); }
-#status-bar { display: flex; align-items: center; justify-content: space-between; padding: 0 12px; border-top: 1px solid #1e2a40; color: #9fb0d0; font: 11px ui-monospace, monospace; overflow: hidden; }
-#status-left, #status-right { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; user-select: text; }
+#status-bar { display: flex; align-items: center; padding: 0 12px; border-top: 1px solid #1e2a40; color: #9fb0d0; font: 11px ui-monospace, monospace; overflow: hidden; }
+#status-left { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; user-select: text; }
 """
 
 
 def _editor_shell_js() -> str:
-    return """
+    return r"""
 const boot = BOOT_STATE;
 document.getElementById('viewer').src = boot.viser_url;
 let state = null;
@@ -252,7 +254,6 @@ let playbackAnimId = null;
 let playbackAnimMs = null;
 const FRAME_POST_INTERVAL_MS = 50;
 const timeline = document.getElementById('timeline');
-const timelineScroll = document.getElementById('timeline-scroll');
 const playhead = document.getElementById('playhead');
 const playheadLabel = document.getElementById('playhead-label');
 const recentSelect = document.getElementById('recent');
@@ -285,7 +286,7 @@ function railLeft() { return 120; }
 function frameToX(frame) { return railLeft() + (frame / Math.max(1, state.n_frames - 1)) * railWidth(); }
 function xToFrame(clientX) {
   const rect = timeline.getBoundingClientRect();
-  const ratio = clamp((clientX - rect.left - railLeft() + timelineScroll.scrollLeft) / railWidth(), 0, 1);
+  const ratio = clamp((clientX - rect.left - railLeft()) / railWidth(), 0, 1);
   return Math.round(ratio * Math.max(0, state.n_frames - 1));
 }
 function shownFrame() { return Math.round(Number(state?.current_frame || 0)); }
@@ -309,6 +310,11 @@ function eventFromMessage(message, kind='info') {
 function canGenerate() {
   const gen = state?.generation || {};
   return Boolean(state?.layers?.edit_plan_path) && !gen.running;
+}
+function updateTimelineHeight() {
+  const tracks = Math.max(4, Number(state?.bodies?.length || 0));
+  const height = Math.min(300, Math.max(188, 92 + tracks * 26));
+  document.documentElement.style.setProperty('--timeline-height', `${height}px`);
 }
 function syncPlaybackAnimation() {
   if (!state?.playing || dragging) {
@@ -382,7 +388,6 @@ function updateChrome() {
   const hint = 'Click blocks to select · drag empty timeline to scrub';
   const message = state.last_message && state.last_message !== 'Ready' ? state.last_message : hint;
   $('status-left').textContent = state.last_error ? `Error: ${state.last_error}` : message;
-  $('status-right').textContent = `selected ${shortAnchor(selectedAnchor())} | pending ${state.pending_edit_count || 0} | failed ${failed}`;
   $('viewport-selected').textContent = shortAnchor(selectedAnchor());
   $('generate-top').disabled = !ready;
   $('generate-top').textContent = gen.running ? 'Generating...' : 'Generate';
@@ -406,16 +411,18 @@ function renderLeftPanel() {
       <div class="key">output</div><div class="copy-row"><div class="value copyable" title="${esc(layers.output_contact_layer)}">${esc(layers.output_contact_layer || '-')}</div>${copyButton(layers.output_contact_layer)}</div>
       <div class="key">session</div><div class="copy-row"><div class="value copyable" title="${esc(layers.session_dir)}">${esc(layers.session_dir || '-')}</div>${copyButton(layers.session_dir)}</div>
     </div>`;
+  const failedClass = Number(counts.failed_count || 0) > 0 ? ' failed-active' : '';
+  const clampedClass = Number(counts.clamped_count || 0) > 0 ? ' clamped-active' : '';
   $('binding-summary').innerHTML = `
     <div class="mini-stats">
       <div class="mini-stat"><div class="mini-stat-label">anchors</div><div class="mini-stat-value">${counts.anchor_count || 0}</div></div>
       <div class="mini-stat"><div class="mini-stat-label">bound</div><div class="mini-stat-value">${counts.bound_count || 0}</div></div>
-      <div class="mini-stat failed"><div class="mini-stat-label">failed</div><div class="mini-stat-value">${counts.failed_count || 0}</div></div>
-      <div class="mini-stat clamped"><div class="mini-stat-label">clamped</div><div class="mini-stat-value">${counts.clamped_count || 0}</div></div>
+      <div class="mini-stat${failedClass}"><div class="mini-stat-label">failed</div><div class="mini-stat-value">${counts.failed_count || 0}</div></div>
+      <div class="mini-stat${clampedClass}"><div class="mini-stat-label">clamped</div><div class="mini-stat-value">${counts.clamped_count || 0}</div></div>
     </div>`;
   const events = [];
   if (state.last_error) events.push(eventFromMessage(state.last_error, 'error'));
-  if (state.last_message) events.push(eventFromMessage(state.last_message, 'info'));
+  if (state.last_message && state.last_message !== 'Ready') events.push(eventFromMessage(state.last_message, 'info'));
   $('warning-list').innerHTML = events.length
     ? events.map(item => `<div class="event-card ${item.kind}"><div class="event-title"><span>${esc(item.title)}</span>${copyButton(item.body)}</div><div class="event-meta" title="${attr(item.body)}">${esc(item.body)}</div></div>`).join('')
     : '<div class="muted">No warnings.</div>';
@@ -448,20 +455,19 @@ function renderInspector() {
       ${edit.delta_world ? `
         <div class="key">delta</div><div class="copy-row"><div class="value copyable" title="${esc(JSON.stringify(edit.delta_world))}">${esc(vectorShort(edit.delta_world))}</div>${copyButton(JSON.stringify(edit.delta_world))}</div>
         <div class="key">mode</div><div class="value">${esc(edit.constraint_mode || '-')}</div>
-      ` : '<div class="key">status</div><div class="value muted">No edit applied yet.</div>'}
+      ` : '<div class="key">status</div><div class="value muted">Drag the selected anchor on its bound surface.</div>'}
     </div>`;
   wireCopyButtons($('inspector-panel'));
 }
 function renderGenerationCard() {
   const gen = state.generation || {};
-  const ready = canGenerate();
   const status = gen.running ? 'running' : (gen.last_error ? 'failed' : (gen.last_output_motion ? 'done' : 'idle'));
-  const readyText = gen.running ? 'running' : (ready ? 'yes' : 'no');
+  const outputRow = gen.last_output_motion ? `<div class="key">output</div><div class="copy-row"><div class="value copyable" title="${esc(gen.last_output_motion)}">${esc(gen.last_output_motion)}</div>${copyButton(gen.last_output_motion)}</div>` : '';
   $('generation-card').innerHTML = `<h3>Generation</h3>
     <div class="kv">
       <div class="key">solver</div><div class="value">ik_subprocess</div>
-      <div class="key">status</div><div class="copy-row"><div class="value copyable" title="${esc(gen.last_error || gen.last_output_motion || status)}">${esc(status)}</div>${copyButton(gen.last_error || gen.last_output_motion || '')}</div>
-      <div class="key">ready</div><div class="value muted">${esc(readyText)}</div>
+      <div class="key">status</div><div class="value ${gen.last_error ? 'error' : ''}" title="${esc(gen.last_error || status)}">${esc(status)}</div>
+      ${outputRow}
     </div>`;
   wireCopyButtons($('generation-card'));
 }
@@ -480,8 +486,7 @@ function bodyOrder(body) {
 }
 function renderTimeline() {
   const bodies = [...(state.bodies || [])].sort((a, b) => bodyOrder(a) - bodyOrder(b) || String(a).localeCompare(String(b)));
-  const minWidth = Math.max(900, timelineScroll.clientWidth);
-  timeline.style.width = `${minWidth}px`;
+  timeline.style.width = '100%';
   for (const el of [...timeline.querySelectorAll('.track-header,.track-line,.anchorBlock,.tick,.minorTick')]) el.remove();
   const majorCount = 8;
   for (let i = 0; i <= majorCount; i++) {
@@ -519,7 +524,7 @@ function renderTimeline() {
     const start = clamp(anchor.start_frame, 0, Math.max(0, state.n_frames - 1));
     const end = clamp(anchor.end_frame, start + 1, state.n_frames);
     const el = document.createElement('div');
-    el.className = 'anchorBlock ' + statusClass(anchor.status) + (anchor.anchor_id === state.selected_anchor_id ? ' selected' : '');
+    el.className = 'anchorBlock ' + statusClass(anchor.status) + (anchor.selected ? ' selected' : '');
     el.style.left = frameToX(start) + 'px';
     el.style.width = Math.max(3, frameToX(end - 1) - frameToX(start)) + 'px';
     el.style.top = (laneTop + lane * laneH + 4) + 'px';
@@ -532,6 +537,7 @@ function renderTimeline() {
 }
 function render() {
   if (!state) return;
+  updateTimelineHeight();
   updateChrome();
   renderLeftPanel();
   renderInspector();
@@ -566,6 +572,7 @@ window.addEventListener('keydown', event => {
   if (event.code === 'ArrowLeft') api('/api/frame', {frame: shownFrame() - (event.shiftKey ? 10 : 1)});
   if (event.code === 'ArrowRight') api('/api/frame', {frame: shownFrame() + (event.shiftKey ? 10 : 1)});
 });
+window.addEventListener('resize', () => { if (state) renderTimeline(); });
 refresh();
 setInterval(refresh, 500);
 """
@@ -594,7 +601,7 @@ def _timeline_html(*, viser_url: str) -> str:
   </header>
   <main id="main">
     <aside id="left-panel">
-      <section class="card"><h3>Motion</h3><div class="stack"><select id="recent" class="full"></select><button id="load-motion" class="primary">Load Motion...</button><div class="muted">Opens the local motion file picker.</div></div></section>
+      <section class="card"><h3>Motion</h3><div class="stack"><select id="recent" class="full"></select><button id="load-motion" class="primary">Load Motion...</button></div></section>
       <section class="card"><h3>Layers</h3><div id="layer-summary"></div></section>
       <section class="card"><h3>Binding</h3><div id="binding-summary"></div></section>
       <section class="card"><h3>Events / Warnings</h3><div id="warning-list"></div></section>
@@ -613,20 +620,18 @@ def _timeline_html(*, viser_url: str) -> str:
   <section id="timeline-panel">
     <div id="timeline-toolbar">
       <div id="timeline-title-group"><div id="timeline-title">Contact Sequencer</div><div id="timeline-readout">-</div></div>
-      <div id="timeline-controls">
-        <div id="transport-controls">
-          <button id="play" class="primary">Play</button>
-          <input id="frame-input" type="number" min="0" value="0" />
-        </div>
-        <div id="anchor-nav-controls">
-          <button id="snap-selected" class="ghost">Snap selected</button>
-          <button id="prev-anchor" class="ghost">Prev anchor</button>
-          <button id="next-anchor" class="ghost">Next anchor</button>
-        </div>
+      <div id="transport-controls">
+        <button id="play" class="primary">Play</button>
+        <input id="frame-input" type="number" min="0" value="0" aria-label="Current frame" title="Current frame" />
+      </div>
+      <div id="anchor-nav-controls">
+        <button id="snap-selected" class="ghost">Go to selected</button>
+        <button id="prev-anchor" class="ghost">Prev anchor</button>
+        <button id="next-anchor" class="ghost">Next anchor</button>
       </div>
     </div>
     <div id="timeline-scroll"><div id="timeline"><div id="frame-ruler"></div><div id="track-area"></div><div id="playhead"></div><div id="playhead-label"></div></div></div>
-    <div id="status-bar"><div id="status-left">Ready</div><div id="status-right"></div></div>
+    <div id="status-bar"><div id="status-left">Ready</div></div>
   </section>
 </div>
 <script>{script}</script>
@@ -646,7 +651,12 @@ def start_contact_timeline_wrapper(
     viser_url = f"http://localhost:{viser_port}"
 
     def state() -> dict[str, Any]:
-        return contact_timeline_state(controller=controller, playback=playback, motion_name=motion_name, fps=fps)
+        return contact_timeline_state(
+            controller=controller,
+            playback=playback,
+            motion_name=motion_name,
+            fps=fps,
+        )
 
     def target_controller() -> Any:
         return getattr(controller, "current", None) or controller
@@ -654,10 +664,22 @@ def start_contact_timeline_wrapper(
     def generation_state(target: Any) -> Any:
         state_obj = getattr(target, "state", None)
         if state_obj is None:
-            return SimpleNamespace(running=False, last_output_motion=None, last_error="no editor state", last_started_at=None, last_finished_at=None)
+            return SimpleNamespace(
+                running=False,
+                last_output_motion=None,
+                last_error="no editor state",
+                last_started_at=None,
+                last_finished_at=None,
+            )
         gen = getattr(state_obj, "generation", None)
         if gen is None:
-            gen = SimpleNamespace(running=False, last_output_motion=None, last_error=None, last_started_at=None, last_finished_at=None)
+            gen = SimpleNamespace(
+                running=False,
+                last_output_motion=None,
+                last_error=None,
+                last_started_at=None,
+                last_finished_at=None,
+            )
             setattr(state_obj, "generation", gen)
         return gen
 
@@ -781,7 +803,9 @@ def start_contact_timeline_wrapper(
                 if path == "/api/frame" and playback is not None:
                     playback.set_frame(int(body.get("frame", playback.frame())))
                 elif path == "/api/play" and playback is not None:
-                    playback.playing["value"] = bool(body.get("playing", not playback.playing["value"]))
+                    playback.playing["value"] = bool(
+                        body.get("playing", not playback.playing["value"])
+                    )
                 elif path == "/api/select_anchor":
                     anchor_id = str(body.get("anchor_id") or "")
                     controller.select_anchor(anchor_id)
@@ -799,7 +823,9 @@ def start_contact_timeline_wrapper(
                     if hasattr(controller, "open_load_dialog"):
                         controller.open_load_dialog()
                     else:
-                        controller.state.last_error = "load dialog is unavailable in this editor mode"
+                        controller.state.last_error = (
+                            "load dialog is unavailable in this editor mode"
+                        )
                 elif path == "/api/open_latest":
                     controller.open_latest_motion()
                 elif path == "/api/reload_motion":
