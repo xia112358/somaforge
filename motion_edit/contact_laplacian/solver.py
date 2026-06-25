@@ -1,10 +1,15 @@
-"""Whole-trajectory batch contact-Laplacian solver.
+"""Whole-trajectory dual-Laplacian contact deformation solver.
 
-This solver assembles one global trajectory least-squares problem over
-``q[0:T]`` and is currently validated with synthetic kinematics providers. It is
-kept as an experimental research backend; real motion generation should still
-use the production ``lte_fullbody`` subprocess path unless a real kinematics
-provider is supplied.
+The core objective is intentionally narrow:
+
+* edited and fixed contact handles provide spatial boundary conditions;
+* the temporal Laplacian propagates the deformation through time;
+* semantic body-relative and interaction-mesh Laplacians propagate it through
+  the robot/object spatial graph.
+
+The q prior is only a weak gauge term that removes the global null space. The
+legacy first-difference q smoothness term remains available for compatibility,
+but is disabled by the default dual-Laplacian profile.
 """
 
 from __future__ import annotations
@@ -51,11 +56,12 @@ def solve_batch_contact_laplacian(
     body_edges: Sequence[tuple[str, str]] | None = None,
     interaction_mesh: InteractionMeshSpec | None = None,
 ) -> ContactLaplacianSolveResult:
-    """Solve a full-trajectory contact-Laplacian least-squares problem.
+    """Solve one global trajectory problem over ``q[0:T]``.
 
-    The optimization variable is the entire trajectory ``dq [T, nq]``. Spatial
-    contact terms are block-diagonal by frame, while q smoothness and temporal
-    Laplacian terms couple adjacent frames in the same global system.
+    For the body-position proxy provider, ``q - q_prior`` is exactly the
+    semantic deformation field. The temporal residual therefore minimizes its
+    second derivative, while body and mesh residuals minimize its spatial
+    Laplacian. Contact handles are the only high-weight target terms.
     """
 
     cfg = config or BatchContactLaplacianConfig()
@@ -78,10 +84,17 @@ def solve_batch_contact_laplacian(
     )
 
     warnings: list[str] = []
+    temporal_active = float(cfg.temporal_laplacian_weight) > 0.0
+    body_spatial_active = float(cfg.body_relative_weight) > 0.0 and bool(resolved_body_edges)
+    mesh_spatial_active = float(cfg.mesh_laplacian_weight) > 0.0 and interaction_mesh is not None
+    if not temporal_active:
+        warnings.append("temporal_laplacian_weight is zero; contact deformation can change abruptly in time")
     if float(cfg.mesh_laplacian_weight) > 0.0 and interaction_mesh is None:
         warnings.append("mesh_laplacian_weight > 0 but no interaction_mesh spec was provided; mesh residual skipped")
     if float(cfg.body_relative_weight) > 0.0 and not resolved_body_edges:
         warnings.append("body_relative_weight > 0 but no compatible semantic body edges were available; body-relative residual skipped")
+    if not body_spatial_active and not mesh_spatial_active:
+        warnings.append("no spatial Laplacian is active; deformation will not propagate through body/object structure")
 
     edited_count = sum(1 for handle in handles if handle.kind == "edited_contact")
     fixed_count = sum(1 for handle in handles if handle.kind == "fixed_contact")
@@ -195,8 +208,18 @@ def solve_batch_contact_laplacian(
         if relative_improvement <= float(cfg.relative_cost_tolerance):
             break
 
+    deformation = q - prior
+    frame_deformation_norm = np.linalg.norm(deformation, axis=1) if len(deformation) else np.zeros(0, dtype=np.float64)
     metadata = {
         "solver": "batch_contact_laplacian",
+        "objective_profile": "dual_laplacian_contact_deformation",
+        "core_residual_families": [
+            "edited_contact",
+            "fixed_contact",
+            "temporal_laplacian",
+            "body_relative",
+            "mesh_laplacian",
+        ],
         "trajectory_shape": [int(n_frames), int(nq)],
         "semantic_points": list(semantic_points),
         "body_edges": [list(edge) for edge in resolved_body_edges],
@@ -204,6 +227,10 @@ def solve_batch_contact_laplacian(
         "fixed_handle_count": int(fixed_count),
         "handle_count": int(len(handles)),
         "interaction_mesh": mesh_meta,
+        "spatial_laplacian_active": bool(body_spatial_active or mesh_spatial_active),
+        "temporal_laplacian_active": bool(temporal_active),
+        "deformation_norm": float(np.linalg.norm(deformation)),
+        "deformation_max_frame_norm": float(np.max(frame_deformation_norm)) if len(frame_deformation_norm) else 0.0,
         "weights": {
             "edit_contact_weight": float(cfg.edit_contact_weight),
             "fixed_contact_weight": float(cfg.fixed_contact_weight),
@@ -252,8 +279,6 @@ def _build_system(
         n_frames=n_frames,
         nq=nq,
     )
-    add_q_prior_residuals(system, q=q, q_prior=prior, weight=float(config.q_prior_weight))
-    add_q_smooth_residuals(system, q=q, q_prior=prior, weight=float(config.q_smooth_weight))
     add_temporal_laplacian_residuals(
         system,
         q=q,
@@ -278,6 +303,10 @@ def _build_system(
             mesh=interaction_mesh,
             weight=float(config.mesh_laplacian_weight),
         )
+    # Gauge/compatibility regularizers are deliberately assembled after both
+    # Laplacian families so they cannot be mistaken for the algorithmic core.
+    add_q_prior_residuals(system, q=q, q_prior=prior, weight=float(config.q_prior_weight))
+    add_q_smooth_residuals(system, q=q, q_prior=prior, weight=float(config.q_smooth_weight))
     return system, mesh_meta
 
 
