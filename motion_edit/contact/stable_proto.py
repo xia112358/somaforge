@@ -292,18 +292,18 @@ def transitions_from_stable_contact_anchors(
         config=cfg,
     )
     debounced_contact = np.asarray(stable_metadata.get("debounced_contact_mask"), dtype=bool)
-    if len(stable_anchors) < 2:
+    if len(stable_anchors) < 2 or not touchdown_by_anchor:
         return []
 
     transitions: list[ContactTransitionRecord] = []
     for proto_id, (start, end) in enumerate(zip(stable_anchors[:-1], stable_anchors[1:])):
         start_i = int(start)
         end_i = int(end)
-        if end_i <= start_i:
+        if end_i <= start_i or end_i not in touchdown_by_anchor:
             continue
         end_sample = max(start_i, min(end_i - 1, contact.shape[0] - 1))
         endpoint_sample = max(start_i, min(end_i, contact.shape[0] - 1))
-        touchdown_mask = touchdown_by_anchor.get(end_i, np.zeros(contact.shape[1], dtype=bool))
+        touchdown_mask = touchdown_by_anchor[end_i]
         active_bodies = bodies_from_mask(touchdown_mask, names)
         if not active_bodies and active is not None:
             active_bodies = _mask_at(active, start_i, names)
