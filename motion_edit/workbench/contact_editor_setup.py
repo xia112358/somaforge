@@ -20,6 +20,7 @@ from motion_edit.contact.patches import patches_from_anchors
 from motion_edit.contact.surface_catalog import surfaces_from_urdf_meshes
 from motion_edit.io import write_jsonl
 from motion_edit.paths import LAYERS_ROOT, SURFACES_ROOT, WORKBENCH_ROOT
+from motion_edit.workbench.stable_transition_rebuild import stable_proto_transitions_for_editor
 from motion_edit.workbench.surface_editor_session import SurfaceEditorSession, prepare_surface_editor_session
 
 
@@ -251,12 +252,25 @@ def prepare_contact_editor_session(
         max_distance=config.max_surface_distance,
         mode=config.bind_mode,
     )
-    ready_graph = ContactGraph(
+    bound_graph = ContactGraph(
         motion_id=visible_graph.motion_id,
         events=visible_graph.events,
         anchors=bound_anchors,
         patches=patches_from_anchors(bound_anchors),
         transitions=visible_graph.transitions,
+    )
+    ready_transitions = stable_proto_transitions_for_editor(
+        graph=bound_graph,
+        motion=config.motion,
+        fps=config.fps,
+        fallback=visible_graph.transitions,
+    )
+    ready_graph = ContactGraph(
+        motion_id=bound_graph.motion_id,
+        events=bound_graph.events,
+        anchors=bound_graph.anchors,
+        patches=bound_graph.patches,
+        transitions=ready_transitions,
     )
     counts = surface_binding_counts(ready_graph)
     if counts["unbound_count"] or counts["failed_count"]:
