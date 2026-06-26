@@ -42,6 +42,9 @@ class BatchContactLaplacianConfig:
     line_search_max_steps: int = 8
     relative_cost_tolerance: float = 1.0e-8
     step_tolerance: float = 1.0e-10
+    transport_structure_prior: bool = True
+    transport_structure_damping: float = 1.0e-4
+    transport_structure_max_step: float = 0.0
 
     def __post_init__(self) -> None:
         temporal_core = (
@@ -67,10 +70,16 @@ class BatchContactLaplacianConfig:
             "q_prior_weight",
             "q_smooth_weight",
             "mesh_laplacian_weight",
+            "damping",
+            "transport_structure_damping",
+            "transport_structure_max_step",
         ):
             value = float(getattr(self, name))
             if value < 0.0 or not np.isfinite(value):
                 raise ValueError(f"{name} must be finite and nonnegative")
+        for name in ("line_search_max_steps", "num_iters"):
+            if int(getattr(self, name)) < 0:
+                raise ValueError(f"{name} must be nonnegative")
 
 
 @dataclass(frozen=True)
