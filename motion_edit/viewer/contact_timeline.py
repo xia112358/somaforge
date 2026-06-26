@@ -46,17 +46,19 @@ def _proto_boundaries(graph: Any, n_frames: int) -> list[dict[str, Any]]:
         stable_frames = _metadata_value(transition, "stable_anchor_frames", []) or []
         for frame in stable_frames:
             frame_i = int(max(0, min(n_frames - 1, int(frame))))
-            by_frame.setdefault(
+            entry = by_frame.setdefault(
                 frame_i,
                 {"frame": frame_i, "kind": "stable_contact_boundary", "sources": []},
-            )["sources"].append(getattr(transition, "transition_id", "transition"))
+            )
+            entry["kind"] = "stable_contact_boundary"
+            entry["sources"].append(getattr(transition, "transition_id", "transition"))
         for endpoint_kind, frame in (
             ("segment_start", getattr(transition, "start_frame", 0)),
             ("segment_end", getattr(transition, "end_frame", 0)),
         ):
             frame_i = int(max(0, min(n_frames - 1, int(frame))))
             entry = by_frame.setdefault(frame_i, {"frame": frame_i, "kind": endpoint_kind, "sources": []})
-            if entry["kind"] != "stable_contact_boundary":
+            if entry.get("kind") != "stable_contact_boundary":
                 entry["kind"] = endpoint_kind if kind == "transition" else f"{kind}_{endpoint_kind}"
             entry["sources"].append(getattr(transition, "transition_id", "transition"))
     return [by_frame[frame] for frame in sorted(by_frame)]
@@ -142,7 +144,7 @@ def contact_timeline_state(
         selected = anchor.anchor_id == controller.selected_anchor_id
         item = {
             "contact_point_id": anchor.anchor_id,
-            "anchor_id": anchor.anchor_id,  # compatibility for existing JS/tests
+            "anchor_id": anchor.anchor_id,
             "body": anchor.body,
             "start_frame": int(anchor.start_frame),
             "end_frame": int(anchor.end_frame),
@@ -195,7 +197,7 @@ def contact_timeline_state(
     failed_count = status_counts.get("failed", 0)
     unbound_count = status_counts.get("unbound", 0)
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "motion_name": current_motion_name,
         "n_frames": int(n_frames),
         "fps": int(fps),
@@ -208,11 +210,11 @@ def contact_timeline_state(
         "last_error": controller.state.last_error,
         "recent_motions": controller.recent_motion_items() if hasattr(controller, "recent_motion_items") else [],
         "bodies": bodies,
-        "anchors": contact_points,  # compatibility: these are UI contact points
+        "anchors": contact_points,
         "contact_points": contact_points,
         "segments": segments,
         "proto_boundaries": proto_boundaries,
-        "selected_anchor": selected_contact_point,  # compatibility
+        "selected_anchor": selected_contact_point,
         "selected_contact_point": selected_contact_point,
         "binding_counts": {
             "contact_point_count": len(contact_points),
@@ -300,9 +302,8 @@ button:disabled { opacity:.48; cursor:default; }
 .track-header { position:absolute; left:0; width:112px; height:24px; padding:5px 8px 0 0; box-sizing:border-box; text-align:right; color:#aab8d6; font:11px ui-monospace, monospace; border-right:1px solid #23304a; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; background:#08101b; z-index:5; }
 .track-header.segment-track { color:#ffe083; }
 .track-line { position:absolute; left:120px; right:16px; height:1px; background:rgba(64,78,112,.35); }
-.protoBoundary { position:absolute; top:0; bottom:0; width:1px; background:rgba(255,255,255,.22); z-index:3; }
-.protoBoundary.stable_contact_boundary { width:2px; background:rgba(255,212,95,.72); box-shadow:0 0 8px rgba(255,212,95,.22); }
-.protoBoundaryLabel { position:absolute; top:0; transform:translateX(3px); color:#ffe8a6; font:9px ui-monospace, monospace; opacity:.85; z-index:4; pointer-events:none; }
+.protoBoundary { position:absolute; top:3px; height:21px; width:1px; background:rgba(255,255,255,.18); z-index:3; pointer-events:auto; }
+.protoBoundary.stable_contact_boundary { width:2px; background:rgba(255,212,95,.8); box-shadow:0 0 8px rgba(255,212,95,.24); }
 .segmentBlock { position:absolute; height:21px; border-radius:5px; background:rgba(255,212,95,.16); border:1px solid rgba(255,212,95,.48); box-sizing:border-box; cursor:pointer; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:#ffe8a6; font:10px ui-monospace, monospace; padding:4px 6px; z-index:4; }
 .segmentBlock.stable_contact_anchor { background:linear-gradient(90deg, rgba(255,212,95,.22), rgba(85,180,255,.14)); border-color:rgba(255,212,95,.7); }
 .segmentBlock.proto_index { background:rgba(126,224,140,.16); border-color:rgba(126,224,140,.56); color:#bff5c6; }
@@ -510,7 +511,7 @@ function renderLeftPanel() {
       <div class="mini-stat"><div class="mini-stat-label">bound points</div><div class="mini-stat-value">${counts.bound_count || 0}</div></div>
       <div class="mini-stat${failedClass}"><div class="mini-stat-label">failed</div><div class="mini-stat-value">${counts.failed_count || 0}</div></div>
       <div class="mini-stat${clampedClass}"><div class="mini-stat-label">clamped</div><div class="mini-stat-value">${counts.clamped_count || 0}</div></div>
-      <div class="mini-stat"><div class="mini-stat-label">proto kind</div><div class="mini-stat-value" title="${esc(segKinds)}">${esc(segKinds)}</div></div>
+      <div class="mini-stat"><div class="mini-stat-label">segment kind</div><div class="mini-stat-value" title="${esc(segKinds)}">${esc(segKinds)}</div></div>
     </div>`;
   wireCopyButtons($('layer-summary'));
 }
@@ -598,19 +599,6 @@ function renderTimeline() {
     minor.style.left = x + 'px';
     frameRuler.appendChild(minor);
   }
-  (state.proto_boundaries || []).forEach(boundary => {
-    const x = frameToX(boundary.frame);
-    const line = document.createElement('div');
-    line.className = 'protoBoundary ' + kindClass(boundary.kind);
-    line.style.left = x + 'px';
-    line.title = `proto boundary ${boundary.frame}\n${boundary.kind}\n${(boundary.sources || []).join(', ')}`;
-    trackArea.appendChild(line);
-    const label = document.createElement('div');
-    label.className = 'protoBoundaryLabel';
-    label.style.left = x + 'px';
-    label.textContent = String(boundary.frame);
-    trackArea.appendChild(label);
-  });
   const laneH = 26;
   const segmentTop = 2;
   const bodyTop = 32;
@@ -623,16 +611,26 @@ function renderTimeline() {
   segmentLine.className = 'track-line';
   segmentLine.style.top = (segmentTop + laneH - 1) + 'px';
   trackArea.appendChild(segmentLine);
+  (state.proto_boundaries || []).forEach(boundary => {
+    const x = frameToX(boundary.frame);
+    const line = document.createElement('div');
+    line.className = 'protoBoundary ' + kindClass(boundary.kind);
+    line.style.left = x + 'px';
+    line.title = `proto boundary ${boundary.frame}\n${boundary.kind}\n${(boundary.sources || []).join(', ')}`;
+    trackArea.appendChild(line);
+  });
   (state.segments || []).forEach(segment => {
     const start = clamp(segment.start_frame, 0, Math.max(0, state.n_frames - 1));
     const end = clamp(segment.end_frame, start + 1, state.n_frames);
+    const left = frameToX(start);
+    const width = Math.max(4, frameToX(end - 1) - frameToX(start));
     const el = document.createElement('div');
     el.className = 'segmentBlock ' + kindClass(segment.segmentation_kind);
-    el.style.left = frameToX(start) + 'px';
-    el.style.width = Math.max(4, frameToX(end - 1) - frameToX(start)) + 'px';
+    el.style.left = left + 'px';
+    el.style.width = width + 'px';
     el.style.top = (segmentTop + 2) + 'px';
     el.title = `${segment.segment_id}\n${segment.segmentation_kind || ''} ${segment.start_frame}-${segment.end_frame}\nactive=${segment.active_body || '-'}\nsupport=${(segment.support_bodies || []).join(',')}\n${segment.source_contact_point_id || ''} -> ${segment.target_contact_point_id || ''}`;
-    el.textContent = segment.label || `${segment.start_frame}-${segment.end_frame}`;
+    el.textContent = width >= 96 ? `${segment.start_frame}-${segment.end_frame}` : '';
     el.onclick = event => { event.stopPropagation(); api('/api/frame', {frame: segment.start_frame}); };
     trackArea.appendChild(el);
   });
