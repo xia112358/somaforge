@@ -302,6 +302,7 @@ def transitions_from_stable_contact_anchors(
         if end_i <= start_i:
             continue
         end_sample = max(start_i, min(end_i - 1, contact.shape[0] - 1))
+        endpoint_sample = max(start_i, min(end_i, contact.shape[0] - 1))
         touchdown_mask = touchdown_by_anchor.get(end_i, np.zeros(contact.shape[1], dtype=bool))
         active_bodies = bodies_from_mask(touchdown_mask, names)
         if not active_bodies and active is not None:
@@ -313,7 +314,7 @@ def transitions_from_stable_contact_anchors(
         free_bodies = [body for body in names if body not in set(active_bodies) and body not in set(support_bodies)]
 
         source_anchor = _anchor_for_body_at(anchors, body=active_body, frame=start_i)
-        target_anchor = _anchor_for_body_at(anchors, body=active_body, frame=end_sample)
+        target_anchor = _anchor_for_body_at(anchors, body=active_body, frame=endpoint_sample)
         start_event = _event_near(events, body=active_body, event_type="liftoff", frame=start_i) if active_body else None
         end_event = _event_near(events, body=active_body, event_type="touchdown", frame=end_i) if active_body else None
         transition = ContactTransitionRecord(
@@ -338,7 +339,7 @@ def transitions_from_stable_contact_anchors(
                 "anchor_start": int(start_i),
                 "anchor_end": int(end_i),
                 "contact_start": _mask_string_at(debounced_contact, start_i),
-                "contact_end": _mask_string_at(debounced_contact, end_sample),
+                "contact_end": _mask_string_at(debounced_contact, endpoint_sample),
                 "touchdown_part": mask_string(touchdown_mask),
                 "active_bodies": active_bodies,
                 "support_bodies": support_bodies,
