@@ -22,7 +22,7 @@ class ContactSegmentExtractionTests(unittest.TestCase):
             body_names=body_names,
         )
 
-        self.assertEqual(len(graph.transitions), 2)
+        self.assertEqual(len(graph.transitions), 1)
         transition = graph.transitions[0]
         self.assertEqual(transition.start_frame, 0)
         self.assertEqual(transition.end_frame, 7)
@@ -82,7 +82,7 @@ class ContactSegmentExtractionTests(unittest.TestCase):
         self.assertEqual(transition.end_frame, 5)
         self.assertEqual(transition.metadata["segmentation_kind"], "proto_index")
 
-    def test_no_internal_stable_touchdown_yields_full_motion_proto(self) -> None:
+    def test_no_internal_stable_touchdown_does_not_create_stable_proto(self) -> None:
         contact = np.zeros((8, 1), dtype=bool)
         contact[2:5, 0] = True
 
@@ -93,9 +93,7 @@ class ContactSegmentExtractionTests(unittest.TestCase):
         )
 
         self.assertEqual(len(graph.anchors), 1)
-        self.assertEqual(len(graph.transitions), 1)
-        self.assertEqual((graph.transitions[0].start_frame, graph.transitions[0].end_frame), (0, 8))
-        self.assertEqual(graph.transitions[0].metadata["segmentation_kind"], "stable_contact_anchor")
+        self.assertEqual(graph.transitions, [])
 
 
 if __name__ == "__main__":
