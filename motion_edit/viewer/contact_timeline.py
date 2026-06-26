@@ -197,7 +197,7 @@ def contact_timeline_state(
     failed_count = status_counts.get("failed", 0)
     unbound_count = status_counts.get("unbound", 0)
     return {
-        "schema_version": 6,
+        "schema_version": 7,
         "motion_name": current_motion_name,
         "n_frames": int(n_frames),
         "fps": int(fps),
@@ -361,7 +361,9 @@ function wireCopyButtons(root=document) {
 }
 function railWidth() { return Math.max(1, timeline.clientWidth - 136); }
 function railLeft() { return 120; }
-function frameToX(frame) { return railLeft() + (frame / Math.max(1, state.n_frames - 1)) * railWidth(); }
+function frameRatio(frame) { return frame / Math.max(1, state.n_frames - 1); }
+function frameToRailX(frame) { return frameRatio(frame) * railWidth(); }
+function frameToX(frame) { return railLeft() + frameToRailX(frame); }
 function xToFrame(clientX) {
   const rect = timeline.getBoundingClientRect();
   const ratio = clamp((clientX - rect.left - railLeft()) / railWidth(), 0, 1);
@@ -587,7 +589,7 @@ function renderTimeline() {
   const maxFrame = Math.max(0, state.n_frames - 1);
   const major = Math.max(1, Math.ceil(maxFrame / 8));
   for (let frame = 0; frame <= maxFrame; frame += major) {
-    const x = frameToX(frame);
+    const x = frameToRailX(frame);
     const tick = document.createElement('div');
     tick.className = 'tick';
     tick.style.left = x + 'px';
