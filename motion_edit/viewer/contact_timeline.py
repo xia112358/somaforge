@@ -197,7 +197,7 @@ def contact_timeline_state(
     failed_count = status_counts.get("failed", 0)
     unbound_count = status_counts.get("unbound", 0)
     return {
-        "schema_version": 5,
+        "schema_version": 6,
         "motion_name": current_motion_name,
         "n_frames": int(n_frames),
         "fps": int(fps),
@@ -369,6 +369,10 @@ function xToFrame(clientX) {
 }
 function shownFrame() { return Math.round(Number(state?.current_frame || 0)); }
 function selectedContactPoint() { return state?.selected_contact_point || state?.selected_anchor || null; }
+function cutFrames() {
+  const frames = (state?.proto_boundaries || []).map(boundary => Number(boundary.frame)).filter(Number.isFinite);
+  return Array.from(new Set(frames)).sort((a, b) => a - b);
+}
 function statusClass(status) { return String(status || 'bound').replace(/[^a-zA-Z0-9_-]/g, '_'); }
 function kindClass(kind) { return String(kind || 'boundary').replace(/[^a-zA-Z0-9_-]/g, '_'); }
 function shortContactPoint(point) {
@@ -663,12 +667,28 @@ timeline.addEventListener('pointercancel', event => { if (dragging) scrub(event,
 $('play').onclick = () => api('/api/play', {playing: !state.playing});
 $('frame-input').onchange = () => api('/api/frame', {frame: Number($('frame-input').value || 0)});
 $('snap-selected').onclick = () => { const p = selectedContactPoint(); if (p) api('/api/frame', {frame: p.start_frame}); };
+$('prev-cut').onclick = () => selectRelativeCutFrame(-1);
+$('next-cut').onclick = () => selectRelativeCutFrame(1);
 $('prev-contact').onclick = () => selectRelativeContactPoint(-1);
 $('next-contact').onclick = () => selectRelativeContactPoint(1);
 $('generate-top').onclick = () => api('/api/generate', {});
 recentSelect.onchange = () => api('/api/open_recent', {index: Number(recentSelect.value || 0)});
 $('load-motion').onclick = () => api('/api/load_motion', {});
 $('discard').onclick = () => api('/api/discard', {});
+function selectRelativeCutFrame(offset) {
+  const frames = cutFrames();
+  if (!frames.length) return;
+  const frame = shownFrame();
+  let next;
+  if (offset > 0) {
+    next = frames.find(value => value > frame);
+    if (next === undefined) next = frames[0];
+  } else {
+    next = frames.slice().reverse().find(value => value < frame);
+    if (next === undefined) next = frames[frames.length - 1];
+  }
+  api('/api/frame', {frame: next});
+}
 function selectRelativeContactPoint(offset) {
   const points = state?.contact_points || state?.anchors || [];
   if (!points.length) return;
@@ -737,6 +757,8 @@ def _timeline_html(*, viser_url: str) -> str:
       </div>
       <div id="contact-nav-controls">
         <button id="snap-selected" class="ghost">Go to selected contact</button>
+        <button id="prev-cut" class="ghost">Prev cut</button>
+        <button id="next-cut" class="ghost">Next cut</button>
         <button id="prev-contact" class="ghost">Prev contact</button>
         <button id="next-contact" class="ghost">Next contact</button>
       </div>
