@@ -197,7 +197,7 @@ def contact_timeline_state(
     failed_count = status_counts.get("failed", 0)
     unbound_count = status_counts.get("unbound", 0)
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "motion_name": current_motion_name,
         "n_frames": int(n_frames),
         "fps": int(fps),
@@ -300,15 +300,10 @@ button:disabled { opacity:.48; cursor:default; }
 #playhead { position:absolute; top:0; bottom:0; width:2px; background:var(--accent); z-index:14; box-shadow:0 0 0 1px rgba(255,212,95,.24), 0 0 12px rgba(255,212,95,.18); }
 #playhead-label { position:absolute; top:2px; transform:translateX(-50%); background:#231e0b; color:var(--accent); border:1px solid rgba(255,212,95,.38); border-radius:4px; padding:1px 5px; font:10px ui-monospace, monospace; z-index:15; }
 .track-header { position:absolute; left:0; width:112px; height:24px; padding:5px 8px 0 0; box-sizing:border-box; text-align:right; color:#aab8d6; font:11px ui-monospace, monospace; border-right:1px solid #23304a; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; background:#08101b; z-index:5; }
-.track-header.segment-track { color:#ffe083; }
+.track-header.boundary-track { color:#ffe083; }
 .track-line { position:absolute; left:120px; right:16px; height:1px; background:rgba(64,78,112,.35); }
-.protoBoundary { position:absolute; top:3px; height:21px; width:1px; background:rgba(255,255,255,.18); z-index:3; pointer-events:auto; }
-.protoBoundary.stable_contact_boundary { width:2px; background:rgba(255,212,95,.8); box-shadow:0 0 8px rgba(255,212,95,.24); }
-.segmentBlock { position:absolute; height:21px; border-radius:5px; background:rgba(255,212,95,.16); border:1px solid rgba(255,212,95,.48); box-sizing:border-box; cursor:pointer; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:#ffe8a6; font:10px ui-monospace, monospace; padding:4px 6px; z-index:4; }
-.segmentBlock.stable_contact_anchor { background:linear-gradient(90deg, rgba(255,212,95,.22), rgba(85,180,255,.14)); border-color:rgba(255,212,95,.7); }
-.segmentBlock.proto_index { background:rgba(126,224,140,.16); border-color:rgba(126,224,140,.56); color:#bff5c6; }
-.segmentBlock.anchor_pair { background:rgba(210,110,255,.14); border-color:rgba(210,110,255,.48); color:#efd6ff; }
-.segmentBlock:hover { filter:brightness(1.25); }
+.cutFrameMarker { position:absolute; top:3px; height:21px; width:2px; border-radius:2px; background:rgba(255,212,95,.72); z-index:4; cursor:pointer; box-shadow:0 0 8px rgba(255,212,95,.16); }
+.cutFrameMarker.segment_start, .cutFrameMarker.segment_end { background:rgba(255,255,255,.42); box-shadow:none; }
 .contactPointBlock { position:absolute; height:17px; border-radius:4px; opacity:.72; cursor:pointer; border:1px solid rgba(255,255,255,.18); box-sizing:border-box; }
 .contactPointBlock:hover { opacity:1; transform:translateY(-1px); }
 .contactPointBlock.selected { opacity:1; border-color:#ffe083; box-shadow:0 0 0 2px rgba(255,211,90,.42); z-index:6; }
@@ -375,7 +370,7 @@ function xToFrame(clientX) {
 function shownFrame() { return Math.round(Number(state?.current_frame || 0)); }
 function selectedContactPoint() { return state?.selected_contact_point || state?.selected_anchor || null; }
 function statusClass(status) { return String(status || 'bound').replace(/[^a-zA-Z0-9_-]/g, '_'); }
-function kindClass(kind) { return String(kind || 'segment').replace(/[^a-zA-Z0-9_-]/g, '_'); }
+function kindClass(kind) { return String(kind || 'boundary').replace(/[^a-zA-Z0-9_-]/g, '_'); }
 function shortContactPoint(point) {
   if (!point) return '-';
   return `${point.body || 'contact'} · ${point.start_frame ?? '-'}-${point.end_frame ?? '-'}`;
@@ -471,7 +466,7 @@ function scheduleFramePost(frame, commit=false) {
 }
 function updateChrome() {
   if (!state) return;
-  const frameText = `${shownFrame()} / ${Math.max(0, state.n_frames - 1)} · ${state.segments?.length || 0} segments · ${state.proto_boundaries?.length || 0} boundaries`;
+  const frameText = `${shownFrame()} / ${Math.max(0, state.n_frames - 1)} · ${state.proto_boundaries?.length || 0} cut frames`;
   const gen = state.generation || {};
   const ready = canGenerate();
   $('timeline-readout').textContent = frameText;
@@ -482,7 +477,7 @@ function updateChrome() {
   const failed = state.binding_counts?.failed_count || 0;
   $('failed-chip').textContent = `failed ${failed}`;
   $('failed-chip').style.display = failed ? 'inline-block' : 'none';
-  const hint = 'Click proto segment bands or contact point blocks · drag timeline to scrub';
+  const hint = 'Click cut-frame markers or contact point blocks · drag timeline to scrub';
   const message = state.last_message && state.last_message !== 'Ready' ? state.last_message : hint;
   $('status-left').textContent = state.last_error ? `Error: ${state.last_error}` : message;
   $('viewport-selected').textContent = shortContactPoint(selectedContactPoint());
@@ -506,12 +501,12 @@ function renderLeftPanel() {
   $('binding-summary').innerHTML = `
     <div class="mini-stats">
       <div class="mini-stat"><div class="mini-stat-label">contact points</div><div class="mini-stat-value">${counts.contact_point_count || counts.anchor_count || 0}</div></div>
-      <div class="mini-stat"><div class="mini-stat-label">segments</div><div class="mini-stat-value">${counts.segment_count || 0}</div></div>
-      <div class="mini-stat"><div class="mini-stat-label">boundaries</div><div class="mini-stat-value">${counts.boundary_count || 0}</div></div>
+      <div class="mini-stat"><div class="mini-stat-label">cut frames</div><div class="mini-stat-value">${counts.boundary_count || 0}</div></div>
+      <div class="mini-stat"><div class="mini-stat-label">transitions</div><div class="mini-stat-value">${counts.segment_count || 0}</div></div>
       <div class="mini-stat"><div class="mini-stat-label">bound points</div><div class="mini-stat-value">${counts.bound_count || 0}</div></div>
       <div class="mini-stat${failedClass}"><div class="mini-stat-label">failed</div><div class="mini-stat-value">${counts.failed_count || 0}</div></div>
       <div class="mini-stat${clampedClass}"><div class="mini-stat-label">clamped</div><div class="mini-stat-value">${counts.clamped_count || 0}</div></div>
-      <div class="mini-stat"><div class="mini-stat-label">segment kind</div><div class="mini-stat-value" title="${esc(segKinds)}">${esc(segKinds)}</div></div>
+      <div class="mini-stat"><div class="mini-stat-label">transition kind</div><div class="mini-stat-value" title="${esc(segKinds)}">${esc(segKinds)}</div></div>
     </div>`;
   wireCopyButtons($('layer-summary'));
 }
@@ -600,39 +595,25 @@ function renderTimeline() {
     frameRuler.appendChild(minor);
   }
   const laneH = 26;
-  const segmentTop = 2;
+  const boundaryTop = 2;
   const bodyTop = 32;
-  const segmentHeader = document.createElement('div');
-  segmentHeader.className = 'track-header segment-track';
-  segmentHeader.style.top = segmentTop + 'px';
-  segmentHeader.textContent = 'proto segments';
-  trackArea.appendChild(segmentHeader);
-  const segmentLine = document.createElement('div');
-  segmentLine.className = 'track-line';
-  segmentLine.style.top = (segmentTop + laneH - 1) + 'px';
-  trackArea.appendChild(segmentLine);
+  const boundaryHeader = document.createElement('div');
+  boundaryHeader.className = 'track-header boundary-track';
+  boundaryHeader.style.top = boundaryTop + 'px';
+  boundaryHeader.textContent = 'cut frames';
+  trackArea.appendChild(boundaryHeader);
+  const boundaryLine = document.createElement('div');
+  boundaryLine.className = 'track-line';
+  boundaryLine.style.top = (boundaryTop + laneH - 1) + 'px';
+  trackArea.appendChild(boundaryLine);
   (state.proto_boundaries || []).forEach(boundary => {
     const x = frameToX(boundary.frame);
-    const line = document.createElement('div');
-    line.className = 'protoBoundary ' + kindClass(boundary.kind);
-    line.style.left = x + 'px';
-    line.title = `proto boundary ${boundary.frame}\n${boundary.kind}\n${(boundary.sources || []).join(', ')}`;
-    trackArea.appendChild(line);
-  });
-  (state.segments || []).forEach(segment => {
-    const start = clamp(segment.start_frame, 0, Math.max(0, state.n_frames - 1));
-    const end = clamp(segment.end_frame, start + 1, state.n_frames);
-    const left = frameToX(start);
-    const width = Math.max(4, frameToX(end - 1) - frameToX(start));
-    const el = document.createElement('div');
-    el.className = 'segmentBlock ' + kindClass(segment.segmentation_kind);
-    el.style.left = left + 'px';
-    el.style.width = width + 'px';
-    el.style.top = (segmentTop + 2) + 'px';
-    el.title = `${segment.segment_id}\n${segment.segmentation_kind || ''} ${segment.start_frame}-${segment.end_frame}\nactive=${segment.active_body || '-'}\nsupport=${(segment.support_bodies || []).join(',')}\n${segment.source_contact_point_id || ''} -> ${segment.target_contact_point_id || ''}`;
-    el.textContent = width >= 96 ? `${segment.start_frame}-${segment.end_frame}` : '';
-    el.onclick = event => { event.stopPropagation(); api('/api/frame', {frame: segment.start_frame}); };
-    trackArea.appendChild(el);
+    const marker = document.createElement('div');
+    marker.className = 'cutFrameMarker ' + kindClass(boundary.kind);
+    marker.style.left = x + 'px';
+    marker.title = `cut frame ${boundary.frame}\n${boundary.kind}\n${(boundary.sources || []).join(', ')}`;
+    marker.onclick = event => { event.stopPropagation(); api('/api/frame', {frame: boundary.frame}); };
+    trackArea.appendChild(marker);
   });
   const bodies = state.bodies || [];
   bodies.forEach((body, i) => {
