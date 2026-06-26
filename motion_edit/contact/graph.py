@@ -67,6 +67,13 @@ def contact_graph_from_masks(
             source=source,
         )
     if not transitions:
+        transitions = transitions_from_event_pairs(
+            motion_id=motion_id,
+            events=events,
+            anchors=anchors,
+            source=source,
+        )
+    if not transitions:
         transitions = transitions_from_anchor_pairs(
             motion_id=motion_id,
             anchors=anchors,
@@ -75,13 +82,6 @@ def contact_graph_from_masks(
             active_mask=active_mask,
             support_mask=support_mask,
             body_names=body_names,
-            source=source,
-        )
-    if not transitions:
-        transitions = transitions_from_event_pairs(
-            motion_id=motion_id,
-            events=events,
-            anchors=anchors,
             source=source,
         )
     return ContactGraph(motion_id=motion_id, events=events, anchors=anchors, patches=patches_from_anchors(anchors), transitions=transitions)
