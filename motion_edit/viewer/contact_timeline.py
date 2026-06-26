@@ -39,6 +39,29 @@ def _metadata_value(item: Any, key: str, default: Any = None) -> Any:
     return default
 
 
+def _proto_boundaries(graph: Any, n_frames: int) -> list[dict[str, Any]]:
+    by_frame: dict[int, dict[str, Any]] = {}
+    for transition in getattr(graph, "transitions", []) or []:
+        kind = str(_metadata_value(transition, "segmentation_kind", "transition") or "transition")
+        stable_frames = _metadata_value(transition, "stable_anchor_frames", []) or []
+        for frame in stable_frames:
+            frame_i = int(max(0, min(n_frames - 1, int(frame))))
+            by_frame.setdefault(
+                frame_i,
+                {"frame": frame_i, "kind": "stable_contact_boundary", "sources": []},
+            )["sources"].append(getattr(transition, "transition_id", "transition"))
+        for endpoint_kind, frame in (
+            ("segment_start", getattr(transition, "start_frame", 0)),
+            ("segment_end", getattr(transition, "end_frame", 0)),
+        ):
+            frame_i = int(max(0, min(n_frames - 1, int(frame))))
+            entry = by_frame.setdefault(frame_i, {"frame": frame_i, "kind": endpoint_kind, "sources": []})
+            if entry["kind"] != "stable_contact_boundary":
+                entry["kind"] = endpoint_kind if kind == "transition" else f"{kind}_{endpoint_kind}"
+            entry["sources"].append(getattr(transition, "transition_id", "transition"))
+    return [by_frame[frame] for frame in sorted(by_frame)]
+
+
 def _transition_segments(graph: Any, n_frames: int) -> list[dict[str, Any]]:
     segments: list[dict[str, Any]] = []
     for index, transition in enumerate(getattr(graph, "transitions", []) or []):
@@ -62,8 +85,8 @@ def _transition_segments(graph: Any, n_frames: int) -> list[dict[str, Any]]:
                 "active_body": active_body,
                 "support_bodies": support_bodies,
                 "transition_type": getattr(transition, "transition_type", "unknown"),
-                "source_anchor_id": getattr(transition, "source_anchor_id", None),
-                "target_anchor_id": getattr(transition, "target_anchor_id", None),
+                "source_contact_point_id": getattr(transition, "source_anchor_id", None),
+                "target_contact_point_id": getattr(transition, "target_anchor_id", None),
                 "segmentation_kind": segmentation_kind,
                 "endpoint_policy": endpoint_policy,
                 "touchdown_part": touch,
@@ -90,8 +113,8 @@ def contact_timeline_state(
     current_frame = playback.frame() if playback is not None else 0
     pending_edits = controller.pending_edits()
     bodies: list[str] = []
-    anchors: list[dict[str, Any]] = []
-    selected_anchor: dict[str, Any] | None = None
+    contact_points: list[dict[str, Any]] = []
+    selected_contact_point: dict[str, Any] | None = None
     status_counts: dict[str, int] = {}
 
     def _edit_value(edit: Any, key: str) -> Any:
@@ -118,7 +141,8 @@ def contact_timeline_state(
         status = str(obj.get("status") or "bound") if isinstance(obj, dict) else "bound"
         selected = anchor.anchor_id == controller.selected_anchor_id
         item = {
-            "anchor_id": anchor.anchor_id,
+            "contact_point_id": anchor.anchor_id,
+            "anchor_id": anchor.anchor_id,  # compatibility for existing JS/tests
             "body": anchor.body,
             "start_frame": int(anchor.start_frame),
             "end_frame": int(anchor.end_frame),
@@ -130,6 +154,7 @@ def contact_timeline_state(
             "surface_bounds": anchor.surface_bounds,
             "surface_binding_source": anchor.surface_binding_source,
             "failure_reason": anchor.metadata.get("surface_binding_failure_reason"),
+            "patch_role": anchor.metadata.get("patch_role"),
             "status": status,
             "selected": selected,
             "warnings": obj.get("warnings", []) if isinstance(obj, dict) else [],
@@ -137,11 +162,12 @@ def contact_timeline_state(
             "color": _body_color_hex(anchor.body),
         }
         status_counts[status] = status_counts.get(status, 0) + 1
-        anchors.append(item)
+        contact_points.append(item)
         if selected:
-            selected_anchor = item
+            selected_contact_point = item
 
     segments = _transition_segments(graph, int(n_frames))
+    proto_boundaries = _proto_boundaries(graph, int(n_frames))
     segment_kinds: dict[str, int] = {}
     for segment in segments:
         kind = str(segment.get("segmentation_kind") or "transition")
@@ -169,25 +195,31 @@ def contact_timeline_state(
     failed_count = status_counts.get("failed", 0)
     unbound_count = status_counts.get("unbound", 0)
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "motion_name": current_motion_name,
         "n_frames": int(n_frames),
         "fps": int(fps),
         "current_frame": current_frame,
         "playing": bool(playback.playing["value"]) if playback is not None else False,
         "selected_anchor_id": controller.selected_anchor_id,
+        "selected_contact_point_id": controller.selected_anchor_id,
         "pending_edit_count": len(pending_edits),
         "last_message": controller.state.last_message,
         "last_error": controller.state.last_error,
         "recent_motions": controller.recent_motion_items() if hasattr(controller, "recent_motion_items") else [],
         "bodies": bodies,
-        "anchors": anchors,
+        "anchors": contact_points,  # compatibility: these are UI contact points
+        "contact_points": contact_points,
         "segments": segments,
-        "selected_anchor": selected_anchor,
+        "proto_boundaries": proto_boundaries,
+        "selected_anchor": selected_contact_point,  # compatibility
+        "selected_contact_point": selected_contact_point,
         "binding_counts": {
-            "anchor_count": len(anchors),
+            "contact_point_count": len(contact_points),
+            "anchor_count": len(contact_points),
             "segment_count": len(segments),
-            "bound_count": max(0, len(anchors) - failed_count - unbound_count),
+            "boundary_count": len(proto_boundaries),
+            "bound_count": max(0, len(contact_points) - failed_count - unbound_count),
             "failed_count": failed_count,
             "unbound_count": unbound_count,
             "clamped_count": status_counts.get("clamped", 0),
@@ -201,7 +233,7 @@ def contact_timeline_state(
 
 def _editor_shell_css() -> str:
     return """
-:root { color-scheme: dark; --bg:#070a10; --panel:#101723; --panel-2:#0b111b; --line:#27344d; --muted:#8fa1c3; --text:#e7edf9; --accent:#ffd45f; --green:#7ee08c; --red:#ff6b72; --orange:#ffad5c; --timeline-height:220px; }
+:root { color-scheme: dark; --bg:#070a10; --panel:#101723; --panel-2:#0b111b; --line:#27344d; --muted:#8fa1c3; --text:#e7edf9; --accent:#ffd45f; --green:#7ee08c; --red:#ff6b72; --orange:#ffad5c; --timeline-height:226px; }
 html, body { margin:0; height:100%; background:var(--bg); color:var(--text); font-family:Inter, system-ui, sans-serif; overflow:hidden; }
 #app { height:100%; display:grid; grid-template-rows:34px minmax(0,1fr) var(--timeline-height); }
 #appbar { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:center; padding:0 10px; border-bottom:1px solid var(--line); background:#0d1420; box-sizing:border-box; }
@@ -257,28 +289,31 @@ button:disabled { opacity:.48; cursor:default; }
 #timeline-title { font-size:12px; font-weight:650; color:#dce7ff; white-space:nowrap; }
 #timeline-readout { color:var(--muted); font:11px ui-monospace, monospace; white-space:nowrap; }
 #transport-controls { display:flex; gap:6px; align-items:center; justify-self:center; }
-#anchor-nav-controls { display:flex; gap:6px; align-items:center; justify-self:end; }
+#contact-nav-controls { display:flex; gap:6px; align-items:center; justify-self:end; }
 #frame-input { width:82px; font-family:ui-monospace, monospace; }
 #timeline-scroll { min-height:0; overflow:hidden; }
 #timeline { position:relative; width:100%; min-width:0; height:100%; background:#08101b; user-select:none; }
 #frame-ruler { position:absolute; left:120px; right:16px; top:0; height:28px; border-bottom:1px solid #23304a; }
 #track-area { position:absolute; left:0; right:0; top:28px; bottom:0; }
-#playhead { position:absolute; top:0; bottom:0; width:2px; background:var(--accent); z-index:12; box-shadow:0 0 0 1px rgba(255,212,95,.24), 0 0 12px rgba(255,212,95,.18); }
-#playhead-label { position:absolute; top:2px; transform:translateX(-50%); background:#231e0b; color:var(--accent); border:1px solid rgba(255,212,95,.38); border-radius:4px; padding:1px 5px; font:10px ui-monospace, monospace; z-index:13; }
+#playhead { position:absolute; top:0; bottom:0; width:2px; background:var(--accent); z-index:14; box-shadow:0 0 0 1px rgba(255,212,95,.24), 0 0 12px rgba(255,212,95,.18); }
+#playhead-label { position:absolute; top:2px; transform:translateX(-50%); background:#231e0b; color:var(--accent); border:1px solid rgba(255,212,95,.38); border-radius:4px; padding:1px 5px; font:10px ui-monospace, monospace; z-index:15; }
 .track-header { position:absolute; left:0; width:112px; height:24px; padding:5px 8px 0 0; box-sizing:border-box; text-align:right; color:#aab8d6; font:11px ui-monospace, monospace; border-right:1px solid #23304a; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; background:#08101b; z-index:5; }
 .track-header.segment-track { color:#ffe083; }
 .track-line { position:absolute; left:120px; right:16px; height:1px; background:rgba(64,78,112,.35); }
+.protoBoundary { position:absolute; top:0; bottom:0; width:1px; background:rgba(255,255,255,.22); z-index:3; }
+.protoBoundary.stable_contact_boundary { width:2px; background:rgba(255,212,95,.72); box-shadow:0 0 8px rgba(255,212,95,.22); }
+.protoBoundaryLabel { position:absolute; top:0; transform:translateX(3px); color:#ffe8a6; font:9px ui-monospace, monospace; opacity:.85; z-index:4; pointer-events:none; }
 .segmentBlock { position:absolute; height:21px; border-radius:5px; background:rgba(255,212,95,.16); border:1px solid rgba(255,212,95,.48); box-sizing:border-box; cursor:pointer; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:#ffe8a6; font:10px ui-monospace, monospace; padding:4px 6px; z-index:4; }
 .segmentBlock.stable_contact_anchor { background:linear-gradient(90deg, rgba(255,212,95,.22), rgba(85,180,255,.14)); border-color:rgba(255,212,95,.7); }
 .segmentBlock.proto_index { background:rgba(126,224,140,.16); border-color:rgba(126,224,140,.56); color:#bff5c6; }
 .segmentBlock.anchor_pair { background:rgba(210,110,255,.14); border-color:rgba(210,110,255,.48); color:#efd6ff; }
 .segmentBlock:hover { filter:brightness(1.25); }
-.anchorBlock { position:absolute; height:17px; border-radius:4px; opacity:.72; cursor:pointer; border:1px solid rgba(255,255,255,.18); box-sizing:border-box; }
-.anchorBlock:hover { opacity:1; transform:translateY(-1px); }
-.anchorBlock.selected { opacity:1; border-color:#ffe083; box-shadow:0 0 0 2px rgba(255,211,90,.42); z-index:6; }
-.anchorBlock.edited { border-color:var(--green); box-shadow:inset 0 -3px 0 rgba(126,224,140,.9); }
-.anchorBlock.failed { border-color:var(--red); background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.18) 0 4px,transparent 4px 8px); }
-.anchorBlock.clamped, .anchorBlock.suspicious { border-color:var(--orange); box-shadow:inset 0 -3px 0 rgba(255,173,92,.9); }
+.contactPointBlock { position:absolute; height:17px; border-radius:4px; opacity:.72; cursor:pointer; border:1px solid rgba(255,255,255,.18); box-sizing:border-box; }
+.contactPointBlock:hover { opacity:1; transform:translateY(-1px); }
+.contactPointBlock.selected { opacity:1; border-color:#ffe083; box-shadow:0 0 0 2px rgba(255,211,90,.42); z-index:6; }
+.contactPointBlock.edited { border-color:var(--green); box-shadow:inset 0 -3px 0 rgba(126,224,140,.9); }
+.contactPointBlock.failed { border-color:var(--red); background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.18) 0 4px,transparent 4px 8px); }
+.contactPointBlock.clamped, .contactPointBlock.suspicious { border-color:var(--orange); box-shadow:inset 0 -3px 0 rgba(255,173,92,.9); }
 .tick { position:absolute; top:6px; color:#7184a8; font:10px ui-monospace, monospace; transform:translateX(-50%); }
 .minorTick { position:absolute; top:18px; width:1px; height:8px; background:rgba(113,132,168,.45); }
 #status-bar { display:flex; align-items:center; padding:0 12px; border-top:1px solid #1e2a40; color:#9fb0d0; font:11px ui-monospace, monospace; overflow:hidden; }
@@ -337,12 +372,12 @@ function xToFrame(clientX) {
   return Math.round(ratio * Math.max(0, state.n_frames - 1));
 }
 function shownFrame() { return Math.round(Number(state?.current_frame || 0)); }
-function selectedAnchor() { return state?.selected_anchor || null; }
+function selectedContactPoint() { return state?.selected_contact_point || state?.selected_anchor || null; }
 function statusClass(status) { return String(status || 'bound').replace(/[^a-zA-Z0-9_-]/g, '_'); }
 function kindClass(kind) { return String(kind || 'segment').replace(/[^a-zA-Z0-9_-]/g, '_'); }
-function shortAnchor(anchor) {
-  if (!anchor) return '-';
-  return `${anchor.body || 'anchor'} · ${anchor.start_frame ?? '-'}-${anchor.end_frame ?? '-'}`;
+function shortContactPoint(point) {
+  if (!point) return '-';
+  return `${point.body || 'contact'} · ${point.start_frame ?? '-'}-${point.end_frame ?? '-'}`;
 }
 function vectorShort(value) {
   if (!Array.isArray(value)) return '';
@@ -350,7 +385,8 @@ function vectorShort(value) {
 }
 function eventFromMessage(message, kind='info') {
   const text = String(message || '');
-  const body = (text.match(/anchor_(left_foot|right_foot|left_hand|right_hand)|(left_foot|right_foot|left_hand|right_hand)/) || []).find(Boolean) || 'anchor';
+  const bodyMatch = text.match(/anchor_(left_foot|right_foot|left_hand|right_hand)|(left_foot|right_foot|left_hand|right_hand)/);
+  const body = bodyMatch?.find(Boolean) || 'contact point';
   const delta = text.match(/delta=\[([^\]]+)\]/);
   if (text.startsWith('moved ')) return {kind, title: `Moved ${body}`, body: delta ? `delta=(${delta[1]})` : text};
   return {kind, title: kind === 'error' ? 'Error' : 'Event', body: text};
@@ -361,7 +397,7 @@ function canGenerate() {
 }
 function updateTimelineHeight() {
   const tracks = Math.max(4, Number(state?.bodies?.length || 0) + 1);
-  const height = Math.min(330, Math.max(212, 96 + tracks * 26));
+  const height = Math.min(336, Math.max(218, 98 + tracks * 26));
   document.documentElement.style.setProperty('--timeline-height', `${height}px`);
 }
 function renderRecentMotions() {
@@ -434,7 +470,7 @@ function scheduleFramePost(frame, commit=false) {
 }
 function updateChrome() {
   if (!state) return;
-  const frameText = `${shownFrame()} / ${Math.max(0, state.n_frames - 1)} · ${state.segments?.length || 0} segments`;
+  const frameText = `${shownFrame()} / ${Math.max(0, state.n_frames - 1)} · ${state.segments?.length || 0} segments · ${state.proto_boundaries?.length || 0} boundaries`;
   const gen = state.generation || {};
   const ready = canGenerate();
   $('timeline-readout').textContent = frameText;
@@ -445,10 +481,10 @@ function updateChrome() {
   const failed = state.binding_counts?.failed_count || 0;
   $('failed-chip').textContent = `failed ${failed}`;
   $('failed-chip').style.display = failed ? 'inline-block' : 'none';
-  const hint = 'Click segment bands or anchor blocks · drag timeline to scrub';
+  const hint = 'Click proto segment bands or contact point blocks · drag timeline to scrub';
   const message = state.last_message && state.last_message !== 'Ready' ? state.last_message : hint;
   $('status-left').textContent = state.last_error ? `Error: ${state.last_error}` : message;
-  $('viewport-selected').textContent = shortAnchor(selectedAnchor());
+  $('viewport-selected').textContent = shortContactPoint(selectedContactPoint());
   $('generate-top').disabled = !ready;
   $('generate-top').textContent = gen.running ? 'Generating...' : 'Generate';
   $('generate-top').title = ready ? 'Generate fullbody LTE from the current edit plan' : (gen.running ? 'Generation is running' : 'No editable contact plan is loaded');
@@ -468,48 +504,50 @@ function renderLeftPanel() {
   const clampedClass = Number(counts.clamped_count || 0) > 0 ? ' clamped-active' : '';
   $('binding-summary').innerHTML = `
     <div class="mini-stats">
-      <div class="mini-stat"><div class="mini-stat-label">anchors</div><div class="mini-stat-value">${counts.anchor_count || 0}</div></div>
+      <div class="mini-stat"><div class="mini-stat-label">contact points</div><div class="mini-stat-value">${counts.contact_point_count || counts.anchor_count || 0}</div></div>
       <div class="mini-stat"><div class="mini-stat-label">segments</div><div class="mini-stat-value">${counts.segment_count || 0}</div></div>
-      <div class="mini-stat"><div class="mini-stat-label">bound</div><div class="mini-stat-value">${counts.bound_count || 0}</div></div>
+      <div class="mini-stat"><div class="mini-stat-label">boundaries</div><div class="mini-stat-value">${counts.boundary_count || 0}</div></div>
+      <div class="mini-stat"><div class="mini-stat-label">bound points</div><div class="mini-stat-value">${counts.bound_count || 0}</div></div>
       <div class="mini-stat${failedClass}"><div class="mini-stat-label">failed</div><div class="mini-stat-value">${counts.failed_count || 0}</div></div>
       <div class="mini-stat${clampedClass}"><div class="mini-stat-label">clamped</div><div class="mini-stat-value">${counts.clamped_count || 0}</div></div>
-      <div class="mini-stat"><div class="mini-stat-label">segment kind</div><div class="mini-stat-value" title="${esc(segKinds)}">${esc(segKinds)}</div></div>
+      <div class="mini-stat"><div class="mini-stat-label">proto kind</div><div class="mini-stat-value" title="${esc(segKinds)}">${esc(segKinds)}</div></div>
     </div>`;
   wireCopyButtons($('layer-summary'));
 }
 function renderInspector() {
-  const a = selectedAnchor();
-  if (!a) {
-    $('selected-anchor-card').innerHTML = '<h3>Selected Anchor</h3><div class="muted">No anchor selected.</div>';
-    $('surface-card').innerHTML = '<h3>Surface Binding</h3><div class="muted">Select an anchor.</div>';
-    $('edit-card').innerHTML = '<h3>Edit</h3><div class="muted">Drag an anchor in the 3D viewport to edit.</div>';
+  const p = selectedContactPoint();
+  if (!p) {
+    $('selected-anchor-card').innerHTML = '<h3>Selected Contact Point</h3><div class="muted">No contact point selected.</div>';
+    $('surface-card').innerHTML = '<h3>Surface Binding</h3><div class="muted">Select a contact point.</div>';
+    $('edit-card').innerHTML = '<h3>Edit</h3><div class="muted">Drag a contact point in the 3D viewport to edit.</div>';
     return;
   }
   $('selected-anchor-card').innerHTML = `
-    <h3>Selected Anchor <span class="status-badge ${statusClass(a.status)}">${esc(a.status || 'bound')}</span></h3>
+    <h3>Selected Contact Point <span class="status-badge ${statusClass(p.status)}">${esc(p.status || 'bound')}</span></h3>
     <div class="kv">
-      <div class="key">id</div><div class="copy-row"><div class="value copyable" title="${esc(a.anchor_id)}">${esc(a.anchor_id)}</div>${copyButton(a.anchor_id)}</div>
-      <div class="key">body</div><div class="value">${esc(a.body)}</div>
-      <div class="key">frames</div><div class="value">${a.start_frame} - ${a.end_frame}</div>
-      <div class="key">world</div><div class="value" title="${esc(vectorShort(a.world_position))}">${esc(vectorShort(a.world_position) || '-')}</div>
+      <div class="key">id</div><div class="copy-row"><div class="value copyable" title="${esc(p.contact_point_id)}">${esc(p.contact_point_id)}</div>${copyButton(p.contact_point_id)}</div>
+      <div class="key">body</div><div class="value">${esc(p.body)}</div>
+      <div class="key">frames</div><div class="value">${p.start_frame} - ${p.end_frame}</div>
+      <div class="key">patch</div><div class="value">${esc(p.patch_role || '-')}</div>
+      <div class="key">world</div><div class="value" title="${esc(vectorShort(p.world_position))}">${esc(vectorShort(p.world_position) || '-')}</div>
     </div>`;
   $('surface-card').innerHTML = `
     <h3>Surface Binding</h3>
     <div class="kv">
-      <div class="key">surface</div><div class="copy-row"><div class="value copyable" title="${esc(a.surface_id)}">${esc(a.surface_id || '-')}</div>${copyButton(a.surface_id)}</div>
-      <div class="key">object</div><div class="value">${esc(a.object_id || '-')}</div>
-      <div class="key">type</div><div class="value">${esc(a.surface_type || '-')}</div>
-      <div class="key">uv</div><div class="value">${esc(a.surface_coordinates ? JSON.stringify(a.surface_coordinates) : '-')}</div>
-      <div class="key">reason</div><div class="value error">${esc(a.failure_reason || '')}</div>
+      <div class="key">surface</div><div class="copy-row"><div class="value copyable" title="${esc(p.surface_id)}">${esc(p.surface_id || '-')}</div>${copyButton(p.surface_id)}</div>
+      <div class="key">object</div><div class="value">${esc(p.object_id || '-')}</div>
+      <div class="key">type</div><div class="value">${esc(p.surface_type || '-')}</div>
+      <div class="key">uv</div><div class="value">${esc(p.surface_coordinates ? JSON.stringify(p.surface_coordinates) : '-')}</div>
+      <div class="key">reason</div><div class="value error">${esc(p.failure_reason || '')}</div>
     </div>`;
-  const edit = a.latest_edit;
+  const edit = p.latest_edit;
   $('edit-card').innerHTML = edit ? `
-    <h3>Edit</h3><div class="kv">
+    <h3>Contact Edit</h3><div class="kv">
       <div class="key">delta</div><div class="value">${esc(vectorShort(edit.delta_world) || '-')}</div>
       <div class="key">tangent</div><div class="value">${esc(vectorShort(edit.tangent_delta) || '-')}</div>
       <div class="key">mode</div><div class="value">${esc(edit.constraint_mode || '-')}</div>
       <div class="key">clamped</div><div class="value">${edit.clamped ? 'yes' : 'no'}</div>
-    </div>` : '<h3>Edit</h3><div class="muted">No pending edit for selected anchor.</div>';
+    </div>` : '<h3>Contact Edit</h3><div class="muted">No pending edit for selected contact point.</div>';
   wireCopyButtons($('selected-anchor-card'));
   wireCopyButtons($('surface-card'));
 }
@@ -528,8 +566,8 @@ function renderWarnings() {
   const events = [];
   if (state.last_error) events.push(eventFromMessage(state.last_error, 'error'));
   if (state.last_message && state.last_message !== 'Ready') events.push(eventFromMessage(state.last_message, 'info'));
-  state.anchors.filter(a => (a.warnings || []).length || a.failure_reason).slice(0, 5).forEach(a => {
-    events.push({kind: 'warning', title: `${a.body} ${a.status}`, body: a.failure_reason || (a.warnings || []).join('; ')});
+  (state.contact_points || state.anchors || []).filter(p => (p.warnings || []).length || p.failure_reason).slice(0, 5).forEach(p => {
+    events.push({kind: 'warning', title: `${p.body} ${p.status}`, body: p.failure_reason || (p.warnings || []).join('; ')});
   });
   $('warning-list').innerHTML = events.length ? events.map(ev => `
     <div class="event-card"><div class="event-title"><span>${esc(ev.title)}</span></div><div class="event-meta">${esc(ev.body)}</div></div>`).join('') : '<div class="muted">No recent events.</div>';
@@ -560,13 +598,26 @@ function renderTimeline() {
     minor.style.left = x + 'px';
     frameRuler.appendChild(minor);
   }
+  (state.proto_boundaries || []).forEach(boundary => {
+    const x = frameToX(boundary.frame);
+    const line = document.createElement('div');
+    line.className = 'protoBoundary ' + kindClass(boundary.kind);
+    line.style.left = x + 'px';
+    line.title = `proto boundary ${boundary.frame}\n${boundary.kind}\n${(boundary.sources || []).join(', ')}`;
+    trackArea.appendChild(line);
+    const label = document.createElement('div');
+    label.className = 'protoBoundaryLabel';
+    label.style.left = x + 'px';
+    label.textContent = String(boundary.frame);
+    trackArea.appendChild(label);
+  });
   const laneH = 26;
   const segmentTop = 2;
   const bodyTop = 32;
   const segmentHeader = document.createElement('div');
   segmentHeader.className = 'track-header segment-track';
   segmentHeader.style.top = segmentTop + 'px';
-  segmentHeader.textContent = 'segments';
+  segmentHeader.textContent = 'proto segments';
   trackArea.appendChild(segmentHeader);
   const segmentLine = document.createElement('div');
   segmentLine.className = 'track-line';
@@ -580,7 +631,7 @@ function renderTimeline() {
     el.style.left = frameToX(start) + 'px';
     el.style.width = Math.max(4, frameToX(end - 1) - frameToX(start)) + 'px';
     el.style.top = (segmentTop + 2) + 'px';
-    el.title = `${segment.segment_id}\n${segment.segmentation_kind || ''} ${segment.start_frame}-${segment.end_frame}\nactive=${segment.active_body || '-'}\nsupport=${(segment.support_bodies || []).join(',')}\n${segment.source_anchor_id || ''} -> ${segment.target_anchor_id || ''}`;
+    el.title = `${segment.segment_id}\n${segment.segmentation_kind || ''} ${segment.start_frame}-${segment.end_frame}\nactive=${segment.active_body || '-'}\nsupport=${(segment.support_bodies || []).join(',')}\n${segment.source_contact_point_id || ''} -> ${segment.target_contact_point_id || ''}`;
     el.textContent = segment.label || `${segment.start_frame}-${segment.end_frame}`;
     el.onclick = event => { event.stopPropagation(); api('/api/frame', {frame: segment.start_frame}); };
     trackArea.appendChild(el);
@@ -598,18 +649,18 @@ function renderTimeline() {
     line.style.top = (y + laneH - 1) + 'px';
     trackArea.appendChild(line);
   });
-  state.anchors.forEach(anchor => {
-    const lane = Math.max(0, bodies.indexOf(anchor.body));
-    const start = clamp(anchor.start_frame, 0, Math.max(0, state.n_frames - 1));
-    const end = clamp(anchor.end_frame, start + 1, state.n_frames);
+  (state.contact_points || state.anchors || []).forEach(point => {
+    const lane = Math.max(0, bodies.indexOf(point.body));
+    const start = clamp(point.start_frame, 0, Math.max(0, state.n_frames - 1));
+    const end = clamp(point.end_frame, start + 1, state.n_frames);
     const el = document.createElement('div');
-    el.className = 'anchorBlock ' + statusClass(anchor.status) + (anchor.selected ? ' selected' : '');
+    el.className = 'contactPointBlock ' + statusClass(point.status) + (point.selected ? ' selected' : '');
     el.style.left = frameToX(start) + 'px';
     el.style.width = Math.max(3, frameToX(end - 1) - frameToX(start)) + 'px';
     el.style.top = (bodyTop + lane * laneH + 4) + 'px';
-    el.style.background = anchor.color || '#55b4ff';
-    el.title = `${anchor.anchor_id}\n${anchor.body} ${anchor.start_frame}-${anchor.end_frame}\n${anchor.surface_id || ''}\n${anchor.status || ''}`;
-    el.onclick = event => { event.stopPropagation(); api('/api/select_anchor', {anchor_id: anchor.anchor_id, frame: anchor.start_frame}); };
+    el.style.background = point.color || '#55b4ff';
+    el.title = `${point.contact_point_id || point.anchor_id}\n${point.body} ${point.start_frame}-${point.end_frame}\ncontact point / handle\n${point.surface_id || ''}\n${point.status || ''}`;
+    el.onclick = event => { event.stopPropagation(); api('/api/select_anchor', {anchor_id: point.anchor_id || point.contact_point_id, frame: point.start_frame}); };
     trackArea.appendChild(el);
   });
   updatePlayhead();
@@ -632,19 +683,20 @@ timeline.addEventListener('pointerup', event => { if (dragging) scrub(event, tru
 timeline.addEventListener('pointercancel', event => { if (dragging) scrub(event, true); dragging = false; syncPlaybackAnimation(); });
 $('play').onclick = () => api('/api/play', {playing: !state.playing});
 $('frame-input').onchange = () => api('/api/frame', {frame: Number($('frame-input').value || 0)});
-$('snap-selected').onclick = () => { const a = selectedAnchor(); if (a) api('/api/frame', {frame: a.start_frame}); };
-$('prev-anchor').onclick = () => selectRelativeAnchor(-1);
-$('next-anchor').onclick = () => selectRelativeAnchor(1);
+$('snap-selected').onclick = () => { const p = selectedContactPoint(); if (p) api('/api/frame', {frame: p.start_frame}); };
+$('prev-contact').onclick = () => selectRelativeContactPoint(-1);
+$('next-contact').onclick = () => selectRelativeContactPoint(1);
 $('generate-top').onclick = () => api('/api/generate', {});
 recentSelect.onchange = () => api('/api/open_recent', {index: Number(recentSelect.value || 0)});
 $('load-motion').onclick = () => api('/api/load_motion', {});
 $('discard').onclick = () => api('/api/discard', {});
-function selectRelativeAnchor(offset) {
-  if (!state?.anchors?.length) return;
-  const ids = state.anchors.map(a => a.anchor_id);
-  const current = Math.max(0, ids.indexOf(state.selected_anchor_id));
-  const next = state.anchors[(current + offset + state.anchors.length) % state.anchors.length];
-  api('/api/select_anchor', {anchor_id: next.anchor_id, frame: next.start_frame});
+function selectRelativeContactPoint(offset) {
+  const points = state?.contact_points || state?.anchors || [];
+  if (!points.length) return;
+  const ids = points.map(p => p.contact_point_id || p.anchor_id);
+  const current = Math.max(0, ids.indexOf(state.selected_contact_point_id || state.selected_anchor_id));
+  const next = points[(current + offset + points.length) % points.length];
+  api('/api/select_anchor', {anchor_id: next.anchor_id || next.contact_point_id, frame: next.start_frame});
 }
 window.addEventListener('keydown', event => {
   if (!state) return;
@@ -683,12 +735,12 @@ def _timeline_html(*, viser_url: str) -> str:
     <aside id="left-panel">
       <section class="card"><h3>Motion</h3><div class="stack"><select id="recent" class="full"></select><button id="load-motion" class="primary">Load Motion...</button></div></section>
       <section class="card"><h3>Layers</h3><div id="layer-summary"></div></section>
-      <section class="card"><h3>Binding</h3><div id="binding-summary"></div></section>
+      <section class="card"><h3>Timeline Objects</h3><div id="binding-summary"></div></section>
       <section class="card"><h3>Events / Warnings</h3><div id="warning-list"></div></section>
     </aside>
     <section id="viewer-panel">
       <iframe id="viewer"></iframe>
-      <div class="viewport-hud"><span id="viewport-selected" class="badge">no anchor</span></div>
+      <div class="viewport-hud"><span id="viewport-selected" class="badge">no contact point</span></div>
     </section>
     <aside id="inspector-panel">
       <section id="selected-anchor-card" class="card"></section>
@@ -704,10 +756,10 @@ def _timeline_html(*, viser_url: str) -> str:
         <button id="play" class="primary">Play</button>
         <input id="frame-input" type="number" min="0" value="0" aria-label="Current frame" title="Current frame" />
       </div>
-      <div id="anchor-nav-controls">
-        <button id="snap-selected" class="ghost">Go to selected</button>
-        <button id="prev-anchor" class="ghost">Prev anchor</button>
-        <button id="next-anchor" class="ghost">Next anchor</button>
+      <div id="contact-nav-controls">
+        <button id="snap-selected" class="ghost">Go to selected contact</button>
+        <button id="prev-contact" class="ghost">Prev contact</button>
+        <button id="next-contact" class="ghost">Next contact</button>
       </div>
     </div>
     <div id="timeline-scroll"><div id="timeline"><div id="frame-ruler"></div><div id="track-area"></div><div id="playhead"></div><div id="playhead-label"></div></div></div>
@@ -879,8 +931,7 @@ def start_contact_timeline_wrapper(
                 elif path == "/api/discard":
                     controller.discard()
                 elif path == "/api/open_recent":
-                    index = int(body.get("index", 0))
-                    controller.open_recent_motion(index)
+                    controller.open_recent_motion(int(body.get("index", 0)))
                 elif path == "/api/load_motion":
                     if hasattr(controller, "open_load_dialog"):
                         controller.open_load_dialog()
@@ -900,9 +951,9 @@ def start_contact_timeline_wrapper(
                 controller.state.last_error = str(exc)
             self._send_json(state())
 
-        def log_message(self, *_args: Any) -> None:  # noqa: D401
+        def log_message(self, _format: str, *args: object) -> None:
             return
 
-    server = ThreadingHTTPServer(("localhost", timeline_port), TimelineHandler)
+    server = ThreadingHTTPServer(("localhost", int(timeline_port)), TimelineHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
