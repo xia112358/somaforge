@@ -24,12 +24,56 @@ BODY_COLORS: dict[str, tuple[int, int, int]] = {
 }
 
 
-def _body_color_hex(body: str) -> str:
-    lowered = body.lower()
+def _body_color_hex(body: str | None) -> str:
+    lowered = str(body or "").lower()
     for key, color in BODY_COLORS.items():
         if key in lowered or lowered in key:
             return "#{:02x}{:02x}{:02x}".format(*color)
     return "#55b4ff"
+
+
+def _metadata_value(item: Any, key: str, default: Any = None) -> Any:
+    meta = getattr(item, "metadata", None)
+    if isinstance(meta, dict):
+        return meta.get(key, default)
+    return default
+
+
+def _transition_segments(graph: Any, n_frames: int) -> list[dict[str, Any]]:
+    segments: list[dict[str, Any]] = []
+    for index, transition in enumerate(getattr(graph, "transitions", []) or []):
+        start = int(max(0, min(n_frames, getattr(transition, "start_frame", 0))))
+        end = int(max(start + 1, min(n_frames, getattr(transition, "end_frame", start + 1))))
+        active_body = getattr(transition, "active_body", None)
+        support_bodies = list(getattr(transition, "support_bodies", []) or [])
+        segmentation_kind = str(_metadata_value(transition, "segmentation_kind", "transition") or "transition")
+        endpoint_policy = str(_metadata_value(transition, "endpoint_policy", "") or "")
+        touch = str(_metadata_value(transition, "touchdown_part", "") or "")
+        label_parts = [segmentation_kind.replace("_", " ")]
+        if active_body:
+            label_parts.append(str(active_body))
+        if touch:
+            label_parts.append(f"touch {touch}")
+        segments.append(
+            {
+                "segment_id": getattr(transition, "transition_id", f"segment_{index:04d}"),
+                "start_frame": start,
+                "end_frame": end,
+                "active_body": active_body,
+                "support_bodies": support_bodies,
+                "transition_type": getattr(transition, "transition_type", "unknown"),
+                "source_anchor_id": getattr(transition, "source_anchor_id", None),
+                "target_anchor_id": getattr(transition, "target_anchor_id", None),
+                "segmentation_kind": segmentation_kind,
+                "endpoint_policy": endpoint_policy,
+                "touchdown_part": touch,
+                "owned_bodies": _metadata_value(transition, "owned_bodies", []),
+                "stable_anchor_frames": _metadata_value(transition, "stable_anchor_frames", []),
+                "color": _body_color_hex(active_body),
+                "label": " · ".join(label_parts),
+            }
+        )
+    return segments
 
 
 def contact_timeline_state(
@@ -41,7 +85,7 @@ def contact_timeline_state(
 ) -> dict[str, Any]:
     graph = controller.graph()
     n_frames = playback.n_frames if playback is not None else max(
-        (anchor.end_frame for anchor in graph.anchors), default=0
+        [0, *(int(anchor.end_frame) for anchor in getattr(graph, "anchors", []) or [])]
     ) + 1
     current_frame = playback.frame() if playback is not None else 0
     pending_edits = controller.pending_edits()
@@ -67,7 +111,7 @@ def contact_timeline_state(
             }
         return None
 
-    for anchor in graph.anchors:
+    for anchor in getattr(graph, "anchors", []) or []:
         if anchor.body not in bodies:
             bodies.append(anchor.body)
         obj = controller._anchor_obj(anchor.anchor_id)
@@ -76,8 +120,8 @@ def contact_timeline_state(
         item = {
             "anchor_id": anchor.anchor_id,
             "body": anchor.body,
-            "start_frame": anchor.start_frame,
-            "end_frame": anchor.end_frame,
+            "start_frame": int(anchor.start_frame),
+            "end_frame": int(anchor.end_frame),
             "world_position": anchor.world_position,
             "surface_id": anchor.surface_id,
             "object_id": anchor.object_id,
@@ -96,6 +140,12 @@ def contact_timeline_state(
         anchors.append(item)
         if selected:
             selected_anchor = item
+
+    segments = _transition_segments(graph, int(n_frames))
+    segment_kinds: dict[str, int] = {}
+    for segment in segments:
+        kind = str(segment.get("segmentation_kind") or "transition")
+        segment_kinds[kind] = segment_kinds.get(kind, 0) + 1
 
     session = getattr(getattr(controller, "state", None), "session", None)
     current_motion_name = motion_name
@@ -119,9 +169,9 @@ def contact_timeline_state(
     failed_count = status_counts.get("failed", 0)
     unbound_count = status_counts.get("unbound", 0)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "motion_name": current_motion_name,
-        "n_frames": n_frames,
+        "n_frames": int(n_frames),
         "fps": int(fps),
         "current_frame": current_frame,
         "playing": bool(playback.playing["value"]) if playback is not None else False,
@@ -132,15 +182,18 @@ def contact_timeline_state(
         "recent_motions": controller.recent_motion_items() if hasattr(controller, "recent_motion_items") else [],
         "bodies": bodies,
         "anchors": anchors,
+        "segments": segments,
         "selected_anchor": selected_anchor,
         "binding_counts": {
             "anchor_count": len(anchors),
+            "segment_count": len(segments),
             "bound_count": max(0, len(anchors) - failed_count - unbound_count),
             "failed_count": failed_count,
             "unbound_count": unbound_count,
             "clamped_count": status_counts.get("clamped", 0),
             "low_confidence_count": status_counts.get("suspicious", 0),
         },
+        "segment_counts": segment_kinds,
         "layers": layer_info,
         "generation": generation_info,
     }
@@ -148,95 +201,88 @@ def contact_timeline_state(
 
 def _editor_shell_css() -> str:
     return """
-:root {
-  color-scheme: dark;
-  --bg: #070a10;
-  --panel: #101723;
-  --panel-2: #0b111b;
-  --line: #27344d;
-  --muted: #8fa1c3;
-  --text: #e7edf9;
-  --accent: #ffd45f;
-  --green: #7ee08c;
-  --red: #ff6b72;
-  --orange: #ffad5c;
-  --timeline-height: 196px;
-}
-html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: Inter, system-ui, sans-serif; overflow: hidden; }
-#app { height: 100%; display: grid; grid-template-rows: 34px minmax(0, 1fr) var(--timeline-height); background: var(--bg); }
-#appbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 0 10px; border-bottom: 1px solid var(--line); background: #0d1420; box-sizing: border-box; }
-#brand { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
-#title { font-size: 15px; font-weight: 700; white-space: nowrap; }
-#motion-title { color: var(--muted); font: 12px ui-monospace, monospace; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; user-select: text; }
-#app-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; min-width: 0; }
-#pending-chip, #failed-chip { border: 1px solid var(--line); border-radius: 999px; background: #121b2a; color: #cdd9f0; padding: 4px 8px; font: 12px ui-monospace, monospace; white-space: nowrap; }
-#pending-chip { border-color: rgba(255, 212, 95, .45); color: var(--accent); }
-#failed-chip { display: none; border-color: rgba(255, 107, 114, .55); color: var(--red); }
-#main { min-height: 0; display: grid; grid-template-columns: 260px minmax(0, 1fr) 340px; background: #05070c; }
-#left-panel, #inspector-panel { min-width: 0; overflow: auto; background: var(--panel); border-right: 1px solid var(--line); padding: 10px; box-sizing: border-box; }
-#inspector-panel { border-right: 0; border-left: 1px solid var(--line); }
-#viewer-panel { position: relative; min-width: 0; min-height: 0; background: #05070c; overflow: hidden; }
-#viewer { width: calc(100% + 250px); height: 100%; border: 0; background: #05070c; }
-.viewport-hud { position: absolute; left: 12px; top: 10px; pointer-events: none; opacity: .68; }
-.badge, .status-badge { border: 1px solid var(--line); border-radius: 999px; background: rgba(16, 23, 35, .88); color: #d7e2f5; padding: 2px 7px; font-size: 11px; white-space: nowrap; }
-.status-badge.bound { color: #9bcfff; }
-.status-badge.edited { border-color: rgba(126, 224, 140, .65); color: var(--green); }
-.status-badge.failed { border-color: rgba(255, 107, 114, .7); color: var(--red); }
-.status-badge.clamped, .status-badge.suspicious { border-color: rgba(255, 173, 92, .75); color: var(--orange); }
-.card { border: 1px solid var(--line); border-radius: 7px; background: var(--panel-2); padding: 10px; margin-bottom: 10px; }
-.card h3 { margin: 0 0 8px; font-size: 12px; color: #dbe6fa; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.kv { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 6px 8px; font: 12px Inter, system-ui, sans-serif; color: #c5d1e8; }
-.kv .key { color: var(--muted); }
-.kv .value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, monospace; }
-.copyable { user-select: text; cursor: text; }
-.copy-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
-.copy-btn { height: 21px; padding: 0 6px; font-size: 10px; border-radius: 4px; opacity: 0; transition: opacity .12s ease; }
-.copy-row:hover .copy-btn, .card:hover .copy-btn, .copy-btn:focus { opacity: .75; }
-.event-card { border: 1px solid #25324b; border-radius: 6px; background: #0e1624; padding: 7px; display: grid; gap: 3px; }
-.event-title { font-size: 12px; color: #dce7ff; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.event-meta { color: var(--muted); font: 11px ui-monospace, monospace; overflow-wrap: anywhere; line-height: 1.35; }
-.mini-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
-.mini-stat { border: 1px solid #25324b; border-radius: 6px; background: #0e1624; padding: 5px 7px; }
-.mini-stat-label { color: var(--muted); font-size: 10px; }
-.mini-stat-value { color: #dce7ff; font: 12px ui-monospace, monospace; }
-.mini-stat.failed-active .mini-stat-value { color: var(--red); }
-.mini-stat.clamped-active .mini-stat-value { color: var(--orange); }
-.muted { color: var(--muted); }
-.error { color: var(--red); }
-select, button, input { height: 28px; border: 1px solid #34415f; border-radius: 5px; background: #111a29; color: #dce7ff; padding: 0 8px; box-sizing: border-box; }
-button { cursor: pointer; }
-button.primary { background: #1d5f8f; border-color: #2b8eca; color: white; }
-button.danger { background: #67212a; border-color: #a33a45; color: #ffe9ed; }
-button.ghost { background: #121927; }
-button:disabled { opacity: .48; cursor: default; }
-.stack { display: grid; gap: 7px; }
-.full { width: 100%; }
-#timeline-panel { min-height: 0; border-top: 1px solid var(--line); background: #0d1420; display: grid; grid-template-rows: 36px minmax(0, 1fr) 22px; }
-#timeline-toolbar { display: grid; grid-template-columns: 245px minmax(180px, 1fr) auto; gap: 10px; align-items: center; padding: 4px 12px; border-bottom: 1px solid #1e2a40; box-sizing: border-box; }
-#timeline-title-group { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-#timeline-title { font-size: 12px; font-weight: 650; color: #dce7ff; white-space: nowrap; }
-#timeline-readout { color: var(--muted); font: 11px ui-monospace, monospace; white-space: nowrap; }
-#transport-controls { display: flex; gap: 6px; align-items: center; justify-self: center; }
-#anchor-nav-controls { display: flex; gap: 6px; align-items: center; justify-self: end; }
-#frame-input { width: 82px; font-family: ui-monospace, monospace; }
-#timeline-scroll { min-height: 0; overflow: hidden; }
-#timeline { position: relative; width: 100%; min-width: 0; height: 100%; background: #08101b; user-select: none; }
-#frame-ruler { position: absolute; left: 120px; right: 16px; top: 0; height: 28px; border-bottom: 1px solid #23304a; }
-#track-area { position: absolute; left: 0; right: 0; top: 28px; bottom: 0; }
-#playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); z-index: 8; box-shadow: 0 0 0 1px rgba(255, 212, 95, .24), 0 0 12px rgba(255, 212, 95, .18); }
-#playhead-label { position: absolute; top: 2px; transform: translateX(-50%); background: #231e0b; color: var(--accent); border: 1px solid rgba(255, 212, 95, .38); border-radius: 4px; padding: 1px 5px; font: 10px ui-monospace, monospace; z-index: 9; }
-.track-header { position: absolute; left: 0; width: 112px; height: 24px; padding: 5px 8px 0 0; box-sizing: border-box; text-align: right; color: #aab8d6; font: 11px ui-monospace, monospace; border-right: 1px solid #23304a; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; background: #08101b; z-index: 5; }
-.track-line { position: absolute; left: 120px; right: 16px; height: 1px; background: rgba(64, 78, 112, .35); }
-.anchorBlock { position: absolute; height: 17px; border-radius: 4px; opacity: .72; cursor: pointer; border: 1px solid rgba(255,255,255,.18); box-sizing: border-box; }
-.anchorBlock:hover { opacity: 1; transform: translateY(-1px); }
-.anchorBlock.selected { opacity: 1; border-color: #ffe083; box-shadow: 0 0 0 2px rgba(255, 211, 90, .42); z-index: 6; }
-.anchorBlock.edited { border-color: var(--green); box-shadow: inset 0 -3px 0 rgba(126, 224, 140, .9); }
-.anchorBlock.failed { border-color: var(--red); background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.18) 0 4px, transparent 4px 8px); }
-.anchorBlock.clamped, .anchorBlock.suspicious { border-color: var(--orange); box-shadow: inset 0 -3px 0 rgba(255, 173, 92, .9); }
-.tick { position: absolute; top: 6px; color: #7184a8; font: 10px ui-monospace, monospace; transform: translateX(-50%); }
-.minorTick { position: absolute; top: 18px; width: 1px; height: 8px; background: rgba(113, 132, 168, .45); }
-#status-bar { display: flex; align-items: center; padding: 0 12px; border-top: 1px solid #1e2a40; color: #9fb0d0; font: 11px ui-monospace, monospace; overflow: hidden; }
-#status-left { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; user-select: text; }
+:root { color-scheme: dark; --bg:#070a10; --panel:#101723; --panel-2:#0b111b; --line:#27344d; --muted:#8fa1c3; --text:#e7edf9; --accent:#ffd45f; --green:#7ee08c; --red:#ff6b72; --orange:#ffad5c; --timeline-height:220px; }
+html, body { margin:0; height:100%; background:var(--bg); color:var(--text); font-family:Inter, system-ui, sans-serif; overflow:hidden; }
+#app { height:100%; display:grid; grid-template-rows:34px minmax(0,1fr) var(--timeline-height); }
+#appbar { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:center; padding:0 10px; border-bottom:1px solid var(--line); background:#0d1420; box-sizing:border-box; }
+#brand { display:flex; align-items:baseline; gap:12px; min-width:0; }
+#title { font-size:15px; font-weight:700; white-space:nowrap; }
+#motion-title { color:var(--muted); font:12px ui-monospace, monospace; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; user-select:text; }
+#app-actions { display:flex; gap:8px; align-items:center; justify-content:flex-end; }
+#pending-chip, #failed-chip { border:1px solid var(--line); border-radius:999px; background:#121b2a; color:#cdd9f0; padding:4px 8px; font:12px ui-monospace, monospace; white-space:nowrap; }
+#pending-chip { border-color:rgba(255,212,95,.45); color:var(--accent); }
+#failed-chip { display:none; border-color:rgba(255,107,114,.55); color:var(--red); }
+#main { min-height:0; display:grid; grid-template-columns:260px minmax(0,1fr) 340px; background:#05070c; }
+#left-panel, #inspector-panel { min-width:0; overflow:auto; background:var(--panel); border-right:1px solid var(--line); padding:10px; box-sizing:border-box; }
+#inspector-panel { border-right:0; border-left:1px solid var(--line); }
+#viewer-panel { position:relative; min-width:0; min-height:0; background:#05070c; overflow:hidden; }
+#viewer { width:calc(100% + 250px); height:100%; border:0; background:#05070c; }
+.viewport-hud { position:absolute; left:12px; top:10px; pointer-events:none; opacity:.68; }
+.badge, .status-badge { border:1px solid var(--line); border-radius:999px; background:rgba(16,23,35,.88); color:#d7e2f5; padding:2px 7px; font-size:11px; white-space:nowrap; }
+.status-badge.bound { color:#9bcfff; }
+.status-badge.edited { border-color:rgba(126,224,140,.65); color:var(--green); }
+.status-badge.failed { border-color:rgba(255,107,114,.7); color:var(--red); }
+.status-badge.clamped, .status-badge.suspicious { border-color:rgba(255,173,92,.75); color:var(--orange); }
+.card { border:1px solid var(--line); border-radius:7px; background:var(--panel-2); padding:10px; margin-bottom:10px; }
+.card h3 { margin:0 0 8px; font-size:12px; color:#dbe6fa; display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.kv { display:grid; grid-template-columns:72px minmax(0,1fr); gap:6px 8px; font:12px Inter, system-ui, sans-serif; color:#c5d1e8; }
+.kv .key { color:var(--muted); }
+.kv .value { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:ui-monospace, monospace; }
+.copyable { user-select:text; cursor:text; }
+.copy-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px; align-items:center; }
+.copy-btn { height:21px; padding:0 6px; font-size:10px; border-radius:4px; opacity:0; transition:opacity .12s ease; }
+.copy-row:hover .copy-btn, .card:hover .copy-btn, .copy-btn:focus { opacity:.75; }
+.event-card { border:1px solid #25324b; border-radius:6px; background:#0e1624; padding:7px; display:grid; gap:3px; }
+.event-title { font-size:12px; color:#dce7ff; display:flex; align-items:center; justify-content:space-between; gap:6px; }
+.event-meta { color:var(--muted); font:11px ui-monospace, monospace; overflow-wrap:anywhere; line-height:1.35; }
+.mini-stats { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; }
+.mini-stat { border:1px solid #25324b; border-radius:6px; background:#0e1624; padding:5px 7px; }
+.mini-stat-label { color:var(--muted); font-size:10px; }
+.mini-stat-value { color:#dce7ff; font:12px ui-monospace, monospace; }
+.mini-stat.failed-active .mini-stat-value { color:var(--red); }
+.mini-stat.clamped-active .mini-stat-value { color:var(--orange); }
+.muted { color:var(--muted); }
+.error { color:var(--red); }
+select, button, input { height:28px; border:1px solid #34415f; border-radius:5px; background:#111a29; color:#dce7ff; padding:0 8px; box-sizing:border-box; }
+button { cursor:pointer; }
+button.primary { background:#1d5f8f; border-color:#2b8eca; color:white; }
+button.danger { background:#67212a; border-color:#a33a45; color:#ffe9ed; }
+button.ghost { background:#121927; }
+button:disabled { opacity:.48; cursor:default; }
+.stack { display:grid; gap:7px; }
+.full { width:100%; }
+#timeline-panel { min-height:0; border-top:1px solid var(--line); background:#0d1420; display:grid; grid-template-rows:36px minmax(0,1fr) 22px; }
+#timeline-toolbar { display:grid; grid-template-columns:245px minmax(180px,1fr) auto; gap:10px; align-items:center; padding:4px 12px; border-bottom:1px solid #1e2a40; box-sizing:border-box; }
+#timeline-title-group { display:flex; align-items:baseline; gap:10px; min-width:0; }
+#timeline-title { font-size:12px; font-weight:650; color:#dce7ff; white-space:nowrap; }
+#timeline-readout { color:var(--muted); font:11px ui-monospace, monospace; white-space:nowrap; }
+#transport-controls { display:flex; gap:6px; align-items:center; justify-self:center; }
+#anchor-nav-controls { display:flex; gap:6px; align-items:center; justify-self:end; }
+#frame-input { width:82px; font-family:ui-monospace, monospace; }
+#timeline-scroll { min-height:0; overflow:hidden; }
+#timeline { position:relative; width:100%; min-width:0; height:100%; background:#08101b; user-select:none; }
+#frame-ruler { position:absolute; left:120px; right:16px; top:0; height:28px; border-bottom:1px solid #23304a; }
+#track-area { position:absolute; left:0; right:0; top:28px; bottom:0; }
+#playhead { position:absolute; top:0; bottom:0; width:2px; background:var(--accent); z-index:12; box-shadow:0 0 0 1px rgba(255,212,95,.24), 0 0 12px rgba(255,212,95,.18); }
+#playhead-label { position:absolute; top:2px; transform:translateX(-50%); background:#231e0b; color:var(--accent); border:1px solid rgba(255,212,95,.38); border-radius:4px; padding:1px 5px; font:10px ui-monospace, monospace; z-index:13; }
+.track-header { position:absolute; left:0; width:112px; height:24px; padding:5px 8px 0 0; box-sizing:border-box; text-align:right; color:#aab8d6; font:11px ui-monospace, monospace; border-right:1px solid #23304a; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; background:#08101b; z-index:5; }
+.track-header.segment-track { color:#ffe083; }
+.track-line { position:absolute; left:120px; right:16px; height:1px; background:rgba(64,78,112,.35); }
+.segmentBlock { position:absolute; height:21px; border-radius:5px; background:rgba(255,212,95,.16); border:1px solid rgba(255,212,95,.48); box-sizing:border-box; cursor:pointer; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:#ffe8a6; font:10px ui-monospace, monospace; padding:4px 6px; z-index:4; }
+.segmentBlock.stable_contact_anchor { background:linear-gradient(90deg, rgba(255,212,95,.22), rgba(85,180,255,.14)); border-color:rgba(255,212,95,.7); }
+.segmentBlock.proto_index { background:rgba(126,224,140,.16); border-color:rgba(126,224,140,.56); color:#bff5c6; }
+.segmentBlock.anchor_pair { background:rgba(210,110,255,.14); border-color:rgba(210,110,255,.48); color:#efd6ff; }
+.segmentBlock:hover { filter:brightness(1.25); }
+.anchorBlock { position:absolute; height:17px; border-radius:4px; opacity:.72; cursor:pointer; border:1px solid rgba(255,255,255,.18); box-sizing:border-box; }
+.anchorBlock:hover { opacity:1; transform:translateY(-1px); }
+.anchorBlock.selected { opacity:1; border-color:#ffe083; box-shadow:0 0 0 2px rgba(255,211,90,.42); z-index:6; }
+.anchorBlock.edited { border-color:var(--green); box-shadow:inset 0 -3px 0 rgba(126,224,140,.9); }
+.anchorBlock.failed { border-color:var(--red); background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.18) 0 4px,transparent 4px 8px); }
+.anchorBlock.clamped, .anchorBlock.suspicious { border-color:var(--orange); box-shadow:inset 0 -3px 0 rgba(255,173,92,.9); }
+.tick { position:absolute; top:6px; color:#7184a8; font:10px ui-monospace, monospace; transform:translateX(-50%); }
+.minorTick { position:absolute; top:18px; width:1px; height:8px; background:rgba(113,132,168,.45); }
+#status-bar { display:flex; align-items:center; padding:0 12px; border-top:1px solid #1e2a40; color:#9fb0d0; font:11px ui-monospace, monospace; overflow:hidden; }
+#status-left { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; user-select:text; }
 """
 
 
@@ -293,6 +339,7 @@ function xToFrame(clientX) {
 function shownFrame() { return Math.round(Number(state?.current_frame || 0)); }
 function selectedAnchor() { return state?.selected_anchor || null; }
 function statusClass(status) { return String(status || 'bound').replace(/[^a-zA-Z0-9_-]/g, '_'); }
+function kindClass(kind) { return String(kind || 'segment').replace(/[^a-zA-Z0-9_-]/g, '_'); }
 function shortAnchor(anchor) {
   if (!anchor) return '-';
   return `${anchor.body || 'anchor'} · ${anchor.start_frame ?? '-'}-${anchor.end_frame ?? '-'}`;
@@ -303,7 +350,7 @@ function vectorShort(value) {
 }
 function eventFromMessage(message, kind='info') {
   const text = String(message || '');
-  const body = (text.match(/anchor_(left_foot|right_foot|left_hand|right_hand)|\b(left_foot|right_foot|left_hand|right_hand)\b/) || []).find(Boolean) || 'anchor';
+  const body = (text.match(/anchor_(left_foot|right_foot|left_hand|right_hand)|(left_foot|right_foot|left_hand|right_hand)/) || []).find(Boolean) || 'anchor';
   const delta = text.match(/delta=\[([^\]]+)\]/);
   if (text.startsWith('moved ')) return {kind, title: `Moved ${body}`, body: delta ? `delta=(${delta[1]})` : text};
   return {kind, title: kind === 'error' ? 'Error' : 'Event', body: text};
@@ -313,8 +360,8 @@ function canGenerate() {
   return Boolean(state?.layers?.edit_plan_path) && !gen.running;
 }
 function updateTimelineHeight() {
-  const tracks = Math.max(4, Number(state?.bodies?.length || 0));
-  const height = Math.min(300, Math.max(188, 92 + tracks * 26));
+  const tracks = Math.max(4, Number(state?.bodies?.length || 0) + 1);
+  const height = Math.min(330, Math.max(212, 96 + tracks * 26));
   document.documentElement.style.setProperty('--timeline-height', `${height}px`);
 }
 function renderRecentMotions() {
@@ -345,11 +392,7 @@ function syncPlaybackAnimation() {
   playbackAnimId = requestAnimationFrame(localPlaybackTick);
 }
 function localPlaybackTick(now) {
-  if (!state?.playing || dragging) {
-    playbackAnimId = null;
-    playbackAnimMs = null;
-    return;
-  }
+  if (!state?.playing || dragging) { playbackAnimId = null; playbackAnimMs = null; return; }
   const maxFrame = Math.max(0, Number(state.n_frames || 1) - 1);
   const dt = playbackAnimMs === null ? 0 : Math.max(0, (now - playbackAnimMs) / 1000.0);
   playbackAnimMs = now;
@@ -370,7 +413,7 @@ async function postFrame(frame, commit=false) {
   if (framePostInFlight && !commit) return;
   framePostInFlight = true;
   try {
-    const res = await fetch('/api/frame', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({frame})});
+    const res = await fetch('/api/frame', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({frame})});
     const nextState = await res.json();
     state = nextState;
     if (dragging && !commit) { state.current_frame = frame; updateChrome(); updatePlayhead(); } else { render(); }
@@ -391,7 +434,7 @@ function scheduleFramePost(frame, commit=false) {
 }
 function updateChrome() {
   if (!state) return;
-  const frameText = `${shownFrame()} / ${Math.max(0, state.n_frames - 1)}`;
+  const frameText = `${shownFrame()} / ${Math.max(0, state.n_frames - 1)} · ${state.segments?.length || 0} segments`;
   const gen = state.generation || {};
   const ready = canGenerate();
   $('timeline-readout').textContent = frameText;
@@ -402,7 +445,7 @@ function updateChrome() {
   const failed = state.binding_counts?.failed_count || 0;
   $('failed-chip').textContent = `failed ${failed}`;
   $('failed-chip').style.display = failed ? 'inline-block' : 'none';
-  const hint = 'Click blocks to select · drag empty timeline to scrub';
+  const hint = 'Click segment bands or anchor blocks · drag timeline to scrub';
   const message = state.last_message && state.last_message !== 'Ready' ? state.last_message : hint;
   $('status-left').textContent = state.last_error ? `Error: ${state.last_error}` : message;
   $('viewport-selected').textContent = shortAnchor(selectedAnchor());
@@ -413,6 +456,7 @@ function updateChrome() {
 function renderLeftPanel() {
   const counts = state.binding_counts || {};
   const layers = state.layers || {};
+  const segKinds = Object.entries(state.segment_counts || {}).map(([k, v]) => `${k}:${v}`).join(' · ') || '-';
   renderRecentMotions();
   $('layer-summary').innerHTML = `
     <div class="kv">
@@ -425,108 +469,134 @@ function renderLeftPanel() {
   $('binding-summary').innerHTML = `
     <div class="mini-stats">
       <div class="mini-stat"><div class="mini-stat-label">anchors</div><div class="mini-stat-value">${counts.anchor_count || 0}</div></div>
+      <div class="mini-stat"><div class="mini-stat-label">segments</div><div class="mini-stat-value">${counts.segment_count || 0}</div></div>
       <div class="mini-stat"><div class="mini-stat-label">bound</div><div class="mini-stat-value">${counts.bound_count || 0}</div></div>
       <div class="mini-stat${failedClass}"><div class="mini-stat-label">failed</div><div class="mini-stat-value">${counts.failed_count || 0}</div></div>
       <div class="mini-stat${clampedClass}"><div class="mini-stat-label">clamped</div><div class="mini-stat-value">${counts.clamped_count || 0}</div></div>
+      <div class="mini-stat"><div class="mini-stat-label">segment kind</div><div class="mini-stat-value" title="${esc(segKinds)}">${esc(segKinds)}</div></div>
     </div>`;
-  const events = [];
-  if (state.last_error) events.push(eventFromMessage(state.last_error, 'error'));
-  if (state.last_message && state.last_message !== 'Ready') events.push(eventFromMessage(state.last_message, 'info'));
-  $('warning-list').innerHTML = events.length
-    ? events.map(item => `<div class="event-card ${item.kind}"><div class="event-title"><span>${esc(item.title)}</span>${copyButton(item.body)}</div><div class="event-meta" title="${attr(item.body)}">${esc(item.body)}</div></div>`).join('')
-    : '<div class="muted">No warnings.</div>';
-  wireCopyButtons($('left-panel'));
+  wireCopyButtons($('layer-summary'));
 }
 function renderInspector() {
-  const anchor = selectedAnchor();
-  if (!anchor) {
+  const a = selectedAnchor();
+  if (!a) {
     $('selected-anchor-card').innerHTML = '<h3>Selected Anchor</h3><div class="muted">No anchor selected.</div>';
     $('surface-card').innerHTML = '<h3>Surface Binding</h3><div class="muted">Select an anchor.</div>';
-    $('edit-card').innerHTML = '<h3>Edit</h3><div class="muted">No pending edit selected.</div>';
+    $('edit-card').innerHTML = '<h3>Edit</h3><div class="muted">Drag an anchor in the 3D viewport to edit.</div>';
     return;
   }
-  const duration = Math.max(0, (anchor.end_frame || 0) - (anchor.start_frame || 0) + 1);
-  $('selected-anchor-card').innerHTML = `<h3>Selected Anchor <span class="status-badge ${statusClass(anchor.status)}">${esc(anchor.status)}</span></h3>
+  $('selected-anchor-card').innerHTML = `
+    <h3>Selected Anchor <span class="status-badge ${statusClass(a.status)}">${esc(a.status || 'bound')}</span></h3>
     <div class="kv">
-      <div class="key">label</div><div class="value" title="${esc(anchor.anchor_id)}">${esc(shortAnchor(anchor))}</div>
-      <div class="key">frames</div><div class="value">${anchor.start_frame} -> ${anchor.end_frame}</div>
-      <div class="key">duration</div><div class="value">${duration} frames</div>
+      <div class="key">id</div><div class="copy-row"><div class="value copyable" title="${esc(a.anchor_id)}">${esc(a.anchor_id)}</div>${copyButton(a.anchor_id)}</div>
+      <div class="key">body</div><div class="value">${esc(a.body)}</div>
+      <div class="key">frames</div><div class="value">${a.start_frame} - ${a.end_frame}</div>
+      <div class="key">world</div><div class="value" title="${esc(vectorShort(a.world_position))}">${esc(vectorShort(a.world_position) || '-')}</div>
     </div>`;
-  $('surface-card').innerHTML = `<h3>Surface Binding</h3>
+  $('surface-card').innerHTML = `
+    <h3>Surface Binding</h3>
     <div class="kv">
-      <div class="key">surface</div><div class="copy-row"><div class="value copyable" title="${esc(anchor.surface_id)}">${esc(anchor.surface_id || '-')}</div>${copyButton(anchor.surface_id)}</div>
-      <div class="key">object</div><div class="copy-row"><div class="value copyable" title="${esc(anchor.object_id)}">${esc(anchor.object_id || '-')}</div>${copyButton(anchor.object_id)}</div>
-      ${anchor.failure_reason ? `<div class="key">failure</div><div class="copy-row"><div class="value copyable">${esc(anchor.failure_reason)}</div>${copyButton(anchor.failure_reason)}</div>` : ''}
+      <div class="key">surface</div><div class="copy-row"><div class="value copyable" title="${esc(a.surface_id)}">${esc(a.surface_id || '-')}</div>${copyButton(a.surface_id)}</div>
+      <div class="key">object</div><div class="value">${esc(a.object_id || '-')}</div>
+      <div class="key">type</div><div class="value">${esc(a.surface_type || '-')}</div>
+      <div class="key">uv</div><div class="value">${esc(a.surface_coordinates ? JSON.stringify(a.surface_coordinates) : '-')}</div>
+      <div class="key">reason</div><div class="value error">${esc(a.failure_reason || '')}</div>
     </div>`;
-  const edit = anchor.latest_edit || {};
-  $('edit-card').innerHTML = `<h3>Edit</h3>
-    <div class="kv">
-      ${edit.delta_world ? `
-        <div class="key">delta</div><div class="copy-row"><div class="value copyable" title="${esc(JSON.stringify(edit.delta_world))}">${esc(vectorShort(edit.delta_world))}</div>${copyButton(JSON.stringify(edit.delta_world))}</div>
-        <div class="key">mode</div><div class="value">${esc(edit.constraint_mode || '-')}</div>
-      ` : '<div class="key">status</div><div class="value muted">Drag the selected anchor on its bound surface.</div>'}
-    </div>`;
-  wireCopyButtons($('inspector-panel'));
+  const edit = a.latest_edit;
+  $('edit-card').innerHTML = edit ? `
+    <h3>Edit</h3><div class="kv">
+      <div class="key">delta</div><div class="value">${esc(vectorShort(edit.delta_world) || '-')}</div>
+      <div class="key">tangent</div><div class="value">${esc(vectorShort(edit.tangent_delta) || '-')}</div>
+      <div class="key">mode</div><div class="value">${esc(edit.constraint_mode || '-')}</div>
+      <div class="key">clamped</div><div class="value">${edit.clamped ? 'yes' : 'no'}</div>
+    </div>` : '<h3>Edit</h3><div class="muted">No pending edit for selected anchor.</div>';
+  wireCopyButtons($('selected-anchor-card'));
+  wireCopyButtons($('surface-card'));
 }
 function renderGenerationCard() {
   const gen = state.generation || {};
-  const status = gen.running ? 'running' : (gen.last_error ? 'failed' : (gen.last_output_motion ? 'done' : 'idle'));
-  const outputRow = gen.last_output_motion ? `<div class="key">output</div><div class="copy-row"><div class="value copyable" title="${esc(gen.last_output_motion)}">${esc(gen.last_output_motion)}</div>${copyButton(gen.last_output_motion)}</div>` : '';
-  $('generation-card').innerHTML = `<h3>Generation</h3>
+  $('generation-card').innerHTML = `
+    <h3>Generation</h3>
     <div class="kv">
-      <div class="key">solver</div><div class="value">ik_subprocess</div>
-      <div class="key">status</div><div class="value ${gen.last_error ? 'error' : ''}" title="${esc(gen.last_error || status)}">${esc(status)}</div>
-      ${outputRow}
+      <div class="key">status</div><div class="value">${gen.running ? 'running' : 'idle'}</div>
+      <div class="key">output</div><div class="copy-row"><div class="value copyable" title="${esc(gen.last_output_motion)}">${esc(gen.last_output_motion || '-')}</div>${copyButton(gen.last_output_motion)}</div>
+      <div class="key">error</div><div class="value error">${esc(gen.last_error || '')}</div>
     </div>`;
   wireCopyButtons($('generation-card'));
 }
+function renderWarnings() {
+  const events = [];
+  if (state.last_error) events.push(eventFromMessage(state.last_error, 'error'));
+  if (state.last_message && state.last_message !== 'Ready') events.push(eventFromMessage(state.last_message, 'info'));
+  state.anchors.filter(a => (a.warnings || []).length || a.failure_reason).slice(0, 5).forEach(a => {
+    events.push({kind: 'warning', title: `${a.body} ${a.status}`, body: a.failure_reason || (a.warnings || []).join('; ')});
+  });
+  $('warning-list').innerHTML = events.length ? events.map(ev => `
+    <div class="event-card"><div class="event-title"><span>${esc(ev.title)}</span></div><div class="event-meta">${esc(ev.body)}</div></div>`).join('') : '<div class="muted">No recent events.</div>';
+}
 function updatePlayhead() {
   if (!state) return;
-  const x = frameToX(state.current_frame);
+  const x = frameToX(shownFrame());
   playhead.style.left = x + 'px';
   playheadLabel.style.left = x + 'px';
-  playheadLabel.textContent = String(shownFrame());
-}
-function bodyOrder(body) {
-  const order = ['right_foot', 'left_foot', 'right_hand', 'left_hand'];
-  const lower = String(body || '').toLowerCase();
-  const found = order.findIndex(item => lower.includes(item));
-  return found >= 0 ? found : 10;
+  playheadLabel.textContent = shownFrame();
 }
 function renderTimeline() {
-  const bodies = [...(state.bodies || [])].sort((a, b) => bodyOrder(a) - bodyOrder(b) || String(a).localeCompare(String(b)));
-  timeline.style.width = '100%';
-  for (const el of [...timeline.querySelectorAll('.track-header,.track-line,.anchorBlock,.tick,.minorTick')]) el.remove();
-  const majorCount = 8;
-  for (let i = 0; i <= majorCount; i++) {
-    const frame = Math.round((Math.max(0, state.n_frames - 1) * i) / majorCount);
+  const frameRuler = $('frame-ruler');
+  const trackArea = $('track-area');
+  frameRuler.innerHTML = '';
+  trackArea.innerHTML = '';
+  const maxFrame = Math.max(0, state.n_frames - 1);
+  const major = Math.max(1, Math.ceil(maxFrame / 8));
+  for (let frame = 0; frame <= maxFrame; frame += major) {
+    const x = frameToX(frame);
     const tick = document.createElement('div');
     tick.className = 'tick';
-    tick.style.left = frameToX(frame) + 'px';
-    tick.textContent = String(frame);
-    $('frame-ruler').appendChild(tick);
+    tick.style.left = x + 'px';
+    tick.textContent = frame;
+    frameRuler.appendChild(tick);
+    const minor = document.createElement('div');
+    minor.className = 'minorTick';
+    minor.style.left = x + 'px';
+    frameRuler.appendChild(minor);
   }
-  const minorCount = 32;
-  for (let i = 0; i <= minorCount; i++) {
-    const frame = Math.round((Math.max(0, state.n_frames - 1) * i) / minorCount);
-    const tick = document.createElement('div');
-    tick.className = 'minorTick';
-    tick.style.left = frameToX(frame) + 'px';
-    $('frame-ruler').appendChild(tick);
-  }
-  const laneTop = 6;
   const laneH = 26;
+  const segmentTop = 2;
+  const bodyTop = 32;
+  const segmentHeader = document.createElement('div');
+  segmentHeader.className = 'track-header segment-track';
+  segmentHeader.style.top = segmentTop + 'px';
+  segmentHeader.textContent = 'segments';
+  trackArea.appendChild(segmentHeader);
+  const segmentLine = document.createElement('div');
+  segmentLine.className = 'track-line';
+  segmentLine.style.top = (segmentTop + laneH - 1) + 'px';
+  trackArea.appendChild(segmentLine);
+  (state.segments || []).forEach(segment => {
+    const start = clamp(segment.start_frame, 0, Math.max(0, state.n_frames - 1));
+    const end = clamp(segment.end_frame, start + 1, state.n_frames);
+    const el = document.createElement('div');
+    el.className = 'segmentBlock ' + kindClass(segment.segmentation_kind);
+    el.style.left = frameToX(start) + 'px';
+    el.style.width = Math.max(4, frameToX(end - 1) - frameToX(start)) + 'px';
+    el.style.top = (segmentTop + 2) + 'px';
+    el.title = `${segment.segment_id}\n${segment.segmentation_kind || ''} ${segment.start_frame}-${segment.end_frame}\nactive=${segment.active_body || '-'}\nsupport=${(segment.support_bodies || []).join(',')}\n${segment.source_anchor_id || ''} -> ${segment.target_anchor_id || ''}`;
+    el.textContent = segment.label || `${segment.start_frame}-${segment.end_frame}`;
+    el.onclick = event => { event.stopPropagation(); api('/api/frame', {frame: segment.start_frame}); };
+    trackArea.appendChild(el);
+  });
+  const bodies = state.bodies || [];
   bodies.forEach((body, i) => {
-    const y = laneTop + i * laneH;
+    const y = bodyTop + i * laneH;
     const header = document.createElement('div');
     header.className = 'track-header';
     header.style.top = y + 'px';
     header.textContent = body;
-    $('track-area').appendChild(header);
+    trackArea.appendChild(header);
     const line = document.createElement('div');
     line.className = 'track-line';
     line.style.top = (y + laneH - 1) + 'px';
-    $('track-area').appendChild(line);
+    trackArea.appendChild(line);
   });
   state.anchors.forEach(anchor => {
     const lane = Math.max(0, bodies.indexOf(anchor.body));
@@ -536,11 +606,11 @@ function renderTimeline() {
     el.className = 'anchorBlock ' + statusClass(anchor.status) + (anchor.selected ? ' selected' : '');
     el.style.left = frameToX(start) + 'px';
     el.style.width = Math.max(3, frameToX(end - 1) - frameToX(start)) + 'px';
-    el.style.top = (laneTop + lane * laneH + 4) + 'px';
+    el.style.top = (bodyTop + lane * laneH + 4) + 'px';
     el.style.background = anchor.color || '#55b4ff';
     el.title = `${anchor.anchor_id}\n${anchor.body} ${anchor.start_frame}-${anchor.end_frame}\n${anchor.surface_id || ''}\n${anchor.status || ''}`;
     el.onclick = event => { event.stopPropagation(); api('/api/select_anchor', {anchor_id: anchor.anchor_id, frame: anchor.start_frame}); };
-    $('track-area').appendChild(el);
+    trackArea.appendChild(el);
   });
   updatePlayhead();
 }
@@ -551,6 +621,7 @@ function render() {
   renderLeftPanel();
   renderInspector();
   renderGenerationCard();
+  renderWarnings();
   renderTimeline();
   syncPlaybackAnimation();
 }
@@ -660,12 +731,7 @@ def start_contact_timeline_wrapper(
     viser_url = f"http://localhost:{viser_port}"
 
     def state() -> dict[str, Any]:
-        return contact_timeline_state(
-            controller=controller,
-            playback=playback,
-            motion_name=motion_name,
-            fps=fps,
-        )
+        return contact_timeline_state(controller=controller, playback=playback, motion_name=motion_name, fps=fps)
 
     def target_controller() -> Any:
         return getattr(controller, "current", None) or controller
@@ -673,22 +739,10 @@ def start_contact_timeline_wrapper(
     def generation_state(target: Any) -> Any:
         state_obj = getattr(target, "state", None)
         if state_obj is None:
-            return SimpleNamespace(
-                running=False,
-                last_output_motion=None,
-                last_error="no editor state",
-                last_started_at=None,
-                last_finished_at=None,
-            )
+            return SimpleNamespace(running=False, last_output_motion=None, last_error="no editor state", last_started_at=None, last_finished_at=None)
         gen = getattr(state_obj, "generation", None)
         if gen is None:
-            gen = SimpleNamespace(
-                running=False,
-                last_output_motion=None,
-                last_error=None,
-                last_started_at=None,
-                last_finished_at=None,
-            )
+            gen = SimpleNamespace(running=False, last_output_motion=None, last_error=None, last_started_at=None, last_finished_at=None)
             setattr(state_obj, "generation", gen)
         return gen
 
@@ -812,9 +866,7 @@ def start_contact_timeline_wrapper(
                 if path == "/api/frame" and playback is not None:
                     playback.set_frame(int(body.get("frame", playback.frame())))
                 elif path == "/api/play" and playback is not None:
-                    playback.playing["value"] = bool(
-                        body.get("playing", not playback.playing["value"])
-                    )
+                    playback.playing["value"] = bool(body.get("playing", not playback.playing["value"]))
                 elif path == "/api/select_anchor":
                     anchor_id = str(body.get("anchor_id") or "")
                     controller.select_anchor(anchor_id)
@@ -827,27 +879,30 @@ def start_contact_timeline_wrapper(
                 elif path == "/api/discard":
                     controller.discard()
                 elif path == "/api/open_recent":
-                    controller.open_recent_motion(int(body.get("index", 0)))
+                    index = int(body.get("index", 0))
+                    controller.open_recent_motion(index)
                 elif path == "/api/load_motion":
                     if hasattr(controller, "open_load_dialog"):
                         controller.open_load_dialog()
                     else:
-                        controller.state.last_error = (
-                            "load dialog is unavailable in this editor mode"
-                        )
+                        controller.state.last_error = "load dialog unavailable"
                 elif path == "/api/open_latest":
-                    controller.open_latest_motion()
+                    if hasattr(controller, "open_latest_generated_motion"):
+                        controller.open_latest_generated_motion()
+                    else:
+                        controller.state.last_error = "open latest unavailable"
                 elif path == "/api/reload_motion":
-                    controller.reload_current_motion()
-                else:
-                    controller.state.last_error = f"unknown timeline API path: {path}"
-            except Exception as exc:
+                    if hasattr(controller, "reload_motion"):
+                        controller.reload_motion()
+                    else:
+                        controller.state.last_error = "reload unavailable"
+            except Exception as exc:  # pragma: no cover - defensive UI path
                 controller.state.last_error = str(exc)
             self._send_json(state())
 
-        def log_message(self, _format: str, *args: object) -> None:
+        def log_message(self, *_args: Any) -> None:  # noqa: D401
             return
 
-    httpd = ThreadingHTTPServer(("127.0.0.1", int(timeline_port)), TimelineHandler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    return httpd
+    server = ThreadingHTTPServer(("localhost", timeline_port), TimelineHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
