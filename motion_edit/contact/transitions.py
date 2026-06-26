@@ -342,13 +342,11 @@ def transitions_from_event_pairs(
             continue
         source_anchor = _anchor_for_body_at(anchors, body=start_event.body, frame=max(0, start_event.frame - 1))
         target_anchor = _anchor_for_body_at(anchors, body=start_event.body, frame=end_event.frame)
-        start = max(0, start_event.frame - 1)
-        end = end_event.frame + 1
         transition = ContactTransitionRecord(
             motion_id=motion_id,
             transition_id=f"{motion_id}_{source}_event_transition_{index:04d}",
-            start_frame=start,
-            end_frame=end,
+            start_frame=start_event.frame,
+            end_frame=end_event.frame,
             active_body=start_event.body,
             support_bodies=end_event.contact_after,
             start_event_id=start_event.event_id,
@@ -359,7 +357,6 @@ def transitions_from_event_pairs(
             source=source,
             metadata={
                 "segmentation_kind": "event_pair",
-                "endpoint_policy": ANCHOR_PAIR_ENDPOINT_POLICY,
                 "source_event_frame": int(start_event.frame),
                 "target_event_frame": int(end_event.frame),
                 "outside_policy": "copy_original",
