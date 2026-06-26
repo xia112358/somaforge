@@ -83,21 +83,23 @@ def solve_batch_contact_laplacian(
         else _default_semantic_body_edges(semantic_points)
     )
 
+    edited_count = sum(1 for handle in handles if handle.kind == "edited_contact")
+    fixed_count = sum(1 for handle in handles if handle.kind == "fixed_contact")
+    contact_handle_active = bool(edited_count or fixed_count)
+
     warnings: list[str] = []
     temporal_active = float(cfg.temporal_laplacian_weight) > 0.0
     body_spatial_active = float(cfg.body_relative_weight) > 0.0 and bool(resolved_body_edges)
     mesh_spatial_active = float(cfg.mesh_laplacian_weight) > 0.0 and interaction_mesh is not None
-    if not temporal_active:
+    if not temporal_active and contact_handle_active:
         warnings.append("temporal_laplacian_weight is zero; contact deformation can change abruptly in time")
     if float(cfg.mesh_laplacian_weight) > 0.0 and interaction_mesh is None:
         warnings.append("mesh_laplacian_weight > 0 but no interaction_mesh spec was provided; mesh residual skipped")
     if float(cfg.body_relative_weight) > 0.0 and not resolved_body_edges:
         warnings.append("body_relative_weight > 0 but no compatible semantic body edges were available; body-relative residual skipped")
-    if not body_spatial_active and not mesh_spatial_active:
+    if contact_handle_active and not body_spatial_active and not mesh_spatial_active:
         warnings.append("no spatial Laplacian is active; deformation will not propagate through body/object structure")
 
-    edited_count = sum(1 for handle in handles if handle.kind == "edited_contact")
-    fixed_count = sum(1 for handle in handles if handle.kind == "fixed_contact")
     iteration_meta: list[dict[str, object]] = []
     mesh_meta: dict[str, object] = {"active": False, "rows": 0}
     var_count = n_frames * nq
