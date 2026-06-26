@@ -1,36 +1,52 @@
 from __future__ import annotations
 
-from collections import defaultdict
-
-import numpy as np
-
 from motion_edit.contact.graph import ContactGraph
 from motion_edit.contact.schema import ContactAnchorRecord, ContactTransitionRecord
 from motion_edit.contact.stable_proto import STABLE_PROTO_ENDPOINT_POLICY, STABLE_PROTO_KIND, StableContactProtoConfig
 
 
 _INITIAL_FRAME = 0
+_PARENT_BODY_ORDER = ("left_foot", "right_foot", "left_hand", "right_hand", "left_knee", "right_knee")
+_FOOT_PATCH_SUFFIXES = ("heel", "toe", "sole")
+
+
+def _parent_body(body: str) -> str:
+    lowered = str(body).lower()
+    for foot in ("left_foot", "right_foot"):
+        if lowered == foot or lowered.startswith(f"{foot}_") or foot in lowered:
+            return foot
+    for hand in ("left_hand", "right_hand"):
+        if lowered == hand or lowered.startswith(f"{hand}_") or hand in lowered:
+            return hand
+    for knee in ("left_knee", "right_knee"):
+        if lowered == knee or lowered.startswith(f"{knee}_") or knee in lowered:
+            return knee
+    aliases = {
+        "lf": "left_foot",
+        "rf": "right_foot",
+        "lh": "left_hand",
+        "rh": "right_hand",
+        "lk": "left_knee",
+        "rk": "right_knee",
+    }
+    return aliases.get(lowered, lowered)
 
 
 def _is_active_motion_body(body: str, active_parts: set[str]) -> bool:
-    lowered = str(body).lower()
-    if lowered in active_parts:
-        return True
-    return any(part in lowered for part in active_parts)
+    return _parent_body(body) in active_parts
 
 
 def _body_sort_key(body: str) -> tuple[int, str]:
-    order = ("left_foot", "right_foot", "left_hand", "right_hand", "left_knee", "right_knee")
-    lowered = str(body).lower()
-    for index, name in enumerate(order):
-        if lowered == name or name in lowered:
-            return (index, lowered)
-    return (len(order), lowered)
+    parent = _parent_body(body)
+    try:
+        return (_PARENT_BODY_ORDER.index(parent), parent)
+    except ValueError:
+        return (len(_PARENT_BODY_ORDER), parent)
 
 
 def _contact_bodies_at(anchors: list[ContactAnchorRecord], frame: int) -> list[str]:
     bodies = {
-        anchor.body
+        _parent_body(anchor.body)
         for anchor in anchors
         if int(anchor.start_frame) <= int(frame) < int(anchor.end_frame)
     }
@@ -45,11 +61,12 @@ def _anchor_for_body_at(
 ) -> ContactAnchorRecord | None:
     if body is None:
         return None
+    parent = _parent_body(body)
     return next(
         (
             anchor
             for anchor in anchors
-            if anchor.body == body and int(anchor.start_frame) <= int(frame) < int(anchor.end_frame)
+            if _parent_body(anchor.body) == parent and int(anchor.start_frame) <= int(frame) < int(anchor.end_frame)
         ),
         None,
     )
@@ -63,14 +80,35 @@ def _last_anchor_before(
 ) -> ContactAnchorRecord | None:
     if body is None:
         return None
+    parent = _parent_body(body)
     candidates = [
         anchor
         for anchor in anchors
-        if anchor.body == body and int(anchor.end_frame) <= int(frame)
+        if _parent_body(anchor.body) == parent and int(anchor.end_frame) <= int(frame)
     ]
     if not candidates:
         return None
     return max(candidates, key=lambda anchor: (int(anchor.end_frame), int(anchor.start_frame), anchor.anchor_id))
+
+
+def _merge_intervals_for_parent(
+    anchors: list[ContactAnchorRecord],
+    *,
+    max_gap: int,
+) -> list[tuple[int, int, list[ContactAnchorRecord]]]:
+    ordered = sorted(anchors, key=lambda anchor: (int(anchor.start_frame), int(anchor.end_frame), anchor.anchor_id))
+    merged: list[tuple[int, int, list[ContactAnchorRecord]]] = []
+    for anchor in ordered:
+        start = int(anchor.start_frame)
+        end = int(anchor.end_frame)
+        if end <= start:
+            continue
+        if not merged or start - merged[-1][1] > int(max_gap):
+            merged.append((start, end, [anchor]))
+            continue
+        prev_start, prev_end, prev_anchors = merged[-1]
+        merged[-1] = (prev_start, max(prev_end, end), [*prev_anchors, anchor])
+    return merged
 
 
 def _cluster_contact_starts(
@@ -78,33 +116,48 @@ def _cluster_contact_starts(
     *,
     active_parts: set[str],
     cluster_window: int,
-) -> tuple[list[int], dict[int, list[ContactAnchorRecord]]]:
-    events = sorted(
-        (
-            (int(anchor.start_frame), anchor)
-            for anchor in anchors
-            if int(anchor.start_frame) > _INITIAL_FRAME and _is_active_motion_body(anchor.body, active_parts)
-        ),
-        key=lambda item: (item[0], _body_sort_key(item[1].body), item[1].anchor_id),
-    )
+    same_body_gap: int,
+) -> tuple[list[int], dict[int, list[ContactAnchorRecord]], dict[int, list[str]]]:
+    by_parent: dict[str, list[ContactAnchorRecord]] = {}
+    for anchor in anchors:
+        parent = _parent_body(anchor.body)
+        if parent not in active_parts:
+            continue
+        by_parent.setdefault(parent, []).append(anchor)
+
+    parent_events: list[tuple[int, str, list[ContactAnchorRecord]]] = []
+    for parent, parent_anchors in by_parent.items():
+        for start, _end, group in _merge_intervals_for_parent(parent_anchors, max_gap=same_body_gap):
+            if start <= _INITIAL_FRAME:
+                continue
+            parent_events.append((int(start), parent, group))
+    parent_events.sort(key=lambda item: (item[0], _body_sort_key(item[1])))
+
     clusters: dict[int, list[ContactAnchorRecord]] = {}
+    cluster_bodies: dict[int, list[str]] = {}
     cluster_frame: int | None = None
     cluster_items: list[ContactAnchorRecord] = []
-    for frame, anchor in events:
+    cluster_parents: set[str] = set()
+    for frame, parent, group in parent_events:
         if cluster_frame is None:
             cluster_frame = frame
-            cluster_items = [anchor]
+            cluster_items = list(group)
+            cluster_parents = {parent}
             continue
         if frame - cluster_frame <= int(cluster_window):
             cluster_frame = frame
-            cluster_items.append(anchor)
+            cluster_items.extend(group)
+            cluster_parents.add(parent)
             continue
         clusters[cluster_frame] = list(cluster_items)
+        cluster_bodies[cluster_frame] = sorted(cluster_parents, key=_body_sort_key)
         cluster_frame = frame
-        cluster_items = [anchor]
+        cluster_items = list(group)
+        cluster_parents = {parent}
     if cluster_frame is not None:
         clusters[cluster_frame] = list(cluster_items)
-    return sorted(clusters), clusters
+        cluster_bodies[cluster_frame] = sorted(cluster_parents, key=_body_sort_key)
+    return sorted(clusters), clusters, cluster_bodies
 
 
 def stable_proto_transitions_for_editor(
@@ -114,22 +167,23 @@ def stable_proto_transitions_for_editor(
     fps: int,
     fallback: list[ContactTransitionRecord],
 ) -> list[ContactTransitionRecord]:
-    """Rebuild editor timeline cuts from cleaned contact point records.
+    """Rebuild editor timeline cuts from cleaned body-level contact phases.
 
-    Contact-editor cleanup has already refined, split, merged, filtered, and
-    surface-bound contact points. Those cleaned contact intervals are the source
-    of truth for timeline cuts; the raw force mask is not re-parsed here.
-    ``motion`` and ``fps`` are kept in the signature for call-site compatibility.
+    Contact-editor cleanup has already refined, split, filtered, and surface-bound
+    contact points. Foot heel/toe/sole records are editable patch handles for the
+    same limb contact phase, so they are unioned at the parent foot body before
+    timeline cut frames are derived. The raw force mask is not re-parsed here.
     """
 
     _ = motion
     cfg = StableContactProtoConfig(fps=float(fps))
     anchors = sorted(graph.anchors, key=lambda anchor: (int(anchor.start_frame), int(anchor.end_frame), anchor.body, anchor.anchor_id))
     active_parts = set(cfg.active_motion_parts)
-    cut_frames, anchors_by_cut = _cluster_contact_starts(
+    cut_frames, anchors_by_cut, bodies_by_cut = _cluster_contact_starts(
         anchors,
         active_parts=active_parts,
         cluster_window=int(cfg.stable_touchdown_cluster_window),
+        same_body_gap=max(int(cfg.merge_transition_window), int(cfg.stable_touchdown_cluster_window)),
     )
     if not cut_frames:
         return fallback
@@ -140,15 +194,16 @@ def stable_proto_transitions_for_editor(
         stable_anchor_frames.append(int(n_frames))
     stable_anchor_frames = sorted(dict.fromkeys(stable_anchor_frames))
 
+    all_parent_bodies = {_parent_body(anchor.body) for anchor in anchors}
     transitions: list[ContactTransitionRecord] = []
     previous_frame = _INITIAL_FRAME
     for proto_index, cut_frame in enumerate(cut_frames):
-        cluster_anchors = sorted(anchors_by_cut[cut_frame], key=lambda anchor: (_body_sort_key(anchor.body), anchor.anchor_id))
-        active_bodies = sorted({anchor.body for anchor in cluster_anchors}, key=_body_sort_key)
+        cluster_anchors = sorted(anchors_by_cut[cut_frame], key=lambda anchor: (_body_sort_key(anchor.body), int(anchor.start_frame), anchor.anchor_id))
+        active_bodies = list(bodies_by_cut.get(cut_frame, []))
         active_body = active_bodies[0] if active_bodies else None
         support_bodies = [body for body in _contact_bodies_at(anchors, previous_frame) if body not in set(active_bodies)]
         free_bodies = sorted(
-            {anchor.body for anchor in anchors} - set(active_bodies) - set(support_bodies),
+            all_parent_bodies - set(active_bodies) - set(support_bodies),
             key=_body_sort_key,
         )
         target_anchor = cluster_anchors[0] if cluster_anchors else None
@@ -172,6 +227,8 @@ def stable_proto_transitions_for_editor(
                 "segmentation_kind": STABLE_PROTO_KIND,
                 "endpoint_policy": STABLE_PROTO_ENDPOINT_POLICY,
                 "contact_source": "cleaned_contact_points",
+                "contact_phase_scope": "parent_limb_union",
+                "foot_patch_policy": "heel_toe_sole_do_not_cut",
                 "outside_policy": "copy_original",
                 "proto_index": int(proto_index),
                 "anchor_start": int(previous_frame),
@@ -184,6 +241,7 @@ def stable_proto_transitions_for_editor(
                 "stable_anchor_frames": stable_anchor_frames,
                 "config": {
                     "stable_touchdown_cluster_window": int(cfg.stable_touchdown_cluster_window),
+                    "same_parent_body_merge_gap": max(int(cfg.merge_transition_window), int(cfg.stable_touchdown_cluster_window)),
                     "active_motion_parts": list(cfg.active_motion_parts),
                     "source": "cleaned_contact_points",
                 },
