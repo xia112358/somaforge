@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from motion_edit.contact import ContactSurfaceRecord, contact_graph_from_masks, read_contact_graph, write_contact_layer, write_contact_surfaces
+from motion_edit.contact.schema import ContactAnchorRecord
 from motion_edit.workbench.contact_editor_setup import ContactEditorConfig, prepare_contact_editor_session
 
 
@@ -64,6 +65,56 @@ class ContactEditorStableTransitionTests(unittest.TestCase):
         self.assertEqual(transition.metadata["segmentation_kind"], "stable_contact_anchor")
         self.assertEqual(transition.metadata["contact_source"], "cleaned_contact_points")
         self.assertEqual(transition.source, "contact_editor_anchor_proto")
+
+    def test_foot_patch_subcontacts_do_not_create_extra_cut_frames(self) -> None:
+        from motion_edit.workbench.stable_transition_rebuild import stable_proto_transitions_for_editor
+        from motion_edit.contact.graph import ContactGraph
+
+        anchors = [
+            ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="right_foot_toe_000000_000004",
+                body="right_foot",
+                start_frame=0,
+                end_frame=4,
+                metadata={"patch_role": "toe"},
+            ),
+            ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="right_foot_heel_000004_000008",
+                body="right_foot",
+                start_frame=4,
+                end_frame=8,
+                metadata={"patch_role": "heel"},
+            ),
+            ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="right_foot_sole_000008_000012",
+                body="right_foot",
+                start_frame=8,
+                end_frame=12,
+                metadata={"patch_role": "sole"},
+            ),
+            ContactAnchorRecord(
+                motion_id="motion_a",
+                anchor_id="left_hand_000020_000030",
+                body="left_hand",
+                start_frame=20,
+                end_frame=30,
+            ),
+        ]
+        transitions = stable_proto_transitions_for_editor(
+            graph=ContactGraph(motion_id="motion_a", anchors=anchors),
+            motion="unused.npz",
+            fps=50,
+            fallback=[],
+        )
+
+        self.assertEqual(len(transitions), 1)
+        self.assertEqual((transitions[0].start_frame, transitions[0].end_frame), (0, 20))
+        self.assertEqual(transitions[0].active_body, "left_hand")
+        self.assertEqual(transitions[0].metadata["foot_patch_policy"], "heel_toe_sole_do_not_cut")
+        self.assertEqual(transitions[0].metadata["contact_phase_scope"], "parent_limb_union")
 
 
 if __name__ == "__main__":
