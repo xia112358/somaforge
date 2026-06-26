@@ -42,6 +42,7 @@ from .surface_binding import bind_anchor_to_surface, bind_anchors_to_surfaces, s
 from .transitions import (
     mask_string,
     segment_from_contact_transition,
+    transitions_from_anchor_pairs,
     transitions_from_event_pairs,
     transitions_from_proto_indices,
 )
@@ -90,6 +91,7 @@ __all__ = [
     "split_foot_contact_anchors",
     "segment_from_contact_transition",
     "surface_compatible_with_body",
+    "transitions_from_anchor_pairs",
     "transitions_from_event_pairs",
     "transitions_from_proto_indices",
     "validate_contact_edit_plan",
