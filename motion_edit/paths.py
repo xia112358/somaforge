@@ -36,6 +36,7 @@ def ensure_data_dirs() -> None:
         EXPORTS_ROOT / "manifests",
         EXPORTS_ROOT / "split_npz",
         WORKBENCH_ROOT / "sessions",
+        WORKBENCH_ROOT / "segmentation_sessions",
         BACKUPS_ROOT,
     ]:
         path.mkdir(parents=True, exist_ok=True)
