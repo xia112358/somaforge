@@ -149,18 +149,16 @@ def _add_cutter_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--motion", default=None, help="override motion npz path; defaults to the motion version path")
     parser.add_argument("--repo-root", default=None)
     parser.add_argument("--conda-env", default="hsretargeting")
-    parser.add_argument("--timeline-port", type=int, default=8094)
+    parser.add_argument("--viewer-port", type=int, default=8094, help="port for the embedded 3D viewer")
+    parser.add_argument("--timeline-port", type=int, default=8095, help="port for the wrapper-owned segmentation timeline")
     parser.add_argument("--fps", type=int, default=50)
     parser.add_argument("--with-terrain", action="store_true")
-    parser.add_argument("--save-on-exit", action="store_true", help="replace canonical segmentation when the viewer exits")
-    parser.add_argument("--allow-overlap", action="store_true", help="allow overlap validation warnings when saving")
-    parser.add_argument("--reason", default=None)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="motion-edit-seg",
-        description="Explicit segmentation edit sessions: start from automatic canonical cuts, edit a draft in the existing segment timeline, then save or discard.",
+        description="Explicit segmentation edit sessions: start from automatic canonical cuts, edit a draft with wrapper-owned timeline handles, then save or discard.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -170,7 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--overwrite", action="store_true")
     p.set_defaults(func=_cmd_start)
 
-    p = sub.add_parser("cutter", help="open the existing segment/cutter timeline on a draft segmentation session")
+    p = sub.add_parser("cutter", help="open the 3D viewer plus motion_edit-owned segment timeline handles")
     _add_cutter_args(p)
     p.set_defaults(func=_cmd_session_cutter)
 
