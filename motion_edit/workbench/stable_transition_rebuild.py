@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from motion_edit.contact.graph import ContactGraph
 from motion_edit.contact.schema import ContactAnchorRecord, ContactTransitionRecord
 from motion_edit.contact.stable_proto import STABLE_PROTO_ENDPOINT_POLICY, STABLE_PROTO_KIND, StableContactProtoConfig
@@ -7,7 +9,7 @@ from motion_edit.contact.stable_proto import STABLE_PROTO_ENDPOINT_POLICY, STABL
 
 _INITIAL_FRAME = 0
 _PARENT_BODY_ORDER = ("left_foot", "right_foot", "left_hand", "right_hand", "left_knee", "right_knee")
-_FOOT_PATCH_SUFFIXES = ("heel", "toe", "sole")
+_MIN_PROTO_SEGMENT_FRAMES = 20
 
 
 def _parent_body(body: str) -> str:
@@ -111,12 +113,48 @@ def _merge_intervals_for_parent(
     return merged
 
 
+def _merge_short_cut_clusters(
+    clusters: dict[int, list[ContactAnchorRecord]],
+    cluster_bodies: dict[int, list[str]],
+    *,
+    min_segment_frames: int,
+) -> tuple[dict[int, list[ContactAnchorRecord]], dict[int, list[str]]]:
+    if int(min_segment_frames) <= 0 or len(clusters) <= 1:
+        return clusters, cluster_bodies
+    merged_clusters: dict[int, list[ContactAnchorRecord]] = {}
+    merged_bodies: dict[int, list[str]] = {}
+    active_frame: int | None = None
+    active_items: list[ContactAnchorRecord] = []
+    active_bodies: set[str] = set()
+    for frame in sorted(clusters):
+        if active_frame is None:
+            active_frame = frame
+            active_items = list(clusters[frame])
+            active_bodies = set(cluster_bodies.get(frame, []))
+            continue
+        if frame - active_frame < int(min_segment_frames):
+            active_frame = frame
+            active_items.extend(clusters[frame])
+            active_bodies.update(cluster_bodies.get(frame, []))
+            continue
+        merged_clusters[active_frame] = list(active_items)
+        merged_bodies[active_frame] = sorted(active_bodies, key=_body_sort_key)
+        active_frame = frame
+        active_items = list(clusters[frame])
+        active_bodies = set(cluster_bodies.get(frame, []))
+    if active_frame is not None:
+        merged_clusters[active_frame] = list(active_items)
+        merged_bodies[active_frame] = sorted(active_bodies, key=_body_sort_key)
+    return merged_clusters, merged_bodies
+
+
 def _cluster_contact_starts(
     anchors: list[ContactAnchorRecord],
     *,
     active_parts: set[str],
     cluster_window: int,
     same_body_gap: int,
+    min_segment_frames: int,
 ) -> tuple[list[int], dict[int, list[ContactAnchorRecord]], dict[int, list[str]]]:
     by_parent: dict[str, list[ContactAnchorRecord]] = {}
     for anchor in anchors:
@@ -157,7 +195,28 @@ def _cluster_contact_starts(
     if cluster_frame is not None:
         clusters[cluster_frame] = list(cluster_items)
         cluster_bodies[cluster_frame] = sorted(cluster_parents, key=_body_sort_key)
+    clusters, cluster_bodies = _merge_short_cut_clusters(
+        clusters,
+        cluster_bodies,
+        min_segment_frames=int(min_segment_frames),
+    )
     return sorted(clusters), clusters, cluster_bodies
+
+
+def _fallback_transitions(
+    fallback: list[ContactTransitionRecord],
+    *,
+    reason: str,
+) -> list[ContactTransitionRecord]:
+    out: list[ContactTransitionRecord] = []
+    for transition in fallback:
+        metadata = dict(transition.metadata or {})
+        metadata.setdefault("contact_source", "fallback_existing_transitions")
+        metadata.setdefault("contact_phase_scope", "legacy_transition")
+        metadata.setdefault("cut_rebuild_failed", True)
+        metadata.setdefault("cut_rebuild_reason", reason)
+        out.append(replace(transition, metadata=metadata))
+    return out
 
 
 def stable_proto_transitions_for_editor(
@@ -179,14 +238,16 @@ def stable_proto_transitions_for_editor(
     cfg = StableContactProtoConfig(fps=float(fps))
     anchors = sorted(graph.anchors, key=lambda anchor: (int(anchor.start_frame), int(anchor.end_frame), anchor.body, anchor.anchor_id))
     active_parts = set(cfg.active_motion_parts)
+    min_proto_segment_frames = _MIN_PROTO_SEGMENT_FRAMES
     cut_frames, anchors_by_cut, bodies_by_cut = _cluster_contact_starts(
         anchors,
         active_parts=active_parts,
         cluster_window=int(cfg.stable_touchdown_cluster_window),
         same_body_gap=max(int(cfg.merge_transition_window), int(cfg.stable_touchdown_cluster_window)),
+        min_segment_frames=min_proto_segment_frames,
     )
     if not cut_frames:
-        return fallback
+        return _fallback_transitions(fallback, reason="no_parent_limb_contact_starts")
 
     n_frames = max((int(anchor.end_frame) for anchor in anchors), default=0)
     stable_anchor_frames = [_INITIAL_FRAME, *cut_frames]
@@ -242,6 +303,7 @@ def stable_proto_transitions_for_editor(
                 "config": {
                     "stable_touchdown_cluster_window": int(cfg.stable_touchdown_cluster_window),
                     "same_parent_body_merge_gap": max(int(cfg.merge_transition_window), int(cfg.stable_touchdown_cluster_window)),
+                    "min_proto_segment_frames": int(min_proto_segment_frames),
                     "active_motion_parts": list(cfg.active_motion_parts),
                     "source": "cleaned_contact_points",
                 },
@@ -250,4 +312,4 @@ def stable_proto_transitions_for_editor(
         transition.validate()
         transitions.append(transition)
         previous_frame = int(cut_frame)
-    return transitions or fallback
+    return transitions or _fallback_transitions(fallback, reason="empty_generated_transitions")
