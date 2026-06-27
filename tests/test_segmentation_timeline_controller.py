@@ -6,9 +6,9 @@ from pathlib import Path
 from unittest import mock
 
 from motion_edit.schema import SegmentRecord
-from motion_edit.segmentation.session import create_segmentation_edit_session
+from motion_edit.segmentation.session import create_segmentation_edit_session, read_draft_segments
 from motion_edit.storage import io as storage_io
-from motion_edit.storage.io import read_canonical_segments, read_draft_segments, write_canonical_segments, write_motion_version
+from motion_edit.storage.io import read_canonical_segments, write_canonical_segments, write_motion_version
 from motion_edit.storage.schema import MotionVersionRecord
 from motion_edit.viewer.segmentation_timeline import SegmentationTimelineController
 
@@ -64,7 +64,10 @@ class SegmentationTimelineControllerTests(unittest.TestCase):
                 draft = read_draft_segments(session)
 
                 self.assertEqual((draft[0].start_frame, draft[0].end_frame), (2, 8))
-                self.assertEqual((read_canonical_segments("motion_a_raw")[0].start_frame, read_canonical_segments("motion_a_raw")[0].end_frame), (0, 10))
+                self.assertEqual(
+                    (read_canonical_segments("motion_a_raw")[0].start_frame, read_canonical_segments("motion_a_raw")[0].end_frame),
+                    (0, 10),
+                )
 
                 controller.save(reason="save timeline edit")
                 saved = read_canonical_segments("motion_a_raw")
