@@ -20,6 +20,14 @@ class _FakeProcess:
         return None
 
 
+class _FakeHttpd:
+    def shutdown(self) -> None:
+        return None
+
+    def server_close(self) -> None:
+        return None
+
+
 class SegmentationCutterLauncherTests(unittest.TestCase):
     def _patch_storage(self, root: Path):
         return (
@@ -48,7 +56,7 @@ class SegmentationCutterLauncherTests(unittest.TestCase):
         )
         return motion
 
-    def test_cutter_opens_existing_viewer_with_draft_segments(self) -> None:
+    def test_cutter_opens_3d_viewer_and_wrapper_timeline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             with self._patch_storage(root)[0], self._patch_storage(root)[1], self._patch_storage(root)[2]:
@@ -61,47 +69,26 @@ class SegmentationCutterLauncherTests(unittest.TestCase):
                     motion=None,
                     repo_root="/repo",
                     conda_env="env",
-                    timeline_port=8094,
+                    viewer_port=8094,
+                    timeline_port=8095,
                     fps=50,
                     with_terrain=False,
-                    save_on_exit=False,
-                    allow_overlap=False,
-                    reason=None,
                 )
-                with mock.patch("motion_edit.segmentation.cutter.launch_viewer", return_value=_FakeProcess()) as launch:
+                with (
+                    mock.patch("motion_edit.segmentation.cutter.launch_viewer", return_value=_FakeProcess()) as launch,
+                    mock.patch("motion_edit.segmentation.cutter.start_segmentation_timeline_wrapper", return_value=_FakeHttpd()) as timeline,
+                ):
                     _cmd_cutter(args)
 
                 kwargs = launch.call_args.kwargs
                 self.assertEqual(launch.call_args.args[0], str(motion))
-                self.assertEqual(Path(kwargs["segment_path"]).name, "draft_segments.jsonl")
-                self.assertIn("seg_session", str(kwargs["segment_path"]))
+                self.assertIsNone(kwargs["segment_path"])
+                self.assertEqual(kwargs["timeline_port"], 8094)
+                timeline_kwargs = timeline.call_args.kwargs
+                self.assertEqual(timeline_kwargs["timeline_port"], 8095)
+                self.assertEqual(timeline_kwargs["viser_port"], 8094)
+                self.assertEqual(timeline_kwargs["controller"].session.session_id, "seg_session")
                 self.assertEqual(read_canonical_segments("motion_a_raw")[0].start_frame, 0)
-
-    def test_cutter_save_on_exit_replaces_canonical(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            with self._patch_storage(root)[0], self._patch_storage(root)[1], self._patch_storage(root)[2]:
-                self._seed(root)
-                args = argparse.Namespace(
-                    motion_version_id="motion_a_raw",
-                    session=None,
-                    session_id="seg_session_save",
-                    overwrite=False,
-                    motion=None,
-                    repo_root="/repo",
-                    conda_env="env",
-                    timeline_port=8094,
-                    fps=50,
-                    with_terrain=False,
-                    save_on_exit=True,
-                    allow_overlap=False,
-                    reason="save reviewed segmentation",
-                )
-                with mock.patch("motion_edit.segmentation.cutter.launch_viewer", return_value=_FakeProcess()):
-                    _cmd_cutter(args)
-
-                saved = read_canonical_segments("motion_a_raw")
-                self.assertEqual([segment.segment_id for segment in saved], ["seg_0"])
 
 
 if __name__ == "__main__":
