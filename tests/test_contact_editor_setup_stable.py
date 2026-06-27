@@ -105,7 +105,7 @@ class ContactEditorStableTransitionTests(unittest.TestCase):
         ]
         transitions = stable_proto_transitions_for_editor(
             graph=ContactGraph(motion_id="motion_a", anchors=anchors),
-            motion="unused.npz",
+            motion="x",
             fps=50,
             fallback=[],
         )
@@ -115,6 +115,26 @@ class ContactEditorStableTransitionTests(unittest.TestCase):
         self.assertEqual(transitions[0].active_body, "left_hand")
         self.assertEqual(transitions[0].metadata["foot_patch_policy"], "heel_toe_sole_do_not_cut")
         self.assertEqual(transitions[0].metadata["contact_phase_scope"], "parent_limb_union")
+
+    def test_close_cross_limb_contact_starts_share_one_cut(self) -> None:
+        from motion_edit.workbench.stable_transition_rebuild import stable_proto_transitions_for_editor
+        from motion_edit.contact.graph import ContactGraph
+
+        anchors = [
+            ContactAnchorRecord(motion_id="motion_a", anchor_id="left_hand_100_140", body="left_hand", start_frame=100, end_frame=140),
+            ContactAnchorRecord(motion_id="motion_a", anchor_id="right_hand_111_150", body="right_hand", start_frame=111, end_frame=150),
+            ContactAnchorRecord(motion_id="motion_a", anchor_id="left_foot_150_170", body="left_foot", start_frame=150, end_frame=170),
+        ]
+        transitions = stable_proto_transitions_for_editor(
+            graph=ContactGraph(motion_id="motion_a", anchors=anchors),
+            motion="x",
+            fps=50,
+            fallback=[],
+        )
+
+        self.assertEqual([(item.start_frame, item.end_frame) for item in transitions], [(0, 111), (111, 150)])
+        self.assertEqual(transitions[0].metadata["active_bodies"], ["left_hand", "right_hand"])
+        self.assertEqual(transitions[0].metadata["config"]["min_proto_segment_frames"], 20)
 
 
 if __name__ == "__main__":
