@@ -952,8 +952,9 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertNotIn("openLatest", html)
         self.assertNotIn("reloadMotion", html)
         self.assertIn("contactPointBlock", html)
-        self.assertIn("segmentBlock", html)
-        self.assertIn("protoBoundary", html)
+        self.assertIn("cutFrameMarker", html)
+        self.assertNotIn("segmentBlock", html)
+        self.assertNotIn("protoBoundaryLabel", html)
 
     def test_recent_motions_upsert_prunes_and_deduplicates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

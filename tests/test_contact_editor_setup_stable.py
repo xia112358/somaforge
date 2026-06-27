@@ -20,14 +20,14 @@ class ContactEditorStableTransitionTests(unittest.TestCase):
             # should be derived from the cleaned ContactAnchorRecords instead of
             # reparsing raw force from the motion file.
             np.savez(motion, dummy=np.asarray([1], dtype=np.int64))
-            contact_mask = np.zeros((12, 1), dtype=bool)
-            contact_mask[0:3, 0] = True
-            contact_mask[7:10, 0] = True
+            contact_mask = np.zeros((40, 2), dtype=bool)
+            contact_mask[0:10, 0] = True
+            contact_mask[25:31, 1] = True
             source_graph = contact_graph_from_masks(
                 motion_id="motion_a",
                 contact_mask=contact_mask,
-                body_pos_w=np.zeros((12, 1, 3), dtype=float),
-                body_names=["left_foot"],
+                body_pos_w=np.zeros((40, 2, 3), dtype=float),
+                body_names=["left_foot", "left_hand"],
             )
             write_contact_layer(root / "layers" / "contact" / "source", source_graph)
             surface = ContactSurfaceRecord(
@@ -61,7 +61,7 @@ class ContactEditorStableTransitionTests(unittest.TestCase):
 
         self.assertEqual(len(ready.transitions), 1)
         transition = ready.transitions[0]
-        self.assertEqual((transition.start_frame, transition.end_frame), (0, 7))
+        self.assertEqual((transition.start_frame, transition.end_frame), (0, 25))
         self.assertEqual(transition.metadata["segmentation_kind"], "stable_contact_anchor")
         self.assertEqual(transition.metadata["contact_source"], "cleaned_contact_points")
         self.assertEqual(transition.source, "contact_editor_anchor_proto")
