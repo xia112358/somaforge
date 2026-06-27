@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from motion_edit.segmentation.cutter import _cmd_cutter as _cmd_session_cutter
 from motion_edit.segmentation.session import (
     add_draft_segment,
     create_segmentation_edit_session,
@@ -140,10 +141,26 @@ def _cmd_discard(args: argparse.Namespace) -> None:
     print(f"discarded segmentation edit session {session.session_id}")
 
 
+def _add_cutter_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--motion-version-id", default=None, help="canonical motion version to copy into a draft session")
+    parser.add_argument("--session", default=None, help="existing open segmentation edit session id, dir, or session.json")
+    parser.add_argument("--session-id", default=None, help="new session id when creating a draft")
+    parser.add_argument("--overwrite", action="store_true", help="overwrite an existing session with --session-id")
+    parser.add_argument("--motion", default=None, help="override motion npz path; defaults to the motion version path")
+    parser.add_argument("--repo-root", default=None)
+    parser.add_argument("--conda-env", default="hsretargeting")
+    parser.add_argument("--timeline-port", type=int, default=8094)
+    parser.add_argument("--fps", type=int, default=50)
+    parser.add_argument("--with-terrain", action="store_true")
+    parser.add_argument("--save-on-exit", action="store_true", help="replace canonical segmentation when the viewer exits")
+    parser.add_argument("--allow-overlap", action="store_true", help="allow overlap validation warnings when saving")
+    parser.add_argument("--reason", default=None)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="motion-edit-seg",
-        description="Explicit segmentation edit sessions: start from automatic canonical cuts, edit a draft, then save or discard.",
+        description="Explicit segmentation edit sessions: start from automatic canonical cuts, edit a draft in the existing segment timeline, then save or discard.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -152,6 +169,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--session-id", default=None)
     p.add_argument("--overwrite", action="store_true")
     p.set_defaults(func=_cmd_start)
+
+    p = sub.add_parser("cutter", help="open the existing segment/cutter timeline on a draft segmentation session")
+    _add_cutter_args(p)
+    p.set_defaults(func=_cmd_session_cutter)
 
     p = sub.add_parser("list", help="list draft segments in an edit session")
     p.add_argument("--session", required=True)
