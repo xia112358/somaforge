@@ -21,6 +21,7 @@ viewer = [
 
 [project.scripts]
 motion-edit = "motion_edit.cli:main"
+motion-edit-seg = "motion_edit.segmentation.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

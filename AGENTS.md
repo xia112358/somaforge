@@ -44,16 +44,25 @@ main / origin/main
 The accidental segmentation wrapper work includes:
 
 ```text
-motion-edit-seg
+motion-edit-seg cutter
 motion_edit/viewer/segmentation_timeline.py
-motion_edit/segmentation/cli.py
 motion_edit/segmentation/cutter.py
-motion_edit/segmentation/session.py
 ```
 
 These are not part of the desired primary workflow. If anything from that work is
 needed later, port it deliberately into `motion_edit/viewer/contact_timeline.py`
 instead of reviving a separate UI path.
+
+The segmentation session backend is allowed on the main line:
+
+```text
+motion_edit/segmentation/session.py
+motion_edit/segmentation/cli.py
+motion-edit-seg start/list/trim/add/delete/relabel/save/discard
+```
+
+This CLI is a non-visual canonical segmentation draft/session utility. It must
+not launch a separate wrapper UI.
 
 ## Product Direction
 
@@ -121,7 +130,7 @@ After branch cleanup or UI/contact pipeline changes, run:
 The current consolidated branch has passed:
 
 ```text
-Ran 217 tests
+Ran 220 tests
 OK (skipped=1)
 ```
 
