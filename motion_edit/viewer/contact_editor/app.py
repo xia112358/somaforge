@@ -2,24 +2,28 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import os
 import socket
 import sys
 import threading
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from motion_edit.contact import read_contact_surfaces
 from motion_edit.contact.graph import ContactGraph
 from motion_edit.generation import apply_contact_edit_plan_to_motion
 from motion_edit.contact.plans import ContactEditPlan, read_contact_edit_plan, validate_contact_edit_plan, write_contact_edit_plan
 from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord
 from motion_edit.paths import LAYERS_ROOT, MOTIONS_ROOT, WORKBENCH_ROOT
-from motion_edit.storage.io import read_motion_asset
+from motion_edit.storage.io import read_motion_asset, write_motion_asset
+from motion_edit.storage.schema import MotionAssetRecord
 from motion_edit.viewer.contact_timeline import start_contact_timeline_wrapper
 from motion_edit.workbench import (
     coalesce_pending_surface_edits,
@@ -1307,7 +1311,7 @@ def _contact_editor_config_from_motion_asset(path: str | Path) -> ContactEditorC
     selected_path = Path(path).expanduser()
     record = read_motion_asset(selected_path.stem, selected_path)
     derived = record.derived or {}
-    source_contact_layer = derived.get("bound_contact_layer") or derived.get("contact_layer")
+    source_contact_layer = record.source_contact_layer
     if not source_contact_layer:
         raise ValueError(f"motion has no derived contact layer: {record.motion_asset_id}")
     return ContactEditorConfig(
@@ -1318,11 +1322,12 @@ def _contact_editor_config_from_motion_asset(path: str | Path) -> ContactEditorC
         surface_catalog=record.surface_catalog_path,
         terrain_urdf=record.terrain_urdf,
         output_prefix=f"contact/{record.motion_asset_id}_contact_editor",
-        edit_plan=derived.get("edit_plan_path"),
-        output_contact_layer=derived.get("output_contact_layer"),
+        edit_plan=record.edit_plan_path,
+        output_contact_layer=record.output_contact_layer,
         repo_root=None,
         with_terrain=bool(record.terrain_urdf),
         fps=int(record.fps or 50),
+        prebound_contact_layer=bool(record.bound_contact_layer or derived.get("prebound_contact_layer")),
     )
 
 
@@ -1336,10 +1341,11 @@ def _recent_entry_from_motion_asset(path: str | Path) -> RecentMotionEntry:
         motion_path=record.motion_path,
         motion_id=record.motion_id or record.motion_asset_id,
         terrain_urdf=record.terrain_urdf,
-        contact_layer=derived.get("bound_contact_layer") or derived.get("contact_layer"),
+        contact_layer=record.source_contact_layer,
         surface_catalog=record.surface_catalog_path,
-        edit_plan_path=derived.get("edit_plan_path"),
-        output_contact_layer=derived.get("output_contact_layer"),
+        edit_plan_path=record.edit_plan_path,
+        output_contact_layer=record.output_contact_layer,
+        output_segment_layer=record.output_segment_layer,
         metadata={"source": "motion_asset"},
     )
 
@@ -1364,6 +1370,11 @@ def _contact_editor_config_from_recent_entry(entry: RecentMotionEntry) -> Contac
         output_contact_layer=entry.output_contact_layer,
         repo_root=None,
         with_terrain=bool(entry.terrain_urdf),
+        prebound_contact_layer=bool(
+            entry.metadata.get("prebound_contact_layer")
+            or entry.metadata.get("kind") == "lte_augmented"
+            or (entry.output_contact_layer and entry.contact_layer == entry.output_contact_layer)
+        ),
     )
 
 
@@ -1395,23 +1406,68 @@ def _recent_entry_from_generated_session(
     output_segment_layer: str | None,
     output_motion_version_id: str | None,
     terrain_urdf: str | None = None,
+    motion_asset_path: str | None = None,
+    motion_asset_id: str | None = None,
 ) -> RecentMotionEntry:
-    label = output_motion_version_id or Path(output_motion).stem
+    label = motion_asset_id or output_motion_version_id or Path(output_motion).stem
     return RecentMotionEntry(
         label=label,
         motion_path=output_motion,
         motion_id=session.motion_id,
+        motion_asset_id=motion_asset_id,
+        motion_asset_path=motion_asset_path,
         terrain_urdf=terrain_urdf,
         contact_layer=output_contact_layer,
         surface_catalog=session.surface_catalog,
         edit_plan_path=session.edit_plan_path,
         output_contact_layer=output_contact_layer,
+        output_segment_layer=output_segment_layer,
         metadata={
             "kind": "lte_augmented",
             "parent_motion_path": session.motion_path,
             "output_segment_layer": output_segment_layer,
+            "prebound_contact_layer": bool(output_contact_layer),
         },
     )
+
+
+def _write_generated_motion_asset_from_session(
+    session: SurfaceEditorSession,
+    *,
+    output_motion: str,
+    output_contact_layer: str | None,
+    output_segment_layer: str | None,
+    output_motion_version_id: str | None,
+    terrain_urdf: str | None = None,
+) -> Path:
+    asset_id = output_motion_version_id or Path(output_motion).stem
+    record = MotionAssetRecord(
+        motion_asset_id=asset_id,
+        motion_path=output_motion,
+        source="motion_edit_lte_fullbody",
+        motion_id=session.motion_id,
+        terrain_urdf=terrain_urdf,
+        surface_catalog_path=session.surface_catalog,
+        contact_layer=output_contact_layer,
+        bound_contact_layer=output_contact_layer,
+        edit_plan_path=session.edit_plan_path,
+        output_contact_layer=output_contact_layer,
+        output_segment_layer=output_segment_layer,
+        derived={
+            "contact_layer": output_contact_layer,
+            "bound_contact_layer": output_contact_layer,
+            "edit_plan_path": session.edit_plan_path,
+            "output_contact_layer": output_contact_layer,
+            "output_segment_layer": output_segment_layer,
+            "prebound_contact_layer": bool(output_contact_layer),
+        },
+        metadata={
+            "kind": "lte_augmented",
+            "parent_motion_path": session.motion_path,
+            "prebound_contact_layer": bool(output_contact_layer),
+        },
+    )
+    return write_motion_asset(record)
 
 
 def _loaded_editor_command_from_config(
@@ -1631,6 +1687,14 @@ def _add_loaded_editor_sidebar(
             register_motion_version=inputs["register_motion_version"],
         )
         if not dry_run:
+            motion_asset_path = _write_generated_motion_asset_from_session(
+                controller.state.session,
+                output_motion=str(result.output_motion_path),
+                output_contact_layer=inputs["generated_contact_layer"],
+                output_segment_layer=inputs["generated_segment_layer"],
+                output_motion_version_id=inputs["generated_motion_version_id"],
+                terrain_urdf=controller.terrain_urdf,
+            )
             generated_entry = _recent_entry_from_generated_session(
                 controller.state.session,
                 output_motion=str(result.output_motion_path),
@@ -1638,6 +1702,8 @@ def _add_loaded_editor_sidebar(
                 output_segment_layer=inputs["generated_segment_layer"],
                 output_motion_version_id=inputs["generated_motion_version_id"],
                 terrain_urdf=controller.terrain_urdf,
+                motion_asset_path=str(motion_asset_path),
+                motion_asset_id=inputs["generated_motion_version_id"] or Path(result.output_motion_path).stem,
             )
             upsert_recent_motion(generated_entry)
             if callable(controller.reload_motion_callback):
@@ -1973,16 +2039,132 @@ def load_motion_sequence(path: str | Path) -> tuple[np.ndarray, int]:
     return np.asarray(qpos, dtype=np.float32), fps
 
 
-def _add_static_urdf(server: Any, *, root_name: str, urdf_path: str | Path) -> list[Any]:
+def _surface_catalog_mesh_paths(surface_catalog: str | Path | None) -> dict[str, Path]:
+    if surface_catalog is None:
+        return {}
+    try:
+        surfaces = read_contact_surfaces(surface_catalog)
+    except Exception:
+        return {}
+    paths: dict[str, Path] = {}
+    for surface in surfaces:
+        mesh_path = surface.metadata.get("mesh_path") if isinstance(surface.metadata, dict) else None
+        if not mesh_path:
+            continue
+        path = Path(str(mesh_path)).expanduser()
+        if path.exists():
+            paths[path.name] = path.resolve()
+    return paths
+
+
+def _patched_terrain_urdf_for_viewer(urdf_path: str | Path, surface_catalog: str | Path | None) -> Path:
+    urdf = Path(urdf_path).expanduser().resolve()
+    replacements = _surface_catalog_mesh_paths(surface_catalog)
+    if not replacements:
+        return urdf
+    tree = ET.parse(urdf)
+    root = tree.getroot()
+    changed = False
+    for mesh in root.findall(".//mesh"):
+        filename = mesh.attrib.get("filename")
+        if not filename:
+            continue
+        mesh_path = Path(filename)
+        resolved = mesh_path if mesh_path.is_absolute() else urdf.parent / mesh_path
+        if resolved.exists():
+            continue
+        replacement = replacements.get(mesh_path.name)
+        if replacement is None:
+            continue
+        mesh.attrib["filename"] = str(replacement)
+        changed = True
+    if not changed:
+        return urdf
+    digest = hashlib.sha1((str(urdf) + json.dumps({k: str(v) for k, v in sorted(replacements.items())})).encode("utf-8")).hexdigest()[:12]
+    out = Path("/tmp") / "motion_edit_terrain_urdf_cache" / f"{urdf.stem}_{digest}.urdf"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tree.write(out, encoding="utf-8", xml_declaration=True)
+    return out
+
+
+def _surface_polygon_mesh(surface: Any) -> tuple[np.ndarray, np.ndarray] | None:
+    polygon = surface.metadata.get("polygon_world") if isinstance(surface.metadata, dict) else None
+    if polygon:
+        vertices = np.asarray(polygon, dtype=np.float32)
+    elif surface.surface_id != "terrain_ground_z0" and surface.bounds:
+        corners = []
+        u_bounds = surface.bounds.get("u") if isinstance(surface.bounds, dict) else None
+        v_bounds = surface.bounds.get("v") if isinstance(surface.bounds, dict) else None
+        if not u_bounds or not v_bounds:
+            return None
+        origin = np.asarray(surface.origin, dtype=float)
+        tangent_u = np.asarray(surface.tangent_u, dtype=float)
+        tangent_v = np.asarray(surface.tangent_v, dtype=float)
+        for u, v in ((u_bounds[0], v_bounds[0]), (u_bounds[1], v_bounds[0]), (u_bounds[1], v_bounds[1]), (u_bounds[0], v_bounds[1])):
+            corners.append(origin + tangent_u * float(u) + tangent_v * float(v))
+        vertices = np.asarray(corners, dtype=np.float32)
+    else:
+        return None
+    if vertices.ndim != 2 or vertices.shape[0] < 3 or vertices.shape[1] != 3:
+        return None
+    faces = np.asarray([[0, index, index + 1] for index in range(1, vertices.shape[0] - 1)], dtype=np.uint32)
+    return vertices, faces
+
+
+def _add_surface_catalog_terrain(server: Any, *, surface_catalog: str | Path | None, root_name: str = "/object") -> list[Any]:
+    if surface_catalog is None or not hasattr(server.scene, "add_mesh_simple"):
+        return []
+    try:
+        surfaces = read_contact_surfaces(surface_catalog)
+    except Exception as exc:
+        print(f"[surface editor] terrain surface fallback unavailable: {exc}")
+        return []
+    handles: list[Any] = []
+    for surface in surfaces:
+        if surface.surface_id == "terrain_ground_z0":
+            continue
+        mesh = _surface_polygon_mesh(surface)
+        if mesh is None:
+            continue
+        vertices, faces = mesh
+        handle = server.scene.add_mesh_simple(
+            f"{root_name}/surface_catalog/{_safe_name(surface.surface_id)}",
+            vertices=vertices,
+            faces=faces,
+            color=(76, 178, 230),
+            opacity=0.42,
+            side="double",
+        )
+        handles.append(handle)
+    if handles:
+        print(f"[surface editor] rendered terrain from surface catalog: {surface_catalog}")
+    return handles
+
+
+def _add_static_urdf(
+    server: Any,
+    *,
+    root_name: str,
+    urdf_path: str | Path,
+    surface_catalog: str | Path | None = None,
+) -> list[Any]:
     try:
         import yourdfpy  # type: ignore[import-untyped]
         from viser.extras import ViserUrdf  # type: ignore[import-not-found]
     except ImportError:
-        return []
+        return _add_surface_catalog_terrain(server, surface_catalog=surface_catalog, root_name=root_name)
     root = server.scene.add_frame(root_name, show_axes=False)
-    urdf = yourdfpy.URDF.load(str(urdf_path), load_meshes=True, build_scene_graph=True)
-    viser_urdf = ViserUrdf(server, urdf_or_path=urdf, root_node_name=root_name)
-    return [root, viser_urdf]
+    try:
+        patched_urdf = _patched_terrain_urdf_for_viewer(urdf_path, surface_catalog)
+        urdf = yourdfpy.URDF.load(str(patched_urdf), load_meshes=True, build_scene_graph=True)
+        viser_urdf = ViserUrdf(server, urdf_or_path=urdf, root_node_name=root_name)
+        if patched_urdf != Path(urdf_path).expanduser().resolve():
+            print(f"[surface editor] patched terrain URDF mesh paths for viewer: {patched_urdf}")
+        return [root, viser_urdf]
+    except Exception as exc:
+        print(f"[surface editor] terrain URDF render failed: {exc}")
+        handles = _add_surface_catalog_terrain(server, surface_catalog=surface_catalog, root_name=root_name)
+        return [root, *handles]
 
 
 def _add_motion_playback(
@@ -1992,13 +2174,14 @@ def _add_motion_playback(
     fps: int,
     robot_urdf: str | Path | None,
     object_urdf: str | Path | None = None,
+    object_surface_catalog: str | Path | None = None,
     show_gui: bool = True,
 ) -> tuple[list[Any], MotionPlaybackController | None]:
     handles: list[Any] = []
     if object_urdf:
         object_path = Path(object_urdf)
         if object_path.exists():
-            handles.extend(_add_static_urdf(server, root_name="/object", urdf_path=object_path))
+            handles.extend(_add_static_urdf(server, root_name="/object", urdf_path=object_path, surface_catalog=object_surface_catalog))
     if robot_urdf is None or not Path(robot_urdf).exists():
         print("[surface editor] robot_urdf missing; showing root trace only")
         return handles, None
@@ -2169,6 +2352,7 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
         *,
         motion_path: str | Path,
         object_urdf: str | Path | None,
+        object_surface_catalog: str | Path | None,
         fps_hint: int,
     ) -> int:
         nonlocal motion_handles
@@ -2181,6 +2365,7 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
             fps=int(fps_hint or motion_fps),
             robot_urdf=args.robot_urdf,
             object_urdf=object_urdf,
+            object_surface_catalog=object_surface_catalog,
             show_gui=False,
         )
         motion_handles.extend(playback_handles)
@@ -2192,6 +2377,7 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
     motion_fps = _replace_motion_visuals(
         motion_path=args.qpos_npz,
         object_urdf=args.object_urdf if args.with_terrain else None,
+        object_surface_catalog=state.session.surface_catalog,
         fps_hint=int(args.fps or 0),
     )
     controller.fps = int(args.fps or motion_fps)
@@ -2203,6 +2389,7 @@ def run_surface_overlay_player(args: argparse.Namespace) -> None:
         next_fps = _replace_motion_visuals(
             motion_path=config.motion,
             object_urdf=object_urdf if config.with_terrain else None,
+            object_surface_catalog=next_state.session.surface_catalog,
             fps_hint=int(args.fps or config.fps),
         )
         controller.state = next_state
@@ -2283,6 +2470,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
         motion_path: str | Path,
         robot_urdf: str | Path | None,
         object_urdf: str | Path | None,
+        object_surface_catalog: str | Path | None,
         fps_hint: int,
     ) -> int:
         nonlocal motion_handles
@@ -2295,6 +2483,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
             fps=int(fps_hint or motion_fps),
             robot_urdf=robot_urdf,
             object_urdf=object_urdf,
+            object_surface_catalog=object_surface_catalog,
             show_gui=False,
         )
         motion_handles.extend(playback_handles)
@@ -2364,6 +2553,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
             motion_path=config.motion,
             robot_urdf=robot_urdf if robot_urdf.exists() else None,
             object_urdf=object_urdf if config.with_terrain else None,
+            object_surface_catalog=next_state.session.surface_catalog,
             fps_hint=int(args.fps or config.fps),
         )
         existing = controller_box.get("controller")
@@ -2389,6 +2579,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
                 motion_path=next_config.motion,
                 robot_urdf=controller.robot_urdf,
                 object_urdf=next_object_urdf if next_config.with_terrain else None,
+                object_surface_catalog=next_state_inner.session.surface_catalog,
                 fps_hint=int(args.fps or next_config.fps),
             )
             controller.state = next_state_inner

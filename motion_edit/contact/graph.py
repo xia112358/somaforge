@@ -7,7 +7,8 @@ import numpy as np
 
 from motion_edit.contact.patches import patches_from_anchors
 from motion_edit.contact.schema import ContactAnchorRecord, ContactEventRecord, ContactPatchRecord, ContactTransitionRecord
-from motion_edit.contact.transitions import transitions_from_event_pairs, transitions_from_proto_indices
+from motion_edit.contact.stable_proto import transitions_from_stable_contact_anchors
+from motion_edit.contact.transitions import transitions_from_anchor_pairs, transitions_from_event_pairs, transitions_from_proto_indices
 
 
 @dataclass(frozen=True)
@@ -54,10 +55,33 @@ def contact_graph_from_masks(
         source=source,
     )
     if not transitions:
+        transitions = transitions_from_stable_contact_anchors(
+            motion_id=motion_id,
+            anchors=anchors,
+            events=events,
+            contact_mask=contact_mask,
+            active_mask=active_mask,
+            support_mask=support_mask,
+            body_pos_w=body_pos_w,
+            body_names=body_names,
+            source=source,
+        )
+    if not transitions:
         transitions = transitions_from_event_pairs(
             motion_id=motion_id,
             events=events,
             anchors=anchors,
+            source=source,
+        )
+    if not transitions:
+        transitions = transitions_from_anchor_pairs(
+            motion_id=motion_id,
+            anchors=anchors,
+            events=events,
+            contact_mask=contact_mask,
+            active_mask=active_mask,
+            support_mask=support_mask,
+            body_names=body_names,
             source=source,
         )
     return ContactGraph(motion_id=motion_id, events=events, anchors=anchors, patches=patches_from_anchors(anchors), transitions=transitions)

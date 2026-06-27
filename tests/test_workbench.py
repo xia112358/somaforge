@@ -54,7 +54,9 @@ from motion_edit.viewer.surface_overlay_player import (
     _anchor_positions_differ,
     _contact_editor_config_from_motion_asset,
     _generate_fullbody_lte_from_session,
+    _patched_terrain_urdf_for_viewer,
     _recent_entry_from_generated_session,
+    _write_generated_motion_asset_from_session,
     _render_overlay,
     _save_and_validate_plan,
     _validate_session_plan,
@@ -949,7 +951,9 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertNotIn("openRecent", html)
         self.assertNotIn("openLatest", html)
         self.assertNotIn("reloadMotion", html)
-        self.assertIn("anchorBlock", html)
+        self.assertIn("contactPointBlock", html)
+        self.assertIn("segmentBlock", html)
+        self.assertIn("protoBoundary", html)
 
     def test_recent_motions_upsert_prunes_and_deduplicates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1224,6 +1228,42 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertEqual(entry.motion_path, str(root / "generated.npz"))
         self.assertEqual(entry.motion_id, "source_motion")
         self.assertEqual(entry.contact_layer, "contact/generated")
+
+    def test_generated_recent_entry_can_point_to_generated_motion_asset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = prepare_surface_editor_session(
+                motion_path=str(root / "source.npz"),
+                motion_id="source_motion",
+                contact_layer="contact/source",
+                surface_catalog=str(root / "surfaces.jsonl"),
+                session_name="generated_asset_recent",
+                edit_plan_path=str(root / "plan.json"),
+                output_contact_layer="contact/debug",
+                layers_root=root / "layers",
+                workbench_root=root / "workbench",
+            )
+            asset_path = _write_generated_motion_asset_from_session(
+                session,
+                output_motion=str(root / "generated.npz"),
+                output_contact_layer="contact/generated",
+                output_segment_layer="candidates/generated",
+                output_motion_version_id="generated_motion_version",
+            )
+            entry = _recent_entry_from_generated_session(
+                session,
+                output_motion=str(root / "generated.npz"),
+                output_contact_layer="contact/generated",
+                output_segment_layer="candidates/generated",
+                output_motion_version_id="generated_motion_version",
+                motion_asset_path=str(asset_path),
+                motion_asset_id="generated_motion_version",
+            )
+
+        self.assertEqual(entry.motion_asset_path, str(asset_path))
+        self.assertEqual(entry.motion_asset_id, "generated_motion_version")
+        self.assertEqual(entry.contact_layer, "contact/generated")
+        self.assertTrue(entry.metadata["prebound_contact_layer"])
 
     def test_debug_save_and_validate_still_exports_contact_layer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1986,6 +2026,74 @@ class SurfaceEditorSessionTests(unittest.TestCase):
         self.assertEqual(config.motion_id, "climb_01_z_scale_1.0")
         self.assertEqual(config.source_contact_layer, "contact/raw_contact_29")
         self.assertEqual(config.session_name, "climb_01_raw_contact_29_contact_editor")
+
+    def test_motion_asset_config_uses_prebound_generated_contact_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            record = MotionAssetRecord(
+                motion_asset_id="generated_motion",
+                motion_path=str(root / "generated.npz"),
+                source="motion_edit_lte_fullbody",
+                motion_id="climb_01_z_scale_1.0",
+                surface_catalog_path=str(root / "surfaces.jsonl"),
+                contact_layer="contact/generated",
+                bound_contact_layer="contact/generated",
+                edit_plan_path=str(root / "plan.json"),
+                output_contact_layer="contact/generated",
+                output_segment_layer="candidates/generated",
+            )
+            path = root / "generated_motion.json"
+            write_motion_asset(record, path)
+            config = _contact_editor_config_from_motion_asset(path)
+
+        self.assertEqual(config.source_contact_layer, "contact/generated")
+        self.assertEqual(config.output_contact_layer, "contact/generated")
+        self.assertTrue(config.prebound_contact_layer)
+
+    def test_terrain_urdf_patch_uses_surface_catalog_mesh_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            urdf = root / "terrain.urdf"
+            urdf.write_text(
+                """<?xml version=\"1.0\"?>
+<robot name=\"terrain\">
+  <link name=\"box\">
+    <visual>
+      <geometry><mesh filename=\"box_models/box1.obj\" scale=\"1 1 1\"/></geometry>
+    </visual>
+  </link>
+</robot>
+""",
+                encoding="utf-8",
+            )
+            real_mesh = root / "catalog_meshes" / "box1.obj"
+            real_mesh.parent.mkdir()
+            real_mesh.write_text("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", encoding="utf-8")
+            catalog = root / "surfaces.jsonl"
+            write_contact_surfaces(
+                catalog,
+                [
+                    ContactSurfaceRecord(
+                        motion_id="motion_a",
+                        surface_id="box_top",
+                        object_id="box",
+                        surface_type="mesh_face",
+                        origin=[0.0, 0.0, 0.0],
+                        normal=[0.0, 0.0, 1.0],
+                        tangent_u=[1.0, 0.0, 0.0],
+                        tangent_v=[0.0, 1.0, 0.0],
+                        bounds={"u": [0.0, 1.0], "v": [0.0, 1.0]},
+                        metadata={"mesh_path": str(real_mesh)},
+                    )
+                ],
+            )
+
+            patched = _patched_terrain_urdf_for_viewer(urdf, catalog)
+
+        self.assertNotEqual(patched, urdf.resolve())
+        text = patched.read_text(encoding="utf-8")
+        self.assertIn(str(real_mesh.resolve()), text)
+        self.assertNotIn("box_models/box1.obj", text)
 
     def test_filtered_picker_hides_directories_without_loadable_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

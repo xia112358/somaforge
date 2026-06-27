@@ -17,9 +17,55 @@ class MotionAssetRecord:
     terrain_id: str | None = None
     terrain_urdf: str | None = None
     surface_catalog_path: str | None = None
+    contact_layer: str | None = None
+    bound_contact_layer: str | None = None
+    edit_plan_path: str | None = None
+    output_contact_layer: str | None = None
+    output_segment_layer: str | None = None
     raw_contact: dict[str, Any] = field(default_factory=dict)
     derived: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Keep old ``derived`` bundle metadata and new top-level fields in sync.
+
+        Older assets stored contact/editor fields under ``derived``. The contact
+        editor now treats a MotionAsset as the complete load bundle, so these
+        fields also live at the top level. This shim keeps both representations
+        readable while making newly written assets self-contained.
+        """
+
+        derived = dict(self.derived or {})
+        mappings = {
+            "contact_layer": "contact_layer",
+            "bound_contact_layer": "bound_contact_layer",
+            "edit_plan_path": "edit_plan_path",
+            "output_contact_layer": "output_contact_layer",
+            "output_segment_layer": "output_segment_layer",
+        }
+        for attr, key in mappings.items():
+            value = getattr(self, attr)
+            if value is None and derived.get(key):
+                object.__setattr__(self, attr, str(derived[key]))
+            elif value is not None and not derived.get(key):
+                derived[key] = value
+        object.__setattr__(self, "derived", derived)
+
+    @property
+    def source_contact_layer(self) -> str | None:
+        return self.bound_contact_layer or self.contact_layer
+
+    def missing_contact_editor_fields(self) -> list[str]:
+        missing: list[str] = []
+        if not self.motion_path:
+            missing.append("motion_path")
+        if not (self.motion_id or self.motion_asset_id):
+            missing.append("motion_id")
+        if not self.source_contact_layer:
+            missing.append("contact_layer")
+        if not (self.surface_catalog_path or self.terrain_urdf):
+            missing.append("surface_catalog_path_or_terrain_urdf")
+        return missing
 
     def validate(self) -> None:
         if not self.motion_asset_id:

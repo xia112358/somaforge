@@ -37,11 +37,13 @@ from .schema import (
     ContactSurfaceRecord,
     ContactTransitionRecord,
 )
+from .stable_proto import StableContactProtoConfig, stable_contact_anchor_maps, transitions_from_stable_contact_anchors
 from .surfaces import bind_anchor_to_plane
 from .surface_binding import bind_anchor_to_surface, bind_anchors_to_surfaces, surface_compatible_with_body
 from .transitions import (
     mask_string,
     segment_from_contact_transition,
+    transitions_from_anchor_pairs,
     transitions_from_event_pairs,
     transitions_from_proto_indices,
 )
@@ -55,6 +57,7 @@ __all__ = [
     "ContactPatchRecord",
     "ContactSurfaceRecord",
     "ContactTransitionRecord",
+    "StableContactProtoConfig",
     "anchors_from_contact_mask",
     "append_anchor_edit_to_plan",
     "bind_segment_to_contact_graph",
@@ -89,9 +92,12 @@ __all__ = [
     "refine_contact_graph_anchor_positions_from_raw_contacts",
     "split_foot_contact_anchors",
     "segment_from_contact_transition",
+    "stable_contact_anchor_maps",
     "surface_compatible_with_body",
+    "transitions_from_anchor_pairs",
     "transitions_from_event_pairs",
     "transitions_from_proto_indices",
+    "transitions_from_stable_contact_anchors",
     "validate_contact_edit_plan",
     "write_contact_jsonl",
     "write_contact_surfaces",

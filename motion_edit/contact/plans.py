@@ -38,9 +38,63 @@ def _edit_dict(edit: ContactAnchorEditRecord | dict[str, Any]) -> dict[str, Any]
     return dict(edit)
 
 
+def _edit_key(edit: dict[str, Any]) -> str:
+    anchor_id = edit.get("anchor_id")
+    if anchor_id:
+        return f"anchor:{anchor_id}"
+    edit_id = edit.get("edit_id")
+    if edit_id:
+        return f"edit:{edit_id}"
+    return f"raw:{json.dumps(edit, sort_keys=True)}"
+
+
+def _upsert_edit(edits: list[dict[str, Any]], edit: dict[str, Any]) -> list[dict[str, Any]]:
+    """Replace the current edit for an anchor instead of accumulating stale moves."""
+
+    key = _edit_key(edit)
+    output: list[dict[str, Any]] = []
+    replaced = False
+    for existing in edits:
+        if _edit_key(existing) == key:
+            if not replaced:
+                output.append(edit)
+                replaced = True
+            continue
+        output.append(existing)
+    if not replaced:
+        output.append(edit)
+    return output
+
+
+def normalize_contact_edit_plan(plan: ContactEditPlan) -> ContactEditPlan:
+    """Keep only the latest edit for each anchor in generation-facing plans."""
+
+    edits: list[dict[str, Any]] = []
+    for raw_edit in plan.edits:
+        edits = _upsert_edit(edits, dict(raw_edit))
+    if len(edits) == len(plan.edits):
+        return plan
+    metadata = dict(plan.metadata)
+    metadata["normalized_duplicate_anchor_edits"] = len(plan.edits) - len(edits)
+    return ContactEditPlan(
+        plan_id=plan.plan_id,
+        source_motion_path=plan.source_motion_path,
+        source_motion_id=plan.source_motion_id,
+        source_contact_layer=plan.source_contact_layer,
+        source_segment_layer=plan.source_segment_layer,
+        edits=edits,
+        status=plan.status,
+        output_motion_path=plan.output_motion_path,
+        output_contact_layer=plan.output_contact_layer,
+        output_segment_layer=plan.output_segment_layer,
+        metadata=metadata,
+    )
+
+
 def write_contact_edit_plan(path: str | Path, plan: ContactEditPlan) -> Path:
     out = Path(path).expanduser()
     out.parent.mkdir(parents=True, exist_ok=True)
+    plan = normalize_contact_edit_plan(plan)
     out.write_text(json.dumps(plan.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
     return out
 
@@ -71,8 +125,8 @@ def append_anchor_edit_to_plan(
             source_contact_layer=source_contact_layer,
             source_segment_layer=source_segment_layer,
         )
-    edits = list(plan.edits)
-    edits.append(_edit_dict(edit))
+    edit_dict = _edit_dict(edit)
+    edits = _upsert_edit(list(plan.edits), edit_dict)
     updated = ContactEditPlan(
         plan_id=plan.plan_id,
         source_motion_path=plan.source_motion_path,
@@ -80,7 +134,7 @@ def append_anchor_edit_to_plan(
         source_contact_layer=plan.source_contact_layer,
         source_segment_layer=plan.source_segment_layer or source_segment_layer,
         edits=edits,
-        status="draft" if plan.status == "validated" else plan.status,
+        status="draft" if plan.status in {"validated", "generated"} else plan.status,
         output_motion_path=plan.output_motion_path,
         output_contact_layer=plan.output_contact_layer,
         output_segment_layer=plan.output_segment_layer,

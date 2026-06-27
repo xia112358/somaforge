@@ -108,6 +108,8 @@ def add_temporal_laplacian_residuals(
     q_prior: np.ndarray,
     weight: float,
 ) -> None:
+    """Penalize the temporal Laplacian of the deformation ``q - q_prior``."""
+
     if weight <= 0.0 or q.shape[0] <= 2:
         return
     n_frames, nq = q.shape
@@ -137,9 +139,16 @@ def add_body_relative_residuals(
     edges: Sequence[tuple[str, str]],
     weight: float,
 ) -> None:
+    """Preserve the spatial Laplacian over the semantic body graph.
+
+    The family weight is distributed across edges so adding another semantic
+    edge changes graph resolution, not the total spatial stiffness.
+    """
+
     if weight <= 0.0 or not edges:
         return
     n_frames, nq = q.shape
+    edge_weight = float(weight) / float(len(edges))
     for frame in range(n_frames):
         for parent, child in edges:
             points = kinematics.fk_points(q[frame], [parent, child])
@@ -151,7 +160,7 @@ def add_body_relative_residuals(
             rel_jac = jac[0] - jac[1]
             for axis in range(3):
                 values = {variable_index(frame, dof, nq): rel_jac[axis, dof] for dof in range(nq)}
-                system.add_row(values, float(residual[axis]), "body_relative", weight)
+                system.add_row(values, float(residual[axis]), "body_relative", edge_weight)
 
 
 def build_uniform_laplacian_matrix(num_vertices: int, edges: Sequence[tuple[int, int]]) -> np.ndarray:
@@ -180,9 +189,9 @@ def build_uniform_laplacian_matrix(num_vertices: int, edges: Sequence[tuple[int,
         if not nbrs:
             continue
         laplacian[index, index] = 1.0
-        weight = -1.0 / float(len(nbrs))
+        neighbor_weight = -1.0 / float(len(nbrs))
         for neighbor in nbrs:
-            laplacian[index, neighbor] = weight
+            laplacian[index, neighbor] = neighbor_weight
     return laplacian
 
 
@@ -215,11 +224,12 @@ def add_interaction_mesh_laplacian_residuals(
     mesh: InteractionMeshSpec,
     weight: float,
 ) -> dict[str, Any]:
-    """Add whole-trajectory interaction mesh Laplacian residuals.
+    """Add whole-trajectory interaction-mesh Laplacian residuals.
 
     Robot vertices are linearized through FK Jacobians. Object vertices are
     fixed points and therefore contribute to the residual value but not to the
-    Jacobian columns.
+    Jacobian columns. The family weight is averaged over active Laplacian
+    vertices, so different surface polygon resolutions remain comparable.
     """
 
     if weight <= 0.0:
@@ -247,6 +257,12 @@ def add_interaction_mesh_laplacian_residuals(
     if not edges:
         return {"active": False, "rows": 0, "warning": "interaction mesh has no edges"}
     laplacian = build_uniform_laplacian_matrix(vertex_count, edges)
+    active_lap_rows = tuple(
+        row for row in range(vertex_count) if np.any(laplacian[row, :robot_count])
+    )
+    if not active_lap_rows:
+        return {"active": False, "rows": 0, "warning": "interaction mesh has no robot-coupled Laplacian rows"}
+    laplacian_row_weight = float(weight) / float(len(active_lap_rows))
 
     row_count = 0
     for frame in range(n_frames):
@@ -258,10 +274,8 @@ def add_interaction_mesh_laplacian_residuals(
         target_lap = laplacian @ vertices_ref
         residual = target_lap - current_lap
 
-        for lap_row in range(vertex_count):
+        for lap_row in active_lap_rows:
             robot_coeffs = laplacian[lap_row, :robot_count]
-            if not np.any(robot_coeffs):
-                continue
             for axis in range(3):
                 values: dict[int, float] = {}
                 for robot_index, coeff in enumerate(robot_coeffs):
@@ -269,10 +283,13 @@ def add_interaction_mesh_laplacian_residuals(
                         continue
                     jac_axis = robot_jac[robot_index, axis]
                     for dof in range(nq):
+                        contribution = float(coeff) * float(jac_axis[dof])
+                        if contribution == 0.0:
+                            continue
                         col = variable_index(frame, dof, nq)
-                        values[col] = values.get(col, 0.0) + float(coeff) * float(jac_axis[dof])
+                        values[col] = values.get(col, 0.0) + contribution
                 if values:
-                    system.add_row(values, float(residual[lap_row, axis]), "mesh_laplacian", weight)
+                    system.add_row(values, float(residual[lap_row, axis]), "mesh_laplacian", laplacian_row_weight)
                     row_count += 1
 
     return {
@@ -282,6 +299,10 @@ def add_interaction_mesh_laplacian_residuals(
         "robot_vertex_count": int(robot_count),
         "object_vertex_count": int(object_count),
         "edge_count": int(len(edges)),
+        "active_laplacian_vertex_count": int(len(active_lap_rows)),
+        "family_weight": float(weight),
+        "per_vertex_weight": float(laplacian_row_weight),
+        "normalization": "mean_over_robot_coupled_laplacian_vertices",
     }
 
 
