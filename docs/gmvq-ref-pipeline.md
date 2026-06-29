@@ -95,8 +95,15 @@ rollout state as ref.
 
 ## Local Setup
 
+The machine-readable data index for the current `climb_00` GMVQ experiment is:
+
+```text
+scripts/gmvq_ref/climb00_data_index.json
+```
+
 Copy `scripts/gmvq_ref/climb00_orig_z1.env.example` to a local ignored env file
-if needed, or export the variables in your shell.
+if needed, or export the variables in your shell. Environment variables override
+the index defaults.
 
 Then run:
 

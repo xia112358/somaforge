@@ -9,10 +9,25 @@ import numpy as np
 
 
 ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_INDEX = Path(__file__).with_name("climb00_data_index.json")
 
 
 def env_path(name: str, default: str) -> Path:
     return Path(os.environ.get(name, default)).expanduser()
+
+
+def expand_path(value: str) -> str:
+    return value.replace("${REPO_ROOT}", str(ROOT))
+
+
+def indexed_path(index: dict, key: str) -> Path:
+    entry = index["paths"][key]
+    return env_path(entry["env"], expand_path(entry["default_path"]))
+
+
+def indexed_repo(index: dict, key: str) -> Path:
+    entry = index["repositories"][key]
+    return env_path(entry["env"], expand_path(entry["default_path"]))
 
 
 def require_path(label: str, path: Path) -> None:
@@ -36,28 +51,25 @@ def npz_names(arr: np.lib.npyio.NpzFile, key: str) -> list[str]:
 
 
 def main() -> None:
-    motion_edit = env_path("MOTION_EDIT_REPO", "/home/xiaz/motion_edit")
-    gmvq_vae = env_path("GMVQ_VAE_REPO", "/home/xiaz/gmvq-vae")
-    holosoma = env_path("HOLOSOMA_NEWTON_REPO", str(ROOT))
-    clean_ref = env_path(
-        "CLIMB00_CLEAN_REF",
-        str(ROOT / "OmniRetarget_Dataset/data/holosoma_motions_50hz/climb_00_z_scale_1.0.npz"),
-    )
-    cut_summary = env_path(
-        "MOTION_EDIT_CUT_SUMMARY",
-        "/home/xiaz/motion_edit/data/workbench/raw_contact_29_cut_summary.json",
-    )
-    rollout_contact = env_path(
-        "CLIMB00_ROLLOUT_CONTACT",
-        str(ROOT / "tmp/rollout_ref_contact_points_29/motions/climb_00_rollout_ref_contact_force.npz"),
-    )
-    motion_id = os.environ.get("MOTION_ID", "climb_00_z_scale_1.0")
+    index_path = env_path("GMVQ_REF_DATA_INDEX", str(DEFAULT_INDEX))
+    with index_path.open("r", encoding="utf-8") as f:
+        index = json.load(f)
+
+    motion_edit = indexed_repo(index, "motion_edit")
+    gmvq_vae = indexed_repo(index, "gmvq_vae")
+    holosoma = indexed_repo(index, "holosoma_newton")
+    clean_ref = indexed_path(index, "clean_ref")
+    cut_summary = indexed_path(index, "cut_summary")
+    rollout_contact = indexed_path(index, "rollout_contact_metadata")
+    terrain_obj = indexed_path(index, "terrain_obj")
+    motion_id = os.environ.get("MOTION_ID", index["motion_id"])
 
     require_path("motion_edit repo", motion_edit / ".git")
     require_path("gmvq-vae repo", gmvq_vae / ".git")
     require_path("holosoma_newton repo", holosoma / ".git")
     require_path("clean ref", clean_ref)
     require_path("cut summary", cut_summary)
+    require_path("terrain obj", terrain_obj)
     if rollout_contact.exists():
         print(f"[ok] optional rollout contact metadata: {rollout_contact}")
     else:

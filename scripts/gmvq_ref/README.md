@@ -16,3 +16,11 @@ Expected local layout:
 
 Use `check_workspace.py` before running training/eval commands to catch the most
 common data mixup: using rollout state as the VAE ref source.
+
+The default paths and known data hazards are recorded in:
+
+```text
+scripts/gmvq_ref/climb00_data_index.json
+```
+
+Environment variables still override the index defaults for local machines.
