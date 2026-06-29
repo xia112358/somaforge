@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from motion_edit.contact.graph import ContactGraph
 from motion_edit.contact.schema import ContactAnchorRecord, ContactTransitionRecord
@@ -9,7 +9,28 @@ from motion_edit.contact.stable_proto import STABLE_PROTO_ENDPOINT_POLICY, STABL
 
 _INITIAL_FRAME = 0
 _PARENT_BODY_ORDER = ("left_foot", "right_foot", "left_hand", "right_hand", "left_knee", "right_knee")
-_MIN_PROTO_SEGMENT_FRAMES = 20
+
+
+@dataclass(frozen=True)
+class EditorCutConfig:
+    min_proto_segment_frames: int = 20
+    same_parent_body_merge_gap: int | None = None
+    cluster_window: int | None = None
+
+
+def _resolve_editor_cut_config(stable_cfg: StableContactProtoConfig, cut_config: EditorCutConfig | None) -> EditorCutConfig:
+    cfg = cut_config or EditorCutConfig()
+    cluster_window = int(cfg.cluster_window) if cfg.cluster_window is not None else int(stable_cfg.stable_touchdown_cluster_window)
+    same_parent_body_merge_gap = (
+        int(cfg.same_parent_body_merge_gap)
+        if cfg.same_parent_body_merge_gap is not None
+        else max(int(stable_cfg.merge_transition_window), int(stable_cfg.stable_touchdown_cluster_window))
+    )
+    return EditorCutConfig(
+        min_proto_segment_frames=int(cfg.min_proto_segment_frames),
+        same_parent_body_merge_gap=same_parent_body_merge_gap,
+        cluster_window=cluster_window,
+    )
 
 
 def _parent_body(body: str) -> str:
@@ -225,6 +246,7 @@ def stable_proto_transitions_for_editor(
     motion: str,
     fps: int,
     fallback: list[ContactTransitionRecord],
+    cut_config: EditorCutConfig | None = None,
 ) -> list[ContactTransitionRecord]:
     """Rebuild editor timeline cuts from cleaned body-level contact phases.
 
@@ -236,15 +258,15 @@ def stable_proto_transitions_for_editor(
 
     _ = motion
     cfg = StableContactProtoConfig(fps=float(fps))
+    editor_cfg = _resolve_editor_cut_config(cfg, cut_config)
     anchors = sorted(graph.anchors, key=lambda anchor: (int(anchor.start_frame), int(anchor.end_frame), anchor.body, anchor.anchor_id))
     active_parts = set(cfg.active_motion_parts)
-    min_proto_segment_frames = _MIN_PROTO_SEGMENT_FRAMES
     cut_frames, anchors_by_cut, bodies_by_cut = _cluster_contact_starts(
         anchors,
         active_parts=active_parts,
-        cluster_window=int(cfg.stable_touchdown_cluster_window),
-        same_body_gap=int(cfg.merge_transition_window),
-        min_segment_frames=min_proto_segment_frames,
+        cluster_window=int(editor_cfg.cluster_window or 0),
+        same_body_gap=int(editor_cfg.same_parent_body_merge_gap or 0),
+        min_segment_frames=int(editor_cfg.min_proto_segment_frames),
     )
     if not cut_frames:
         return _fallback_transitions(fallback, reason="no_parent_limb_contact_starts")
@@ -302,8 +324,9 @@ def stable_proto_transitions_for_editor(
                 "stable_anchor_frames": stable_anchor_frames,
                 "config": {
                     "stable_touchdown_cluster_window": int(cfg.stable_touchdown_cluster_window),
-                    "same_parent_body_merge_gap": int(cfg.merge_transition_window),
-                    "min_proto_segment_frames": int(min_proto_segment_frames),
+                    "cluster_window": int(editor_cfg.cluster_window or 0),
+                    "same_parent_body_merge_gap": int(editor_cfg.same_parent_body_merge_gap or 0),
+                    "min_proto_segment_frames": int(editor_cfg.min_proto_segment_frames),
                     "active_motion_parts": list(cfg.active_motion_parts),
                     "source": "cleaned_contact_points",
                 },
