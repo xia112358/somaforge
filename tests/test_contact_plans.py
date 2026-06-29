@@ -731,7 +731,19 @@ class ContactEditPlanTests(unittest.TestCase):
             output = root / "out.npz"
             intermediate = root / "intermediate"
 
-            with mock.patch("motion_edit.generation.lte_fullbody.subprocess.run") as run_mock:
+            def fake_run(cmd, cwd=None, check=False):
+                ik_out = Path(cmd[cmd.index("--out") + 1])
+                np.savez(
+                    ik_out,
+                    joint_pos=np.full((8, 10), 7.0, dtype=np.float32),
+                    joint_vel=np.full((8, 10), 3.0, dtype=np.float32),
+                    joint_names=np.asarray(["j0", "j1", "j2"], dtype=object),
+                    is_qpos=np.asarray(True),
+                    ik_backend=np.asarray("pyroki_internal"),
+                )
+                return mock.Mock(returncode=0)
+
+            with mock.patch("motion_edit.generation.lte_fullbody.subprocess.run", side_effect=fake_run) as run_mock:
                 result = apply_contact_edit_plan_to_motion(
                     plan,
                     output_motion_path=output,
@@ -754,13 +766,15 @@ class ContactEditPlanTests(unittest.TestCase):
             self.assertEqual(result.output_motion_path, output)
             self.assertTrue((intermediate / "out.contact_laplacian_keypoints.npz").exists())
             self.assertTrue((intermediate / "out.contact_laplacian_taskspace_motion.npz").exists())
-            self.assertFalse((intermediate / "out.contact_laplacian_fullbody_ik_motion.npz").exists())
-            run_mock.assert_not_called()
+            self.assertTrue((intermediate / "out.contact_laplacian_fullbody_ik_motion.npz").exists())
+            self.assertEqual(run_mock.call_args.kwargs["check"], True)
+            self.assertIn("pyroki_fullbody_ik.py", run_mock.call_args.args[0][5])
             self.assertIn("body_pos_w", generated.files)
             self.assertIn("joint_pos", generated.files)
-            self.assertEqual(metadata["output_kind"], "contact_laplacian_taskspace_motion")
-            self.assertEqual(metadata["joint_consistency"], "source_joint_fields_preserved")
-            self.assertEqual(metadata["ik_backend"], "none")
+            np.testing.assert_allclose(generated["joint_pos"], 7.0)
+            self.assertEqual(metadata["output_kind"], "fullbody_ik_after_contact_laplacian_proxy")
+            self.assertEqual(metadata["joint_consistency"], "fullbody_ik_subprocess")
+            self.assertEqual(metadata["ik_backend"], "pyroki_internal")
             self.assertEqual(metadata["fullbody_solver"], "batch_contact_laplacian")
             self.assertIn("solver_metadata", metadata)
             self.assertIn("interaction_mesh", metadata["solver_metadata"])
@@ -775,7 +789,17 @@ class ContactEditPlanTests(unittest.TestCase):
             root = Path(tmp)
             _motion, plan = _write_fullbody_lte_source(root)
 
-            with mock.patch("motion_edit.generation.lte_fullbody.subprocess.run") as run_mock:
+            def fake_run(cmd, cwd=None, check=False):
+                ik_out = Path(cmd[cmd.index("--out") + 1])
+                np.savez(
+                    ik_out,
+                    joint_pos=np.zeros((8, 10), dtype=np.float32),
+                    joint_vel=np.zeros((8, 10), dtype=np.float32),
+                    ik_backend=np.asarray("pyroki_internal"),
+                )
+                return mock.Mock(returncode=0)
+
+            with mock.patch("motion_edit.generation.lte_fullbody.subprocess.run", side_effect=fake_run) as run_mock:
                 result = apply_contact_edit_plan_to_motion(
                     plan,
                     output_motion_path=root / "out.npz",
@@ -786,7 +810,9 @@ class ContactEditPlanTests(unittest.TestCase):
 
             self.assertEqual(result.output_motion_path, root / "out.npz")
             self.assertTrue((root / "out.npz").exists())
-            run_mock.assert_not_called()
+            cmd = run_mock.call_args.args[0]
+            self.assertIn("pyroki_fullbody_ik.py", cmd[5])
+            self.assertNotIn("/home/xiaz/lte/scripts/solve_lte_fullbody_ik.py", cmd)
 
     def test_generate_lte_augmentation_can_register_motion_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
