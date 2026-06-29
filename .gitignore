@@ -19,6 +19,21 @@ Thumbs.db
 # Experiment logs
 logs
 logs_eval
+tmp/
+
+# Local scratch/state
+.cache/
+.codex
+
+# Large local datasets and generated assets
+/OmniRetarget_Dataset/
+/data/
+*.npz
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.pdf
 
 # Isaacsim Converted Files
 src/holosoma/holosoma/data/robots/converted/
