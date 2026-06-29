@@ -5,7 +5,7 @@
     {
       "terrain_id": 0,
       "terrain_file": "terrain_obj_cache/climb_00/multi_boxes_z_scale_1.0.obj",
-      "source_urdf": "/home/xiaz/holosoma/OmniRetarget_Dataset/models/terrain/climb_00/multi_boxes_z_scale_1.0.urdf"
+      "source_urdf": "../../OmniRetarget_Dataset/models/terrain/climb_00/multi_boxes_z_scale_1.0.urdf"
     }
   ],
   "motion_files": [

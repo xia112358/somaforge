@@ -119,7 +119,6 @@ def _subprocess_env() -> dict[str, str]:
     env.setdefault("WARP_CACHE_PATH", str(REPO_ROOT / ".cache/warp"))
     source_paths = [
         str(REPO_ROOT / "src/holosoma"),
-        str(REPO_ROOT / "src/holosoma_inference"),
         str(REPO_ROOT / "src/holosoma_retargeting"),
         str(isaaclab_path / "source/isaaclab"),
         str(isaaclab_path / "source/isaaclab_assets"),

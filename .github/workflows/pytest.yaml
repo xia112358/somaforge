@@ -45,6 +45,11 @@ jobs:
           python -m compileall src/holosoma/holosoma/managers/command/tests || true
           python -m compileall src/holosoma/holosoma/managers/reward/tests || true
 
+      - name: Check manifest path hygiene
+        shell: bash
+        run: |
+          python scripts/gmvq_ref/check_data_layout.py --all --no-require-files
+
       - name: Check cleanup scope
         shell: bash
         run: |

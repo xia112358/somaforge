@@ -4,13 +4,13 @@
   "terrains": [
     {
       "terrain_id": 1,
-      "terrain_file": "terrain_obj_cache/climb_01/multi_boxes_z_scale_1.0.obj",
-      "source_urdf": "/home/xiaz/holosoma/OmniRetarget_Dataset/models/terrain/climb_01/multi_boxes_z_scale_1.0.urdf"
+      "terrain_file": "../terrain_obj_cache/climb_01/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "../../../OmniRetarget_Dataset/models/terrain/climb_01/multi_boxes_z_scale_1.0.urdf"
     }
   ],
   "motion_files": [
     {
-      "motion_file": "/home/xiaz/holosoma/OmniRetarget_Dataset/data/holosoma_motions_50hz/climb_01_z_scale_1.0.npz",
+      "motion_file": "../../../OmniRetarget_Dataset/data/holosoma_motions_50hz/climb_01_z_scale_1.0.npz",
       "terrain_id": 1,
       "weight": 1.0
     }

@@ -4,7 +4,7 @@
 #
 # Usage:
 #   bash docker/build_and_push.sh                  # build & push all images
-#   bash docker/build_and_push.sh mujoco retarget  # only matching images
+#   bash docker/build_and_push.sh retarget         # only matching images
 #   bash docker/build_and_push.sh --no-push        # build only, skip push
 #   bash docker/build_and_push.sh --dry-run        # print commands, do nothing
 #
@@ -27,10 +27,7 @@ TAG="${IMAGE_TAG:-$(date +%Y_%m%d_%H%M)}"
 IMAGES=(
   "holosoma|docker/Dockerfile|holosoma|holosoma"
   "isaacsim|docker/isaacsim.Dockerfile|holosoma-isaacsim|hs-isaacsim"
-  "isaacgym|docker/isaacgym.Dockerfile|holosoma-isaacgym|hs-isaacgym"
-  "mujoco|docker/mujoco.Dockerfile|holosoma-mujoco|hs-mujoco"
   "retargeting|src/holosoma_retargeting/docker/Dockerfile|holosoma-retargeting|hs-retargeting"
-  "inference|src/holosoma_inference/docker/Dockerfile|holosoma-inference|hs-inference"
 )
 
 # ── Parse flags ──────────────────────────────────────────────────────

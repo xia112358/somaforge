@@ -5,12 +5,12 @@
     {
       "terrain_id": 21,
       "terrain_file": "terrain_obj_cache/climb_21/multi_boxes_z_scale_1.0.obj",
-      "source_urdf": "/home/xiaz/holosoma/OmniRetarget_Dataset/models/terrain/climb_21/multi_boxes_z_scale_1.0.urdf"
+      "source_urdf": "../../OmniRetarget_Dataset/models/terrain/climb_21/multi_boxes_z_scale_1.0.urdf"
     }
   ],
   "motion_files": [
     {
-      "motion_file": "/home/xiaz/holosoma/OmniRetarget_Dataset/data/holosoma_motions_50hz/climb_21_z_scale_1.0.npz",
+      "motion_file": "../../OmniRetarget_Dataset/data/holosoma_motions_50hz/climb_21_z_scale_1.0.npz",
       "terrain_id": 21,
       "weight": 1.0
     }
