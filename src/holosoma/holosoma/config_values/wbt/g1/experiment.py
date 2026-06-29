@@ -1,6 +1,5 @@
 from dataclasses import replace
 
-from holosoma.config_types.algo import LayerConfig
 from holosoma.config_types.command import CommandTermCfg
 from holosoma.config_types.experiment import ExperimentConfig, NightlyConfig, TrainingConfig
 from holosoma.config_values import (
@@ -26,10 +25,6 @@ _motion_matched_terrain = replace(
 )
 
 _CONTACT_FORCE_ROLLOUT_MANIFEST = "configs/motion_matched/climb29_z1_rollout_ref_contact_force_manifest.json"
-_CLIMB00_TEACHER_CHECKPOINT = (
-    "logs/WholeBodyTracking/20260607_163425-g1_29dof_wbt_failure_window_climb00_4096_20k_fixed_p50-locomotion/"
-    "model_16000.pt"
-)
 
 g1_29dof_wbt = ExperimentConfig(
     training=TrainingConfig(
@@ -95,198 +90,6 @@ g1_29dof_wbt = ExperimentConfig(
             "Episode/rew_motion_global_body_ang_vel": [0.45, "inf"],
         },
     ),
-)
-
-_wbt_distill_algo_config = replace(
-    algo.distill_ppo.config,
-    module_dict=replace(
-        g1_29dof_wbt.algo.config.module_dict,
-        actor=replace(g1_29dof_wbt.algo.config.module_dict.actor, min_noise_std=0.05),
-    ),
-    num_learning_iterations=g1_29dof_wbt.algo.config.num_learning_iterations,
-    num_learning_epochs=g1_29dof_wbt.algo.config.num_learning_epochs,
-    num_mini_batches=g1_29dof_wbt.algo.config.num_mini_batches,
-    clip_param=g1_29dof_wbt.algo.config.clip_param,
-    gamma=g1_29dof_wbt.algo.config.gamma,
-    lam=g1_29dof_wbt.algo.config.lam,
-    value_loss_coef=g1_29dof_wbt.algo.config.value_loss_coef,
-    entropy_coef=g1_29dof_wbt.algo.config.entropy_coef,
-    actor_learning_rate=g1_29dof_wbt.algo.config.actor_learning_rate,
-    actor_optimizer=g1_29dof_wbt.algo.config.actor_optimizer,
-    critic_learning_rate=g1_29dof_wbt.algo.config.critic_learning_rate,
-    critic_optimizer=g1_29dof_wbt.algo.config.critic_optimizer,
-    max_grad_norm=g1_29dof_wbt.algo.config.max_grad_norm,
-    schedule=g1_29dof_wbt.algo.config.schedule,
-    desired_kl=g1_29dof_wbt.algo.config.desired_kl,
-    use_symmetry=False,
-    num_steps_per_env=g1_29dof_wbt.algo.config.num_steps_per_env,
-    save_interval=g1_29dof_wbt.algo.config.save_interval,
-    load_optimizer=g1_29dof_wbt.algo.config.load_optimizer,
-    init_noise_std=g1_29dof_wbt.algo.config.init_noise_std,
-    init_at_random_ep_len=g1_29dof_wbt.algo.config.init_at_random_ep_len,
-    empirical_normalization=g1_29dof_wbt.algo.config.empirical_normalization,
-    eval_callbacks=g1_29dof_wbt.algo.config.eval_callbacks,
-    distill=replace(
-        algo.distill_ppo.config.distill,
-        enable_kl=True,
-        teacher_checkpoint_path=None,
-        teacher_obs_keys=("teacher_actor_obs",),
-        teacher_prior_coef=0.1,
-        lambda_kl_init=1.0,
-        lambda_kl_final=0.1,
-        lambda_kl_anneal_iters=10000,
-        lambda_kl_anneal_schedule="php_parkour",
-        lambda_ppo_init=None,
-        lambda_ppo_final=None,
-        use_mean_mse_fallback=False,
-        kl_std_min=1e-4,
-    ),
-)
-
-_climb00_original_terrain = replace(
-    terrain.terrain_motion_matched,
-    terrain_term=replace(
-        terrain.terrain_motion_matched.terrain_term,
-        motion_matched_manifest=command.CLIMB00_ORIGINAL_MANIFEST,
-    ),
-)
-
-g1_29dof_wbt_climb00_proto_distill = replace(
-    g1_29dof_wbt,
-    training=replace(
-        g1_29dof_wbt.training,
-        name="g1_29dof_wbt_climb00_proto_distill",
-    ),
-    algo=replace(
-        algo.distill_ppo,
-        config=_wbt_distill_algo_config,
-    ),
-    terrain=_climb00_original_terrain,
-    observation=observation.g1_29dof_wbt_php_distill_observation,
-    reward=reward.g1_29dof_wbt_reward,
-    termination=termination.g1_29dof_wbt_php_student_termination,
-    randomization=randomization.g1_29dof_wbt_php_student_randomization,
-    command=command.g1_29dof_wbt_climb00_original_command,
-    simulator=replace(
-        g1_29dof_wbt.simulator,
-        config=replace(g1_29dof_wbt.simulator.config, scene=replace(g1_29dof_wbt.simulator.config.scene, env_spacing=0.0)),
-    ),
-)
-
-_wbt_distill_kl01_origref_algo_config = replace(
-    _wbt_distill_algo_config,
-    distill=replace(
-        _wbt_distill_algo_config.distill,
-        distill_type="kl",
-        teacher_prior_coef=1.0,
-        lambda_kl_init=0.1,
-        lambda_kl_final=0.1,
-        lambda_kl_anneal_iters=0,
-        lambda_kl_anneal_schedule="linear",
-        lambda_ppo_init=None,
-        lambda_ppo_final=None,
-        use_mean_mse_fallback=False,
-        dagger_valid_use_bad_tracking=True,
-        dagger_bad_ref_pos_threshold=0.5,
-        dagger_bad_ref_ori_threshold=0.8,
-        dagger_bad_motion_body_pos_threshold=0.25,
-        dagger_bad_motion_body_pos_body_names=(
-            "left_ankle_roll_link",
-            "right_ankle_roll_link",
-            "left_wrist_yaw_link",
-            "right_wrist_yaw_link",
-        ),
-    ),
-)
-
-g1_29dof_wbt_climb00_proto_distill_kl01_origref = replace(
-    g1_29dof_wbt_climb00_proto_distill,
-    training=replace(
-        g1_29dof_wbt_climb00_proto_distill.training,
-        name="g1_29dof_wbt_climb00_proto_distill_kl01_origref",
-    ),
-    algo=replace(
-        algo.distill_ppo,
-        config=_wbt_distill_kl01_origref_algo_config,
-    ),
-    terrain=_climb00_original_terrain,
-    observation=observation.g1_29dof_wbt_php_distill_observation,
-    reward=reward.g1_29dof_wbt_reward,
-    termination=termination.g1_29dof_wbt_php_student_termination,
-    randomization=randomization.g1_29dof_wbt_php_student_randomization,
-    command=command.g1_29dof_wbt_climb00_original_command,
-)
-
-_wbt_php_distill_algo_config = replace(
-    _wbt_distill_algo_config,
-    num_learning_iterations=20000,
-    num_learning_epochs=2,
-    num_mini_batches=96,
-    entropy_coef=0.001,
-    actor_learning_rate=3e-4,
-    critic_learning_rate=3e-4,
-    max_actor_learning_rate=3e-4,
-    max_critic_learning_rate=3e-4,
-    desired_kl=0.01,
-    adaptive_schedule_start_iter=1000,
-    init_noise_std=g1_29dof_wbt.algo.config.init_noise_std,
-    module_dict=replace(
-        _wbt_distill_algo_config.module_dict,
-        actor=replace(
-            _wbt_distill_algo_config.module_dict.actor,
-            layer_config=LayerConfig(hidden_dims=[512, 256, 128], activation="ELU"),
-            min_noise_std=None,
-            max_noise_std=None,
-        ),
-        critic=replace(
-            _wbt_distill_algo_config.module_dict.critic,
-            layer_config=LayerConfig(hidden_dims=[512, 256, 128], activation="ELU"),
-        ),
-    ),
-    distill=replace(
-        _wbt_distill_algo_config.distill,
-        distill_type="php_dagger_ppo",
-        teacher_checkpoint_path=_CLIMB00_TEACHER_CHECKPOINT,
-        dagger_coef=10.0,
-        lambda_dagger_init=1.0,
-        lambda_dagger_final=0.1,
-        lambda_ppo_init=None,
-        lambda_ppo_final=None,
-        teacher_prior_coef=1.0,
-        lambda_kl_init=1.0,
-        lambda_kl_final=0.1,
-        lambda_kl_anneal_iters=10000,
-        lambda_kl_anneal_schedule="php_parkour",
-        use_mean_mse_fallback=True,
-        teacher_hidden_dims=(512, 256, 128),
-        dagger_valid_use_bad_tracking=True,
-        dagger_bad_ref_pos_threshold=0.5,
-        dagger_bad_ref_ori_threshold=0.8,
-        dagger_bad_motion_body_pos_threshold=0.25,
-        dagger_bad_motion_body_pos_body_names=(
-            "left_ankle_roll_link",
-            "right_ankle_roll_link",
-            "left_wrist_yaw_link",
-            "right_wrist_yaw_link",
-        ),
-    ),
-)
-
-g1_29dof_wbt_climb00_proto_php_distill = replace(
-    g1_29dof_wbt_climb00_proto_distill,
-    training=replace(
-        g1_29dof_wbt_climb00_proto_distill.training,
-        name="g1_29dof_wbt_climb00_proto_php_distill",
-    ),
-    algo=replace(
-        algo.distill_ppo,
-        config=_wbt_php_distill_algo_config,
-    ),
-    observation=observation.g1_29dof_wbt_php_distill_observation,
-    reward=reward.g1_29dof_wbt_reward,
-    termination=termination.g1_29dof_wbt_php_student_termination,
-    randomization=randomization.g1_29dof_wbt_php_student_randomization,
-    command=command.g1_29dof_wbt_climb00_original_command,
 )
 
 g1_29dof_wbt_a2a = replace(
@@ -396,9 +199,6 @@ __all__ = [
     "g1_29dof_wbt",
     "g1_29dof_wbt_a2a",
     "g1_29dof_wbt_a2a_pure",
-    "g1_29dof_wbt_climb00_proto_distill",
-    "g1_29dof_wbt_climb00_proto_distill_kl01_origref",
-    "g1_29dof_wbt_climb00_proto_php_distill",
     "g1_29dof_wbt_contact_force",
     "g1_29dof_wbt_contact_force_touchdown_lift",
     "g1_29dof_wbt_future_ref",

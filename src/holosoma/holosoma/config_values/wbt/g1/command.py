@@ -76,11 +76,6 @@ climb00_proto_motion_config = dataclasses.replace(
     chain_boundary_contact_threshold=10.0,
 )
 
-climb00_proto_php_motion_config = dataclasses.replace(
-    climb00_proto_motion_config,
-    reset_sampler="uniform",
-)
-
 climb00_original_motion_config = dataclasses.replace(
     motion_config,
     motion_manifest=CLIMB00_ORIGINAL_MANIFEST,
@@ -98,28 +93,6 @@ g1_29dof_wbt_climb00_proto_command = CommandManagerCfg(
             func="holosoma.managers.command.terms.wbt:MotionCommand",
             params={
                 "motion_config": climb00_proto_motion_config,
-            },
-        ),
-    },
-    reset_terms={
-        "motion_command": CommandTermCfg(
-            func="holosoma.managers.command.terms.wbt:MotionCommand",
-        )
-    },
-    step_terms={
-        "motion_command": CommandTermCfg(
-            func="holosoma.managers.command.terms.wbt:MotionCommand",
-        )
-    },
-)
-
-g1_29dof_wbt_climb00_proto_php_command = CommandManagerCfg(
-    params={},
-    setup_terms={
-        "motion_command": CommandTermCfg(
-            func="holosoma.managers.command.terms.wbt:MotionCommand",
-            params={
-                "motion_config": climb00_proto_php_motion_config,
             },
         ),
     },
@@ -162,7 +135,6 @@ __all__ = [
     "CLIMB00_PROTO_SPLIT_MANIFEST",
     "DEFAULT_MOTION_MATCHED_MANIFEST",
     "g1_29dof_wbt_climb00_original_command",
-    "g1_29dof_wbt_climb00_proto_php_command",
     "g1_29dof_wbt_climb00_proto_command",
     "g1_29dof_wbt_command",
 ]

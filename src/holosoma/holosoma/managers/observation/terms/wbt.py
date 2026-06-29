@@ -133,14 +133,6 @@ def proto_command(
     return torch.cat((root_goal, active_region, forward), dim=-1)
 
 
-def php_velocity_command(
-    env: WholeBodyTrackingManager,
-    command: tuple[float, float] = (1.0, 0.0),
-) -> torch.Tensor:
-    """2D velocity command used by PHP-style student policies."""
-    return torch.tensor(command, dtype=torch.float32, device=env.device).expand(env.num_envs, -1)
-
-
 #########################################################################################################
 ## terms specific to Whole Body Tracking
 #########################################################################################################

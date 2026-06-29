@@ -220,7 +220,7 @@ def _as_env_tensor(value: Sequence[float], env: WholeBodyTrackingManager, dims: 
 
 
 class ProtoFunctionalReward(RewardTermBase):
-    """Functional proto reward for single-demo distillation.
+    """Functional proto reward for a single climbing primitive.
 
     The term intentionally avoids demo pose, root trajectory, end-effector
     trajectory, force, phase, and fixed contact timing tracking. The proto is

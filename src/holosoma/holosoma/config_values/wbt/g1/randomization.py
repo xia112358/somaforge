@@ -116,44 +116,7 @@ g1_29dof_wbt_randomization = RandomizationManagerCfg(
     step_terms={},
 )
 
-g1_29dof_wbt_php_student_randomization = RandomizationManagerCfg(
-    setup_terms={
-        **base_setup_terms,
-        "setup_action_delay_buffers": RandomizationTermCfg(
-            func="holosoma.managers.randomization.terms.locomotion:setup_action_delay_buffers",
-            params={
-                "ctrl_delay_step_range": [3, 4],
-                "enabled": True,
-            },
-        ),
-        "setup_dof_pos_bias": RandomizationTermCfg(
-            func="holosoma.managers.randomization.terms.locomotion:setup_dof_pos_bias",
-            params={
-                "dof_pos_bias_range": [-0.01, 0.01],
-                "enabled": True,
-            },
-        ),
-    },
-    reset_terms={
-        **base_reset_terms,
-        "randomize_action_delay": RandomizationTermCfg(
-            func="holosoma.managers.randomization.terms.locomotion:randomize_action_delay",
-        ),
-        "randomize_dof_state": RandomizationTermCfg(
-            func="holosoma.managers.randomization.terms.locomotion:randomize_dof_state",
-            params={
-                "joint_pos_scale_range": [1.0, 1.0],
-                "joint_vel_range": [0.0, 0.0],
-                "joint_pos_bias_range": [-0.01, 0.01],
-                "randomize_dof_pos_bias": True,
-            },
-        ),
-    },
-    step_terms={**base_step_terms},
-)
-
 __all__ = [
-    "g1_29dof_wbt_php_student_randomization",
     "g1_29dof_wbt_randomization",
     "g1_29dof_wbt_randomization_domain_rand",
 ]

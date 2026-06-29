@@ -274,95 +274,6 @@ pure_a2a_actor_obs_terms = {
 
 pure_a2a_critic_obs_terms = pure_a2a_actor_obs_terms
 
-proto_distill_student_actor_obs_terms = {
-    "proto_command": ObsTermCfg(
-        func="holosoma.managers.observation.terms.wbt:proto_command",
-        params={
-            "root_goal_offset": (0.8, 0.0, 0.45),
-            "active_region_center_offset": (0.65, 0.0, 0.75),
-            "forward_axis": (1.0, 0.0),
-        },
-        scale=1.0,
-        noise=0.0,
-    ),
-    "base_lin_vel": ObsTermCfg(
-        func="holosoma.managers.observation.terms.wbt:base_lin_vel",
-        scale=1.0,
-        noise=0.0,
-    ),
-    "base_ang_vel": ObsTermCfg(
-        func="holosoma.managers.observation.terms.wbt:base_ang_vel",
-        scale=1.0,
-        noise=0.2,
-    ),
-    "projected_gravity": ObsTermCfg(
-        func="holosoma.managers.observation.terms.wbt:projected_gravity",
-        scale=1.0,
-        noise=0.05,
-    ),
-    "terrain_height_scan": ObsTermCfg(
-        func="holosoma.managers.observation.terms.wbt:terrain_height_scan",
-        scale=1.0,
-        noise=0.0,
-        clip=(-1.0, 1.0),
-    ),
-    "dof_pos": ObsTermCfg(
-        func="holosoma.managers.observation.terms.wbt:dof_pos",
-        scale=1.0,
-        noise=0.01,
-    ),
-    "dof_vel": ObsTermCfg(
-        func="holosoma.managers.observation.terms.wbt:dof_vel",
-        scale=1.0,
-        noise=0.5,
-    ),
-    "actions": ObsTermCfg(
-        func="holosoma.managers.observation.terms.wbt:actions",
-        scale=1.0,
-        noise=0.0,
-    ),
-}
-
-php_distill_student_actor_obs_terms = {
-    "velocity_command": ObsTermCfg(
-        func="holosoma.managers.observation.terms.wbt:php_velocity_command",
-        params={"command": (1.0, 0.0)},
-        scale=1.0,
-        noise=0.0,
-    ),
-    "projected_gravity": ObsTermCfg(
-        func="holosoma.managers.observation.terms.wbt:projected_gravity",
-        scale=1.0,
-        noise=0.05,
-    ),
-    "base_ang_vel": ObsTermCfg(
-        func="holosoma.managers.observation.terms.wbt:base_ang_vel",
-        scale=1.0,
-        noise=0.2,
-    ),
-    "terrain_height_scan": ObsTermCfg(
-        func="holosoma.managers.observation.terms.wbt:terrain_height_scan",
-        scale=1.0,
-        noise=0.05,
-        clip=(-1.0, 1.0),
-    ),
-    "dof_pos": ObsTermCfg(
-        func="holosoma.managers.observation.terms.wbt:dof_pos",
-        scale=1.0,
-        noise=0.01,
-    ),
-    "dof_vel": ObsTermCfg(
-        func="holosoma.managers.observation.terms.wbt:dof_vel",
-        scale=1.0,
-        noise=0.5,
-    ),
-    "actions": ObsTermCfg(
-        func="holosoma.managers.observation.terms.wbt:actions",
-        scale=1.0,
-        noise=0.0,
-    ),
-}
-
 g1_29dof_wbt_observation = ObservationManagerCfg(
     groups={
         "actor_obs": actor_obs_shared,
@@ -443,58 +354,10 @@ g1_29dof_wbt_a2a_pure_observation = ObservationManagerCfg(
     },
 )
 
-g1_29dof_wbt_proto_distill_observation = ObservationManagerCfg(
-    groups={
-        "actor_obs": ObsGroupCfg(
-            concatenate=True,
-            enable_noise=True,
-            history_length=1,
-            terms=proto_distill_student_actor_obs_terms,
-        ),
-        "critic_obs": ObsGroupCfg(
-            concatenate=True,
-            enable_noise=False,
-            history_length=1,
-            terms=critic_obs_shared_terms,
-        ),
-        "teacher_actor_obs": ObsGroupCfg(
-            concatenate=True,
-            enable_noise=False,
-            history_length=1,
-            terms=actor_obs_shared.terms,
-        ),
-    },
-)
-
-g1_29dof_wbt_php_distill_observation = ObservationManagerCfg(
-    groups={
-        "actor_obs": ObsGroupCfg(
-            concatenate=True,
-            enable_noise=True,
-            history_length=1,
-            terms=php_distill_student_actor_obs_terms,
-        ),
-        "critic_obs": ObsGroupCfg(
-            concatenate=True,
-            enable_noise=False,
-            history_length=1,
-            terms=critic_obs_shared_terms,
-        ),
-        "teacher_actor_obs": ObsGroupCfg(
-            concatenate=True,
-            enable_noise=False,
-            history_length=1,
-            terms=actor_obs_shared.terms,
-        ),
-    },
-)
-
 __all__ = [
     "g1_29dof_wbt_a2a_observation",
     "g1_29dof_wbt_a2a_pure_observation",
     "g1_29dof_wbt_contact_force_observation",
     "g1_29dof_wbt_future_ref_observation",
     "g1_29dof_wbt_observation",
-    "g1_29dof_wbt_php_distill_observation",
-    "g1_29dof_wbt_proto_distill_observation",
 ]

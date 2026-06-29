@@ -94,41 +94,6 @@ g1_29dof_wbt_proto_termination = TerminationManagerCfg(
     }
 )
 
-g1_29dof_wbt_php_student_termination = TerminationManagerCfg(
-    terms={
-        "timeout": g1_29dof_wbt_termination.terms["timeout"],
-        "bad_tracking_relaxed": TerminationTermCfg(
-            func="holosoma.managers.termination.terms.wbt:BadTracking",
-            params={
-                "bad_ref_pos_threshold": 1.0,
-                "bad_ref_ori_threshold": 1.6,
-                "bad_motion_body_pos_threshold": 0.5,
-                "body_names_to_track": g1_29dof_wbt_termination.terms["bad_tracking"].params["body_names_to_track"],
-                "bad_motion_body_pos_body_names": [
-                    "left_ankle_roll_link",
-                    "right_ankle_roll_link",
-                    "left_wrist_yaw_link",
-                    "right_wrist_yaw_link",
-                ],
-                "bad_object_pos_threshold": 0.5,
-                "bad_object_ori_threshold": 1.6,
-            },
-        ),
-        "severe_state_invalid": TerminationTermCfg(
-            func="holosoma.managers.termination.terms.wbt:severe_state_invalid",
-            params={
-                "min_height": 0.05,
-                "max_height": 5.0,
-                "max_ref_pos_error": 10.0,
-                "max_root_lin_vel": 50.0,
-                "max_root_ang_vel": 100.0,
-                "max_body_lin_vel": 100.0,
-                "max_joint_abs_vel": 200.0,
-            },
-        ),
-    }
-)
-
 g1_29dof_wbt_timeout_only_termination = TerminationManagerCfg(
     terms={
         "timeout": g1_29dof_wbt_termination.terms["timeout"],
@@ -138,7 +103,6 @@ g1_29dof_wbt_timeout_only_termination = TerminationManagerCfg(
 __all__ = [
     "g1_29dof_wbt_termination",
     "g1_29dof_wbt_a2a_pure_termination",
-    "g1_29dof_wbt_php_student_termination",
     "g1_29dof_wbt_proto_termination",
     "g1_29dof_wbt_timeout_only_termination",
 ]

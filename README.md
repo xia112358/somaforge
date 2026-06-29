@@ -1,6 +1,6 @@
 # holosoma_newton
 
-Research workspace for IsaacLab3/Newton whole-body tracking on climbing motions. This repository is the training and simulator-integration side of the current project: motion/contact references are prepared externally, then consumed here for WBT training, contact-force-aware rewards, GMVQ/tokenized-reference experiments, and distillation-style policy training.
+Research workspace for IsaacLab3/Newton whole-body tracking on climbing motions. This repository is the training and simulator-integration side of the current project: motion/contact references are prepared externally, then consumed here for WBT training, contact-force-aware rewards, and GMVQ/tokenized-reference experiments.
 
 This is no longer maintained as a full upstream Holosoma framework mirror. Legacy upstream components unrelated to the current WBT climbing workflow should be removed or kept only when they are still required by active code paths.
 
@@ -12,7 +12,7 @@ This is no longer maintained as a full upstream Holosoma framework mirror. Legac
 - Contact-force demo extraction, smoothing, and manifest generation.
 - WBT command, observation, reward, termination, replay, eval, and train logic.
 - GMVQ/tokenized-reference integration points.
-- PPO / distillation-PPO experiments used by the WBT workflow.
+- PPO experiments used by the WBT workflow.
 
 ## Kept but not cleaned in this pass
 
@@ -51,7 +51,7 @@ motion_edit / external preprocessing
   -> holosoma_newton configs/motion_matched
   -> WBT command/reward/observation/termination
   -> train/eval/replay in IsaacLab3/Newton
-  -> optional GMVQ/tokenized reference or distillation experiments
+  -> optional GMVQ/tokenized reference experiments
 ```
 
 ## Cleanup policy
