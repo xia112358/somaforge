@@ -6,8 +6,8 @@ The public generation entry is ContactEditPlan -> ``lte_fullbody``.
 Interactive Contact Editor generation supplies ``source_plan_path`` and does
 not expose a solver selector. Those calls now use the unified
 ``batch_contact_laplacian`` backend by default. Programmatic and CLI callers can
-still request either backend explicitly; legacy direct calls without a source
-plan path retain the historical ``ik_subprocess`` default.
+still request either backend explicitly; only the legacy ``ik_subprocess`` path
+uses the external LTE/IK subprocess.
 """
 
 from __future__ import annotations

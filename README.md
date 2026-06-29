@@ -2,7 +2,7 @@
 
 Contact-centric motion editing workbench for rollout motions, surface-bound contact-anchor editing, explicit ContactEditPlan generation, and downstream exports.
 
-The package stores metadata and segment layers under `motion_edit/data/` and keeps large motion files as path references by default.
+The package stores local runtime metadata and segment layers under `data/` and keeps large motion files as path references by default. `data/` is intentionally ignored by Git; do not force-add local rollout, contact, or generated motion artifacts.
 
 ## Layout
 
@@ -115,6 +115,44 @@ MotionAsset / MotionVersion
 
 Legacy/debug commands such as `surface-editor`, `surface-editor-sync`, `cutter`, `view`, `accept`, `reject`, `import-lte-catalog`, `move-contact-anchor`, and raw segment workbench actions remain available for tests, migration, or diagnostics, but they are hidden from the main `motion-edit --help` flow. New work should enter through `contact-editor` and `generate-lte-augmentation --mode lte_fullbody`.
 
+## Current Branch / PR Organization
+
+The old `solver/contact-laplacian-stability` branch mixed solver, contact segmentation, Contact Editor cuts, timeline UI, motion asset bundle work, local rollout data cleanup, and third-party proto scripts. Do not merge it as one large branch. Keep the work split in reviewable dependency order:
+
+```text
+feature/contact-laplacian-core
+  batch_contact_laplacian / dual_laplacian_contact_deformation core
+
+feature/stable-contact-proto
+  stable contact proto segmentation, graph transitions, fallback policies
+
+feature/contact-editor-cuts
+  cleaned parent-limb contact phases -> editor cut frames
+
+feature/contact-timeline-cut-ui
+  Contact Editor wrapper timeline, cut-frame markers, recent motion UI
+
+feature/motion-asset-generation-bundle
+  MotionAsset bundle compatibility and generated-motion recent entries
+
+tools/holosoma-proto-extraction
+  third_party/holosoma_proto extraction/reference scripts
+```
+
+The feature stack should sit on the data cleanup baseline that stops tracking runtime `data/` artifacts. Before opening or merging a PR, verify:
+
+```bash
+git ls-files data | wc -l
+```
+
+Expected:
+
+```text
+0
+```
+
+The primary UI path remains `motion_edit/viewer/contact_timeline.py` through `motion-edit contact-editor`. Do not promote `motion_edit/viewer/segmentation_timeline.py` or `motion-edit-seg cutter` as the main workflow; those are legacy/debug paths.
+
 ## Concepts
 
 - `MotionRef`: a path reference to qpos / Holosoma fullbody / OmniRetarget motion data.
@@ -157,33 +195,30 @@ The main generation entry is:
 ```bash
 ~/motion_edit/motion-edit generate-lte-augmentation \
   --mode lte_fullbody \
-  --fullbody-solver ik_subprocess \
   --plan data/workbench/climb00_edits.json \
   --output-motion data/motions/generated/climb00_augmented.npz
 ```
 
-The default `ik_subprocess` solver keeps the stable production path: contact
-edits are converted into LTE task-space keypoints, then the external fullbody IK
-subprocess writes joint arrays for the final motion.
+The default solver is `batch_contact_laplacian`. This is the same backend used
+by Contact Editor generation: `ContactEditPlan -> body-space batch
+contact-Laplacian proxy -> internal taskspace generated motion`.
 
-An advanced experimental solver is also available:
+The legacy direct LTE keypoint path is still available explicitly:
 
 ```bash
 ~/motion_edit/motion-edit generate-lte-augmentation \
   --mode lte_fullbody \
-  --fullbody-solver batch_contact_laplacian \
-  --mesh-laplacian-weight 5 \
+  --fullbody-solver ik_subprocess \
   --plan data/workbench/climb00_edits.json \
-  --output-motion data/motions/generated/climb00_batch_augmented.npz
+  --output-motion data/motions/generated/climb00_legacy_ik_augmented.npz
 ```
 
-This path runs `ContactEditPlan -> body-space batch contact-Laplacian proxy ->
-fullbody IK subprocess -> final motion`. It uses semantic `body_pos_w` points as
-the optimization variables, so it is not true q-space contact-Laplacian yet. The
-proxy solve improves contact/task-space propagation before IK, and the final
-output combines refined `body_pos_w` with IK `joint_pos`. For diagnostics only,
-pass `--contact-laplacian-proxy-only` to write the body-space proxy without
-running IK; that output is not guaranteed to be joint consistent.
+The default path uses semantic `body_pos_w` points as the optimization
+variables, so it is not true q-space contact-Laplacian yet. The proxy solve
+improves contact/task-space propagation before IK, and the final output combines
+refined `body_pos_w` with IK `joint_pos`. For diagnostics only, pass
+`--contact-laplacian-proxy-only` to write the body-space proxy without running
+IK; that output is not guaranteed to be joint consistent.
 
 ## Legacy Layer Policy
 
@@ -315,6 +350,14 @@ The local adapter reads the existing overlay JSON and renders the motion root tr
 
 The bottom timeline top bar owns motion switching. It includes a recent-motion dropdown plus `Open`, `Open latest`, and `Reload`. All entries are treated as regular motions with the same bundle-style fields; raw rollout and LTE-augmented outputs are not special UI modes. Generated motions are added to `data/workbench/recent_motions.json` after successful generation, so the next step is usually `Open latest`.
 
+The bottom timeline separates contact-point intervals from edit cut frames:
+
+- `contactPointBlock`: editable contact anchor intervals.
+- `cutFrameMarker`: stable/contact-editor cut-frame boundaries.
+- `proto_boundaries`: state payload for cut-frame navigation.
+
+Avoid reviving old UI/test vocabulary such as `segmentBlock` or `protoBoundary` for the visible contact timeline.
+
 3D selection and handle editing are same-surface constrained. Anchor markers can be clicked in the 3D view when supported by the local Viser runtime. The selected anchor shows a handle with tangent axes, normal axis, and surface bounds. Dragging this handle is not a free 3D transform: the dragged world point is projected back into the anchor's original surface coordinates, any normal component is discarded, and the anchor keeps the same `surface_id` and `object_id`. Bounds are enforced by the current reject/clamp mode. A normal-only drag is ignored as a no-op.
 
 The local Viser direct editor renders the overlay, highlights the selected
@@ -337,6 +380,63 @@ Edits remain anchor-level and surface-constrained. They use `move_contact_anchor
   --output-contact-layer contact/climb00_surface_edited \
   --with-terrain
 ```
+
+### Terrain Bundle Data
+
+Terrain rendering expects the URDF bundle to be self-contained. For Holosoma/OmniRetarget climb assets, the runtime bundle has this shape:
+
+```text
+.../tmp/rollout_ref_contact_points_29/bundled/climb_00/
+  multi_boxes_z_scale_1.0.urdf
+  multi_boxes_z_scale_1.0.obj
+  box_models/
+    box1.obj
+    box2.obj
+    ...
+```
+
+If Viser prints an error like:
+
+```text
+Unable to resolve filename: box_models/box1.obj
+Can't find box_models/box1.obj
+```
+
+that is a data bundle problem, not a Contact Editor code path problem. The URDF references `box_models/*.obj`, so copy the missing `box_models/` directory from the source terrain data into each bundled climb directory:
+
+```bash
+for d in /home/xiaz/holosoma_isaaclab3_newton/tmp/rollout_ref_contact_points_29/bundled/climb_*; do
+  name=$(basename "$d")
+  src="/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/$name/box_models"
+  if [ -d "$src" ] && [ ! -d "$d/box_models" ]; then
+    cp -a "$src" "$d/box_models"
+  fi
+done
+```
+
+Validate that all bundled terrain URDF mesh references resolve before launching the editor:
+
+```bash
+.venv/bin/python - <<'PY'
+from pathlib import Path
+import xml.etree.ElementTree as ET
+
+root = Path("/home/xiaz/holosoma_isaaclab3_newton/tmp/rollout_ref_contact_points_29/bundled")
+missing = []
+for urdf in sorted(root.glob("climb_*/multi_boxes_z_scale_1.0.urdf")):
+    tree = ET.parse(urdf)
+    for mesh in tree.findall(".//mesh"):
+        filename = mesh.attrib.get("filename", "")
+        if filename and not (urdf.parent / filename).exists():
+            missing.append((str(urdf), filename))
+print("urdfs", len(list(root.glob("climb_*/multi_boxes_z_scale_1.0.urdf"))))
+print("missing_mesh_refs", len(missing))
+for item in missing[:20]:
+    print(item)
+PY
+```
+
+The expected `missing_mesh_refs` value is `0`.
 
 In the Viser GUI, select an anchor from the bottom timeline or 3D view, drag its same-surface contact handle, then click `Validate plan`, `Dry run fullbody LTE`, or `Generate fullbody LTE`. No terminal sync is needed in default direct mode.
 
@@ -365,12 +465,10 @@ in a `ContactEditPlan`; motion generation is explicit:
   --output-segment-layer candidates/climb00_farther \
   --output-motion-version-id climb00_farther \
   --register-motion-version \
-  --mode lte_fullbody \
-  --lte-repo-root /home/xiaz/lte \
-  --ik-conda-env env_pyroki_climb_projection
+  --mode lte_fullbody
 ```
 
-Generation requires a `validated` or `locked` plan by default. The primary backend, `lte_fullbody`, follows the old LTE structure but is driven from motion_edit data: it extracts semantic keypoints from the source motion, applies ContactEditPlan handles through the LTE keypoint solver, writes LTE keypoints and a dense taskspace motion as intermediates, calls the full-body IK runner, and writes one final augmented motion `.npz`. This path is explicit; it does not run automatically from the surface editor.
+Generation requires a `validated` or `locked` plan by default. The primary backend, `lte_fullbody`, is driven from motion_edit data: it extracts semantic `body_pos_w` keypoints from the source motion, applies ContactEditPlan handles through the batch contact-Laplacian proxy solve, writes taskspace intermediates, and writes one final augmented motion `.npz`. This path is explicit; the editor only runs it when the user clicks `Dry run fullbody LTE` or `Generate fullbody LTE`. Legacy external LTE/IK options such as `--lte-repo-root`, `--ik-script`, and `--ik-conda-env` only matter when explicitly selecting `--fullbody-solver ik_subprocess`.
 
 The source `.npz`, source ContactLayer, and source canonical segmentation are not modified. `--output-contact-layer` writes a graph derived from the source ContactGraph with edited anchor positions. `--output-segment-layer` writes candidate segments for the generated motion. `--register-motion-version` registers the generated full trajectory as an augmented MotionVersion. Canonical segmentation for that new version is only built when `--build-canonical` is passed explicitly.
 

@@ -1052,35 +1052,25 @@ def apply_contact_edit_plan_to_motion(
                 warnings = proxy_warnings
             else:
                 proxy_metadata = json.loads(generated["motion_edit_generation_metadata"].item())
-                lte_path, taskspace_path, ik_path = _write_contact_laplacian_intermediates(
+                lte_path, taskspace_path, _ik_path = _write_contact_laplacian_intermediates(
                     out=out,
                     intermediate_dir=intermediate_dir,
                     proxy_taskspace=generated,
                     metadata=proxy_metadata,
                 )
-                _run_fullbody_ik_subprocess(
-                    lte_path=lte_path,
-                    ik_output_path=ik_path,
-                    lte_repo_root=lte_repo_root,
-                    ik_script=ik_script,
-                    ik_conda_env=ik_conda_env,
-                    ik_max_nfev=ik_max_nfev,
-                )
-                if not ik_path.exists():
-                    raise FileNotFoundError(f"fullbody IK did not produce {ik_path}")
-                ik_motion = _load_motion_npz(ik_path)
-                generated = _merge_contact_laplacian_ik_output(
-                    proxy_taskspace=generated,
-                    ik_motion=ik_motion,
-                    metadata=proxy_metadata,
-                    lte_path=lte_path,
-                    taskspace_path=taskspace_path,
-                    ik_path=ik_path,
-                    ik_conda_env=ik_conda_env,
-                    ik_script=ik_script,
-                    lte_repo_root=lte_repo_root,
-                )
-                warnings = json.loads(generated["motion_edit_generation_metadata"].item()).get("warnings", warnings)
+                final_metadata = {
+                    **proxy_metadata,
+                    "output_kind": "contact_laplacian_taskspace_motion",
+                    "joint_consistency": "source_joint_fields_preserved",
+                    "contact_laplacian_keypoints": str(lte_path),
+                    "contact_laplacian_taskspace_motion": str(taskspace_path),
+                    "ik_backend": "none",
+                }
+                final_warnings = list(final_metadata.get("warnings", []))
+                final_warnings.append("batch_contact_laplacian wrote internal taskspace motion without external IK")
+                final_metadata["warnings"] = final_warnings
+                generated["motion_edit_generation_metadata"] = _json_npz_value(final_metadata)
+                warnings = final_warnings
             out.parent.mkdir(parents=True, exist_ok=True)
             np.savez(out, **generated)
             edited_graph = _apply_anchor_edits_to_graph(graph, edits)

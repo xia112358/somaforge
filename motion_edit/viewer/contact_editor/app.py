@@ -984,7 +984,7 @@ def _generate_fullbody_lte_from_session(
     dry_run: bool = False,
     overwrite: bool = False,
     register_motion_version: bool = False,
-    lte_repo_root: str = "/home/xiaz/lte",
+    lte_repo_root: str | None = None,
     ik_conda_env: str = "env_pyroki_climb_projection",
     layers_root: Path = LAYERS_ROOT,
 ) -> Any:

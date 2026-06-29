@@ -1,10 +1,10 @@
-"""Experimental batch contact-Laplacian trajectory solver.
+"""Batch contact-Laplian trajectory solver.
 
-This package contains the full-trajectory least-squares solver scaffold and
-synthetic kinematics tests. It is not the current production generator for real
-robot motions. Production ``generate-lte-augmentation --mode lte_fullbody``
-defaults to the task-space LTE plus IK subprocess path unless explicitly asked
-to dry-run or experiment with this backend.
+This package contains the full-trajectory least-squares solver used by the
+default ``generate-lte-augmentation --mode lte_fullbody`` path. The current
+production bridge optimizes semantic ``body_pos_w`` task-space points and writes
+an internal generated motion; the legacy external LTE/IK subprocess path is only
+used when explicitly selected.
 """
 
 from .kinematics import BodyPositionTrajectoryKinematicsProvider, KinematicsProvider, LinearPointKinematicsProvider
