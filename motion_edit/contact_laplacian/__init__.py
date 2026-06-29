@@ -10,14 +10,18 @@ used when explicitly selected.
 from .kinematics import BodyPositionTrajectoryKinematicsProvider, KinematicsProvider, LinearPointKinematicsProvider
 from .schema import BatchContactLaplacianConfig, ContactHandleSpec, ContactLaplacianSolveResult, InteractionMeshSpec
 from .solver import solve_batch_contact_laplacian
+from .transfer_solver import TransferLocalContactLaplacianConfig, TransferWindowSpec, solve_transfer_local_contact_laplacian
 
 __all__ = [
     "BatchContactLaplacianConfig",
     "ContactHandleSpec",
     "ContactLaplacianSolveResult",
     "InteractionMeshSpec",
+    "TransferLocalContactLaplacianConfig",
+    "TransferWindowSpec",
     "BodyPositionTrajectoryKinematicsProvider",
     "KinematicsProvider",
     "LinearPointKinematicsProvider",
     "solve_batch_contact_laplacian",
+    "solve_transfer_local_contact_laplacian",
 ]
