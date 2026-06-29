@@ -127,8 +127,8 @@ class VirtualGantry:
         if simtype is SimulatorType.ISAACGYM:
             self._apply_force_impl = self._apply_force_isaacgym
             self._clear_forces_impl = None  # IsaacGym doesn't need explicit clearing
-        elif simtype is SimulatorType.ISAACSIM:
-            logger.warning("Virtual Gantry untested in IsaacSim")
+        elif simtype in (SimulatorType.ISAACSIM, SimulatorType.ISAACLAB3_NEWTON):
+            logger.warning("Virtual Gantry untested in IsaacLab/Newton")
             self._apply_force_impl = self._apply_force_isaacsim
             self._clear_forces_impl = self._clear_forces_isaacsim
         elif simtype is SimulatorType.MUJOCO:
@@ -410,7 +410,7 @@ class VirtualGantry:
 
         # Get body orientation to transform force from world to body frame
         # IsaacLab applies forces in local frame (is_global=False hardcoded in 2.1)
-        body_quat_w = self.sim._robot.data.body_quat_w[0, isaac_body_id]  # [w,x,y,z] format
+        body_quat_w = self.sim._robot.data.body_quat_w[0, isaac_body_id]  # [x,y,z,w] format
 
         # Transform force from world frame to body frame
         from isaaclab.utils.math import quat_apply_inverse

@@ -16,6 +16,7 @@ from tqdm import tqdm
 # CONFIG_NAME is "holosoma_config.yaml" - the primary configuration file for Holosoma
 # This file contains all settings for training and evaluation of models
 from holosoma.config_types.experiment import ExperimentConfig
+from holosoma.config_types.algo import DistillPPOConfig
 from holosoma.utils.config_utils import CONFIG_NAME
 from holosoma.utils.file_cache import get_cached_file_path
 from holosoma.utils.logging import LoguruLoggingBridge
@@ -93,7 +94,7 @@ def load_saved_experiment_config(checkpoint_cfg: CheckpointConfig) -> tuple[Expe
     cached_config_path = get_cached_file_path(config_uri)
 
     with open(cached_config_path) as f:
-        return ExperimentConfig(**yaml.safe_load(f)), wandb_run_path
+        return _experiment_config_from_serialized(yaml.safe_load(f)), wandb_run_path
 
 
 def _load_config_from_checkpoint(checkpoint_path: Path) -> tuple[ExperimentConfig, str | None]:
@@ -101,7 +102,21 @@ def _load_config_from_checkpoint(checkpoint_path: Path) -> tuple[ExperimentConfi
 
     checkpoint_contents = torch.load(checkpoint_path, map_location="cpu")
     config_data = checkpoint_contents["experiment_config"]
-    return ExperimentConfig(**config_data), checkpoint_contents.get("wandb_run_path")
+    return _experiment_config_from_serialized(config_data), checkpoint_contents.get("wandb_run_path")
+
+
+def _experiment_config_from_serialized(config_data: dict) -> ExperimentConfig:
+    """Restore dataclass subtypes that are lost in plain dict checkpoint metadata."""
+
+    algo_data = config_data.get("algo")
+    if isinstance(algo_data, dict) and algo_data.get("_target_") == "holosoma.agents.ppo.distill_ppo.DistillPPO":
+        algo_config = algo_data.get("config")
+        if isinstance(algo_config, dict):
+            algo_data = dict(algo_data)
+            algo_data["config"] = DistillPPOConfig(**algo_config)
+            config_data = dict(config_data)
+            config_data["algo"] = algo_data
+    return ExperimentConfig(**config_data)
 
 
 class CheckpointMetadata(TypedDict):
@@ -269,7 +284,7 @@ def load_checkpoint(checkpoint: str, log_dir: str) -> Path:
     return Path(checkpoint)
 
 
-def init_sim_imports(tyro_config: ExperimentConfig):
+def init_sim_imports(tyro_config: ExperimentConfig, launcher_args=None):
     """Initialize simulator imports - DEPRECATED.
 
     This function is deprecated in favor of the more focused functions in sim_utils.py.
@@ -291,8 +306,8 @@ def init_sim_imports(tyro_config: ExperimentConfig):
     setup_simulator_imports(tyro_config)
 
     simulator_type = get_simulator_type()
-    if simulator_type == SimulatorType.ISAACSIM:
-        return setup_isaaclab_launcher(tyro_config)
+    if simulator_type in (SimulatorType.ISAACSIM, SimulatorType.ISAACLAB3_NEWTON):
+        return setup_isaaclab_launcher(tyro_config, launcher_args=launcher_args)
 
     # For other simulators, no app is needed
     return None

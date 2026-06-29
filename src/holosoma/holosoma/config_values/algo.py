@@ -1,4 +1,8 @@
+import dataclasses
+
 from holosoma.config_types.algo import (
+    DistillConfig,
+    DistillPPOConfig,
     FastSACAlgoConfig,
     FastSACConfig,
     LayerConfig,
@@ -55,6 +59,24 @@ ppo = PPOAlgoConfig(
     ),
 )
 
+distill_ppo = PPOAlgoConfig(
+    _target_="holosoma.agents.ppo.distill_ppo.DistillPPO",
+    _recursive_=False,
+    config=DistillPPOConfig(
+        **dataclasses.asdict(ppo.config),
+        distill=DistillConfig(
+            enable_kl=False,
+            teacher_checkpoint_path=None,
+            lambda_kl_init=0.1,
+            lambda_kl_final=0.01,
+            lambda_kl_anneal_iters=10000,
+            lambda_kl_anneal_schedule="cosine",
+            distill_type="kl",
+            use_mean_mse_fallback=False,
+        ),
+    ),
+)
+
 fast_sac = FastSACAlgoConfig(
     _target_="holosoma.agents.fast_sac.fast_sac_agent.FastSACAgent",
     _recursive_=False,
@@ -103,5 +125,6 @@ fast_sac = FastSACAlgoConfig(
 
 DEFAULTS = {
     "ppo": ppo,
+    "distill_ppo": distill_ppo,
     "fast_sac": fast_sac,
 }

@@ -15,8 +15,8 @@ source $CONDA_ROOT/etc/profile.d/conda.sh
 
 
 cd "$SCRIPT_DIR"
-chmod +x setup_isaacsim.sh setup_isaacgym.sh setup_mujoco.sh setup_inference.sh setup_retargeting.sh
-OMNI_KIT_ACCEPT_EULA=1 ./setup_isaacsim.sh
+chmod +x setup_isaaclab3_newton.sh setup_isaacgym.sh setup_mujoco.sh setup_inference.sh setup_retargeting.sh
+OMNI_KIT_ACCEPT_EULA=1 ./setup_isaaclab3_newton.sh
 ./setup_isaacgym.sh
 ./setup_mujoco.sh --no-warp
 ./setup_inference.sh

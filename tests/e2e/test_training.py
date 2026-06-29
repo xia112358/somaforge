@@ -160,4 +160,4 @@ def test_training_and_eval_workflow(workflow_name: str, multi_gpu: bool):
 )
 @pytest.mark.parametrize("multi_gpu", [False])
 def test_training_and_eval_workflow_isaacsim(workflow_name: str, multi_gpu: bool):
-    assert_training_and_eval_workflow(workflow_name, multi_gpu=multi_gpu, extra_config=["simulator:isaacsim"])
+    assert_training_and_eval_workflow(workflow_name, multi_gpu=multi_gpu, extra_config=["simulator:isaaclab3-newton"])

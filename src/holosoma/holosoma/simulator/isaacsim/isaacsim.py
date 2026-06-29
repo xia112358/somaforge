@@ -3,18 +3,19 @@ from __future__ import annotations
 import builtins
 import copy
 import dataclasses
+import inspect
 import os
 import xml.etree.ElementTree as ET
 from typing import Any
 
 import pathlib
+import numpy as np
 import trimesh
 
 from holosoma.config_types.full_sim import FullSimConfig
 import isaaclab.sim as sim_utils
 from isaaclab.assets import RigidObject, RigidObjectCfg
 import isaaclab.terrains as terrain_gen
-import omni.log
 import torch
 from isaaclab.actuators import IdealPDActuatorCfg
 from isaaclab.assets import Articulation, ArticulationCfg
@@ -22,8 +23,8 @@ from isaaclab.envs import ViewerCfg, mdp
 from isaaclab.managers import EventManager, SceneEntityCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
-from isaaclab.sensors import ContactSensor, ContactSensorCfg, RayCaster, RayCasterCfg, patterns
-from isaaclab.sim import PhysxCfg, SimulationCfg, SimulationContext
+from isaaclab.sensors import ContactSensor, ContactSensorCfg, RayCasterCfg, patterns
+from isaaclab.sim import SimulationCfg, SimulationContext
 from isaaclab.terrains import TerrainGeneratorCfg, TerrainImporterCfg
 from isaaclab.terrains.utils import create_prim_from_mesh
 from isaaclab.utils.timer import Timer
@@ -34,6 +35,12 @@ from holosoma.utils.module_utils import get_holosoma_root
 from holosoma.utils.path import resolve_data_file_path
 from holosoma.config_types.simulator import SimulatorInitConfig, SceneConfig
 from holosoma.managers.terrain import TerrainManager
+from holosoma.simulator.isaaclab3_newton.backend import (
+    clone_newton_body_coms,
+    resolve_bool_attr_or_method,
+    resolve_usd_next_to_asset,
+)
+from holosoma.simulator.isaaclab3_newton.ray_caster import HolosomaNewtonRayCaster
 from holosoma.simulator.base_simulator.base_simulator import BaseSimulator
 from holosoma.simulator.isaacsim.event_cfg import EventCfg
 from holosoma.simulator.isaacsim.events import randomize_body_com, randomize_rigid_body_inertia
@@ -61,32 +68,17 @@ from holosoma.simulator.types import ActorNames, ActorIndices, EnvIds, ActorStat
 
 
 class IsaacSim(BaseSimulator):
+    @staticmethod
+    def _resolve_bool_attr_or_method(obj: Any, name: str) -> bool:
+        return resolve_bool_attr_or_method(obj, name)
+
     def __init__(self, tyro_config: FullSimConfig, terrain_manager: TerrainManager, device: str):
         super().__init__(tyro_config, terrain_manager, device)
 
         # Add device attribute for base simulator compatibility
         self.device = device
 
-        sim_config: SimulationCfg = SimulationCfg(
-            dt=1.0 / self.simulator_config.sim.fps,
-            render_interval=self.simulator_config.sim.render_interval,
-            device=self.sim_device,
-            physx=PhysxCfg(
-                bounce_threshold_velocity=self.simulator_config.sim.physx.bounce_threshold_velocity,
-                solver_type=self.simulator_config.sim.physx.solver_type,
-                max_position_iteration_count=self.simulator_config.sim.physx.num_position_iterations,
-                max_velocity_iteration_count=self.simulator_config.sim.physx.num_velocity_iterations,
-                gpu_max_rigid_patch_count=10 * 2**15,
-            ),
-            # Global physics material, can be overridden by the individual articulation
-            # Can be inspected by:
-            # materials = self._robot.root_physx_view.get_material_properties()
-            physics_material=sim_utils.RigidBodyMaterialCfg(
-                static_friction=1.0,  # default is 0.5
-                dynamic_friction=1.0,  # default is 0.5
-                restitution=0.0,
-            ),
-        )
+        sim_config: SimulationCfg = self._build_simulation_cfg()
 
         # create a simulation context to control the simulator
         if SimulationContext.instance() is None:
@@ -129,7 +121,9 @@ class IsaacSim(BaseSimulator):
         else:
             viewer_config: ViewerCfg = ViewerCfg()
 
-        if self.sim.render_mode >= self.sim.RenderMode.PARTIAL_RENDERING:
+        render_mode = getattr(self.sim, "render_mode", None)
+        render_mode_enum = getattr(self.sim, "RenderMode", None)
+        if render_mode is not None and render_mode_enum is not None and render_mode >= render_mode_enum.PARTIAL_RENDERING:
             self.viewport_camera_controller: ViewportCameraController | None = ViewportCameraController(
                 self, viewer_config
             )
@@ -144,8 +138,10 @@ class IsaacSim(BaseSimulator):
             with Timer("[INFO]: Time taken for simulation start", "simulation_start"):
                 self.sim.reset()
 
-        self.default_coms = self._robot.root_physx_view.get_coms().clone()
-        self.base_com_bias = torch.zeros((self.training_config.num_envs, 3), dtype=torch.float, device="cpu")
+        self.default_coms = self._get_default_coms()
+        self.base_com_bias = torch.zeros(
+            (self.training_config.num_envs, 3), dtype=torch.float, device=self.default_coms.device
+        )
 
         self.events_cfg = EventCfg()
 
@@ -193,16 +189,32 @@ class IsaacSim(BaseSimulator):
 
         logger.info("Completed setting up the environment...")
 
-    def _setup_scene(self) -> None:
-        self._load_scene_config()
+    def _build_physics_cfg(self):
+        raise NotImplementedError("The IsaacLab3 migration copy is Newton-only; use IsaacLab3Newton.")
 
-        robot_asset_cfg = self.robot_config.asset
+    def _build_simulation_cfg(self) -> SimulationCfg:
+        kwargs = {
+            "dt": 1.0 / self.simulator_config.sim.fps,
+            "render_interval": self.simulator_config.sim.render_interval,
+            "device": self.sim_device,
+            # Global physics material, can be overridden by the individual articulation.
+            # Kept global; individual articulation/object spawn configs can override it.
+            "physics_material": sim_utils.RigidBodyMaterialCfg(
+                static_friction=1.0,  # default is 0.5
+                dynamic_friction=1.0,  # default is 0.5
+                restitution=0.0,
+            ),
+        }
 
-        asset_root = robot_asset_cfg.asset_root
+        return SimulationCfg(**kwargs, physics=self._build_physics_cfg())
+
+    def _resolve_robot_asset_root(self, asset_root: str) -> str:
         if asset_root.startswith("@holosoma/"):
-            asset_root = asset_root.replace("@holosoma", get_holosoma_root())
+            return asset_root.replace("@holosoma", get_holosoma_root())
+        return asset_root
 
-        robot_rigid_props = sim_utils.RigidBodyPropertiesCfg(
+    def _build_robot_rigid_props(self, robot_asset_cfg: Any) -> sim_utils.RigidBodyPropertiesCfg:
+        return sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
             retain_accelerations=False,
             linear_damping=robot_asset_cfg.linear_damping,
@@ -212,48 +224,71 @@ class IsaacSim(BaseSimulator):
             max_depenetration_velocity=1.0,
         )
 
-        robot_articulation_props = sim_utils.ArticulationRootPropertiesCfg(
+    def _build_robot_articulation_props(self, robot_asset_cfg: Any) -> sim_utils.ArticulationRootPropertiesCfg:
+        return sim_utils.ArticulationRootPropertiesCfg(
             enabled_self_collisions=robot_asset_cfg.enable_self_collisions,
+            fix_root_link=robot_asset_cfg.fix_base_link,
             # NOTE: (4, 0) -> (8, 4) necessary for reproducing FAR-tracking-implementation
             solver_position_iteration_count=8,
             solver_velocity_iteration_count=4,
         )
 
+    def _build_robot_spawn_cfg(
+        self,
+        asset_root: str,
+        robot_asset_cfg: Any,
+        robot_rigid_props: sim_utils.RigidBodyPropertiesCfg,
+        robot_articulation_props: sim_utils.ArticulationRootPropertiesCfg,
+    ):
         if robot_asset_cfg.usd_file is None:
-            # convert from urdf dynamically
-            asset_path = robot_asset_cfg.urdf_file
-            full_urdf_path = os.path.abspath(os.path.join(asset_root, asset_path))
-
-            # Get local rank to avoid race conditions in multi-GPU setups
-            local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-            usd_conversion_dir = os.path.abspath(os.path.join(asset_root, f"converted_rank{local_rank}"))
-
-            spawn = sim_utils.UrdfFileCfg(
-                usd_dir=usd_conversion_dir,
-                asset_path=full_urdf_path,
-                fix_base=robot_asset_cfg.fix_base_link,
-                merge_fixed_joints=robot_asset_cfg.collapse_fixed_joints,
-                replace_cylinders_with_capsules=robot_asset_cfg.replace_cylinder_with_capsule,
-                force_usd_conversion=True,
-                joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
-                    gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(
-                        stiffness=0,
-                        damping=0,
-                    ),
-                    target_type="none",
-                ),
-                activate_contact_sensors=True,
-                rigid_props=robot_rigid_props,
-                articulation_props=robot_articulation_props,
+            raise FileNotFoundError(
+                "The IsaacLab3 migration copy is Newton-only and does not perform runtime URDF conversion. "
+                f"Configure a USD file or use IsaacLab3Newton pre-converted asset lookup for '{robot_asset_cfg.urdf_file}'."
             )
-        else:
-            asset_path = robot_asset_cfg.usd_file
-            spawn = sim_utils.UsdFileCfg(
-                usd_path=os.path.abspath(os.path.join(asset_root, asset_path)),
-                activate_contact_sensors=True,
-                rigid_props=robot_rigid_props,
-                articulation_props=robot_articulation_props,
-            )
+
+        asset_path = robot_asset_cfg.usd_file
+        return sim_utils.UsdFileCfg(
+            usd_path=os.path.abspath(os.path.join(asset_root, asset_path)),
+            activate_contact_sensors=True,
+            rigid_props=robot_rigid_props,
+            articulation_props=robot_articulation_props,
+        )
+
+    def _get_default_coms(self) -> torch.Tensor:
+        return clone_newton_body_coms(self._robot, self.training_config.num_envs, self._robot.num_bodies, self.device)
+
+    def _resolve_env0_robot_child_path(self, prim_name: str) -> str:
+        from pxr import UsdPhysics
+
+        matches = sim_utils.get_all_matching_child_prims(
+            "/World/envs/env_0/Robot",
+            predicate=lambda prim: prim.GetName() == prim_name,
+        )
+        if not matches:
+            raise RuntimeError(f"Could not find robot prim named '{prim_name}' under /World/envs/env_0/Robot.")
+
+        rigid_matches = [prim for prim in matches if prim.HasAPI(UsdPhysics.RigidBodyAPI)]
+        selected = rigid_matches[0] if rigid_matches else matches[0]
+        return selected.GetPath().pathString
+
+    @staticmethod
+    def _env0_path_to_env_regex(path: str) -> str:
+        return path.replace("/World/envs/env_0/", "/World/envs/env_.*/", 1)
+
+    def _setup_scene(self) -> None:
+        self._load_scene_config()
+
+        robot_asset_cfg = self.robot_config.asset
+
+        asset_root = self._resolve_robot_asset_root(robot_asset_cfg.asset_root)
+        robot_rigid_props = self._build_robot_rigid_props(robot_asset_cfg)
+        robot_articulation_props = self._build_robot_articulation_props(robot_asset_cfg)
+        spawn = self._build_robot_spawn_cfg(
+            asset_root,
+            robot_asset_cfg,
+            robot_rigid_props,
+            robot_articulation_props,
+        )
 
         # prepare to override the articulation configuration in
         # holosoma/holosoma/simulator/isaacsim_articulation_cfg.py
@@ -319,21 +354,17 @@ class IsaacSim(BaseSimulator):
         terrain_prim_path = "/World/ground"
         height_scanner_config = None
         terrain_state = self.terrain_manager.get_state("locomotion_terrain")
-        if terrain_state.mesh_type not in ["fake", None]:
-            # Add a height scanner to the torso to detect the height of the terrain mesh
-            # TODO: Scene USD files need ground mapping
-            height_scanner_config = RayCasterCfg(
-                prim_path=f"/World/envs/env_.*/Robot/{self.robot_config.body_names[0]}",
-                offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 0.0)),
-                attach_yaw_only=True,
-                # Apply a grid pattern that is smaller than the resolution to only return one height value.
-                pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[0.05, 0.05]),
-                debug_vis=False,
-                mesh_prim_paths=[terrain_prim_path],
+        use_raycaster_height_scanner = terrain_state.mesh_type not in ["fake", None]
+        height_scanner_body = None
+        if use_raycaster_height_scanner:
+            # Isaac Lab 3.x height scanning is implemented through the RayCaster sensor.
+            height_scanner_body = (
+                "torso_link" if "torso_link" in self.robot_config.body_names else self.robot_config.body_names[0]
             )
 
         global_collision_prims = []
-        if terrain_state.mesh_type == "plane":
+        has_motion_matched_terrain = bool(getattr(getattr(terrain_state, "_cfg", None), "motion_matched_manifest", ""))
+        if terrain_state.mesh_type == "plane" and not has_motion_matched_terrain:
             terrain_config = TerrainImporterCfg(
                 prim_path=terrain_prim_path,
                 terrain_type="plane",
@@ -351,9 +382,9 @@ class IsaacSim(BaseSimulator):
             terrain_config.env_spacing = self.scene.cfg.env_spacing
             terrain_config.class_type(terrain_config)
             global_collision_prims.append(terrain_config.prim_path)
-        elif terrain_state.mesh_type in ["trimesh", "load_obj"]:
+        elif terrain_state.mesh_type in ["trimesh", "load_obj", "plane"] or has_motion_matched_terrain:
             self.terrain = self.terrain_manager.get_state("locomotion_terrain").terrain
-            visual_material = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 0.0))
+            visual_material = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.45, 0.45, 0.45))
             physics_material = sim_utils.RigidBodyMaterialCfg(
                 static_friction=terrain_state.static_friction,
                 dynamic_friction=terrain_state.dynamic_friction,
@@ -374,6 +405,21 @@ class IsaacSim(BaseSimulator):
 
         self._robot = Articulation(robot_articulation_config)
 
+        if height_scanner_body is not None:
+            height_scanner_body_path = self._resolve_env0_robot_child_path(height_scanner_body)
+            height_scanner_spawn_path = f"{height_scanner_body_path}/height_scanner"
+            height_scanner_prim_path = f"{self._env0_path_to_env_regex(height_scanner_body_path)}/height_scanner"
+            height_scanner_config = RayCasterCfg(
+                prim_path=height_scanner_prim_path,
+                offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+                ray_alignment="yaw",
+                pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[0.6, 0.6]),
+                debug_vis=False,
+                mesh_prim_paths=[terrain_prim_path],
+            )
+            if height_scanner_config.spawn is not None:
+                height_scanner_config.spawn.spawn_path = height_scanner_spawn_path
+
         print_prim_tree("/World/envs/env_0/Robot")
         log_robot_properties("/World/envs/env_0/Robot", "*")
 
@@ -383,7 +429,7 @@ class IsaacSim(BaseSimulator):
         self.scene.sensors["contact_sensor"] = self.contact_sensor
 
         if height_scanner_config:
-            self._height_scanner = RayCaster(height_scanner_config)
+            self._height_scanner = HolosomaNewtonRayCaster(height_scanner_config)
             self.scene.sensors["height_scanner"] = self._height_scanner
 
         # clone, filter, and replicate
@@ -397,15 +443,13 @@ class IsaacSim(BaseSimulator):
 
         # add objects if object is provided
         if self.robot_config.object.object_urdf_path:
-            # Resolve the object asset urdf path using importlib.resources
             object_asset_urdf_path = resolve_data_file_path(self.robot_config.object.object_urdf_path)
+            object_asset_usd_path = resolve_usd_next_to_asset(object_asset_urdf_path)
             object_name = "object"  # hardcoded object name
             object_cfg = RigidObjectCfg(
                 prim_path=f"/World/envs/env_.*/Object",
-                spawn=sim_utils.UrdfFileCfg(
-                    fix_base=False,
-                    replace_cylinders_with_capsules=True,
-                    asset_path=object_asset_urdf_path,
+                spawn=sim_utils.UsdFileCfg(
+                    usd_path=str(object_asset_usd_path),
                     activate_contact_sensors=True,
                     rigid_props=sim_utils.RigidBodyPropertiesCfg(
                         disable_gravity=False,
@@ -417,16 +461,14 @@ class IsaacSim(BaseSimulator):
                         max_depenetration_velocity=1.0,
                     ),
                     articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+                        articulation_enabled=False,
                         enabled_self_collisions=True,
                         solver_position_iteration_count=8,
                         solver_velocity_iteration_count=4,
                     ),
-                    joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
-                        gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0, damping=0)
-                    ),
                 ),
                 init_state=RigidObjectCfg.InitialStateCfg(
-                    pos=(0.0, 0.0, 0.5),
+                    pos=tuple(self.robot_config.object.init_pos),
                 ),
             )
             self._object = RigidObject(object_cfg)
@@ -481,9 +523,18 @@ class IsaacSim(BaseSimulator):
         # call super
         super().set_headless(headless)
         if not self.headless:
-            from isaacsim.util.debug_draw import _debug_draw
+            try:
+                from isaacsim.util.debug_draw import _debug_draw
 
-            self.draw = _debug_draw.acquire_debug_draw_interface()
+                self.draw = _debug_draw.acquire_debug_draw_interface()
+            except ModuleNotFoundError:
+                try:
+                    import omni.debugdraw as _debug_draw
+
+                    self.draw = _debug_draw.acquire_debug_draw_interface()
+                except Exception as exc:
+                    logger.warning(f"Debug draw unavailable; continuing without it: {exc}")
+                    self.draw = None
         else:
             self.draw = None
 
@@ -771,7 +822,7 @@ class IsaacSim(BaseSimulator):
         return torch.cat([self.dof_pos[..., None], self.dof_vel[..., None]], dim=-1)
 
     def refresh_sim_tensors(self):
-        # Apply reset to recache new wyxz -> xyzw tensor
+        # Newton stores root/body quaternions in xyzw order.
         self.robot_root_states.reset(self._robot.data.root_state_w)  # (num_envs, 13)
 
         self.base_quat = self.robot_root_states[:, 3:7]  # (num_envs, 4), xyzw
@@ -792,11 +843,113 @@ class IsaacSim(BaseSimulator):
         ]  # (num_envs, history_length, num_bodies, 3), the first index is the most recent
 
         self._rigid_body_pos = self._robot.data.body_pos_w[:, self.body_ids, :]
-        self._rigid_body_rot = self._robot.data.body_quat_w[:, self.body_ids][
-            :, :, [1, 2, 3, 0]
-        ]  # (num_envs, 4) 3 isaacsim use wxyz, we keep xyzw for consistency
+        self._rigid_body_rot = self._robot.data.body_quat_w[:, self.body_ids, :]
         self._rigid_body_vel = self._robot.data.body_lin_vel_w[:, self.body_ids, :]
         self._rigid_body_ang_vel = self._robot.data.body_ang_vel_w[:, self.body_ids, :]
+
+    @staticmethod
+    def _split_warp_transform_array(transforms: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Return position and xyzw quaternion arrays from a Warp transform numpy view."""
+        if transforms.dtype.fields is not None:
+            field_names = list(transforms.dtype.fields)
+            if len(field_names) >= 2:
+                return np.asarray(transforms[field_names[0]], dtype=np.float32), np.asarray(
+                    transforms[field_names[1]], dtype=np.float32
+                )
+        transforms = np.asarray(transforms, dtype=np.float32)
+        if transforms.shape[-1] < 7:
+            raise ValueError(f"Expected transform array with trailing dimension >= 7, got {transforms.shape}")
+        return transforms[..., :3], transforms[..., 3:7]
+
+    @staticmethod
+    def _quat_rotate_xyzw(quat: np.ndarray, vec: np.ndarray) -> np.ndarray:
+        """Rotate vectors by xyzw quaternions."""
+        q_xyz = quat[..., :3]
+        q_w = quat[..., 3:4]
+        uv = np.cross(q_xyz, vec)
+        uuv = np.cross(q_xyz, uv)
+        return vec + 2.0 * (q_w * uv + uuv)
+
+    @classmethod
+    def _local_contact_points_to_world(
+        cls, local_points: np.ndarray, shape_ids: np.ndarray, shape_body: np.ndarray, body_pos: np.ndarray, body_quat: np.ndarray
+    ) -> np.ndarray:
+        world_points = np.asarray(local_points, dtype=np.float32).copy()
+        valid_shapes = (shape_ids >= 0) & (shape_ids < shape_body.shape[0])
+        body_ids = np.full(shape_ids.shape, -1, dtype=np.int64)
+        body_ids[valid_shapes] = shape_body[shape_ids[valid_shapes]]
+        valid_bodies = (body_ids >= 0) & (body_ids < body_pos.shape[0])
+        if np.any(valid_bodies):
+            ids = body_ids[valid_bodies]
+            world_points[valid_bodies] = body_pos[ids] + cls._quat_rotate_xyzw(body_quat[ids], world_points[valid_bodies])
+        return world_points
+
+    def get_raw_rigid_contacts(self) -> dict[str, np.ndarray] | None:
+        """Return Newton raw rigid contacts for the latest physics step, with world-space points."""
+        try:
+            from isaaclab_newton.physics.newton_manager import NewtonManager
+        except Exception:
+            return None
+
+        contacts = getattr(NewtonManager, "_contacts", None)
+        model = getattr(NewtonManager, "_model", None)
+        state = getattr(NewtonManager, "_state_0", None)
+        if contacts is None or model is None or state is None:
+            return None
+        if getattr(contacts, "rigid_contact_count", None) is None:
+            return None
+
+        max_contacts = int(getattr(contacts, "rigid_contact_max", 0) or 0)
+        if max_contacts <= 0:
+            return None
+
+        count = int(np.asarray(contacts.rigid_contact_count.numpy()).reshape(-1)[0])
+        count = max(0, min(count, max_contacts))
+
+        shape0 = np.full(max_contacts, -1, dtype=np.int32)
+        shape1 = np.full(max_contacts, -1, dtype=np.int32)
+        body0 = np.full(max_contacts, -1, dtype=np.int32)
+        body1 = np.full(max_contacts, -1, dtype=np.int32)
+        point0_w = np.zeros((max_contacts, 3), dtype=np.float32)
+        point1_w = np.zeros((max_contacts, 3), dtype=np.float32)
+        normal = np.zeros((max_contacts, 3), dtype=np.float32)
+        force = np.zeros((max_contacts, 3), dtype=np.float32)
+
+        if count > 0:
+            shape_body = np.asarray(model.shape_body.numpy(), dtype=np.int32)
+            body_pos, body_quat = self._split_warp_transform_array(state.body_q.numpy())
+
+            shape0_active = np.asarray(contacts.rigid_contact_shape0.numpy()[:count], dtype=np.int32)
+            shape1_active = np.asarray(contacts.rigid_contact_shape1.numpy()[:count], dtype=np.int32)
+            point0_local = np.asarray(contacts.rigid_contact_point0.numpy()[:count], dtype=np.float32)
+            point1_local = np.asarray(contacts.rigid_contact_point1.numpy()[:count], dtype=np.float32)
+
+            shape0[:count] = shape0_active
+            shape1[:count] = shape1_active
+            valid0 = (shape0_active >= 0) & (shape0_active < shape_body.shape[0])
+            valid1 = (shape1_active >= 0) & (shape1_active < shape_body.shape[0])
+            body0_active = body0[:count]
+            body1_active = body1[:count]
+            body0_active[valid0] = shape_body[shape0_active[valid0]]
+            body1_active[valid1] = shape_body[shape1_active[valid1]]
+            body0[:count] = body0_active
+            body1[:count] = body1_active
+            point0_w[:count] = self._local_contact_points_to_world(point0_local, shape0_active, shape_body, body_pos, body_quat)
+            point1_w[:count] = self._local_contact_points_to_world(point1_local, shape1_active, shape_body, body_pos, body_quat)
+            normal[:count] = np.asarray(contacts.rigid_contact_normal.numpy()[:count], dtype=np.float32)
+            force[:count] = np.asarray(contacts.rigid_contact_force.numpy()[:count], dtype=np.float32)
+
+        return {
+            "count": np.asarray(count, dtype=np.int32),
+            "shape0": shape0,
+            "shape1": shape1,
+            "body0": body0,
+            "body1": body1,
+            "point0_w": point0_w,
+            "point1_w": point1_w,
+            "normal_w": normal,
+            "force_w": force,
+        }
 
     def clear_contact_forces_history(self, env_id):
         if len(env_id) > 0:
@@ -813,7 +966,7 @@ class IsaacSim(BaseSimulator):
         self._sim_step_counter += 1
         # Only render if actively recording (not just if video recorder exists)
         has_video_recording = self.video_recorder is not None and self.video_recorder.is_recording
-        is_rendering = self.sim.has_gui() or self.sim.has_rtx_sensors() or has_video_recording
+        is_rendering = self._resolve_bool_attr_or_method(self.sim, "is_rendering") or has_video_recording
 
         # Apply virtual gantry forces before physics step
         if self.virtual_gantry:
@@ -1004,7 +1157,14 @@ class IsaacSim(BaseSimulator):
             logger.warning(f"Could not initialize keyboard controls: {e}")
 
     def render(self, sync_frame_time=True):
-        self.sim.render()
+        render_kwargs = {}
+        try:
+            if "skip_app_pumping" in inspect.signature(self.sim.render).parameters:
+                has_video_recording = self.video_recorder is not None and self.video_recorder.is_recording
+                render_kwargs["skip_app_pumping"] = bool(self.headless and not has_video_recording)
+        except (TypeError, ValueError):
+            pass
+        self.sim.render(**render_kwargs)
         if self.debug_viz_enabled:
             self.clear_lines()
             self.draw_debug_viz()
@@ -1032,7 +1192,7 @@ class IsaacSim(BaseSimulator):
         """See base class.
 
         IsaacSim-specific notes:
-        - Quaternions converted from (x,y,z,w) to (w,x,y,z) format for IsaacSim compatibility
+        - Newton expects quaternions in (x,y,z,w) format, matching holosoma root states
         """
         if env_ids is None:
             env_ids = torch.arange(getattr(self, "num_envs", self.training_config.num_envs), device=self.sim_device)
@@ -1047,8 +1207,9 @@ class IsaacSim(BaseSimulator):
         else:
             raise ValueError(f"Unexpected root states type: {type(root_states)}")
 
-        self._robot.write_root_pose_to_sim(robot_root_states._get_wxyz(env_ids)[:, :7], env_ids)
-        self._robot.write_root_velocity_to_sim(robot_root_states._get_wxyz(env_ids)[:, 7:], env_ids)
+        root_states_xyzw = robot_root_states._get_xyzw(env_ids)
+        self._robot.write_root_pose_to_sim(root_states_xyzw[:, :7], env_ids)
+        self._robot.write_root_velocity_to_sim(root_states_xyzw[:, 7:], env_ids)
 
     def set_dof_state_tensor_robots(self, env_ids=None, dof_states=None):
         """See base class.
@@ -1113,14 +1274,14 @@ class IsaacSim(BaseSimulator):
                 # Get scene object pose from scene collection
                 scene_collection = self.scene.rigid_objects["usd_scene_objects"]
                 default_state = self._get_scene_default_object_state(scene_collection, obj_name)
-                pose = default_state[[0, 1, 2, 4, 5, 6, 3]]  # [x,y,z,qx,qy,qz,qw] reorder from wxyz to xyzw
+                pose = default_state[:7]  # [x,y,z,qx,qy,qz,qw]
                 base_poses.append(pose)
 
             elif obj_name in self.scene.rigid_objects:
                 # Get individual object pose from rigid object
                 rigid_object = self.scene.rigid_objects[obj_name]
                 default_state = rigid_object.data.default_root_state[0]  # [13]
-                pose = default_state[[0, 1, 2, 4, 5, 6, 3]]  # [x,y,z,qx,qy,qz,qw] reorder from wxyz to xyzw
+                pose = default_state[:7]  # [x,y,z,qx,qy,qz,qw]
                 base_poses.append(pose)
 
             else:
@@ -1204,7 +1365,7 @@ class IsaacSim(BaseSimulator):
         Retrieves the default/initial state for an object within a scene collection
         using IsaacLab's tensor data after simulation initialization.
 
-        NOTE: Returns quat in IsaacSim wxyz format, not holosoma xyzw format (internal function)
+        NOTE: Returns quat in Newton-native xyzw format.
 
         Parameters
         ----------
@@ -1241,7 +1402,7 @@ class IsaacSim(BaseSimulator):
         -------
         torch.Tensor
             Object states [len(env_ids), 13] containing position, quaternion, and velocities
-            in xyzw format (converted by state adapter)
+            in Newton-native xyzw format
         """
         return self._state_adapter.get_object_states(object_name, env_ids)
 

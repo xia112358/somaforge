@@ -12,6 +12,7 @@ import trimesh
 from holosoma.config_types.terrain import TerrainTermCfg
 from holosoma.simulator.shared.terrain_types import TerrainInterface
 from holosoma.utils import terrain_utils
+from holosoma.utils.motion_terrain_manifest import load_motion_terrain_manifest
 from holosoma.utils.path import resolve_data_file_path
 
 
@@ -47,12 +48,15 @@ class Terrain(TerrainInterface):
 
         self._env_length: int = max(1, int(self._cfg.terrain_length * self._cfg.scale_factor))
         self._env_width: int = max(1, int(self._cfg.terrain_width * self._cfg.scale_factor))
+        self._motion_matched_terrain_origins: dict[int, np.ndarray] = {}
 
         if self._type in ["none"]:
             # a fully-managed terrain isn't supported for these types, so just return
             return
 
-        if self._type == "load_obj":
+        if self._cfg.motion_matched_manifest:
+            mesh = self._initialize_motion_matched_config()
+        elif self._type == "load_obj":
             mesh = self._initialize_obj_config()
         else:
             mesh = self._initialize_terrain_config()
@@ -90,6 +94,59 @@ class Terrain(TerrainInterface):
                 tiles.append(tile)
 
         return trimesh.util.concatenate(tiles)
+
+    def _initialize_motion_matched_config(self) -> trimesh.Trimesh:
+        manifest = load_motion_terrain_manifest(self._cfg.motion_matched_manifest)
+        terrains = manifest["terrains"]
+        if not terrains:
+            raise ValueError(f"Motion-matched terrain manifest contains no terrains: {manifest['path']}")
+
+        loaded_meshes: dict[int, trimesh.Trimesh] = {}
+        for terrain in terrains:
+            terrain_id = int(terrain["terrain_id"])
+            terrain_path = pathlib.Path(terrain["terrain_file"])
+            if not terrain_path.exists():
+                raise FileNotFoundError(f"Motion-matched terrain file not found: {terrain_path}")
+            mesh = trimesh.load(str(terrain_path), process=False)
+            if isinstance(mesh, trimesh.Scene):
+                mesh = mesh.dump(concatenate=True)  # type: ignore[assignment]
+            if not isinstance(mesh, trimesh.Trimesh):
+                raise ValueError(f"Motion-matched terrain is not a valid Trimesh: {type(mesh)} from {terrain_path}")
+            loaded_meshes[terrain_id] = self._add_motion_matched_ground_patch(mesh)
+
+        tiles = []
+        origin_lists: dict[int, list[np.ndarray]] = {int(terrain["terrain_id"]): [] for terrain in terrains}
+        terrain_ids = [int(terrain["terrain_id"]) for terrain in terrains]
+        grid_cols = max(1, int(math.ceil(math.sqrt(len(terrain_ids)))))
+        for tile_idx, terrain_id in enumerate(terrain_ids):
+            row, col = divmod(tile_idx, grid_cols)
+            origin = np.array(
+                [row * self._cfg.terrain_length, col * self._cfg.terrain_width, 0.0],
+                dtype=np.float32,
+            )
+            tile = loaded_meshes[terrain_id].copy()
+            tile.apply_translation(origin)
+            tiles.append(tile)
+            origin_lists[terrain_id].append(origin)
+
+        self._motion_matched_terrain_origins = {
+            terrain_id: np.stack(origins, axis=0) for terrain_id, origins in origin_lists.items() if origins
+        }
+        print(
+            "[INFO] Loaded motion-matched terrain manifest "
+            f"{manifest['path']} with {len(loaded_meshes)} terrain(s)"
+        )
+        return trimesh.util.concatenate(tiles)
+
+    def _add_motion_matched_ground_patch(self, mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+        bounds = mesh.bounds
+        center_xy = (bounds[0, :2] + bounds[1, :2]) * 0.5
+        span_xy = np.maximum(bounds[1, :2] - bounds[0, :2], np.array([self._cfg.terrain_length, self._cfg.terrain_width]))
+        span_xy = span_xy + 2.0
+        thickness = 0.04
+        ground = trimesh.creation.box(extents=(float(span_xy[0]), float(span_xy[1]), thickness))
+        ground.apply_translation((float(center_xy[0]), float(center_xy[1]), -thickness * 0.5))
+        return trimesh.util.concatenate([mesh, ground])
 
     def _initialize_terrain_config(self) -> trimesh.Trimesh:
         terrain_config = self._cfg.terrain_config
@@ -140,6 +197,10 @@ class Terrain(TerrainInterface):
         return mesh
 
     def sample_env_origins(self) -> np.ndarray:
+        if self._motion_matched_terrain_origins:
+            terrain_ids = np.array(sorted(self._motion_matched_terrain_origins), dtype=np.int64)
+            sampled_terrain_ids = np.random.choice(terrain_ids, size=self._num_robots)
+            return self.sample_motion_matched_origins(sampled_terrain_ids)
         if self._type == "load_obj":
             origin_grid = self._get_load_obj_env_origin_grid()
         else:
@@ -155,6 +216,20 @@ class Terrain(TerrainInterface):
     @property
     def mesh(self) -> trimesh.Trimesh:
         return self._mesh
+
+    @property
+    def has_motion_matched_origins(self) -> bool:
+        return bool(self._motion_matched_terrain_origins)
+
+    def sample_motion_matched_origins(self, terrain_ids: np.ndarray) -> np.ndarray:
+        origins = np.zeros((terrain_ids.shape[0], 3), dtype=np.float32)
+        for terrain_id in np.unique(terrain_ids):
+            selectable = self._motion_matched_terrain_origins.get(int(terrain_id))
+            if selectable is None or len(selectable) == 0:
+                raise ValueError(f"No terrain origins available for terrain_id={int(terrain_id)}")
+            env_mask = terrain_ids == terrain_id
+            origins[env_mask] = selectable[0]
+        return origins
 
     def _get_load_obj_env_origin_grid(self) -> np.ndarray:
         grid = getattr(self, "_load_obj_origin_grid", None)

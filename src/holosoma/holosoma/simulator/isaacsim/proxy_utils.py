@@ -3,9 +3,6 @@ from __future__ import annotations
 import torch
 from loguru import logger
 
-from holosoma.simulator.isaacsim.state_utils import fullstate_wxyz_to_xyzw, fullstate_xyzw_to_wxyz
-
-
 class AllRootStatesProxy:
     """Direct routing proxy using StateAdapter for unified state access.
 
@@ -16,7 +13,7 @@ class AllRootStatesProxy:
     Parameters
     ----------
     state_adapter : IsaacSimStateAdapter
-        The state adapter providing object state access with quaternion conversion.
+        The state adapter providing object state access in simulator-native format.
 
     Attributes
     ----------
@@ -123,34 +120,31 @@ class AllRootStatesProxy:
 
 
 class RootStatesProxy:
-    """Wrapper for root states tensor with quaternion format conversion.
+    """Wrapper for Newton root states tensor.
 
-    This proxy handles the conversion between xyzw and wxyz quaternion formats
-    for consistency between BaseTask/LeggedRobotBase (which uses xyzw) and
-    IsaacSim (which uses wxyz).
-
-    The __getitem__ and __setitem__ methods provide access in xyzw format for
-    BaseTask/LeggedRobotBase, while tensor_wxyz is used for IsaacSim interfacing.
+    IsaacLab Newton exposes root state quaternions in xyzw order, matching
+    holosoma's task-side convention.  Keep this proxy as a compatibility layer
+    for older call sites, but do not reorder quaternion columns.
 
     Parameters
     ----------
-    tensor_wxyz : torch.Tensor
-        Root states tensor with quaternions in wxyz format.
+    tensor_xyzw : torch.Tensor
+        Root states tensor with quaternions in xyzw format.
 
     Attributes
     ----------
-    tensor_wxyz : torch.Tensor
-        Original tensor with quaternions in wxyz format.
     tensor_xyzw : torch.Tensor
-        Converted tensor with quaternions in xyzw format.
+        Root states tensor with quaternions in xyzw format.
     """
 
-    def __init__(self, tensor_wxyz: torch.Tensor):
-        self.reset(tensor_wxyz)
+    def __init__(self, tensor_xyzw: torch.Tensor):
+        self.reset(tensor_xyzw)
 
-    def reset(self, tensor_wxyz: torch.Tensor):
-        self.tensor_wxyz = tensor_wxyz
-        self.tensor_xyzw = fullstate_wxyz_to_xyzw(tensor_wxyz)
+    def reset(self, tensor_xyzw: torch.Tensor):
+        self.tensor_xyzw = tensor_xyzw
+        # Backwards-compatible alias for code that still references the old
+        # PhysX-era name. In the Newton-only copy this is also xyzw.
+        self.tensor_wxyz = self.tensor_xyzw
 
     def __getitem__(self, index):
         """Get tensor values in xyzw quaternion format.
@@ -178,10 +172,10 @@ class RootStatesProxy:
             Values to set with quaternions in xyzw format.
         """
         self.tensor_xyzw[index] = value_xyzw
-        self.tensor_wxyz = fullstate_xyzw_to_wxyz(self.tensor_xyzw)
+        self.tensor_wxyz = self.tensor_xyzw
 
-    def _get_wxyz(self, env_ids=None):
-        """Get tensor in wxyz quaternion format for IsaacSim interfacing.
+    def _get_xyzw(self, env_ids=None):
+        """Get tensor in Newton-native xyzw quaternion format.
 
         Parameters
         ----------
@@ -191,8 +185,12 @@ class RootStatesProxy:
         Returns
         -------
         torch.Tensor
-            Tensor with quaternions in wxyz format.
+            Tensor with quaternions in xyzw format.
         """
         if env_ids is None:
-            return self.tensor_wxyz
-        return self.tensor_wxyz[env_ids]
+            return self.tensor_xyzw
+        return self.tensor_xyzw[env_ids]
+
+    def _get_wxyz(self, env_ids=None):
+        """Compatibility alias; returns Newton-native xyzw in this copy."""
+        return self._get_xyzw(env_ids)

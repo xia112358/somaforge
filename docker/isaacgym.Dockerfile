@@ -9,7 +9,7 @@
 #   /workspace/IsaacGym_Preview_4_Package.tar.gz
 # before running the setup script (it will skip the download if the file
 # already exists).
-FROM nvcr.io/nvidia/isaac-sim:5.1.0
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 
 USER root
 

@@ -13,19 +13,25 @@ class ViserConfig:
     Uses a flat structure with default values.
     """
 
-    qpos_npz: str = "rt_results/OMOMO_new/box_parallel/sub8_largebox_051_original.npz"
+    qpos_npz: str = "OmniRetarget_Dataset/data/holosoma_motions_50hz/climb_00_z_scale_1.0.npz"
     """Path to .npz file with qpos data."""
 
-    robot_urdf: str = "models/g1/g1_29dof.urdf"
+    robot_urdf: str = "OmniRetarget_Dataset/models/g1/g1_29dof.urdf"
     """Path to robot URDF file."""
 
     object_urdf: str | None = None
     """Path to object URDF file (optional)."""
 
+    contact_force_npz: str | None = None
+    """Optional override for contact-force .npz; defaults to auto-matching by motion name."""
+
+    contact_force_scale: float = 0.003
+    """Scale factor from Newtons to displayed contact-force vector length."""
+
     fps: int = 30
     """Frames per second for playback."""
 
-    assume_object_in_qpos: bool = True
+    assume_object_in_qpos: bool = False
     """Whether object pose is included in qpos array."""
 
     loop: bool = False
@@ -42,6 +48,21 @@ class ViserConfig:
 
     visual_fps_multiplier: int = 2
     """Visual FPS multiplier for interpolation."""
+
+    segment_export_path: str | None = None
+    """Path written by the segment exporter; defaults to data/motion_viewer/segments/{motion}.segments.jsonl."""
+
+    clip_output_dir: str | None = None
+    """Directory for saved clip .npz files; defaults to data/motion_viewer/clips/{motion}."""
+
+    timeline_wrapper: bool = True
+    """Use the local wrapper page with a full-width bottom cutter timeline."""
+
+    timeline_port: int = 8090
+    """Port for the local timeline wrapper page."""
+
+    open_browser: bool = False
+    """Open the timeline wrapper URL in a browser after startup."""
 
     min_fps: int = 1
     """Minimum FPS setting."""

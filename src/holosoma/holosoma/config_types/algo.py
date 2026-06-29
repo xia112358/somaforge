@@ -89,6 +89,9 @@ class ModuleConfig:
     min_noise_std: float | None = None
     """Minimum noise standard deviation."""
 
+    max_noise_std: float | None = None
+    """Maximum noise standard deviation."""
+
     min_mean_noise_std: float | None = None
     """Minimum mean noise standard deviation."""
 
@@ -153,6 +156,9 @@ class PPOConfig:
     desired_kl: float = 0.01
     """Desired KL divergence for adaptive learning rate."""
 
+    adaptive_schedule_start_iter: int = 0
+    """Learning iteration at which adaptive KL learning-rate control starts."""
+
     use_symmetry: bool = False
     """Whether to use symmetry in training."""
 
@@ -190,6 +196,93 @@ class PPOConfig:
     min_actor_learning_rate: float | None = None
     max_critic_learning_rate: float | None = None
     min_critic_learning_rate: float | None = None
+
+
+@dataclass(frozen=True)
+class DistillConfig:
+    """Optional frozen-teacher distillation settings for DistillPPO."""
+
+    enable_kl: bool = False
+    """Whether to apply teacher KL/MSE regularization."""
+
+    teacher_checkpoint_path: str | None = None
+    """Checkpoint containing a frozen teacher actor state dict."""
+
+    lambda_kl_init: float = 0.0
+    """Initial teacher-prior curriculum weight."""
+
+    lambda_kl_final: float = 0.0
+    """Final teacher-prior curriculum weight after annealing."""
+
+    lambda_kl_anneal_iters: int = 0
+    """Number of learning iterations used for teacher-prior curriculum annealing."""
+
+    lambda_kl_anneal_schedule: str = "linear"
+    """Teacher-prior curriculum schedule: "linear", "cosine", or "php_parkour"."""
+
+    use_mean_mse_fallback: bool = False
+    """Use mean-action MSE instead of Gaussian KL."""
+
+    distill_type: str = "kl"
+    """Teacher prior type: "kl", "mse_dagger", or "php_dagger_ppo"."""
+
+    dagger_coef: float = 1.0
+    """Multiplier applied to MSE DAgger loss before the DAgger curriculum weight."""
+
+    teacher_prior_coef: float = 1.0
+    """Constant multiplier applied to the teacher prior after the curriculum weight."""
+
+    lambda_dagger_init: float | None = None
+    """Initial DAgger curriculum weight. If None, uses lambda_kl_init."""
+
+    lambda_dagger_final: float | None = None
+    """Final DAgger curriculum weight. If None, uses lambda_kl_final."""
+
+    lambda_ppo_init: float | None = None
+    """Initial PPO actor-loss curriculum weight. If None, uses 1 - lambda_dagger."""
+
+    lambda_ppo_final: float | None = None
+    """Final PPO actor-loss curriculum weight. If None, uses 1 - lambda_dagger."""
+
+    kl_action_slice: tuple[int | None, int | None] | None = None
+    """Optional action slice used for teacher KL, e.g. (0, 15). Defaults to all shared actions."""
+
+    kl_std_min: float = 1e-6
+    """Minimum std used in teacher KL computation."""
+
+    teacher_obs_keys: tuple[str, ...] | None = None
+    """Observation keys for the teacher. Defaults to student actor keys."""
+
+    teacher_init_noise_std: float | None = None
+    """Teacher actor std fallback if checkpoint does not provide log_std."""
+
+    teacher_hidden_dims: tuple[int, ...] | None = None
+    """Optional teacher actor MLP hidden dims. Use when student and teacher architectures differ."""
+
+    dagger_disable_on_term_names: tuple[str, ...] = ()
+    """Termination terms that mark a sample outside the teacher-valid region for DAgger."""
+
+    dagger_valid_use_bad_tracking: bool = False
+    """Use the expert bad-tracking test as a DAgger valid-region mask without terminating the student."""
+
+    dagger_bad_ref_pos_threshold: float = 0.5
+    """Expert-valid root position threshold used by the DAgger mask."""
+
+    dagger_bad_ref_ori_threshold: float = 0.8
+    """Expert-valid root orientation threshold used by the DAgger mask."""
+
+    dagger_bad_motion_body_pos_threshold: float = 0.25
+    """Expert-valid tracked-body position threshold used by the DAgger mask."""
+
+    dagger_bad_motion_body_pos_body_names: tuple[str, ...] = ()
+    """Tracked body names checked by the expert-valid DAgger mask."""
+
+
+@dataclass(frozen=True)
+class DistillPPOConfig(PPOConfig):
+    """PPO config variant for standalone teacher distillation."""
+
+    distill: DistillConfig = field(default_factory=DistillConfig)
 
 
 @dataclass(frozen=True)
@@ -340,6 +433,6 @@ class FastSACAlgoConfig:
     """Algorithm-specific configuration."""
 
 
-AlgoInitConfig = Union[PPOConfig, FastSACConfig]
+AlgoInitConfig = Union[PPOConfig, DistillPPOConfig, FastSACConfig]
 
 AlgoConfig = Union[PPOAlgoConfig, FastSACAlgoConfig]

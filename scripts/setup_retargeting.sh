@@ -12,7 +12,7 @@ if ! command -v sudo &> /dev/null; then
   export -f sudo
 fi
 
-# Use CONDA_ENV_NAME if provided, otherwise default to "hssim"
+# Use CONDA_ENV_NAME if provided, otherwise default to "hsretargeting"
 CONDA_ENV_NAME=${CONDA_ENV_NAME:-hsretargeting}
 echo "conda environment name is set to: $CONDA_ENV_NAME"
 

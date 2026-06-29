@@ -17,6 +17,7 @@ class TerminationTermBase(ABC):
     def __init__(self, cfg: TerminationTermCfg, env: Any):
         self.cfg = cfg
         self.env = env
+        self.metrics: dict[str, Any] = {}
 
     @abstractmethod
     def reset(self, env_ids: torch.Tensor | None = None) -> None:

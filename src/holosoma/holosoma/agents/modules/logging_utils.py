@@ -103,6 +103,31 @@ class LoggingHelper:
         self.cur_episode_length: torch.Tensor = torch.zeros(num_envs, dtype=torch.float, device=self.device)
         self.episode_env_tensors: TensorAverageMeterDict = TensorAverageMeterDict()
 
+    @staticmethod
+    def _finite_tensor(value: torch.Tensor, fill: float = 0.0) -> torch.Tensor:
+        return torch.nan_to_num(value.detach(), nan=fill, posinf=fill, neginf=fill)
+
+    @staticmethod
+    def _finite_float(value: Any, fill: float = 0.0) -> float:
+        if isinstance(value, torch.Tensor):
+            value = torch.nan_to_num(value.detach(), nan=fill, posinf=fill, neginf=fill).mean().item()
+        try:
+            scalar = float(value)
+        except (TypeError, ValueError):
+            return fill
+        if scalar != scalar or scalar == float("inf") or scalar == float("-inf"):
+            return fill
+        return scalar
+
+    def _finite_info_dict(self, info: dict[str, Any]) -> dict[str, Any]:
+        finite_info: dict[str, Any] = {}
+        for key, value in info.items():
+            if isinstance(value, torch.Tensor):
+                finite_info[key] = self._finite_tensor(value)
+            else:
+                finite_info[key] = self._finite_float(value)
+        return finite_info
+
     @contextmanager
     def record_collection_time(self) -> Generator[None, None, None]:
         """Record the time taken for collection."""
@@ -131,22 +156,25 @@ class LoggingHelper:
         """
         if not self.is_main_process:
             return
-        self.ep_infos.append(infos["episode"])
+        self.ep_infos.append(self._finite_info_dict(infos["episode"]))
         # Also process raw episode data if it exists
         if "raw_episode" in infos:
-            self.raw_ep_infos.append(infos["raw_episode"])
-        self.cur_reward_sum += rewards
+            self.raw_ep_infos.append(self._finite_info_dict(infos["raw_episode"]))
+        rewards = self._finite_tensor(rewards)
+        self.cur_reward_sum = self._finite_tensor(self.cur_reward_sum + rewards)
         self.cur_episode_length += 1
 
         new_ids = (dones > 0).nonzero(as_tuple=False)
         if len(new_ids) > 0:
-            self.rewbuffer.extend(self.cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
-            self.lenbuffer.extend(self.cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
+            episode_rewards = self._finite_tensor(self.cur_reward_sum[new_ids][:, 0]).cpu().numpy().tolist()
+            episode_lengths = self._finite_tensor(self.cur_episode_length[new_ids][:, 0]).cpu().numpy().tolist()
+            self.rewbuffer.extend(episode_rewards)
+            self.lenbuffer.extend(episode_lengths)
             self.cur_reward_sum[new_ids] = 0
             self.cur_episode_length[new_ids] = 0
 
         # Update episode environment tensors
-        self.episode_env_tensors.add(infos["to_log"])
+        self.episode_env_tensors.add(self._finite_info_dict(infos["to_log"]))
 
     def post_epoch_logging(
         self,
@@ -252,10 +280,10 @@ class LoggingHelper:
                         ep_info[key] = torch.Tensor([ep_info[key]])
                     if len(ep_info[key].shape) == 0:
                         ep_info[key] = ep_info[key].unsqueeze(0)
-                    infotensor = torch.cat((infotensor, ep_info[key].to(self.device)))
+                    infotensor = torch.cat((infotensor, self._finite_tensor(ep_info[key].to(self.device))))
                 if len(infotensor) == 0:
                     continue
-                value = torch.mean(infotensor).item()
+                value = self._finite_float(torch.mean(infotensor))
                 scalars_to_log[f"Episode/{key}"] = value
                 ep_string += f"""{f"Mean episode {key}:":>35} {value:.4f}\n"""
 
@@ -268,10 +296,10 @@ class LoggingHelper:
                         ep_info[key] = torch.Tensor([ep_info[key]])
                     if len(ep_info[key].shape) == 0:
                         ep_info[key] = ep_info[key].unsqueeze(0)
-                    infotensor = torch.cat((infotensor, ep_info[key].to(self.device)))
+                    infotensor = torch.cat((infotensor, self._finite_tensor(ep_info[key].to(self.device))))
                 if len(infotensor) == 0:
                     continue
-                value = torch.mean(infotensor).item()
+                value = self._finite_float(torch.mean(infotensor))
                 scalars_to_log[f"RawEpisode/{key}"] = value
                 ep_string += f"""{f"Mean raw episode {key}:":>35} {value:.4f}\n"""
 
@@ -334,7 +362,7 @@ class LoggingHelper:
         scalars_to_log["Train/num_samples"] = self.tot_timesteps
 
         # Add prefix to all keys
-        scalars_to_log = {f"{self.prefix}{k}": v for k, v in scalars_to_log.items()}
+        scalars_to_log = {f"{self.prefix}{k}": self._finite_float(v) for k, v in scalars_to_log.items()}
 
         for k, v in scalars_to_log.items():
             self.writer.add_scalar(k, v, global_step=it)
@@ -394,25 +422,25 @@ class LoggingHelper:
 
         # Add training metrics if available
         if len(self.rewbuffer) > 0:
-            log_string += f"""{"Mean reward:":>{pad}} {statistics.mean(self.rewbuffer):.2f}\n"""
+            log_string += f"""{"Mean reward:":>{pad}} {self._finite_float(statistics.mean(self.rewbuffer)):.2f}\n"""
         if len(self.lenbuffer) > 0:
-            log_string += f"""{"Mean episode length:":>{pad}} {statistics.mean(self.lenbuffer):.2f}\n"""
+            log_string += f"""{"Mean episode length:":>{pad}} {self._finite_float(statistics.mean(self.lenbuffer)):.2f}\n"""
 
         # Add loss metrics
         for key, value in loss_dict.items():
-            log_string += f"{f'{key}:':>{pad}} {value:.4f}\n"
+            log_string += f"{f'{key}:':>{pad}} {self._finite_float(value):.4f}\n"
 
         # Add environment metrics
         env_log_string = ""
         for k, v in env_log_dict.items():
-            entry = f"{f'{k}:':>{pad}} {v:.4f}"
+            entry = f"{f'{k}:':>{pad}} {self._finite_float(v):.4f}"
             env_log_string += f"{entry}\n"
         log_string += env_log_string
 
         # Add extra metrics
         for section_name, section_dict in extra_log_dicts.items():
             for key, value in section_dict.items():
-                log_string += f"{f'{section_name}/{key}:':>{pad}} {value:.4f}\n"
+                log_string += f"{f'{section_name}/{key}:':>{pad}} {self._finite_float(value):.4f}\n"
 
         # Add episode info
         log_string += ep_string

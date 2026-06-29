@@ -102,7 +102,7 @@ class EvalOverridesConfig:
 class ExperimentConfig:
     """Top-level experiment configuration used by the Tyro CLI."""
 
-    env_class: str = "holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager"
+    env_class: str = "holosoma.envs.wbt.wbt_manager.WholeBodyTrackingManager"
 
     training: TrainingConfig = TrainingConfig()
     algo: Annotated[
@@ -116,7 +116,7 @@ class ExperimentConfig:
     terrain: Annotated[
         TerrainManagerCfg,
         tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.terrain.DEFAULTS)),
-    ] = holosoma.config_values.terrain.terrain_locomotion_plane
+    ] = holosoma.config_values.terrain.terrain_motion_matched
     observation: Annotated[
         ObservationManagerCfg | None,
         tyro.conf.arg(

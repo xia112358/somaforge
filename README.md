@@ -37,9 +37,9 @@ Choose the appropriate setup script based on your use case:
 # For IsaacGym training
 bash scripts/setup_isaacgym.sh
 
-# For IsaacSim training
-# Requires Ubuntu 22.04 or later due to IsaacSim dependencies
-bash scripts/setup_isaacsim.sh
+# For IsaacLab 3.0 Newton training
+# Requires Ubuntu 22.04 or later due to IsaacSim 6.0 dependencies
+bash scripts/setup_isaaclab3_newton.sh
 
 # For MJWarp training and MuJoCo simulation (inference) — conda
 bash scripts/setup_mujoco.sh

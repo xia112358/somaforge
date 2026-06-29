@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
-from isaaclab.utils import configclass
+from isaaclab.utils.configclass import configclass
 
 from . import from_files
 

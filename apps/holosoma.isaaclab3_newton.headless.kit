@@ -1,0 +1,96 @@
+##
+# Holosoma Isaac Lab 3 Newton headless experience.
+# Based on Isaac Lab 3.0 isaaclab.python.headless.kit with PhysX/Lab PhysX
+# dependencies removed for the project-scoped Newton environment.
+##
+
+[package]
+title = "Holosoma Isaac Lab 3 Newton Headless"
+description = "Newton-only app for running Holosoma headlessly"
+version = "3.0.0"
+keywords = ["experience", "app", "isaaclab", "python", "headless", "newton"]
+
+[settings]
+app.versionFile = "${exe-path}/VERSION"
+app.folder = "${exe-path}/"
+app.name = "HolosomaIsaacLab3Newton"
+app.version = "3.0.0"
+log.level = "Warn"
+log.outputStreamLevel = "Warn"
+app.content.emptyStageOnStart = false
+app.enableStdoutOutput = false
+app.runLoops.rendering_0.fillResolution = false
+exts."omni.kit.window.viewport".blockingGetViewportDrawable = false
+exts."omni.kit.widget.toolbar".PlayButton.enabled = false
+exts."omni.replicator.core".Orchestrator.enabled = false
+app.asyncRendering = false
+app.asyncRenderingLowLatency = false
+app.hydraEngine.waitIdle = false
+app.useFabricSceneDelegate = false
+renderer.enabled = "rtx"
+app.audio.enabled = false
+app.vulkan = true
+app.profilerBackend = "nvtx"
+app.runLoops.main.rateLimitEnabled=false
+isaac.startup.ros_bridge_extension = ""
+metricsAssembler.changeListenerEnabled = false
+app.extensions.excluded = ["omni.kit.pip_archive", "omni.isaac.ml_archive", "isaacsim.pip.newton", "omni.warp.core", "isaaclab_physx", "isaaclab_ovphysx"]
+
+[settings.app.settings]
+persistent = true
+dev_build = false
+fabricDefaultStageFrameHistoryCount = 3
+
+[settings.app.python]
+interceptSysStdOutput = false
+logSysStdOutput = false
+
+[dependencies]
+"usdrt.scenegraph" = {}
+"omni.kit.telemetry" = {}
+"omni.kit.loop" = {}
+"omni.kit.usd.mdl" = {}
+"omni.usd.metrics.assembler.ui" = {}
+"isaacsim.simulation_app" = {}
+"isaacsim.core.simulation_manager" = {}
+"isaacsim.core.version" = {}
+
+"isaaclab" = {order = 1000}
+"isaaclab_newton" = {order = 1000}
+
+[settings.app.exts]
+folders = [
+    "${exe-path}/exts",
+    "${exe-path}/extscore",
+    "${exe-path}/../exts",
+    "${exe-path}/../extscache",
+    "${exe-path}/../extsPhysics",
+    "${exe-path}/../isaacsim/exts",
+    "${exe-path}/../isaacsim/extscache",
+    "${exe-path}/../isaacsim/extsPhysics",
+    "${app}",
+    "${app}/../source",
+]
+
+[settings.ngx]
+enabled=true
+
+[settings.persistent]
+app.file.recentFiles = []
+app.stage.upAxis = "Z"
+app.stage.movePrimInPlace = false
+app.stage.instanceableOnCreatingReference = false
+app.stage.materialStrength = "weakerThanDescendants"
+simulation.minFrameRate = 15
+simulation.defaultMetersPerUnit = 1.0
+omnigraph.updateToUsd = false
+omnigraph.useSchemaPrims = true
+omnigraph.disablePrimNodes = true
+omni.replicator.captureOnPlay = true
+omnihydra.useSceneGraphInstancing = true
+renderer.startupMessageDisplayed = true
+
+[settings]
+persistent.isaac.asset_root.default = "https://omniverse-content-staging.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0"
+persistent.isaac.asset_root.cloud = "https://omniverse-content-staging.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0"
+persistent.isaac.asset_root.nvidia = "https://omniverse-content-staging.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0"

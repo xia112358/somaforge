@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 
 import torch
 from torch import nn
@@ -26,8 +27,11 @@ class PPOActor(nn.Module):
 
         self.actor_module = BaseModule(obs_dim_dict, module_config_dict, history_length)
 
-        self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
+        if init_noise_std <= 0.0:
+            raise ValueError(f"init_noise_std must be positive, got {init_noise_std}")
+        self.log_std = nn.Parameter(math.log(init_noise_std) * torch.ones(num_actions))
         self.min_noise_std = module_config_dict.min_noise_std
+        self.max_noise_std = module_config_dict.max_noise_std
         self.min_mean_noise_std = module_config_dict.min_mean_noise_std
         self.distribution = None
         # disable args validation for speedup
@@ -67,24 +71,32 @@ class PPOActor(nn.Module):
         return self.distribution.stddev
 
     @property
+    def std(self):
+        return self._current_std()
+
+    @property
     def entropy(self):
         return self.distribution.entropy().sum(dim=-1)
 
+    def _current_std(self):
+        with torch.no_grad():
+            self.log_std.data = torch.nan_to_num(self.log_std.data, nan=math.log(0.1), posinf=2.0, neginf=-20.0)
+            self.log_std.data.clamp_(min=-20.0, max=2.0)
+        std = torch.exp(torch.clamp(self.log_std, min=-20.0, max=2.0))
+        if self.max_noise_std:
+            std = torch.clamp(std, max=self.max_noise_std)
+        if self.min_noise_std:
+            return torch.clamp(std, min=self.min_noise_std)
+        if self.min_mean_noise_std:
+            current_mean = std.mean()
+            if current_mean < self.min_mean_noise_std:
+                return std * (self.min_mean_noise_std / (current_mean + 1e-6))
+        return std
+
     def update_distribution(self, actor_obs):
         mean = self.actor(actor_obs)
-        if self.min_noise_std:
-            clamped_std = torch.clamp(self.std, min=self.min_noise_std)
-            self.distribution = Normal(mean, mean * 0.0 + clamped_std)
-        elif self.min_mean_noise_std:
-            current_mean = self.std.mean()
-            if current_mean < self.min_mean_noise_std:
-                scale_up = self.min_mean_noise_std / (current_mean + 1e-6)
-                clamped_std = self.std * scale_up
-            else:
-                clamped_std = self.std
-            self.distribution = Normal(mean, mean * 0.0 + clamped_std)
-        else:
-            self.distribution = Normal(mean, mean * 0.0 + self.std)
+        mean = torch.nan_to_num(mean, nan=0.0, posinf=1.0, neginf=-1.0)
+        self.distribution = Normal(mean, self._current_std().expand_as(mean))
 
     def act(self, policy_state_dict):
         self.update_distribution(policy_state_dict["actor_obs"])
@@ -94,11 +106,21 @@ class PPOActor(nn.Module):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
     def act_inference(self, policy_state_dict):
-        return self.actor(policy_state_dict["actor_obs"])
+        mean = self.actor(policy_state_dict["actor_obs"])
+        return torch.nan_to_num(mean, nan=0.0, posinf=1.0, neginf=-1.0)
 
     def to_cpu(self):
-        self.actor = deepcopy(self.actor).to("cpu")
-        self.std.to("cpu")
+        self.actor_module = deepcopy(self.actor_module).to("cpu")
+        self.log_std.data = self.log_std.data.to("cpu")
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
+        old_std_key = f"{prefix}std"
+        new_log_std_key = f"{prefix}log_std"
+        if old_std_key in state_dict and new_log_std_key not in state_dict:
+            state_dict[new_log_std_key] = state_dict.pop(old_std_key).clamp_min(1e-8).log()
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+        )
 
 
 class PPOCritic(nn.Module):

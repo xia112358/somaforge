@@ -123,11 +123,11 @@ python examples/robot_retarget.py --data_path "$LAFAN_DATA_DIR" --task-type robo
 echo "Running data conversion..."
 python data_conversion/convert_data_format_mj.py --input_file ./demo_results/g1/robot_only/lafan/dance2_subject1.npz --output_fps 50 --output_name converted_res/robot_only/dance2_subject1_mj_fps50.npz --data_format lafan --object_name "ground" --once
 
-# Step 3: Source IsaacSim setup script (for whole-body tracking training)
-echo "Sourcing IsaacSim setup..."
+# Step 3: Source IsaacLab 3.0 Newton setup script (for whole-body tracking training)
+echo "Sourcing IsaacLab 3.0 Newton setup..."
 cd "$PROJECT_ROOT"
 unset CONDA_ENV_NAME
-source "$PROJECT_ROOT/scripts/source_isaacsim_setup.sh"
+source "$PROJECT_ROOT/scripts/source_isaaclab3_newton_setup.sh"
 
 # Ensure holosoma and isaaclab are installed in the IsaacSim env
 HOLOSOMA_DEPS_DIR="${HOLOSOMA_DEPS_DIR:-$HOME/.holosoma_deps}"
@@ -137,7 +137,7 @@ if ! python -c "import isaaclab" 2>/dev/null; then
     pip install 'setuptools<81' --quiet
     echo 'setuptools<81' > /tmp/hs-build-constraints.txt
     PIP_BUILD_CONSTRAINT=/tmp/hs-build-constraints.txt CMAKE_POLICY_VERSION_MINIMUM=3.5 \
-        pip install -e "$HOLOSOMA_DEPS_DIR/IsaacLab/source/isaaclab" --quiet
+        pip install -e "${ISAACLAB_PATH:-$HOLOSOMA_DEPS_DIR/isaaclab_3.0}/source/isaaclab" --quiet
     rm /tmp/hs-build-constraints.txt
 fi
 

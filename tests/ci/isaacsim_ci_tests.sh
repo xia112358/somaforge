@@ -5,7 +5,7 @@ set -ex
 
 cd /workspace/holosoma
 
-source scripts/source_isaacsim_setup.sh
+source scripts/source_isaaclab3_newton_setup.sh
 python -m pip install -e 'src/holosoma[unitree,booster]'
 python -m pip install -e src/holosoma_inference
 

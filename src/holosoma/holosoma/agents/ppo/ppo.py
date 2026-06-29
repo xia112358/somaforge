@@ -55,11 +55,14 @@ class EmpiricalNormalization(nn.Module):
         if x.shape[1:] != self._mean.shape[1:]:
             raise ValueError(f"Expected input of shape (*,{self._mean.shape[1:]}), got {x.shape}")
 
+        x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0).clamp(min=-1.0e6, max=1.0e6)
         if self.training and update:
             self.update(x)
         if center:
-            return (x - self._mean) / (self._std + self.eps)
-        return x / (self._std + self.eps)
+            out = (x - self._mean) / (self._std + self.eps)
+        else:
+            out = x / (self._std + self.eps)
+        return torch.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0).clamp(min=-1.0e6, max=1.0e6)
 
     @torch.jit.unused
     def update(self, x):
@@ -297,14 +300,16 @@ class PPO(BaseAlgo):
         return torch.zeros(1, actor_obs_dim, device=self.device)
 
     def _normalize_actor_obs(self, actor_obs: torch.Tensor, update: bool = True) -> torch.Tensor:
+        actor_obs = self._finite_tensor(actor_obs, clamp=1.0e6)
         if self.empirical_normalization:
-            return self.actor_obs_normalizer(actor_obs, update=update)
-        return actor_obs
+            actor_obs = self.actor_obs_normalizer(actor_obs, update=update)
+        return self._finite_tensor(actor_obs, clamp=1.0e6)
 
     def _normalize_critic_obs(self, critic_obs: torch.Tensor, update: bool = True) -> torch.Tensor:
+        critic_obs = self._finite_tensor(critic_obs, clamp=1.0e6)
         if self.empirical_normalization:
-            return self.critic_obs_normalizer(critic_obs, update=update)
-        return critic_obs
+            critic_obs = self.critic_obs_normalizer(critic_obs, update=update)
+        return self._finite_tensor(critic_obs, clamp=1.0e6)
 
     def _setup_storage(self):
         self.storage = RolloutStorage(self.env.num_envs, self.config.num_steps_per_env, device=self.device)
@@ -357,6 +362,7 @@ class PPO(BaseAlgo):
         for obs_key in obs_dict:
             obs_dict[obs_key] = obs_dict[obs_key].to(self.device)
 
+        last_saved_iteration: int | None = None
         for it in range(
             self.current_learning_iteration,
             self.current_learning_iteration + self.config.num_learning_iterations,
@@ -379,8 +385,9 @@ class PPO(BaseAlgo):
             if it % self.config.save_interval == 0 and self.is_main_process:
                 self.save(os.path.join(self.log_dir, f"model_{it:05d}.pt"))
                 self.export(onnx_file_path=os.path.join(self.log_dir, f"model_{it:05d}.onnx"))
+                last_saved_iteration = it
 
-        if self.is_main_process:
+        if self.is_main_process and last_saved_iteration != self.current_learning_iteration:
             self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration:05d}.pt"))
             self.export(onnx_file_path=os.path.join(self.log_dir, f"model_{self.current_learning_iteration:05d}.onnx"))
 
@@ -394,23 +401,37 @@ class PPO(BaseAlgo):
                 critic_obs = self._normalize_critic_obs(critic_obs_raw)
 
                 actions = self.actor.act({"actor_obs": actor_obs})
-                values = self.critic.evaluate({"critic_obs": critic_obs}).detach()
+                actions = self._finite_tensor(actions, clamp=10.0)
+                values = self._finite_tensor(self.critic.evaluate({"critic_obs": critic_obs}).detach(), clamp=1.0e4)
 
                 obs_dict, rewards, dones, infos = self.env.step({"actions": actions})
 
                 for obs_key in obs_dict:
-                    obs_dict[obs_key] = obs_dict[obs_key].to(self.device)
+                    obs_dict[obs_key] = self._finite_tensor(obs_dict[obs_key].to(self.device), clamp=1.0e6)
                 rewards, dones = rewards.to(self.device), dones.to(self.device)
+                rewards = self._finite_tensor(rewards, clamp=1.0e4)
 
                 # Compute bootstrap value for timeouts
                 final_rewards = torch.zeros_like(rewards)
-                if infos["time_outs"].any():
-                    final_critic_obs = torch.cat([infos["final_observations"][k] for k in self.critic_obs_keys], dim=1)
-                    final_critic_obs = self._normalize_critic_obs(final_critic_obs, update=False)
-                    final_values = self.critic.evaluate({"critic_obs": final_critic_obs}).detach()
-                    final_rewards += self.config.gamma * torch.squeeze(
-                        final_values * infos["time_outs"].unsqueeze(1).to(self.device), 1
+                timeout_env_ids = infos["time_outs"].to(self.device).nonzero(as_tuple=False).flatten()
+                if timeout_env_ids.numel() > 0:
+                    final_critic_obs = torch.cat(
+                        [
+                            infos["final_observations"][k][timeout_env_ids].to(self.device)
+                            for k in self.critic_obs_keys
+                        ],
+                        dim=1,
                     )
+                    final_critic_obs = self._normalize_critic_obs(final_critic_obs, update=False)
+                    final_values = self._finite_tensor(
+                        self.critic.evaluate({"critic_obs": final_critic_obs}).detach(), clamp=1.0e4
+                    )
+                    final_rewards[timeout_env_ids] += self.config.gamma * torch.squeeze(final_values, 1)
+                final_rewards = self._finite_tensor(final_rewards, clamp=1.0e4)
+
+                actions_log_prob = self._finite_tensor(
+                    self.actor.get_actions_log_prob(actions).detach().unsqueeze(1), clamp=1.0e4
+                )
 
                 # Add transition to storage
                 self.storage.add(
@@ -418,10 +439,12 @@ class PPO(BaseAlgo):
                     critic_obs=critic_obs,
                     actions=actions,
                     values=values,
-                    actions_log_prob=self.actor.get_actions_log_prob(actions).detach().unsqueeze(1),
-                    action_mean=self.actor.action_mean.detach(),
-                    action_sigma=self.actor.action_std.detach(),
-                    rewards=(rewards + final_rewards).view(-1, 1),
+                    actions_log_prob=actions_log_prob,
+                    action_mean=self._finite_tensor(self.actor.action_mean.detach(), clamp=10.0),
+                    action_sigma=self._finite_tensor(self.actor.action_std.detach(), fill=1.0, clamp=10.0).clamp_min(
+                        1.0e-6
+                    ),
+                    rewards=self._finite_tensor(rewards + final_rewards, clamp=1.0e4).view(-1, 1),
                     dones=dones.view(-1, 1),
                 )
 
@@ -436,7 +459,9 @@ class PPO(BaseAlgo):
             # Return / Advantage computation
             last_critic_obs = torch.cat([obs_dict[k] for k in self.critic_obs_keys], dim=1)
             last_critic_obs = self._normalize_critic_obs(last_critic_obs, update=False)
-            last_values = self.critic.evaluate({"critic_obs": last_critic_obs}).detach().to(self.device)
+            last_values = self._finite_tensor(
+                self.critic.evaluate({"critic_obs": last_critic_obs}).detach().to(self.device), clamp=1.0e4
+            )
             returns, advantages = self._compute_returns_and_advantages(
                 last_values,
                 self.storage["values"].to(self.device),
@@ -450,7 +475,10 @@ class PPO(BaseAlgo):
         return obs_dict
 
     def _compute_returns_and_advantages(self, last_values, values, dones, rewards):
-        advantage = 0
+        last_values = self._finite_tensor(last_values, clamp=1.0e4)
+        values = self._finite_tensor(values, clamp=1.0e4)
+        rewards = self._finite_tensor(rewards, clamp=1.0e4)
+        advantage = torch.zeros_like(last_values)
         returns = torch.zeros_like(values)
         num_steps = returns.shape[0]
         for step in reversed(range(num_steps)):
@@ -461,13 +489,17 @@ class PPO(BaseAlgo):
             next_is_not_terminal = 1.0 - dones[step].float()
             delta = rewards[step] + next_is_not_terminal * self.config.gamma * next_values - values[step]
             advantage = delta + next_is_not_terminal * self.config.gamma * self.config.lam * advantage
+            advantage = self._finite_tensor(advantage, clamp=1.0e4)
             returns[step] = advantage + values[step]
         advantages = returns - values
+        returns = self._finite_tensor(returns, clamp=1.0e4)
+        advantages = self._finite_tensor(advantages, clamp=1.0e4)
 
         if self.is_multi_gpu:
             advantages = self._normalize_advantages_multi_gpu(advantages)
         else:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        advantages = self._finite_tensor(advantages, clamp=10.0)
 
         return returns, advantages
 
@@ -492,6 +524,16 @@ class PPO(BaseAlgo):
         self.critic_optimizer.zero_grad()
 
         ppo_loss = ppo_loss_dict["actor_loss"] + ppo_loss_dict["critic_loss"]
+        if not torch.isfinite(ppo_loss):
+            logger.warning("Skipping PPO minibatch update because loss is non-finite.")
+            self._sanitize_module_parameters(self.actor)
+            self._sanitize_module_parameters(self.critic)
+            loss_dict["Value"] += 0.0
+            loss_dict["Surrogate"] += 0.0
+            loss_dict["Entropy"] += 0.0
+            loss_dict["KL"] += 0.0
+            loss_dict["nonfinite_update_count"] = loss_dict.get("nonfinite_update_count", 0.0) + 1.0
+            return loss_dict
         ppo_loss.backward()
 
         if self.is_multi_gpu:
@@ -503,6 +545,15 @@ class PPO(BaseAlgo):
 
         self.actor_optimizer.step()
         self.critic_optimizer.step()
+        actor_nonfinite = self._sanitize_module_parameters(self.actor)
+        critic_nonfinite = self._sanitize_module_parameters(self.critic)
+        if actor_nonfinite or critic_nonfinite:
+            logger.warning(
+                f"Sanitized non-finite parameters after optimizer step: actor={actor_nonfinite}, critic={critic_nonfinite}"
+            )
+            loss_dict["nonfinite_parameter_count"] = loss_dict.get("nonfinite_parameter_count", 0.0) + float(
+                actor_nonfinite + critic_nonfinite
+            )
 
         loss_dict["Value"] += ppo_loss_dict.pop("value_loss").item()
         loss_dict["Surrogate"] += ppo_loss_dict.pop("surrogate_loss").item()
@@ -515,14 +566,38 @@ class PPO(BaseAlgo):
             loss_dict[key] += loss_value
         return loss_dict
 
+    @staticmethod
+    def _sanitize_module_parameters(module: nn.Module) -> int:
+        nonfinite_count = 0
+        with torch.no_grad():
+            for param in module.parameters():
+                finite = torch.isfinite(param)
+                if finite.all():
+                    continue
+                nonfinite_count += int((~finite).sum().item())
+                param.data = torch.nan_to_num(param.data, nan=0.0, posinf=1.0, neginf=-1.0)
+                param.data.clamp_(min=-1.0e3, max=1.0e3)
+        return nonfinite_count
+
+    @staticmethod
+    def _finite_tensor(tensor: torch.Tensor, fill: float = 0.0, clamp: float | None = None) -> torch.Tensor:
+        tensor = torch.nan_to_num(tensor, nan=fill, posinf=fill, neginf=fill)
+        if clamp is not None:
+            tensor = tensor.clamp(min=-clamp, max=clamp)
+        return tensor
+
+    @staticmethod
+    def _nonfinite_count(tensor: torch.Tensor) -> float:
+        return float((~torch.isfinite(tensor)).sum().item())
+
     def _compute_ppo_loss(self, minibatch: Minibatch):
-        actions_batch = minibatch["actions"]
-        target_values_batch = minibatch["values"]
-        advantages_batch = minibatch["advantages"]
-        returns_batch = minibatch["returns"]
-        old_actions_log_prob_batch = minibatch["actions_log_prob"]
-        old_mu_batch = minibatch["action_mean"]
-        old_sigma_batch = minibatch["action_sigma"]
+        actions_batch = self._finite_tensor(minibatch["actions"], clamp=10.0)
+        target_values_batch = self._finite_tensor(minibatch["values"], clamp=1.0e4)
+        advantages_batch = self._finite_tensor(minibatch["advantages"], clamp=10.0)
+        returns_batch = self._finite_tensor(minibatch["returns"], clamp=1.0e4)
+        old_actions_log_prob_batch = self._finite_tensor(minibatch["actions_log_prob"], clamp=1.0e4)
+        old_mu_batch = self._finite_tensor(minibatch["action_mean"], clamp=10.0)
+        old_sigma_batch = self._finite_tensor(minibatch["action_sigma"], fill=1.0, clamp=10.0).clamp_min(1.0e-6)
 
         # Symmetry augmentation
         original_batch_size = actions_batch.shape[0]
@@ -546,23 +621,31 @@ class PPO(BaseAlgo):
             advantages_batch = advantages_batch.repeat(num_aug, 1)
             returns_batch = returns_batch.repeat(num_aug, 1)
         else:
-            actor_obs = minibatch["actor_obs"]
-            critic_obs = minibatch["critic_obs"]
+            actor_obs = self._finite_tensor(minibatch["actor_obs"], clamp=1.0e6)
+            critic_obs = self._finite_tensor(minibatch["critic_obs"], clamp=1.0e6)
 
         self.actor.act({"actor_obs": actor_obs})
-        value_batch = self.critic.evaluate({"critic_obs": critic_obs})
-        actions_log_prob_batch = self.actor.get_actions_log_prob(actions_batch)
+        value_batch = self._finite_tensor(self.critic.evaluate({"critic_obs": critic_obs}), clamp=1.0e4)
+        actions_log_prob_batch = self._finite_tensor(self.actor.get_actions_log_prob(actions_batch), clamp=1.0e4)
         mu_batch = self.actor.action_mean[:original_batch_size]
         sigma_batch = self.actor.action_std[:original_batch_size]
-        entropy_batch = self.actor.entropy[:original_batch_size]
+        entropy_batch = self._finite_tensor(self.actor.entropy[:original_batch_size], clamp=1.0e4)
 
+        old_mu_batch = torch.nan_to_num(old_mu_batch, nan=0.0, posinf=1.0, neginf=-1.0)
+        old_sigma_batch = torch.nan_to_num(old_sigma_batch, nan=1.0, posinf=1.0, neginf=1.0).clamp_min(1.0e-6)
+        mu_batch = torch.nan_to_num(mu_batch, nan=0.0, posinf=1.0, neginf=-1.0)
+        sigma_batch = torch.nan_to_num(sigma_batch, nan=1.0, posinf=1.0, neginf=1.0).clamp_min(1.0e-6)
+
+        kl_mean = torch.zeros((), dtype=torch.float32, device=self.device)
         if self.config.desired_kl is not None and self.config.schedule == "adaptive":
-            # Compute the KL divergence between the old and new action distributions
             kl_mean = self._compute_kl_div(old_mu_batch, old_sigma_batch, mu_batch, sigma_batch)
-            self._update_learning_rate(kl_mean)
+            adaptive_start_iter = int(getattr(self.config, "adaptive_schedule_start_iter", 0))
+            if self.current_learning_iteration >= adaptive_start_iter:
+                self._update_learning_rate(kl_mean)
 
         # Surrogate loss
-        ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
+        log_ratio = (actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch)).clamp(min=-20.0, max=20.0)
+        ratio = torch.exp(log_ratio)
         surrogate = -torch.squeeze(advantages_batch) * ratio
         surrogate_clipped = -torch.squeeze(advantages_batch) * torch.clamp(
             ratio, 1.0 - self.config.clip_param, 1.0 + self.config.clip_param
@@ -600,7 +683,7 @@ class PPO(BaseAlgo):
             symmetry_actor_loss = torch.tensor(0.0, device=self.device)
             symmetry_critic_loss = torch.tensor(0.0, device=self.device)
 
-        entropy_loss = entropy_batch.mean()
+        entropy_loss = self._finite_tensor(entropy_batch.mean(), clamp=1.0e4)
         actor_loss = (
             surrogate_loss
             - self.config.entropy_coef * entropy_loss
@@ -608,6 +691,11 @@ class PPO(BaseAlgo):
         )
 
         critic_loss = self.config.value_loss_coef * value_loss + self.config.symmetry_critic_coef * symmetry_critic_loss
+        actor_loss = self._finite_tensor(actor_loss, clamp=1.0e6)
+        critic_loss = self._finite_tensor(critic_loss, clamp=1.0e6)
+        value_loss = self._finite_tensor(value_loss, clamp=1.0e6)
+        surrogate_loss = self._finite_tensor(surrogate_loss, clamp=1.0e6)
+        entropy_loss = self._finite_tensor(entropy_loss, clamp=1.0e6)
 
         return {
             "actor_loss": actor_loss,
@@ -759,8 +847,35 @@ class PPO(BaseAlgo):
         }
         loss_dict["actor_learning_rate"] = self.actor_learning_rate
         loss_dict["critic_learning_rate"] = self.critic_learning_rate
+
+        command_manager = getattr(self.env, "command_manager", None)
+        motion_command = None
+        if command_manager is not None:
+            motion_command = command_manager.get_state("motion_command")
+            update_probe_weights = getattr(motion_command, "update_probe_motion_sampling_weights", None)
+            if callable(update_probe_weights):
+                update_probe_weights()
+            get_motion_progress = getattr(motion_command, "get_motion_learning_progress_metrics", None)
+            if callable(get_motion_progress):
+                motion_progress = get_motion_progress()
+                if motion_progress:
+                    extra_log_dicts["MotionLearning"] = motion_progress
+
         # Use logging helper
         self.logging_helper.post_epoch_logging(it=it, loss_dict=loss_dict, extra_log_dicts=extra_log_dicts)
+
+        if motion_command is not None:
+            write_distribution = getattr(motion_command, "write_adaptive_sampling_distribution", None)
+            if callable(write_distribution):
+                write_distribution(self.log_dir, it, interval=100)
+            write_probe_distribution = getattr(motion_command, "write_start_probe_distribution", None)
+            if callable(write_probe_distribution):
+                write_probe_distribution(self.log_dir, it, interval=100)
+            write_failure_window_distribution = getattr(
+                motion_command, "write_failure_window_distribution", None
+            )
+            if callable(write_failure_window_distribution):
+                write_failure_window_distribution(self.log_dir, it, interval=100)
 
     def _reduce_parameters(self):
         grads = [
@@ -853,14 +968,18 @@ class PPO(BaseAlgo):
         actor_state = self._create_actor_state()
         self.eval_policy = self.get_inference_policy()
 
-        obs_dict = self.env.reset_all()
         init_actions = torch.zeros(self.env.num_envs, self.num_act, device=self.device)
+        actor_state.update({"actions": init_actions})
+
+        obs_dict = self.env.reset_all(
+            pre_step_actor_state=actor_state,
+            pre_step_callback=self._pre_eval_reset_bootstrap,
+        )
         actor_state.update({"obs": obs_dict, "actions": init_actions})
 
         critic_obs = torch.cat([actor_state["obs"][k] for k in self.critic_obs_keys], dim=1)
         actor_state["obs"]["critic_obs"] = critic_obs
-
-        actor_state = self._pre_eval_env_step(actor_state)
+        actor_state = self._post_eval_reset(actor_state)
 
         for step in itertools.islice(itertools.count(), max_eval_steps):
             actor_state["step"] = step
@@ -897,6 +1016,16 @@ class PPO(BaseAlgo):
         actor_state.update({"actions": actions})
         for c in self.eval_callbacks:
             actor_state = c.on_pre_eval_env_step(actor_state)
+        return actor_state
+
+    def _pre_eval_reset_bootstrap(self, actor_state: dict):
+        for c in self.eval_callbacks:
+            actor_state = c.on_pre_eval_reset_bootstrap(actor_state)
+        return actor_state
+
+    def _post_eval_reset(self, actor_state: dict):
+        for c in self.eval_callbacks:
+            actor_state = c.on_post_eval_reset(actor_state)
         return actor_state
 
     def _post_eval_env_step(self, actor_state):

@@ -14,6 +14,12 @@ class RLEvalCallback(Module):
     def on_pre_eval_env_step(self, actor_state):
         return actor_state
 
+    def on_post_eval_reset(self, actor_state):
+        return actor_state
+
+    def on_pre_eval_reset_bootstrap(self, actor_state):
+        return actor_state
+
     def on_post_eval_env_step(self, actor_state):
         return actor_state
 

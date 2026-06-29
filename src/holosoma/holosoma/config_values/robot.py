@@ -1106,6 +1106,4 @@ g1_29dof_w_object = replace(
 
 DEFAULTS = {
     "g1_29dof": g1_29dof,
-    "t1_29dof_waist_wrist": t1_29dof_waist_wrist,
-    "g1_29dof_w_object": g1_29dof_w_object,
 }

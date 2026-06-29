@@ -4,7 +4,7 @@ Core training framework for humanoid robot reinforcement learning with support f
 
 | **Category** | **Supported Options** |
 |-------------|----------------------|
-| **Simulators** | IsaacGym, IsaacSim, MJWarp (training) \| Mujoco (evaluation) |
+| **Simulators** | IsaacGym, IsaacLab3 Newton, MJWarp (training) \| Mujoco (evaluation) |
 | **Algorithms** | PPO, FastSAC |
 | **Robots** | Unitree G1, Booster T1 |
 
@@ -27,11 +27,11 @@ python src/holosoma/holosoma/train_agent.py \
     logger:wandb \
     --training.seed 1
 
-# T1 with PPO on IsaacSim
-source scripts/source_isaacsim_setup.sh
+# T1 with PPO on Isaac Lab 3 Newton
+source scripts/source_isaaclab3_newton_setup.sh
 python src/holosoma/holosoma/train_agent.py \
     exp:t1-29dof \
-    simulator:isaacsim \
+    simulator:isaaclab3-newton \
     logger:wandb \
     --training.seed 1
 ```
@@ -84,32 +84,36 @@ python src/holosoma/holosoma/train_agent.py \
 
 Train robots to track full-body motion sequences.
 
-**Note**: Currently only supported for Unitree G1 / IsaacSim.
+**Note**: Currently only supported for Unitree G1 / Isaac Lab 3 Newton.
 
 ```bash
 # G1 with FastSAC
-source scripts/source_isaacsim_setup.sh
+source scripts/source_isaaclab3_newton_setup.sh
 python src/holosoma/holosoma/train_agent.py \
     exp:g1-29dof-wbt-fast-sac \
+    simulator:isaaclab3-newton \
     logger:wandb
 
 # G1 with PPO
-source scripts/source_isaacsim_setup.sh
+source scripts/source_isaaclab3_newton_setup.sh
 python src/holosoma/holosoma/train_agent.py \
     exp:g1-29dof-wbt \
+    simulator:isaaclab3-newton \
     logger:wandb
 
 # Custom motion file
-source scripts/source_isaacsim_setup.sh
+source scripts/source_isaaclab3_newton_setup.sh
 python src/holosoma/holosoma/train_agent.py \
     exp:g1-29dof-wbt \
+    simulator:isaaclab3-newton \
     logger:wandb \
     --command.setup_terms.motion_command.params.motion_config.motion_file="holosoma/data/motions/g1_29dof/whole_body_tracking/<your file>.npz"
 
-# Visualize the motion file in isaacsim before training
-source scripts/source_isaacsim_setup.sh
+# Visualize the motion file in Isaac Lab 3 Newton before training
+source scripts/source_isaaclab3_newton_setup.sh
 python src/holosoma/holosoma/replay.py \
     exp:g1-29dof-wbt \
+    simulator:isaaclab3-newton \
     --training.headless=False \
     --training.num_envs=1
 ```
@@ -162,10 +166,10 @@ The training system uses a hierarchical configuration system. The `exp` config s
 ### Logging with Weights & Biases
 
 ```bash
-source scripts/source_isaacsim_setup.sh
+source scripts/source_isaaclab3_newton_setup.sh
 python src/holosoma/holosoma/train_agent.py \
     exp:g1-29dof \
-    simulator:isaacsim \
+    simulator:isaaclab3-newton \
     --training.seed 1 \
     --algo.config.use-symmetry=False \
     logger:wandb \

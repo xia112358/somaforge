@@ -52,35 +52,15 @@ def ray_cast(ray_starts_world: torch.Tensor, ray_directions_world: torch.Tensor,
       [Torch.tensor]: The ray hit position. Returns float('inf') for missed hits.
   """
   shape = ray_starts_world.shape
-  ray_starts_world = ray_starts_world.view(-1, 3)
-  ray_directions_world = ray_directions_world.view(-1, 3)
+  mesh_device = str(wp_mesh.device)
+  ray_starts_world = ray_starts_world.to(mesh_device).view(-1, 3).contiguous()
+  ray_directions_world = ray_directions_world.to(mesh_device).view(-1, 3).contiguous()
   num_rays = len(ray_starts_world)
-  ray_starts_world_wp = wp.types.array(
-    ptr=ray_starts_world.data_ptr(),
-    dtype=wp.vec3,
-    shape=(num_rays,),
-    copy=False,
-    # owner=False,
-    device=wp_mesh.device,
-  )
-  ray_directions_world_wp = wp.types.array(
-    ptr=ray_directions_world.data_ptr(),
-    dtype=wp.vec3,
-    shape=(num_rays,),
-    copy=False,
-    # owner=False,
-    device=wp_mesh.device,
-  )
+  ray_starts_world_wp = wp.from_torch(ray_starts_world, dtype=wp.vec3)
+  ray_directions_world_wp = wp.from_torch(ray_directions_world, dtype=wp.vec3)
   ray_hits_world = torch.zeros((num_rays, 3), device=ray_starts_world.device)
   ray_hits_world[:] = float('inf')
-  ray_hits_world_wp = wp.types.array(
-    ptr=ray_hits_world.data_ptr(),
-    dtype=wp.vec3,
-    shape=(num_rays,),
-    copy=False,
-    # owner=False,
-    device=wp_mesh.device,
-  )
+  ray_hits_world_wp = wp.from_torch(ray_hits_world, dtype=wp.vec3)
   wp.launch(
     kernel=raycast_kernel,
     dim=num_rays,
@@ -128,26 +108,13 @@ def nearest_point(points: torch.Tensor, wp_mesh: wp.Mesh) -> torch.Tensor:
       [Torch.tensor]: The ray hit position. Returns float('inf') for missed hits.
   """
   shape = points.shape
-  points = points.view(-1, 3)
+  mesh_device = str(wp_mesh.device)
+  points = points.to(mesh_device).view(-1, 3).contiguous()
   num_points = len(points)
-  points_wp = wp.types.array(
-    ptr=points.data_ptr(),
-    dtype=wp.vec3,
-    shape=(num_points,),
-    copy=False,
-    owner=False,
-    device=wp_mesh.device,
-  )
+  points_wp = wp.from_torch(points, dtype=wp.vec3)
   mesh_points = torch.zeros((num_points, 3), device=points.device)
   mesh_points[:] = float('inf')
-  mesh_points_wp = wp.types.array(
-    ptr=mesh_points.data_ptr(),
-    dtype=wp.vec3,
-    shape=(num_points,),
-    copy=False,
-    owner=False,
-    device=wp_mesh.device,
-  )
+  mesh_points_wp = wp.from_torch(mesh_points, dtype=wp.vec3)
   wp.launch(
     kernel=nearest_point_kernel,
     dim=num_points,

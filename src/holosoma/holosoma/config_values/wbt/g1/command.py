@@ -1,8 +1,12 @@
 """Whole Body Tracking command presets for the G1 robot."""
 
-from dataclasses import replace
+import dataclasses
 
 from holosoma.config_types.command import CommandManagerCfg, CommandTermCfg, MotionConfig, NoiseToInitialPoseConfig
+
+DEFAULT_MOTION_MATCHED_MANIFEST = "configs/motion_matched/climb29_z1_unmasked_manifest.json"
+CLIMB00_ORIGINAL_MANIFEST = "configs/motion_matched/climb00_z1_unmasked_manifest.json"
+CLIMB00_PROTO_SPLIT_MANIFEST = "configs/motion_matched/climb00_masked_proto17_split_long7_manifest.json"
 
 init_pose_config = NoiseToInitialPoseConfig(
     overall_noise_scale=1.0,
@@ -15,7 +19,8 @@ init_pose_config = NoiseToInitialPoseConfig(
 )
 
 motion_config = MotionConfig(
-    motion_file="holosoma/data/motions/g1_29dof/whole_body_tracking/sub3_largebox_003_mj.npz",
+    motion_file="",
+    motion_manifest=DEFAULT_MOTION_MATCHED_MANIFEST,
     body_names_to_track=[
         "pelvis",
         "left_hip_roll_link",
@@ -33,13 +38,8 @@ motion_config = MotionConfig(
         "right_wrist_yaw_link",
     ],
     body_name_ref=["torso_link"],
-    use_adaptive_timesteps_sampler=True,
+    reset_sampler="adaptive",
     noise_to_initial_pose=init_pose_config,
-)
-
-motion_config_w_object = replace(
-    motion_config,
-    motion_file="holosoma/data/motions/g1_29dof/whole_body_tracking/sub3_largebox_003_mj_w_obj.npz",
 )
 
 g1_29dof_wbt_command = CommandManagerCfg(
@@ -64,19 +64,105 @@ g1_29dof_wbt_command = CommandManagerCfg(
     },
 )
 
-g1_29dof_wbt_command_w_object = replace(
-    g1_29dof_wbt_command,
+climb00_proto_motion_config = dataclasses.replace(
+    motion_config,
+    motion_manifest=CLIMB00_PROTO_SPLIT_MANIFEST,
+    reset_sampler="proto_adaptive",
+    use_start_probe_envs=False,
+    chain_motion_segments=True,
+    require_chain_boundary_success=True,
+    chain_gate_before_transition=True,
+    chain_boundary_tracking_threshold=0.0,
+    chain_boundary_contact_threshold=10.0,
+)
+
+climb00_proto_php_motion_config = dataclasses.replace(
+    climb00_proto_motion_config,
+    reset_sampler="uniform",
+)
+
+climb00_original_motion_config = dataclasses.replace(
+    motion_config,
+    motion_manifest=CLIMB00_ORIGINAL_MANIFEST,
+    reset_sampler="uniform",
+    use_start_probe_envs=False,
+    chain_motion_segments=False,
+    require_chain_boundary_success=False,
+    chain_gate_before_transition=False,
+)
+
+g1_29dof_wbt_climb00_proto_command = CommandManagerCfg(
+    params={},
     setup_terms={
         "motion_command": CommandTermCfg(
             func="holosoma.managers.command.terms.wbt:MotionCommand",
             params={
-                "motion_config": motion_config_w_object,
+                "motion_config": climb00_proto_motion_config,
             },
+        ),
+    },
+    reset_terms={
+        "motion_command": CommandTermCfg(
+            func="holosoma.managers.command.terms.wbt:MotionCommand",
+        )
+    },
+    step_terms={
+        "motion_command": CommandTermCfg(
+            func="holosoma.managers.command.terms.wbt:MotionCommand",
+        )
+    },
+)
+
+g1_29dof_wbt_climb00_proto_php_command = CommandManagerCfg(
+    params={},
+    setup_terms={
+        "motion_command": CommandTermCfg(
+            func="holosoma.managers.command.terms.wbt:MotionCommand",
+            params={
+                "motion_config": climb00_proto_php_motion_config,
+            },
+        ),
+    },
+    reset_terms={
+        "motion_command": CommandTermCfg(
+            func="holosoma.managers.command.terms.wbt:MotionCommand",
+        )
+    },
+    step_terms={
+        "motion_command": CommandTermCfg(
+            func="holosoma.managers.command.terms.wbt:MotionCommand",
+        )
+    },
+)
+
+g1_29dof_wbt_climb00_original_command = CommandManagerCfg(
+    params={},
+    setup_terms={
+        "motion_command": CommandTermCfg(
+            func="holosoma.managers.command.terms.wbt:MotionCommand",
+            params={
+                "motion_config": climb00_original_motion_config,
+            },
+        ),
+    },
+    reset_terms={
+        "motion_command": CommandTermCfg(
+            func="holosoma.managers.command.terms.wbt:MotionCommand",
+        )
+    },
+    step_terms={
+        "motion_command": CommandTermCfg(
+            func="holosoma.managers.command.terms.wbt:MotionCommand",
         )
     },
 )
 
 __all__ = [
+    "CLIMB00_ORIGINAL_MANIFEST",
+    "CLIMB00_PROTO_SPLIT_MANIFEST",
+    "DEFAULT_MOTION_MATCHED_MANIFEST",
+    "g1_29dof_wbt_climb00_original_command",
+    "g1_29dof_wbt_climb00_proto_php_command",
+    "g1_29dof_wbt_climb00_proto_command",
     "g1_29dof_wbt_command",
-    "g1_29dof_wbt_command_w_object",
 ]

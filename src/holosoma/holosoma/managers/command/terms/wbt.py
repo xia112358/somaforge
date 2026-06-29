@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import dataclasses
 import os
 import re
 from pathlib import Path
@@ -13,6 +15,7 @@ from holosoma.config_types.command import MotionConfig, NoiseToInitialPoseConfig
 from holosoma.envs.wbt.wbt_manager import WholeBodyTrackingManager
 from holosoma.managers.command.base import CommandTermBase
 from holosoma.utils.file_cache import cached_open
+from holosoma.utils.motion_terrain_manifest import load_motion_terrain_manifest
 from holosoma.utils.path import resolve_data_file_path
 from holosoma.utils.rotations import (
     get_euler_xyz,
@@ -27,6 +30,56 @@ from holosoma.utils.rotations import (
 from holosoma.utils.simulator_config import SimulatorType
 
 
+A2A_LIMB_REF_BODY_NAMES = (
+    "left_ankle_roll_link",
+    "right_ankle_roll_link",
+    "left_wrist_yaw_link",
+    "right_wrist_yaw_link",
+)
+
+CONTACT_FORCE_PART_ORDER = ("LF", "RF", "LH", "RH", "LK", "RK")
+
+CHAIN_BOUNDARY_CONTACT_BODY_NAMES = (
+    ("left_ankle_roll_link",),
+    ("right_ankle_roll_link",),
+    ("left_wrist_yaw_link",),
+    ("right_wrist_yaw_link",),
+    ("left_knee_link",),
+    ("right_knee_link",),
+    ("left_hip_roll_link",),
+    ("right_hip_roll_link",),
+)
+
+CHAIN_BOUNDARY_PART_ORDER = ("LF", "RF", "LH", "RH", "LK", "RK", "LHIP", "RHIP")
+
+
+def _part_names_to_chain_mask(value: Any, device: str | torch.device = "cpu") -> torch.Tensor:
+    if value is None:
+        names: list[str] = []
+    elif isinstance(value, str):
+        names = [part.strip() for part in re.split(r"[|, ]+", value) if part.strip()]
+    else:
+        names = [str(part).strip() for part in value if str(part).strip()]
+    aliases = {"LEFT_FOOT": "LF", "RIGHT_FOOT": "RF", "LEFT_HAND": "LH", "RIGHT_HAND": "RH"}
+    normalized = {aliases.get(name.upper(), name.upper()) for name in names}
+    mask = torch.zeros(len(CHAIN_BOUNDARY_PART_ORDER), dtype=torch.bool, device=device)
+    for i, part in enumerate(CHAIN_BOUNDARY_PART_ORDER):
+        if part in normalized:
+            mask[i] = True
+    return mask
+
+
+def _get_bad_tracking_done_mask(term_dones: dict[str, torch.Tensor], env_ids: torch.Tensor) -> torch.Tensor | None:
+    """Return the union of bad-tracking termination masks for the requested envs."""
+    bad_tracking_names = [name for name in term_dones if "bad_tracking" in name]
+    if not bad_tracking_names:
+        return None
+
+    mask = torch.zeros(env_ids.shape, dtype=torch.bool, device=env_ids.device)
+    for name in bad_tracking_names:
+        mask |= term_dones[name][env_ids].to(torch.bool)
+    return mask
+
 #########################################################################################################
 ## MotionLoader and AdaptiveTimestepsSampler
 #########################################################################################################
@@ -40,6 +93,7 @@ class MotionLoader:
     ):
         # Resolve the motion file path using importlib.resources
         motion_file = resolve_data_file_path(motion_file)
+        self._motion_files = [str(motion_file)]
 
         logger.info(f"Loading motion file: {motion_file}")
         body_names_in_motion_data, joint_names_in_motion_data = self._load_data_from_motion_npz(motion_file, device)
@@ -139,6 +193,29 @@ class MotionLoader:
 
             self._body_lin_vel_w = torch.tensor(body_lin_vel_w_raw, dtype=torch.float32, device=device)
             self._body_ang_vel_w = torch.tensor(body_ang_vel_w_raw, dtype=torch.float32, device=device)
+            num_frames = self._joint_pos.shape[0]
+            self._part_order = [str(x) for x in data["part_order"].tolist()] if "part_order" in data else []
+            self._active_part_mask = self._load_part_mask(data, "active_part_mask", num_frames, device)
+            self._support_part_mask = self._load_part_mask(data, "support_part_mask", num_frames, device)
+            self._free_part_mask = self._load_part_mask(data, "free_part_mask", num_frames, device)
+            self._contact_part_mask = self._load_part_mask(data, "contact_part_mask", num_frames, device)
+            contact_force_part_w = self._load_contact_force_part(data, "contact_force_part_w", num_frames, device)
+            contact_force_part_mask = self._load_part_mask(data, "contact_force_part_mask", num_frames, device)
+            raw_contact_force_part_order = (
+                [str(x) for x in data["contact_force_part_order"].tolist()]
+                if "contact_force_part_order" in data
+                else list(CONTACT_FORCE_PART_ORDER[: contact_force_part_w.shape[1]])
+            )
+            self._contact_force_part_w, self._contact_force_part_mask = self._align_contact_force_parts(
+                contact_force_part_w,
+                contact_force_part_mask,
+                raw_contact_force_part_order,
+                CONTACT_FORCE_PART_ORDER,
+            )
+            self._contact_force_part_order = list(CONTACT_FORCE_PART_ORDER)
+            self._proto_start_idx, self._proto_end_idx = self._load_proto_bounds(
+                data, num_frames, device, Path(motion_file)
+            )
 
             # add object pos and quat
             self.has_object = "object_pos_w" in data
@@ -153,6 +230,159 @@ class MotionLoader:
                 self._object_quat_w = torch.zeros(0, 4, device=device)
                 self._object_lin_vel_w = torch.zeros(0, 3, device=device)
         return body_names, joint_names
+
+    @staticmethod
+    def _load_part_mask(data: np.lib.npyio.NpzFile, key: str, num_frames: int, device: str) -> torch.Tensor:
+        if key not in data:
+            return torch.zeros(num_frames, 8, dtype=torch.bool, device=device)
+        mask = np.asarray(data[key], dtype=np.bool_)
+        if mask.ndim != 2 or mask.shape[0] != num_frames:
+            raise ValueError(f"{key} must have shape [T, num_parts], got {mask.shape}, T={num_frames}")
+        return torch.tensor(mask, dtype=torch.bool, device=device)
+
+    @staticmethod
+    def _load_contact_force_part(
+        data: np.lib.npyio.NpzFile,
+        key: str,
+        num_frames: int,
+        device: str,
+    ) -> torch.Tensor:
+        if key not in data:
+            return torch.zeros(num_frames, len(CONTACT_FORCE_PART_ORDER), 3, dtype=torch.float32, device=device)
+        force = np.asarray(data[key], dtype=np.float32)
+        if force.ndim != 3 or force.shape[0] != num_frames or force.shape[2] != 3:
+            raise ValueError(f"{key} must have shape [T, num_parts, 3], got {force.shape}, T={num_frames}")
+        return torch.tensor(force, dtype=torch.float32, device=device)
+
+    @staticmethod
+    def _align_contact_force_parts(
+        force: torch.Tensor,
+        mask: torch.Tensor,
+        source_order: list[str],
+        target_order: tuple[str, ...],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if len(source_order) != force.shape[1]:
+            source_order = list(target_order[: force.shape[1]])
+        if mask.shape[1] != force.shape[1]:
+            mask = torch.norm(force, dim=-1) > 10.0
+
+        aligned_force = torch.zeros(force.shape[0], len(target_order), 3, dtype=force.dtype, device=force.device)
+        aligned_mask = torch.zeros(force.shape[0], len(target_order), dtype=torch.bool, device=force.device)
+        target_index = {part_name: i for i, part_name in enumerate(target_order)}
+        for src_i, part_name in enumerate(source_order):
+            dst_i = target_index.get(part_name)
+            if dst_i is None:
+                continue
+            aligned_force[:, dst_i] = force[:, src_i]
+            aligned_mask[:, dst_i] = mask[:, src_i]
+        return aligned_force, aligned_mask
+
+    @staticmethod
+    def _load_proto_bounds(
+        data: np.lib.npyio.NpzFile,
+        num_frames: int,
+        device: str,
+        motion_file: Path | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if "proto_start_idx" in data and "proto_end_idx" in data:
+            starts = np.asarray(data["proto_start_idx"], dtype=np.int64)
+            ends = np.asarray(data["proto_end_idx"], dtype=np.int64)
+        else:
+            starts, ends = MotionLoader._load_external_proto_bounds(motion_file, num_frames)
+            if starts is None or ends is None:
+                starts = np.asarray([0], dtype=np.int64)
+                ends = np.asarray([num_frames], dtype=np.int64)
+        if starts.ndim != 1 or ends.ndim != 1 or starts.shape != ends.shape:
+            raise ValueError(f"proto_start_idx/proto_end_idx must be 1D arrays with the same shape, got {starts.shape}/{ends.shape}")
+        keep = (ends > starts) & (starts >= 0) & (ends <= num_frames)
+        starts = starts[keep]
+        ends = ends[keep]
+        if starts.size == 0:
+            starts = np.asarray([0], dtype=np.int64)
+            ends = np.asarray([num_frames], dtype=np.int64)
+        return (
+            torch.tensor(starts, dtype=torch.long, device=device),
+            torch.tensor(ends, dtype=torch.long, device=device),
+        )
+
+    @staticmethod
+    def _load_external_proto_bounds(
+        motion_file: Path | None,
+        num_frames: int,
+    ) -> tuple[np.ndarray | None, np.ndarray | None]:
+        if motion_file is None:
+            return None, None
+        base_stem = motion_file.stem.split("_force_demo", 1)[0]
+        repo_root = Path(__file__).resolve().parents[6]
+        split_bounds = MotionLoader._load_split_proto_manifest_bounds(repo_root, base_stem, num_frames)
+        if split_bounds[0] is not None and split_bounds[1] is not None:
+            logger.info(f"Loaded split proto bounds for {motion_file.name} from proto17 manifest")
+            return split_bounds
+        candidates = [
+            repo_root / "OmniRetarget_Dataset/data/holosoma_motions_masked_50hz" / f"{base_stem}.npz",
+            repo_root / "data/holosoma_motions_masked_50hz" / f"{base_stem}.npz",
+        ]
+        for candidate in candidates:
+            if not candidate.exists():
+                continue
+            with np.load(candidate, allow_pickle=True) as data:
+                if "proto_start_idx" not in data or "proto_end_idx" not in data:
+                    continue
+                starts = np.asarray(data["proto_start_idx"], dtype=np.int64)
+                ends = np.asarray(data["proto_end_idx"], dtype=np.int64)
+                if starts.ndim != 1 or ends.ndim != 1 or starts.shape != ends.shape:
+                    continue
+                if starts.size == 0 or int(ends.max(initial=0)) > num_frames:
+                    continue
+                logger.info(f"Loaded proto bounds for {motion_file.name} from {candidate}")
+                return starts, ends
+        return None, None
+
+    @staticmethod
+    def _load_split_proto_manifest_bounds(
+        repo_root: Path,
+        base_stem: str,
+        num_frames: int,
+    ) -> tuple[np.ndarray | None, np.ndarray | None]:
+        match = re.match(r"(?P<terrain>.+)_z_scale_(?P<scale>[0-9.]+)$", base_stem)
+        if match is None:
+            return None, None
+        terrain_key = match.group("terrain").replace("_", "")
+        candidates = [
+            repo_root / "configs/motion_matched" / f"{terrain_key}_unmasked_proto17_split_long7_manifest.json",
+            repo_root / "configs/motion_matched" / f"{terrain_key}_masked_proto17_split_long7_manifest.json",
+        ]
+        for manifest_path in candidates:
+            if not manifest_path.exists():
+                continue
+            try:
+                manifest = load_motion_terrain_manifest(str(manifest_path))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"Failed to load split proto manifest {manifest_path}: {exc}")
+                continue
+            entries = []
+            for entry in manifest.get("motion_files", []):
+                entry_file = Path(str(entry.get("motion_file", ""))).name
+                if base_stem not in entry_file:
+                    continue
+                if "source_start" in entry and "source_end" in entry:
+                    start = int(entry["source_start"])
+                    end = int(entry["source_end"])
+                else:
+                    frame_match = re.search(r"_frames_(\d+)_(\d+)\.npz$", entry_file)
+                    if frame_match is None:
+                        continue
+                    start = int(frame_match.group(1))
+                    end = int(frame_match.group(2))
+                if 0 <= start < end <= num_frames:
+                    entries.append((start, end))
+            if not entries:
+                continue
+            entries = sorted(set(entries))
+            starts = np.asarray([start for start, _ in entries], dtype=np.int64)
+            ends = np.asarray([end for _, end in entries], dtype=np.int64)
+            return starts, ends
+        return None, None
 
     @property
     def joint_pos(self) -> torch.Tensor:
@@ -191,6 +421,38 @@ class MotionLoader:
         return self._object_lin_vel_w[:]
 
     @property
+    def part_order(self) -> list[str]:
+        return self._part_order
+
+    @property
+    def active_part_mask(self) -> torch.Tensor:
+        return self._active_part_mask
+
+    @property
+    def support_part_mask(self) -> torch.Tensor:
+        return self._support_part_mask
+
+    @property
+    def free_part_mask(self) -> torch.Tensor:
+        return self._free_part_mask
+
+    @property
+    def contact_part_mask(self) -> torch.Tensor:
+        return self._contact_part_mask
+
+    @property
+    def contact_force_part_w(self) -> torch.Tensor:
+        return self._contact_force_part_w
+
+    @property
+    def contact_force_part_mask(self) -> torch.Tensor:
+        return self._contact_force_part_mask
+
+    @property
+    def contact_force_part_order(self) -> list[str]:
+        return self._contact_force_part_order
+
+    @property
     def num_motions(self) -> int:
         return 1
 
@@ -202,6 +464,30 @@ class MotionLoader:
     def motion_end_idx(self) -> torch.Tensor:
         return torch.tensor([self.time_step_total], dtype=torch.long, device=self._joint_pos.device)
 
+    @property
+    def motion_terrain_ids(self) -> torch.Tensor:
+        return torch.tensor([0], dtype=torch.long, device=self._joint_pos.device)
+
+    @property
+    def motion_sampling_weights(self) -> torch.Tensor:
+        return torch.tensor([1.0], dtype=torch.float32, device=self._joint_pos.device)
+
+    @property
+    def proto_start_idx(self) -> torch.Tensor:
+        return self._proto_start_idx
+
+    @property
+    def proto_end_idx(self) -> torch.Tensor:
+        return self._proto_end_idx
+
+    @property
+    def proto_motion_ids(self) -> torch.Tensor:
+        return torch.zeros(len(self._proto_start_idx), dtype=torch.long, device=self._joint_pos.device)
+
+    @property
+    def motion_files(self) -> list[str]:
+        return self._motion_files
+
     def extend_with_segments(self, segments: dict[str, torch.Tensor], prepend: bool) -> MotionLoader:
         """Merge interpolated segments with motion data, mutating this MotionLoader."""
         concat_targets = [
@@ -211,6 +497,12 @@ class MotionLoader:
             ("body_quat", "_body_quat_w"),
             ("body_lin_vel", "_body_lin_vel_w"),
             ("body_ang_vel", "_body_ang_vel_w"),
+            ("part_mask", "_active_part_mask"),
+            ("part_mask", "_support_part_mask"),
+            ("part_mask", "_free_part_mask"),
+            ("part_mask", "_contact_part_mask"),
+            ("contact_force_part", "_contact_force_part_w"),
+            ("contact_force_part_mask", "_contact_force_part_mask"),
         ]
         if self.has_object:
             concat_targets.extend(
@@ -225,6 +517,11 @@ class MotionLoader:
             existing = getattr(self, attr_name)
             tensors = (segments[seg_key], existing) if prepend else (existing, segments[seg_key])
             setattr(self, attr_name, torch.cat(tensors, dim=0))
+
+        if prepend:
+            added_frames = int(segments["joint_pos"].shape[0])
+            self._proto_start_idx = self._proto_start_idx + added_frames
+            self._proto_end_idx = self._proto_end_idx + added_frames
 
         self.time_step_total = self._joint_pos.shape[0]
         return self
@@ -243,24 +540,54 @@ class MultiMotionLoader:
         robot_body_names: list[str],
         robot_joint_names: list[str],
         device: str = "cpu",
+        motion_manifest: str = "",
     ):
-        # Support comma-separated directories for combining multiple datasets
-        dirs = [d.strip() for d in motion_dir.split(",")]
-        motion_files = []
-        for d in dirs:
-            expanded = os.path.expanduser(d)
-            files = sorted(str(p) for p in Path(expanded).glob("*.npz"))
-            logger.info(f"MultiMotionLoader: found {len(files)} .npz files in {expanded}")
-            motion_files.extend(files)
+        terrain_ids: list[int] = []
+        weights: list[float] = []
+        if motion_manifest:
+            manifest = load_motion_terrain_manifest(motion_manifest)
+            motion_entries = manifest["motion_files"]
+            motion_files = [entry["motion_file"] for entry in motion_entries]
+            terrain_ids = [int(entry["terrain_id"]) for entry in motion_entries]
+            weights = [float(entry.get("weight", 1.0)) for entry in motion_entries]
+            touchdown_masks = [
+                _part_names_to_chain_mask(entry.get("expected_touchdown_parts", entry.get("touchdown", "")), device=device)
+                for entry in motion_entries
+            ]
+            logger.info(
+                f"MultiMotionLoader: loading {len(motion_files)} motion file(s) from manifest {manifest['path']}"
+            )
+        else:
+            # Support comma-separated directories for combining multiple datasets
+            dirs = [d.strip() for d in motion_dir.split(",")]
+            motion_files = []
+            for d in dirs:
+                expanded = os.path.expanduser(d)
+                files = sorted(str(p) for p in Path(expanded).glob("*.npz"))
+                logger.info(f"MultiMotionLoader: found {len(files)} .npz files in {expanded}")
+                motion_files.extend(files)
+            terrain_ids = [0 for _ in motion_files]
+            weights = [1.0 for _ in motion_files]
+            touchdown_masks = [
+                torch.zeros(len(CHAIN_BOUNDARY_PART_ORDER), dtype=torch.bool, device=device) for _ in motion_files
+            ]
         assert len(motion_files) > 0, f"No .npz files found in {motion_dir}"
         logger.info(f"MultiMotionLoader: loading {len(motion_files)} total motion files")
 
         loaders = []
+        kept_terrain_ids = []
+        kept_weights = []
+        kept_touchdown_masks = []
+        kept_motion_files = []
         skipped = 0
-        for mf in motion_files:
+        for mf, terrain_id, weight, touchdown_mask in zip(motion_files, terrain_ids, weights, touchdown_masks):
             try:
                 loader = MotionLoader(mf, robot_body_names, robot_joint_names, device=device)
                 loaders.append(loader)
+                kept_terrain_ids.append(terrain_id)
+                kept_weights.append(weight)
+                kept_touchdown_masks.append(touchdown_mask)
+                kept_motion_files.append(str(resolve_data_file_path(mf)))
             except (KeyError, AssertionError, ValueError) as e:  # noqa: PERF203
                 # Skip files with incompatible format (e.g., missing body_names, wrong body count)
                 skipped += 1
@@ -276,6 +603,11 @@ class MultiMotionLoader:
         self._motion_start_idx = torch.cat([torch.tensor([0], dtype=torch.long, device=device), cumulative[:-1]])
         self._motion_end_idx = cumulative
         self._num_motions = len(loaders)
+        self._motion_terrain_ids = torch.tensor(kept_terrain_ids, dtype=torch.long, device=device)
+        self._motion_sampling_weights = torch.tensor(kept_weights, dtype=torch.float32, device=device)
+        self._motion_sampling_weights = self._motion_sampling_weights / self._motion_sampling_weights.sum()
+        self._motion_touchdown_part_mask = torch.stack(kept_touchdown_masks, dim=0)
+        self._motion_files = kept_motion_files
 
         # Concatenate all motion data
         self._joint_pos = torch.cat([ld._joint_pos for ld in loaders], dim=0)
@@ -284,6 +616,28 @@ class MultiMotionLoader:
         self._body_quat_w = torch.cat([ld._body_quat_w for ld in loaders], dim=0)
         self._body_lin_vel_w = torch.cat([ld._body_lin_vel_w for ld in loaders], dim=0)
         self._body_ang_vel_w = torch.cat([ld._body_ang_vel_w for ld in loaders], dim=0)
+        self._active_part_mask = torch.cat([ld._active_part_mask for ld in loaders], dim=0)
+        self._support_part_mask = torch.cat([ld._support_part_mask for ld in loaders], dim=0)
+        self._free_part_mask = torch.cat([ld._free_part_mask for ld in loaders], dim=0)
+        self._contact_part_mask = torch.cat([ld._contact_part_mask for ld in loaders], dim=0)
+        self._contact_force_part_w = torch.cat([ld._contact_force_part_w for ld in loaders], dim=0)
+        self._contact_force_part_mask = torch.cat([ld._contact_force_part_mask for ld in loaders], dim=0)
+        self._part_order = loaders[0]._part_order
+        self._contact_force_part_order = loaders[0]._contact_force_part_order
+        proto_starts = []
+        proto_ends = []
+        proto_motion_ids = []
+        offset = 0
+        for motion_id, loader in enumerate(loaders):
+            proto_starts.append(loader._proto_start_idx + offset)
+            proto_ends.append(loader._proto_end_idx + offset)
+            proto_motion_ids.append(
+                torch.full_like(loader._proto_start_idx, motion_id, dtype=torch.long, device=loader._proto_start_idx.device)
+            )
+            offset += loader.time_step_total
+        self._proto_start_idx = torch.cat(proto_starts, dim=0)
+        self._proto_end_idx = torch.cat(proto_ends, dim=0)
+        self._proto_motion_ids = torch.cat(proto_motion_ids, dim=0)
 
         # Use indexes from first loader (all loaders share the same robot)
         self._joint_indexes = loaders[0]._joint_indexes
@@ -315,6 +669,66 @@ class MultiMotionLoader:
     @property
     def motion_end_idx(self) -> torch.Tensor:
         return self._motion_end_idx
+
+    @property
+    def motion_terrain_ids(self) -> torch.Tensor:
+        return self._motion_terrain_ids
+
+    @property
+    def motion_sampling_weights(self) -> torch.Tensor:
+        return self._motion_sampling_weights
+
+    @property
+    def motion_touchdown_part_mask(self) -> torch.Tensor:
+        return self._motion_touchdown_part_mask
+
+    @property
+    def proto_start_idx(self) -> torch.Tensor:
+        return self._proto_start_idx
+
+    @property
+    def proto_end_idx(self) -> torch.Tensor:
+        return self._proto_end_idx
+
+    @property
+    def proto_motion_ids(self) -> torch.Tensor:
+        return self._proto_motion_ids
+
+    @property
+    def motion_files(self) -> list[str]:
+        return self._motion_files
+
+    @property
+    def part_order(self) -> list[str]:
+        return self._part_order
+
+    @property
+    def active_part_mask(self) -> torch.Tensor:
+        return self._active_part_mask
+
+    @property
+    def support_part_mask(self) -> torch.Tensor:
+        return self._support_part_mask
+
+    @property
+    def free_part_mask(self) -> torch.Tensor:
+        return self._free_part_mask
+
+    @property
+    def contact_part_mask(self) -> torch.Tensor:
+        return self._contact_part_mask
+
+    @property
+    def contact_force_part_w(self) -> torch.Tensor:
+        return self._contact_force_part_w
+
+    @property
+    def contact_force_part_mask(self) -> torch.Tensor:
+        return self._contact_force_part_mask
+
+    @property
+    def contact_force_part_order(self) -> list[str]:
+        return self._contact_force_part_order
 
     @property
     def joint_pos(self) -> torch.Tensor:
@@ -361,6 +775,12 @@ class MultiMotionLoader:
             ("body_quat", "_body_quat_w"),
             ("body_lin_vel", "_body_lin_vel_w"),
             ("body_ang_vel", "_body_ang_vel_w"),
+            ("part_mask", "_active_part_mask"),
+            ("part_mask", "_support_part_mask"),
+            ("part_mask", "_free_part_mask"),
+            ("part_mask", "_contact_part_mask"),
+            ("contact_force_part", "_contact_force_part_w"),
+            ("contact_force_part_mask", "_contact_force_part_mask"),
         ]
         if self.has_object:
             concat_targets.extend(
@@ -381,8 +801,11 @@ class MultiMotionLoader:
 
         # Update boundaries — shift all motion boundaries if prepending
         if prepend:
+            self._proto_start_idx = self._proto_start_idx + added_frames
+            self._proto_end_idx = self._proto_end_idx + added_frames
             self._motion_start_idx = self._motion_start_idx + added_frames
             self._motion_end_idx = self._motion_end_idx + added_frames
+            self._proto_motion_ids = self._proto_motion_ids + 1
             dev = self._motion_start_idx.device
             self._motion_start_idx = torch.cat(
                 [torch.tensor([0], dtype=torch.long, device=dev), self._motion_start_idx]
@@ -390,6 +813,11 @@ class MultiMotionLoader:
             self._motion_end_idx = torch.cat(
                 [torch.tensor([added_frames], dtype=torch.long, device=dev), self._motion_end_idx]
             )
+            self._motion_terrain_ids = torch.cat([self._motion_terrain_ids[:1], self._motion_terrain_ids])
+            self._motion_sampling_weights = torch.cat(
+                [self._motion_sampling_weights[:1], self._motion_sampling_weights]
+            )
+            self._motion_files = [f"default_pose_prepend:{self._motion_files[0]}", *self._motion_files]
         else:
             old_total = self.time_step_total
             dev = self._motion_start_idx.device
@@ -399,9 +827,15 @@ class MultiMotionLoader:
             self._motion_end_idx = torch.cat(
                 [self._motion_end_idx, torch.tensor([old_total + added_frames], dtype=torch.long, device=dev)]
             )
+            self._motion_terrain_ids = torch.cat([self._motion_terrain_ids, self._motion_terrain_ids[-1:]])
+            self._motion_sampling_weights = torch.cat(
+                [self._motion_sampling_weights, self._motion_sampling_weights[-1:]]
+            )
+            self._motion_files = [*self._motion_files, f"default_pose_append:{self._motion_files[-1]}"]
 
         self.time_step_total = self._joint_pos.shape[0]
         self._num_motions = len(self._motion_start_idx)
+        self._motion_sampling_weights = self._motion_sampling_weights / self._motion_sampling_weights.sum()
         return self
 
 
@@ -410,17 +844,37 @@ class AdaptiveTimestepsSampler:
 
     def __init__(
         self,
-        motion_time_step_total: int,
+        motion_lengths: torch.Tensor | int,
         device: str,
         env_fps: int,
         adaptive_kernel_size: int = 1,
         adaptive_lambda: float = 0.8,
         adaptive_uniform_ratio: float = 0.1,
         adaptive_alpha: float = 0.001,
+        motion_start_idx: torch.Tensor | None = None,
+        bin_start_idx: torch.Tensor | None = None,
+        bin_end_idx: torch.Tensor | None = None,
+        bin_motion_ids: torch.Tensor | None = None,
+        min_bin_frames: int = 1,
     ):
         self.device = device
-        # length of the motion in rl environment time steps
-        self.motion_time_step_total = motion_time_step_total
+        if isinstance(motion_lengths, int):
+            motion_lengths = torch.tensor([motion_lengths], dtype=torch.long, device=device)
+        else:
+            motion_lengths = motion_lengths.to(device=device, dtype=torch.long)
+        self.motion_lengths = motion_lengths.clamp(min=1)
+        self.num_motions = int(self.motion_lengths.numel())
+        if motion_start_idx is None:
+            self.motion_start_idx = torch.cat(
+                [
+                    torch.zeros(1, dtype=torch.long, device=self.device),
+                    torch.cumsum(self.motion_lengths, dim=0)[:-1],
+                ],
+                dim=0,
+            )
+        else:
+            self.motion_start_idx = motion_start_idx.to(device=device, dtype=torch.long)
+        self.motion_time_step_total = int(self.motion_lengths.sum().item())
         # fps of the rl environment
         self.env_fps = env_fps
 
@@ -429,8 +883,34 @@ class AdaptiveTimestepsSampler:
         self.adaptive_uniform_ratio = adaptive_uniform_ratio
         self.adaptive_alpha = adaptive_alpha
 
-        # Match BeyondMimic binning: ~1 second bins at env FPS, with +1 tail bin.
-        self.num_bins = int(self.motion_time_step_total // max(self.env_fps, 1)) + 1
+        # Use per-motion local bins. By default they are fixed-duration bins, matching the
+        # original adaptive reset sampler. Optional proto bounds only replace the bin edges.
+        if bin_start_idx is None or bin_end_idx is None or bin_motion_ids is None:
+            self.num_bins_per_motion = (self.motion_lengths // max(self.env_fps, 1) + 1).clamp(min=1)
+            self.num_bins = int(self.num_bins_per_motion.max().item())
+            bin_ids = torch.arange(self.num_bins, device=self.device).unsqueeze(0)
+            self.valid_bin_mask = bin_ids < self.num_bins_per_motion.unsqueeze(1)
+            self.bin_start_local, self.bin_end_local = self._build_fixed_bins()
+            self.uses_external_bins = False
+        else:
+            self.num_bins_per_motion, self.bin_start_local, self.bin_end_local = self._build_external_bins(
+                bin_start_idx,
+                bin_end_idx,
+                bin_motion_ids,
+                min_bin_frames=max(int(min_bin_frames), 1),
+            )
+            self.num_bins = int(self.num_bins_per_motion.max().item())
+            bin_ids = torch.arange(self.num_bins, device=self.device).unsqueeze(0)
+            self.valid_bin_mask = bin_ids < self.num_bins_per_motion.unsqueeze(1)
+            self.uses_external_bins = True
+        self.bin_lengths = (self.bin_end_local - self.bin_start_local).clamp(min=0)
+        self.uniform_bin_probability = self.bin_lengths.to(torch.float32) / self.motion_lengths.to(
+            torch.float32
+        ).unsqueeze(1).clamp(min=1.0)
+        self.uniform_bin_probability = self.uniform_bin_probability * self.valid_bin_mask
+        self.uniform_bin_probability = self.uniform_bin_probability / self.uniform_bin_probability.sum(
+            dim=1, keepdim=True
+        ).clamp(min=1e-8)
 
         # Match BeyondMimic non-causal kernel.
         self.kernel = torch.tensor(
@@ -444,52 +924,243 @@ class AdaptiveTimestepsSampler:
         # metrics
         self.metrics: dict[str, torch.Tensor] = {}
 
-    def init_buffers(self):
-        self.current_bin_failed_count = torch.zeros(self.num_bins, dtype=torch.float, device=self.device)
-        self.bin_failed_count = torch.zeros(self.num_bins, dtype=torch.float, device=self.device)
+    def _build_fixed_bins(self) -> tuple[torch.Tensor, torch.Tensor]:
+        bin_ids = torch.arange(self.num_bins, device=self.device).unsqueeze(0)
+        starts = torch.div(
+            bin_ids * self.motion_lengths.unsqueeze(1),
+            self.num_bins_per_motion.unsqueeze(1),
+            rounding_mode="floor",
+        )
+        ends = torch.div(
+            (bin_ids + 1) * self.motion_lengths.unsqueeze(1),
+            self.num_bins_per_motion.unsqueeze(1),
+            rounding_mode="floor",
+        )
+        starts = starts * self.valid_bin_mask
+        ends = ends * self.valid_bin_mask
+        return starts.long(), ends.long()
 
-    def update_current_bin_failed_count(self, failed_at_time_step: torch.Tensor):
-        """Update the current bin failed count with terminated time steps."""
-        failed_bin = torch.clamp(
-            (failed_at_time_step * self.num_bins) // max(self.motion_time_step_total, 1),
-            0,
-            self.num_bins - 1,
-        ).long()
-        assert failed_bin.min() >= 0 and failed_bin.max() < self.num_bins, "Failed bin is out of range"
-        self.current_bin_failed_count[:] = torch.bincount(failed_bin, minlength=self.num_bins)
+    def _build_external_bins(
+        self,
+        bin_start_idx: torch.Tensor,
+        bin_end_idx: torch.Tensor,
+        bin_motion_ids: torch.Tensor,
+        min_bin_frames: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        starts_global = bin_start_idx.to(device=self.device, dtype=torch.long)
+        ends_global = bin_end_idx.to(device=self.device, dtype=torch.long)
+        motion_ids = bin_motion_ids.to(device=self.device, dtype=torch.long)
+        starts_by_motion: list[torch.Tensor] = []
+        ends_by_motion: list[torch.Tensor] = []
+        counts: list[int] = []
+        for motion_id in range(self.num_motions):
+            selected = motion_ids == motion_id
+            motion_start = 0
+            motion_end = int(self.motion_lengths[motion_id].item())
+            # External proto bounds are global motion-buffer indices. Convert to local
+            # indices for this motion before using them as adaptive bin edges.
+            global_motion_start = self.motion_start_idx[motion_id]
+            starts = starts_global[selected] - global_motion_start
+            ends = ends_global[selected] - global_motion_start
+            keep = (ends - starts >= min_bin_frames) & (starts >= motion_start) & (ends <= motion_end)
+            starts = starts[keep]
+            ends = ends[keep]
+            if starts.numel() == 0:
+                starts = torch.tensor([0], dtype=torch.long, device=self.device)
+                ends = torch.tensor([max(motion_end, 1)], dtype=torch.long, device=self.device)
+            order = torch.argsort(starts)
+            starts = starts[order]
+            ends = ends[order]
+            starts_by_motion.append(starts)
+            ends_by_motion.append(ends)
+            counts.append(int(starts.numel()))
+
+        max_bins = max(counts) if counts else 1
+        padded_starts = torch.zeros(self.num_motions, max_bins, dtype=torch.long, device=self.device)
+        padded_ends = torch.zeros(self.num_motions, max_bins, dtype=torch.long, device=self.device)
+        for motion_id, (starts, ends) in enumerate(zip(starts_by_motion, ends_by_motion)):
+            count = starts.numel()
+            padded_starts[motion_id, :count] = starts
+            padded_ends[motion_id, :count] = ends
+        return (
+            torch.tensor(counts, dtype=torch.long, device=self.device).clamp(min=1),
+            padded_starts,
+            padded_ends,
+        )
+
+    def init_buffers(self):
+        self.current_bin_failed_count = torch.zeros(
+            self.num_motions, self.num_bins, dtype=torch.float, device=self.device
+        )
+        self.bin_failed_count = torch.zeros(self.num_motions, self.num_bins, dtype=torch.float, device=self.device)
+
+    def update_current_bin_failed_count(self, motion_ids: torch.Tensor, local_failed_at_time_step: torch.Tensor):
+        """Update per-motion local failed-bin counts with terminated time steps."""
+        if motion_ids.numel() == 0:
+            return
+        motion_ids = motion_ids.to(device=self.device, dtype=torch.long)
+        local_failed_at_time_step = local_failed_at_time_step.to(device=self.device, dtype=torch.long).clamp(min=0)
+        if self.uses_external_bins:
+            failed_bin = torch.empty_like(local_failed_at_time_step)
+            for motion_id in motion_ids.unique():
+                selected = motion_ids == motion_id
+                mid = int(motion_id.item())
+                count = int(self.num_bins_per_motion[mid].item())
+                starts = self.bin_start_local[mid, :count]
+                ends = self.bin_end_local[mid, :count]
+                ts = local_failed_at_time_step[selected].clamp(max=int(self.motion_lengths[mid].item()) - 1)
+                bin_ids = torch.searchsorted(ends, ts, right=True)
+                bin_ids = torch.minimum(bin_ids, torch.tensor(count - 1, dtype=torch.long, device=self.device))
+                before_start = ts < starts[bin_ids]
+                if torch.any(before_start):
+                    bin_ids[before_start] = torch.searchsorted(starts, ts[before_start], right=True).clamp(min=1) - 1
+                failed_bin[selected] = bin_ids
+        else:
+            motion_bin_counts = self.num_bins_per_motion[motion_ids]
+            motion_lengths = self.motion_lengths[motion_ids]
+            failed_bin = (local_failed_at_time_step * motion_bin_counts) // motion_lengths.clamp(min=1)
+            failed_bin = torch.minimum(
+                torch.maximum(failed_bin, torch.zeros_like(failed_bin)), motion_bin_counts - 1
+            ).long()
+        flat_idx = motion_ids * self.num_bins + failed_bin
+        counts = torch.bincount(flat_idx, minlength=self.num_motions * self.num_bins).to(torch.float)
+        self.current_bin_failed_count += counts.view(self.num_motions, self.num_bins)
 
     def update_bin_failed_count(self):
         """At every rl environment step, update the failed count with the current bin failed count."""
         self.bin_failed_count = (self.adaptive_alpha * self.current_bin_failed_count) + (
             1 - self.adaptive_alpha
         ) * self.bin_failed_count
+        self.bin_failed_count = self.bin_failed_count * self.valid_bin_mask
         self.current_bin_failed_count.zero_()
 
     @property
     def sampling_probabilities(self) -> torch.Tensor:
-        sampling_probabilities = self.bin_failed_count + self.adaptive_uniform_ratio / float(self.num_bins)
+        sampling_probabilities = self.bin_failed_count + (
+            self.adaptive_uniform_ratio * self.uniform_bin_probability
+        )
+        sampling_probabilities = sampling_probabilities * self.valid_bin_mask
         sampling_probabilities = torch.nn.functional.pad(
-            sampling_probabilities.unsqueeze(0).unsqueeze(0),
-            (0, self.adaptive_kernel_size - 1),  # Non-causal kernel
+            sampling_probabilities.unsqueeze(1),
+            (0, self.adaptive_kernel_size - 1),
             mode="replicate",
         )
-        sampling_probabilities = torch.nn.functional.conv1d(sampling_probabilities, self.kernel.view(1, 1, -1)).view(-1)
-        return sampling_probabilities / sampling_probabilities.sum()
+        sampling_probabilities = torch.nn.functional.conv1d(
+            sampling_probabilities, self.kernel.view(1, 1, -1)
+        ).squeeze(1)
+        sampling_probabilities = sampling_probabilities * self.valid_bin_mask
+        return sampling_probabilities / sampling_probabilities.sum(dim=1, keepdim=True).clamp(min=1e-8)
 
-    def sample(self, num_samples: int) -> torch.Tensor:
-        sampled_bins = torch.multinomial(self.sampling_probabilities, num_samples, replacement=True)
-        # inside of each bin, randomly sample a time step, ignoring the borders
-        return (sampled_bins + torch.rand(num_samples, device=self.device)) / self.num_bins
+    def sample(self, motion_ids: torch.Tensor) -> torch.Tensor:
+        motion_ids = motion_ids.to(device=self.device, dtype=torch.long)
+        probabilities = self.sampling_probabilities[motion_ids]
+        sampled_bins = torch.multinomial(probabilities, 1, replacement=True).squeeze(1)
+        starts = self.bin_start_local[motion_ids, sampled_bins]
+        lengths = self.bin_lengths[motion_ids, sampled_bins].clamp(min=1).to(torch.float32)
+        local_steps = starts.to(torch.float32) + torch.rand(motion_ids.numel(), device=self.device) * lengths
+        return local_steps / self.motion_lengths[motion_ids].to(torch.float32).clamp(min=1.0)
 
     def get_stats(self):
         # Metrics
         prob = self.sampling_probabilities
-        H = -(prob * (prob + 1e-12).log()).sum()
-        H_norm = H / np.log(self.num_bins)
-        pmax, imax = prob.max(dim=0)
-        self.metrics["sampling_entropy"] = H_norm
+        H = -(prob * (prob + 1e-12).log()).sum(dim=1)
+        H_norm = H / torch.log(self.num_bins_per_motion.to(torch.float).clamp(min=2.0))
+        pmax_per_motion, imax_per_motion = prob.max(dim=1)
+        pmax, motion_idx = pmax_per_motion.max(dim=0)
+        imax = imax_per_motion[motion_idx]
+        self.metrics["sampling_entropy"] = H_norm.mean()
         self.metrics["sampling_top1_prob"] = pmax
-        self.metrics["sampling_top1_bin"] = imax.float() / self.num_bins
+        self.metrics["sampling_top1_bin"] = imax.float() / self.num_bins_per_motion[motion_idx].to(torch.float)
+
+
+class ProtoResetBinSampler:
+    """Samples reset timesteps by first choosing a proto bin uniformly."""
+
+    def __init__(
+        self,
+        motion_start_idx: torch.Tensor,
+        motion_end_idx: torch.Tensor,
+        window_start_idx: torch.Tensor,
+        window_end_idx: torch.Tensor,
+        window_motion_ids: torch.Tensor,
+        device: str,
+        min_window_frames: int = 2,
+    ) -> None:
+        self.device = device
+        self.motion_start_idx = motion_start_idx.to(device=device, dtype=torch.long)
+        self.motion_end_idx = motion_end_idx.to(device=device, dtype=torch.long)
+        self.window_start_idx = window_start_idx.to(device=device, dtype=torch.long)
+        self.window_end_idx = window_end_idx.to(device=device, dtype=torch.long)
+        self.window_motion_ids = window_motion_ids.to(device=device, dtype=torch.long)
+        self.min_window_frames = max(int(min_window_frames), 1)
+        self.num_motions = int(self.motion_start_idx.numel())
+
+        starts_by_motion: list[torch.Tensor] = []
+        lengths_by_motion: list[torch.Tensor] = []
+        window_counts: list[int] = []
+        coverage_frames_by_motion: list[int] = []
+        for motion_id in range(self.num_motions):
+            motion_start = int(self.motion_start_idx[motion_id].item())
+            motion_end = int(self.motion_end_idx[motion_id].item())
+            starts, lengths, coverage_frames = self._extract_windows(motion_id, motion_start, motion_end)
+            starts_by_motion.append(starts)
+            lengths_by_motion.append(lengths)
+            window_counts.append(int(starts.numel()))
+            coverage_frames_by_motion.append(coverage_frames)
+
+        self.starts_by_motion = starts_by_motion
+        self.lengths_by_motion = lengths_by_motion
+        self.window_counts = window_counts
+        self.coverage_frames_by_motion = coverage_frames_by_motion
+
+    def _extract_windows(
+        self,
+        motion_id: int,
+        motion_start: int,
+        motion_end: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, int]:
+        selected = self.window_motion_ids == motion_id
+        starts = self.window_start_idx[selected]
+        ends = self.window_end_idx[selected]
+        keep = (ends - starts >= self.min_window_frames) & (starts >= motion_start) & (ends <= motion_end)
+        starts = starts[keep]
+        ends = ends[keep]
+        if starts.numel() == 0:
+            return (
+                torch.empty(0, dtype=torch.long, device=self.device),
+                torch.empty(0, dtype=torch.long, device=self.device),
+                0,
+            )
+        lengths = ends - starts
+        coverage = torch.zeros(max(motion_end - motion_start, 0), dtype=torch.bool, device=self.device)
+        for start, end in zip(starts.tolist(), ends.tolist()):
+            coverage[start - motion_start : end - motion_start] = True
+        return (
+            starts,
+            lengths,
+            int(coverage.sum().item()),
+        )
+
+    def sample_time_steps(self, motion_ids: torch.Tensor) -> torch.Tensor:
+        motion_ids = motion_ids.to(device=self.device, dtype=torch.long)
+        out = torch.empty(motion_ids.numel(), dtype=torch.long, device=self.device)
+        for motion_id in motion_ids.unique():
+            selected = motion_ids == motion_id
+            count = int(selected.sum().item())
+            mid = int(motion_id.item())
+            starts = self.starts_by_motion[mid]
+            lengths = self.lengths_by_motion[mid]
+            if starts.numel() == 0:
+                start = self.motion_start_idx[mid]
+                end = self.motion_end_idx[mid]
+                span = (end - start - 1).clamp(min=1)
+                out[selected] = start + torch.randint(int(span.item()), (count,), device=self.device)
+                continue
+
+            window_ids = torch.randint(0, starts.numel(), (count,), device=self.device)
+            offsets = torch.floor(torch.rand(count, device=self.device) * lengths[window_ids].to(torch.float32)).long()
+            out[selected] = starts[window_ids] + offsets
+        return out
 
 
 #########################################################################################################
@@ -531,11 +1202,19 @@ class MotionCommand(CommandTermBase):
         robot_joint_names = self._env.simulator.dof_names  # type: ignore[attr-defined]
 
         # 1. load motion data
-        assert self.motion_cfg.motion_file or self.motion_cfg.motion_dir, (
-            "Either motion_file or motion_dir must be set in MotionConfig"
+        assert self.motion_cfg.motion_file or self.motion_cfg.motion_dir or self.motion_cfg.motion_manifest, (
+            "Either motion_file, motion_dir, or motion_manifest must be set in MotionConfig"
         )
         self.motion: MotionLoader | MultiMotionLoader
-        if self.motion_cfg.motion_dir:
+        if self.motion_cfg.motion_manifest:
+            self.motion = MultiMotionLoader(
+                self.motion_cfg.motion_dir,
+                robot_body_names_alias,
+                robot_joint_names,
+                device=self.device,
+                motion_manifest=self.motion_cfg.motion_manifest,
+            )
+        elif self.motion_cfg.motion_dir:
             self.motion = MultiMotionLoader(
                 self.motion_cfg.motion_dir,
                 robot_body_names_alias,
@@ -565,6 +1244,9 @@ class MotionCommand(CommandTermBase):
         self.tracked_body_indexes = self._get_index_of_a_in_b(
             self.motion_cfg.body_names_to_track, robot_body_names, self.device
         )
+        self.a2a_limb_body_indexes_in_track = self._get_index_of_a_in_b(
+            list(A2A_LIMB_REF_BODY_NAMES), self.motion_cfg.body_names_to_track, self.device
+        )
 
         # 3. get the name of the object, or indices of the object
         if self.motion.has_object:
@@ -572,15 +1254,54 @@ class MotionCommand(CommandTermBase):
             self.object_name = "object"  # hardcoded object name
             self.object_indices_in_simulator = self._env.simulator.get_actor_indices(self.object_name, env_ids=None)
 
-            assert self._env.simulator.get_simulator_type() == SimulatorType.ISAACSIM, (
-                "Object is only supported in IsaacSim"
+            assert self._env.simulator.get_simulator_type() == SimulatorType.ISAACLAB3_NEWTON, (
+                "Object is only supported in the IsaacLab3 Newton backend in this migration copy."
             )
 
-        # 4. get the adaptive timesteps sampler
-        if self.motion_cfg.use_adaptive_timesteps_sampler:
-            self.adaptive_timesteps_sampler = AdaptiveTimestepsSampler(
-                self.motion.time_step_total, self.device, int(1 / (self._env.dt))
+        # 4. get the reset timestep sampler
+        self.proto_reset_bin_sampler: ProtoResetBinSampler | None = None
+        self._reset_sampler = str(self.motion_cfg.reset_sampler)
+        self._uses_failure_window_sampler = self._reset_sampler in (
+            "failure_window",
+            "adaptive_failure_window",
+            "hotspot_failure_window",
+        )
+        self._uses_hotspot_failure_sampler = self._reset_sampler == "hotspot_failure_window"
+        if self._uses_failure_window_sampler:
+            logger.info(
+                "Failure-window reset sampler enabled: "
+                f"mode={self._reset_sampler}, "
+                f"pre_frames={int(self.motion_cfg.failure_window_pre_frames)}, "
+                f"post_frames={int(self.motion_cfg.failure_window_post_frames)}, "
+                f"before_prob={float(self.motion_cfg.failure_window_before_prob):.3f}, "
+                f"success_horizon_frames={int(self.motion_cfg.failure_window_success_horizon_frames)}"
             )
+        if self._uses_hotspot_failure_sampler:
+            logger.info(
+                "Hotspot failure replay enabled: "
+                f"uniform_mix={float(self.motion_cfg.hotspot_failure_uniform_mix):.3f}, "
+                f"decay={float(self.motion_cfg.hotspot_failure_decay):.5f}, "
+                f"min_count={float(self.motion_cfg.hotspot_failure_min_count):.3f}"
+            )
+        if self._reset_sampler in ("adaptive", "proto_adaptive", "adaptive_failure_window"):
+            motion_lengths = self.motion.motion_end_idx - self.motion.motion_start_idx
+            use_proto_bins = self._reset_sampler == "proto_adaptive"
+            self.adaptive_timesteps_sampler = AdaptiveTimestepsSampler(
+                motion_lengths,
+                self.device,
+                int(1 / (self._env.dt)),
+                motion_start_idx=self.motion.motion_start_idx,
+                bin_start_idx=self.motion.proto_start_idx if use_proto_bins else None,
+                bin_end_idx=self.motion.proto_end_idx if use_proto_bins else None,
+                bin_motion_ids=self.motion.proto_motion_ids if use_proto_bins else None,
+                min_bin_frames=self.motion_cfg.touchdown_lift_min_window_frames,
+            )
+            if use_proto_bins:
+                logger.info(
+                    "Adaptive timestep sampler using proto bins: "
+                    f"bins_per_motion={self.adaptive_timesteps_sampler.num_bins_per_motion.detach().cpu().tolist()}, "
+                    f"coverage_frames_per_motion={self.adaptive_timesteps_sampler.bin_lengths.sum(dim=1).detach().cpu().tolist()}"
+                )
 
         # 5. metrics
         self.metrics: dict[str, torch.Tensor] = {}
@@ -588,7 +1309,7 @@ class MotionCommand(CommandTermBase):
         self.init_buffers()
 
         # 6. visualization markers for isaacsim
-        if self._env.viewer and self._env.simulator.get_simulator_type() == SimulatorType.ISAACSIM:
+        if self._env.viewer and self._env.simulator.get_simulator_type() == SimulatorType.ISAACLAB3_NEWTON:
             self._setup_visualization_markers_for_isaacsim()
 
     def reset(self, env_ids: torch.Tensor | None) -> None:
@@ -597,40 +1318,104 @@ class MotionCommand(CommandTermBase):
         if env_ids.numel() == 0:
             return
 
-        # 0. Sample the time steps
-        if self.motion_cfg.use_adaptive_timesteps_sampler:
-            # Match BeyondMimic behavior: update failed bins from environments
-            # that terminated before this reset, then sample new phases.
+        self._clear_pending_chain_checks(env_ids)
+        self._clear_chain_completion_state(env_ids)
+        self._update_start_probe_stats(env_ids)
+        self._failure_window_reset_count.zero_()
+        self._failure_window_before_count.zero_()
+        self._failure_window_offset_sum.zero_()
+
+        # 0. Update failed local bins from environments that terminated before this reset.
+        if hasattr(self, "adaptive_timesteps_sampler"):
             episode_failed = self._env.termination_manager.terminated[env_ids]
             if torch.any(episode_failed):
-                failed_at_time_step = self.time_steps[env_ids][episode_failed]
-                self.adaptive_timesteps_sampler.update_current_bin_failed_count(failed_at_time_step)
-            phase = self.adaptive_timesteps_sampler.sample(env_ids.numel())
+                failed_env_ids = env_ids[episode_failed]
+                failed_motion_ids = self.motion_ids[failed_env_ids]
+                failed_start_idx = self.motion.motion_start_idx[failed_motion_ids]
+                local_failed_at_time_step = self.time_steps[failed_env_ids] - failed_start_idx
+                self.adaptive_timesteps_sampler.update_current_bin_failed_count(
+                    failed_motion_ids, local_failed_at_time_step
+                )
+
+        failure_window_mask = self._get_failure_window_reset_mask(env_ids)
+        failure_window_env_ids = env_ids[failure_window_mask]
+        failure_window_failed_time_steps = self.time_steps[failure_window_env_ids].clone()
+        failure_window_failed_motion_ids = self.motion_ids[failure_window_env_ids].clone()
+        normal_sampler_mask = ~failure_window_mask
+        self._failure_window_retry_active[env_ids] = False
+
+        if self._use_start_probe_envs:
+            is_probe = self._probe_env_mask[env_ids]
+            probe_env_ids = env_ids[is_probe]
+            normal_env_ids = env_ids[~is_probe & normal_sampler_mask]
+
+            if probe_env_ids.numel() > 0:
+                self.motion_ids[probe_env_ids] = self._probe_motion_ids[probe_env_ids]
+                self._probe_episode_valid[probe_env_ids] = True
+
+            if normal_env_ids.numel() > 0:
+                sampled_motion_ids = torch.multinomial(
+                    self._normal_motion_sampling_weights,
+                    normal_env_ids.numel(),
+                    replacement=True,
+                )
+                self.motion_ids[normal_env_ids] = sampled_motion_ids
+                self._probe_episode_valid[normal_env_ids] = False
         else:
-            phase = torch.rand(env_ids.numel(), device=self.device)
+            # Original WBT sampling: choose a motion, then sample a phase inside that motion.
+            sampler_env_ids = env_ids[normal_sampler_mask]
+            normal_env_ids = sampler_env_ids
+            n = sampler_env_ids.numel()
+            num_motions = self.motion.num_motions
+            if n > 0:
+                if (
+                    self._env.is_evaluating
+                    and bool(self.motion_cfg.chain_motion_segments)
+                    and float(self.motion_cfg.start_at_timestep_zero_prob) >= 1.0
+                ):
+                    self.motion_ids[sampler_env_ids] = self.env_motion_ids[sampler_env_ids]
+                else:
+                    self.motion_ids[sampler_env_ids] = torch.randint(0, num_motions, (n,), device=self.device)
+            self._probe_episode_valid[env_ids] = False
 
-        if self._env.is_evaluating:
-            phase = torch.zeros_like(phase)
-
-        # For multi-motion: randomly assign each env to a motion, sample within that motion's range
-        n = env_ids.numel()
-        num_motions = self.motion.num_motions
-        self.motion_ids[env_ids] = torch.randint(0, num_motions, (n,), device=self.device)
+        self._maybe_sample_motion_matched_origins(env_ids)
         start_idx = self.motion.motion_start_idx[self.motion_ids[env_ids]]
         end_idx = self.motion.motion_end_idx[self.motion_ids[env_ids]]
-        motion_len = end_idx - start_idx
-
-        self.time_steps[env_ids] = start_idx + (phase * (motion_len - 1).float()).long()
+        if self._env.is_evaluating:
+            self.time_steps[env_ids] = start_idx
+        else:
+            if hasattr(self, "adaptive_timesteps_sampler"):
+                phase = self.adaptive_timesteps_sampler.sample(self.motion_ids[env_ids])
+            else:
+                phase = torch.rand(env_ids.numel(), device=self.device)
+            if self._use_start_probe_envs:
+                phase[self._probe_env_mask[env_ids]] = 0.0
+            motion_len = end_idx - start_idx
+            self.time_steps[env_ids] = start_idx + (phase * (motion_len - 1).float()).long()
+            if self._uses_hotspot_failure_sampler:
+                hotspot_env_ids = normal_env_ids
+                if hotspot_env_ids.numel() > 0:
+                    self.time_steps[hotspot_env_ids] = self._sample_hotspot_failure_time_steps(hotspot_env_ids)
+            if failure_window_env_ids.numel() > 0:
+                self.time_steps[failure_window_env_ids] = self._sample_failure_window_time_steps(
+                    failure_window_env_ids,
+                    failure_window_failed_time_steps,
+                )
+                self._failure_window_retry_active[failure_window_env_ids] = True
+                self._failure_window_retry_motion_ids[failure_window_env_ids] = failure_window_failed_motion_ids
+                self._failure_window_retry_target_steps[failure_window_env_ids] = failure_window_failed_time_steps
 
         # Handle start_at_timestep_zero_prob (reset to start of assigned motion)
         prob = self.motion_cfg.start_at_timestep_zero_prob
-        if prob >= 1.0:
-            self.time_steps[env_ids] = start_idx
-        elif prob > 0.0:
-            subset = self.time_steps[env_ids]
+        start_zero_env_ids = env_ids[normal_sampler_mask]
+        start_zero_start_idx = self.motion.motion_start_idx[self.motion_ids[start_zero_env_ids]]
+        if prob >= 1.0 and start_zero_env_ids.numel() > 0:
+            self.time_steps[start_zero_env_ids] = start_zero_start_idx
+        elif prob > 0.0 and start_zero_env_ids.numel() > 0:
+            subset = self.time_steps[start_zero_env_ids]
             rand_vals = torch.rand_like(subset, dtype=torch.float32)
-            subset = torch.where(rand_vals < prob, start_idx, subset)
-            self.time_steps[env_ids] = subset
+            subset = torch.where(rand_vals < prob, start_zero_start_idx, subset)
+            self.time_steps[start_zero_env_ids] = subset
 
         # If the motion is at the last timestep, set it to the second last timestep;
         # Otherwise, update_tasks_callback will advance the timestep to the next timestep -> out of bounds error.
@@ -740,6 +1525,8 @@ class MotionCommand(CommandTermBase):
             # 4.3 set the object states in simulator
             self._env.simulator.set_actor_states([self.object_name], env_ids, object_states)
 
+        self._reset_local_segment_anchors(env_ids)
+
     def step(self) -> None:
         """called in _update_tasks_callback of the environment. (after compute_reward, before compute_observations)"""
         # 0. update time steps, all motion joint/body poses are updated automatically with the time steps.
@@ -755,20 +1542,23 @@ class MotionCommand(CommandTermBase):
                 advance_mask = advance_mask & ~freeze_mask
 
         self.time_steps += advance_mask.long()
+        self._update_chain_touchdown_latches()
 
-        # BeyondMimic-style behavior: when the clip ends, resample motion and
-        # reset robot/object state without terminating the whole episode.
+        # BeyondMimic-style behavior: when the clip ends, either resample a new
+        # segment or keep rolling into the next consecutive segment.
         per_motion_end = self.motion.motion_end_idx[self.motion_ids]
         ended_env_ids = torch.where(self.time_steps >= per_motion_end)[0]
         if ended_env_ids.numel() > 0:
-            self.reset(ended_env_ids)
-            # Flush the mutated root/dof state into the simulator so that
-            # rigid-body positions are up-to-date for downstream consumers
-            # (termination checks, observations, rewards).
-            sim = self._env.simulator
-            sim.set_actor_root_state_tensor_robots(ended_env_ids, sim.robot_root_states)
-            sim.set_dof_state_tensor_robots(ended_env_ids, sim.dof_state)  # type: ignore[attr-defined]
-            sim.refresh_sim_tensors()
+            if (
+                bool(self.motion_cfg.hold_at_motion_end_in_eval)
+                and bool(self._env.is_evaluating)
+                and not bool(self.motion_cfg.chain_motion_segments)
+            ):
+                self.time_steps[ended_env_ids] = per_motion_end[ended_env_ids] - 1
+            else:
+                self._handle_ended_motion_segments(ended_env_ids)
+
+        self._handle_failure_window_success_horizon()
 
         # 1. update body_pos_relative_w and body_quat_relative_w
         # definition of body_pos/quat_relative_w:
@@ -805,9 +1595,15 @@ class MotionCommand(CommandTermBase):
         robot_ref_quat_w_repeat = robot_ref_quat_w[:, None, :].repeat(1, len(self.motion_cfg.body_names_to_track), 1)  # type: ignore[arg-type]
 
         ## 1.2 compute the relative body poses
-        delta_quat_w = yaw_quat(
-            quat_mul(robot_ref_quat_w_repeat, quat_inverse(ref_quat_w_repeat, w_last=True), w_last=True), w_last=True
+        delta_quat_full_w = quat_mul(
+            robot_ref_quat_w_repeat,
+            quat_inverse(ref_quat_w_repeat, w_last=True),
+            w_last=True,
         )
+        if self.motion_cfg.relative_reference_rotation == "full":
+            delta_quat_w = delta_quat_full_w
+        else:
+            delta_quat_w = yaw_quat(delta_quat_full_w, w_last=True)
         ### 1.2.1 body_quat_relative_w
         self.body_quat_relative_w = quat_mul(delta_quat_w, self.body_quat_w, w_last=True)
         ### 1.2.2 body_pos_relative_w
@@ -819,9 +1615,328 @@ class MotionCommand(CommandTermBase):
             + quat_apply(delta_quat_w, self.body_pos_w - ref_pos_w_repeat, w_last=True)
         )
 
+        self._update_pending_chain_checks()
+
         ### 1.3 update the adaptive timesteps sampler
-        if self.motion_cfg.use_adaptive_timesteps_sampler:
+        if hasattr(self, "adaptive_timesteps_sampler"):
             self.adaptive_timesteps_sampler.update_bin_failed_count()
+
+    def _handle_ended_motion_segments(self, env_ids: torch.Tensor) -> None:
+        if not bool(self.motion_cfg.chain_motion_segments):
+            if bool(self.motion_cfg.hold_at_motion_end_in_eval) and bool(self._env.is_evaluating):
+                per_motion_end = self.motion.motion_end_idx[self.motion_ids[env_ids]]
+                self.time_steps[env_ids] = per_motion_end - 1
+                return
+            self.reset(env_ids)
+            self._flush_reset_states_to_sim(env_ids)
+            return
+
+        # Keep probe envs anchored to their assigned segment; only normal training
+        # envs chain forward.
+        self._update_start_probe_stats(env_ids)
+        if getattr(self, "_use_start_probe_envs", False):
+            is_probe = self._probe_env_mask[env_ids]
+        else:
+            is_probe = torch.zeros(env_ids.shape, dtype=torch.bool, device=self.device)
+
+        probe_env_ids = env_ids[is_probe]
+        normal_env_ids = env_ids[~is_probe]
+        reset_env_ids = [probe_env_ids] if probe_env_ids.numel() > 0 else []
+
+        if normal_env_ids.numel() > 0:
+            current_motion_ids = self.motion_ids[normal_env_ids]
+            next_motion_ids = current_motion_ids + 1
+            num_motions = int(self.motion.num_motions)
+            has_next = next_motion_ids < num_motions
+            safe_next_motion_ids = next_motion_ids.clamp(max=max(num_motions - 1, 0))
+
+            consecutive = self.motion.motion_start_idx[safe_next_motion_ids] == self.motion.motion_end_idx[
+                current_motion_ids
+            ]
+            same_terrain = self.motion.motion_terrain_ids[safe_next_motion_ids] == self.motion.motion_terrain_ids[
+                current_motion_ids
+            ]
+            chain_mask = has_next & consecutive & same_terrain
+            waiting_mask = torch.zeros_like(chain_mask)
+            if bool(self.motion_cfg.require_chain_boundary_success) and bool(self.motion_cfg.chain_gate_before_transition):
+                candidate_env_ids = normal_env_ids[chain_mask]
+                if candidate_env_ids.numel() > 0:
+                    boundary_success = self._chain_transition_success(candidate_env_ids)
+                    candidate_indices = torch.where(chain_mask)[0]
+                    failed_candidate_indices = candidate_indices[~boundary_success]
+                    if failed_candidate_indices.numel() > 0:
+                        failed_env_ids = normal_env_ids[failed_candidate_indices]
+                        failed_motion_ids = current_motion_ids[failed_candidate_indices]
+                        failed_steps = self.motion.motion_end_idx[failed_motion_ids] - 1
+                        self._record_adaptive_failures(failed_env_ids, failed_motion_ids, failed_steps)
+                    chain_mask[candidate_indices] = boundary_success
+
+            if bool(self.motion_cfg.chain_require_touchdown_completion):
+                candidate_indices = torch.where(chain_mask)[0]
+                if candidate_indices.numel() > 0:
+                    candidate_env_ids = normal_env_ids[candidate_indices]
+                    completion_success = self._chain_completion_success(candidate_env_ids)
+                    next_wait_steps = self._chain_completion_wait_steps[candidate_env_ids] + 1
+                    timed_out = next_wait_steps > max(int(self.motion_cfg.chain_completion_max_hold_steps), 0)
+                    waiting = ~completion_success & ~timed_out
+
+                    if torch.any(waiting):
+                        waiting_env_ids = candidate_env_ids[waiting]
+                        waiting_motion_ids = current_motion_ids[candidate_indices[waiting]]
+                        self.time_steps[waiting_env_ids] = self.motion.motion_end_idx[waiting_motion_ids] - 1
+                        self._chain_completion_wait_steps[waiting_env_ids] = next_wait_steps[waiting]
+
+                    if torch.any(timed_out):
+                        failed_env_ids = candidate_env_ids[timed_out]
+                        failed_motion_ids = current_motion_ids[candidate_indices[timed_out]]
+                        failed_steps = self.motion.motion_end_idx[failed_motion_ids] - 1
+                        self._record_adaptive_failures(failed_env_ids, failed_motion_ids, failed_steps)
+                        self._clear_chain_completion_state(failed_env_ids)
+
+                    chain_mask[candidate_indices] = completion_success
+                    waiting_mask[candidate_indices] = waiting
+
+            chain_env_ids = normal_env_ids[chain_mask]
+            if chain_env_ids.numel() > 0:
+                chained_motion_ids = next_motion_ids[chain_mask]
+                from_motion_ids = current_motion_ids[chain_mask]
+                self.motion_ids[chain_env_ids] = chained_motion_ids
+                self.time_steps[chain_env_ids] = self.motion.motion_start_idx[chained_motion_ids]
+                self._reset_local_segment_anchors(chain_env_ids)
+                self._clear_chain_completion_state(chain_env_ids)
+                if not bool(self.motion_cfg.chain_gate_before_transition):
+                    self._start_pending_chain_checks(chain_env_ids, from_motion_ids, chained_motion_ids)
+
+            normal_reset_env_ids = normal_env_ids[~chain_mask & ~waiting_mask]
+            if normal_reset_env_ids.numel() > 0:
+                if bool(self.motion_cfg.hold_at_motion_end_in_eval) and bool(self._env.is_evaluating):
+                    per_motion_end = self.motion.motion_end_idx[self.motion_ids[normal_reset_env_ids]]
+                    self.time_steps[normal_reset_env_ids] = per_motion_end - 1
+                    self._clear_chain_completion_state(normal_reset_env_ids)
+                else:
+                    reset_env_ids.append(normal_reset_env_ids)
+
+        if reset_env_ids:
+            reset_ids = torch.cat(reset_env_ids, dim=0)
+            self._clear_chain_completion_state(reset_ids)
+            self.reset(reset_ids)
+            self._flush_reset_states_to_sim(reset_ids)
+
+    def _clear_chain_completion_state(self, env_ids: torch.Tensor) -> None:
+        if not hasattr(self, "_chain_completion_wait_steps"):
+            return
+        self._chain_completion_wait_steps[env_ids] = 0
+        self._chain_contact_free_steps[env_ids] = 0
+        self._chain_contact_stable_steps[env_ids] = 0
+        self._chain_touchdown_latched[env_ids] = False
+
+    def _update_chain_touchdown_latches(self) -> None:
+        if not bool(self.motion_cfg.chain_require_touchdown_completion):
+            return
+        if not hasattr(self._env.simulator, "contact_forces_history"):
+            return
+        part_contact = self._chain_boundary_part_contact(
+            torch.arange(self.num_envs, device=self.device),
+            float(self.motion_cfg.chain_boundary_contact_threshold),
+        )
+        prev_free_steps = self._chain_contact_free_steps.clone()
+        self._chain_contact_stable_steps = torch.where(
+            part_contact,
+            self._chain_contact_stable_steps + 1,
+            torch.zeros_like(self._chain_contact_stable_steps),
+        )
+        self._chain_contact_free_steps = torch.where(
+            part_contact,
+            torch.zeros_like(self._chain_contact_free_steps),
+            self._chain_contact_free_steps + 1,
+        )
+
+        expected = self._motion_touchdown_mask_for_envs(torch.arange(self.num_envs, device=self.device))
+        if not torch.any(expected):
+            return
+        motion_ids = self.motion_ids
+        exit_window = max(int(self.motion_cfg.chain_completion_exit_window_steps), 0)
+        exit_start = self.motion.motion_end_idx[motion_ids] - max(exit_window, 1)
+        in_exit_window = self.time_steps >= exit_start
+        free_window = max(int(self.motion_cfg.chain_touchdown_free_window_steps), 0)
+        stable_steps = max(int(self.motion_cfg.chain_touchdown_stable_steps), 1)
+        touchdown = (prev_free_steps >= free_window) & (self._chain_contact_stable_steps >= stable_steps)
+        self._chain_touchdown_latched |= in_exit_window.unsqueeze(1) & expected & touchdown
+
+    def _motion_touchdown_mask_for_envs(self, env_ids: torch.Tensor) -> torch.Tensor:
+        mask = getattr(self.motion, "motion_touchdown_part_mask", None)
+        if mask is None:
+            return torch.zeros(env_ids.numel(), len(CHAIN_BOUNDARY_PART_ORDER), dtype=torch.bool, device=self.device)
+        return mask[self.motion_ids[env_ids], : len(CHAIN_BOUNDARY_PART_ORDER)].to(torch.bool)
+
+    def _chain_completion_success(self, env_ids: torch.Tensor) -> torch.Tensor:
+        success = self._chain_transition_success(env_ids)
+        expected = self._motion_touchdown_mask_for_envs(env_ids)
+        has_expected_touchdown = expected.any(dim=1)
+        if not torch.any(has_expected_touchdown):
+            return success
+
+        stable_steps = max(int(self.motion_cfg.chain_touchdown_stable_steps), 1)
+        stable_contact = self._chain_contact_stable_steps[env_ids] >= stable_steps
+        touchdown_ok_by_part = self._chain_touchdown_latched[env_ids] | stable_contact
+        touchdown_ok = torch.all(~expected | touchdown_ok_by_part, dim=1)
+        return success & (~has_expected_touchdown | touchdown_ok)
+
+    def _handle_failure_window_success_horizon(self) -> None:
+        self._failure_window_success_horizon_reset_count.zero_()
+        if not self._uses_failure_window_sampler:
+            return
+        horizon = int(self.motion_cfg.failure_window_success_horizon_frames)
+        if horizon <= 0:
+            return
+
+        retry_env_ids = torch.where(self._failure_window_retry_active)[0]
+        if retry_env_ids.numel() == 0:
+            return
+
+        same_motion = self.motion_ids[retry_env_ids] == self._failure_window_retry_motion_ids[retry_env_ids]
+        target_steps = self._failure_window_retry_target_steps[retry_env_ids]
+        reached = self.time_steps[retry_env_ids] >= target_steps + horizon
+        success_env_ids = retry_env_ids[same_motion & reached]
+        if success_env_ids.numel() == 0:
+            return
+
+        success_count = float(success_env_ids.numel())
+        self.reset(success_env_ids)
+        self._flush_reset_states_to_sim(success_env_ids)
+        self._failure_window_success_horizon_reset_count = torch.tensor(
+            success_count, dtype=torch.float32, device=self.device
+        )
+        self._failure_window_total_success_horizon_reset_count += self._failure_window_success_horizon_reset_count
+
+    def _flush_reset_states_to_sim(self, env_ids: torch.Tensor) -> None:
+        # Flush mutated root/dof state into the simulator so rigid-body positions
+        # are current for termination checks, observations, and rewards.
+        sim = self._env.simulator
+        sim.set_actor_root_state_tensor_robots(env_ids, sim.robot_root_states)
+        sim.set_dof_state_tensor_robots(env_ids, sim.dof_state)  # type: ignore[attr-defined]
+        sim.refresh_sim_tensors()
+
+    def _record_adaptive_failures(
+        self,
+        env_ids: torch.Tensor,
+        motion_ids: torch.Tensor | None = None,
+        time_steps: torch.Tensor | None = None,
+    ) -> None:
+        if env_ids.numel() == 0 or not hasattr(self, "adaptive_timesteps_sampler"):
+            return
+        failed_motion_ids = self.motion_ids[env_ids] if motion_ids is None else motion_ids
+        failed_start_idx = self.motion.motion_start_idx[failed_motion_ids]
+        failed_end_idx = self.motion.motion_end_idx[failed_motion_ids]
+        failed_time_steps = self.time_steps[env_ids] if time_steps is None else time_steps
+        failed_time_steps = torch.minimum(failed_time_steps, failed_end_idx - 1)
+        local_failed_at_time_step = failed_time_steps - failed_start_idx
+        self.adaptive_timesteps_sampler.update_current_bin_failed_count(
+            failed_motion_ids, local_failed_at_time_step
+        )
+
+    def _start_pending_chain_checks(
+        self,
+        env_ids: torch.Tensor,
+        from_motion_ids: torch.Tensor,
+        to_motion_ids: torch.Tensor,
+    ) -> None:
+        if not bool(self.motion_cfg.require_chain_boundary_success) or env_ids.numel() == 0:
+            return
+        self._pending_chain_check[env_ids] = True
+        self._pending_chain_from_motion_ids[env_ids] = from_motion_ids
+        self._pending_chain_to_motion_ids[env_ids] = to_motion_ids
+        self._pending_chain_success_steps[env_ids] = 0
+        self._pending_chain_deadline_steps[env_ids] = (
+            self.motion.motion_start_idx[to_motion_ids] + int(self.motion_cfg.chain_transition_grace_steps)
+        )
+
+    def _update_pending_chain_checks(self) -> None:
+        if not bool(self.motion_cfg.require_chain_boundary_success):
+            return
+        env_ids = torch.where(self._pending_chain_check)[0]
+        if env_ids.numel() == 0:
+            return
+
+        success = self._chain_transition_success(env_ids)
+        self._pending_chain_success_steps[env_ids] = torch.where(
+            success,
+            self._pending_chain_success_steps[env_ids] + 1,
+            torch.zeros_like(self._pending_chain_success_steps[env_ids]),
+        )
+
+        required = max(int(self.motion_cfg.chain_transition_success_window), 1)
+        accepted = self._pending_chain_success_steps[env_ids] >= required
+        if torch.any(accepted):
+            accepted_env_ids = env_ids[accepted]
+            self._clear_pending_chain_checks(accepted_env_ids)
+
+        remaining_env_ids = env_ids[~accepted]
+        if remaining_env_ids.numel() == 0:
+            return
+        expired = self.time_steps[remaining_env_ids] >= self._pending_chain_deadline_steps[remaining_env_ids]
+        if not torch.any(expired):
+            return
+
+        failed_env_ids = remaining_env_ids[expired]
+        from_motion_ids = self._pending_chain_from_motion_ids[failed_env_ids]
+        from_end_steps = self.motion.motion_end_idx[from_motion_ids] - 1
+        self._record_adaptive_failures(failed_env_ids, from_motion_ids, from_end_steps)
+        self._record_adaptive_failures(failed_env_ids)
+        self._clear_pending_chain_checks(failed_env_ids)
+        self.reset(failed_env_ids)
+        self._flush_reset_states_to_sim(failed_env_ids)
+
+    def _clear_pending_chain_checks(self, env_ids: torch.Tensor) -> None:
+        self._pending_chain_check[env_ids] = False
+        self._pending_chain_from_motion_ids[env_ids] = -1
+        self._pending_chain_to_motion_ids[env_ids] = -1
+        self._pending_chain_deadline_steps[env_ids] = 0
+        self._pending_chain_success_steps[env_ids] = 0
+
+    def _chain_transition_success(self, env_ids: torch.Tensor) -> torch.Tensor:
+        if not bool(self.motion_cfg.require_chain_boundary_success):
+            return torch.ones(env_ids.shape, dtype=torch.bool, device=self.device)
+
+        success = torch.ones(env_ids.shape, dtype=torch.bool, device=self.device)
+
+        threshold = float(self.motion_cfg.chain_boundary_tracking_threshold)
+        limb_idx = self.a2a_limb_body_indexes_in_track
+        if threshold > 0.0 and limb_idx.numel() > 0:
+            z_error = torch.abs(
+                self.body_pos_relative_w[env_ids][:, limb_idx, -1]
+                - self.robot_body_pos_w[env_ids][:, limb_idx, -1]
+            )
+            success &= torch.all(z_error <= threshold, dim=1)
+
+        contact_threshold = float(self.motion_cfg.chain_boundary_contact_threshold)
+        if contact_threshold > 0.0 and hasattr(self._env.simulator, "contact_forces_history"):
+            part_contact = self._chain_boundary_part_contact(env_ids, contact_threshold)
+            motion_ids = self.motion_ids[env_ids]
+            boundary_steps = self.time_steps[env_ids].clamp(
+                max=(self.motion.motion_end_idx[motion_ids] - 1)
+            )
+            expected_support = self.motion.support_part_mask[
+                boundary_steps, : part_contact.shape[1]
+            ].to(torch.bool)
+            has_expected_support = expected_support.any(dim=1)
+            support_contact_ok = torch.all(~expected_support | part_contact, dim=1)
+            success &= ~has_expected_support | support_contact_ok
+
+        return success
+
+    def _chain_boundary_part_contact(self, env_ids: torch.Tensor, threshold: float) -> torch.Tensor:
+        body_names = list(self._env.simulator.body_names)  # type: ignore[attr-defined]
+        body_force = torch.norm(self._env.simulator.contact_forces_history[env_ids], dim=-1).max(dim=1)[0]
+        body_contact = body_force > threshold
+        contacts = []
+        for part_body_names in CHAIN_BOUNDARY_CONTACT_BODY_NAMES:
+            body_ids = [body_names.index(name) for name in part_body_names if name in body_names]
+            if not body_ids:
+                contacts.append(torch.zeros(env_ids.numel(), dtype=torch.bool, device=self.device))
+            else:
+                contacts.append(body_contact[:, body_ids].any(dim=1))
+        return torch.stack(contacts, dim=1)
 
     @property
     def command(self) -> torch.Tensor:
@@ -840,42 +1955,57 @@ class MotionCommand(CommandTermBase):
 
     @property
     def body_pos_w(self) -> torch.Tensor:
-        return (
-            self.motion.body_pos_w[self.time_steps][:, self.tracked_body_indexes]
-            + self._env.simulator.scene.env_origins[:, None, :]
-        )
+        pos_w = self.motion.body_pos_w[self.time_steps][:, self.tracked_body_indexes]
+        quat_w = self.motion.body_quat_w[self.time_steps][:, self.tracked_body_indexes]
+        pos_w, _ = self._localize_motion_pos_quat(pos_w, quat_w)
+        return pos_w
 
     @property
     def body_quat_w(self) -> torch.Tensor:
-        return self.motion.body_quat_w[self.time_steps][:, self.tracked_body_indexes]
+        pos_w = self.motion.body_pos_w[self.time_steps][:, self.tracked_body_indexes]
+        quat_w = self.motion.body_quat_w[self.time_steps][:, self.tracked_body_indexes]
+        _, quat_w = self._localize_motion_pos_quat(pos_w, quat_w)
+        return quat_w
 
     @property
     def body_lin_vel_w(self) -> torch.Tensor:
-        return self.motion.body_lin_vel_w[self.time_steps][:, self.tracked_body_indexes]
+        return self._localize_motion_velocity(
+            self.motion.body_lin_vel_w[self.time_steps][:, self.tracked_body_indexes]
+        )
 
     @property
     def body_ang_vel_w(self) -> torch.Tensor:
-        return self.motion.body_ang_vel_w[self.time_steps][:, self.tracked_body_indexes]
+        return self._localize_motion_velocity(
+            self.motion.body_ang_vel_w[self.time_steps][:, self.tracked_body_indexes]
+        )
 
     @property
     def ref_pos_w(self) -> torch.Tensor:
-        return self.motion.body_pos_w[self.time_steps, self.ref_body_index] + self._env.simulator.scene.env_origins
+        pos_w = self.motion.body_pos_w[self.time_steps, self.ref_body_index][:, None, :]
+        quat_w = self.motion.body_quat_w[self.time_steps, self.ref_body_index][:, None, :]
+        pos_w, _ = self._localize_motion_pos_quat(pos_w, quat_w)
+        return pos_w[:, 0, :]
 
     @property
     def ref_quat_w(self) -> torch.Tensor:
-        return self.motion.body_quat_w[self.time_steps, self.ref_body_index]
+        pos_w = self.motion.body_pos_w[self.time_steps, self.ref_body_index][:, None, :]
+        quat_w = self.motion.body_quat_w[self.time_steps, self.ref_body_index][:, None, :]
+        _, quat_w = self._localize_motion_pos_quat(pos_w, quat_w)
+        return quat_w[:, 0, :]
 
     @property
     def ref_lin_vel_w(self) -> torch.Tensor:
-        return self.motion.body_lin_vel_w[self.time_steps, self.ref_body_index]
+        vel_w = self.motion.body_lin_vel_w[self.time_steps, self.ref_body_index][:, None, :]
+        return self._localize_motion_velocity(vel_w)[:, 0, :]
 
     @property
     def ref_ang_vel_w(self) -> torch.Tensor:
-        return self.motion.body_ang_vel_w[self.time_steps, self.ref_body_index]
+        vel_w = self.motion.body_ang_vel_w[self.time_steps, self.ref_body_index][:, None, :]
+        return self._localize_motion_velocity(vel_w)[:, 0, :]
 
     @property
     def root_pos_w(self) -> torch.Tensor:
-        return self.motion.body_pos_w[self.time_steps, 0] + self._env.simulator.scene.env_origins
+        return self.motion.body_pos_w[self.time_steps, 0] + self._reference_env_origins
 
     @property
     def root_quat_w(self) -> torch.Tensor:
@@ -888,6 +2018,30 @@ class MotionCommand(CommandTermBase):
     @property
     def root_ang_vel_w(self) -> torch.Tensor:
         return self.motion.body_ang_vel_w[self.time_steps, 0]
+
+    @property
+    def active_part_mask(self) -> torch.Tensor:
+        return self.motion.active_part_mask[self.time_steps]
+
+    @property
+    def support_part_mask(self) -> torch.Tensor:
+        return self.motion.support_part_mask[self.time_steps]
+
+    @property
+    def free_part_mask(self) -> torch.Tensor:
+        return self.motion.free_part_mask[self.time_steps]
+
+    @property
+    def contact_part_mask(self) -> torch.Tensor:
+        return self.motion.contact_part_mask[self.time_steps]
+
+    @property
+    def contact_force_part_w(self) -> torch.Tensor:
+        return self.motion.contact_force_part_w[self.time_steps]
+
+    @property
+    def contact_force_part_mask(self) -> torch.Tensor:
+        return self.motion.contact_force_part_mask[self.time_steps]
 
     #########################################################################################
     ## Robot from simulator
@@ -954,7 +2108,7 @@ class MotionCommand(CommandTermBase):
     @property
     def object_pos_w(self) -> torch.Tensor:
         # Applies env origins, but ideally we should rely on the simulator
-        return self.motion.object_pos_w[self.time_steps] + self._env.simulator.scene.env_origins
+        return self.motion.object_pos_w[self.time_steps] + self._reference_env_origins
 
     @property
     def object_quat_w(self) -> torch.Tensor:
@@ -985,7 +2139,107 @@ class MotionCommand(CommandTermBase):
 
     def init_buffers(self):
         self.time_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-        self.motion_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        num_motions = max(int(self.motion.num_motions), 1)
+        self.env_motion_ids = torch.arange(self.num_envs, dtype=torch.long, device=self.device) % num_motions
+        self.motion_ids = self.env_motion_ids.clone()
+        base_motion_weights = getattr(
+            self.motion,
+            "motion_sampling_weights",
+            torch.full((num_motions,), 1.0 / num_motions, dtype=torch.float32, device=self.device),
+        ).to(device=self.device, dtype=torch.float32)
+        self._normal_motion_sampling_weights = base_motion_weights / base_motion_weights.sum().clamp(min=1e-8)
+
+        configured_probe_per_motion = max(int(self.motion_cfg.probe_env_per_motion), 0)
+        probe_per_motion = configured_probe_per_motion
+        if num_motions * probe_per_motion > self.num_envs:
+            probe_per_motion = self.num_envs // num_motions
+            logger.warning(
+                "Requested start probe envs exceed num_envs; clamping probe_env_per_motion "
+                f"from {configured_probe_per_motion} to {probe_per_motion}."
+            )
+        self._probe_env_per_motion = probe_per_motion
+        self._num_probe_envs = num_motions * probe_per_motion
+        self._use_start_probe_envs = bool(
+            self.motion_cfg.use_start_probe_envs and num_motions > 1 and self._num_probe_envs > 0
+        )
+        self._probe_env_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._probe_motion_ids = torch.full((self.num_envs,), -1, dtype=torch.long, device=self.device)
+        if self._use_start_probe_envs:
+            probe_env_ids = torch.arange(self._num_probe_envs, dtype=torch.long, device=self.device)
+            self._probe_env_mask[probe_env_ids] = True
+            self._probe_motion_ids[probe_env_ids] = torch.arange(
+                num_motions, dtype=torch.long, device=self.device
+            ).repeat_interleave(probe_per_motion)
+            logger.info(
+                "Start-probe envs enabled: "
+                f"{probe_per_motion} envs/motion, {self._num_probe_envs} probe envs, "
+                f"{self.num_envs - self._num_probe_envs} normal envs."
+            )
+        self._probe_episode_valid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._probe_completion_ema = torch.zeros(num_motions, dtype=torch.float32, device=self.device)
+        self._probe_success_ema = torch.zeros(num_motions, dtype=torch.float32, device=self.device)
+        self._probe_fail_ema = torch.zeros(num_motions, dtype=torch.float32, device=self.device)
+        self._probe_timeout_ema = torch.zeros(num_motions, dtype=torch.float32, device=self.device)
+        self._probe_count = torch.zeros(num_motions, dtype=torch.long, device=self.device)
+        self._probe_fail_bin_count = max(int(self.motion_cfg.probe_fail_bin_count), 1)
+        self._probe_fail_bin_hist = torch.zeros(
+            num_motions, self._probe_fail_bin_count, dtype=torch.float32, device=self.device
+        )
+        self._failure_window_reset_count = torch.zeros((), dtype=torch.float32, device=self.device)
+        self._failure_window_before_count = torch.zeros((), dtype=torch.float32, device=self.device)
+        self._failure_window_offset_sum = torch.zeros((), dtype=torch.float32, device=self.device)
+        self._failure_window_total_reset_count = torch.zeros((), dtype=torch.float32, device=self.device)
+        self._failure_window_total_before_count = torch.zeros((), dtype=torch.float32, device=self.device)
+        self._failure_window_total_offset_sum = torch.zeros((), dtype=torch.float32, device=self.device)
+        self._failure_window_success_horizon_reset_count = torch.zeros((), dtype=torch.float32, device=self.device)
+        self._failure_window_total_success_horizon_reset_count = torch.zeros((), dtype=torch.float32, device=self.device)
+        self._failure_window_retry_active = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._failure_window_retry_motion_ids = torch.full(
+            (self.num_envs,), -1, dtype=torch.long, device=self.device
+        )
+        self._failure_window_retry_target_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._failure_window_log_bin_frames = max(int(self.motion_cfg.failure_window_log_bin_frames), 1)
+        motion_lengths = (self.motion.motion_end_idx - self.motion.motion_start_idx).clamp(min=1)
+        self._failure_window_log_bin_count = int(
+            torch.div(motion_lengths.max() + self._failure_window_log_bin_frames - 1, self._failure_window_log_bin_frames, rounding_mode="floor").item()
+        )
+        self._failure_window_failure_hist = torch.zeros(
+            num_motions, self._failure_window_log_bin_count, dtype=torch.float32, device=self.device
+        )
+        self._hotspot_failure_weights = torch.zeros(
+            num_motions, int(motion_lengths.max().item()), dtype=torch.float32, device=self.device
+        )
+        self._hotspot_failure_last_sample_count = torch.zeros((), dtype=torch.float32, device=self.device)
+        self._hotspot_failure_total_sample_count = torch.zeros((), dtype=torch.float32, device=self.device)
+        self._pending_chain_check = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._pending_chain_from_motion_ids = torch.full(
+            (self.num_envs,), -1, dtype=torch.long, device=self.device
+        )
+        self._pending_chain_to_motion_ids = torch.full(
+            (self.num_envs,), -1, dtype=torch.long, device=self.device
+        )
+        self._pending_chain_deadline_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._pending_chain_success_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        num_chain_parts = len(CHAIN_BOUNDARY_PART_ORDER)
+        self._chain_completion_wait_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._chain_contact_free_steps = torch.zeros(
+            self.num_envs, num_chain_parts, dtype=torch.long, device=self.device
+        )
+        self._chain_contact_stable_steps = torch.zeros(
+            self.num_envs, num_chain_parts, dtype=torch.long, device=self.device
+        )
+        self._chain_touchdown_latched = torch.zeros(
+            self.num_envs, num_chain_parts, dtype=torch.bool, device=self.device
+        )
+        self._local_segment_anchor_motion_ids = torch.full(
+            (self.num_envs,), -1, dtype=torch.long, device=self.device
+        )
+        self._local_segment_motion_ref_pos_w = torch.zeros(self.num_envs, 3, dtype=torch.float32, device=self.device)
+        self._local_segment_motion_ref_quat_w = torch.zeros(self.num_envs, 4, dtype=torch.float32, device=self.device)
+        self._local_segment_motion_ref_quat_w[:, 3] = 1.0
+        self._local_segment_robot_ref_pos_w = torch.zeros(self.num_envs, 3, dtype=torch.float32, device=self.device)
+        self._local_segment_robot_ref_quat_w = torch.zeros(self.num_envs, 4, dtype=torch.float32, device=self.device)
+        self._local_segment_robot_ref_quat_w[:, 3] = 1.0
         self.body_pos_relative_w = torch.zeros(
             self.num_envs, len(self.motion_cfg.body_names_to_track), 3, device=self.device
         )  # type: ignore[arg-type]
@@ -994,35 +2248,180 @@ class MotionCommand(CommandTermBase):
         )  # type: ignore[arg-type]
         self.body_quat_relative_w[:, :, 0] = 1.0
 
-        if self.motion_cfg.use_adaptive_timesteps_sampler:
+        if hasattr(self, "adaptive_timesteps_sampler"):
             self.adaptive_timesteps_sampler.init_buffers()
+
+    def _update_start_probe_stats(
+        self,
+        env_ids: torch.Tensor,
+        force_fail_mask: torch.Tensor | None = None,
+    ) -> None:
+        if not getattr(self, "_use_start_probe_envs", False):
+            return
+        is_valid_probe = self._probe_env_mask[env_ids] & self._probe_episode_valid[env_ids]
+        if not torch.any(is_valid_probe):
+            return
+
+        probe_env_ids = env_ids[is_valid_probe]
+        if force_fail_mask is None:
+            force_fail = torch.zeros(probe_env_ids.shape, dtype=torch.bool, device=self.device)
+        else:
+            force_fail = force_fail_mask[is_valid_probe].to(torch.bool)
+        motion_ids = self.motion_ids[probe_env_ids]
+        start_idx = self.motion.motion_start_idx[motion_ids]
+        end_idx = self.motion.motion_end_idx[motion_ids]
+        motion_len = (end_idx - start_idx - 1).clamp(min=1).to(torch.float32)
+        elapsed = (self.time_steps[probe_env_ids] - start_idx).to(torch.float32)
+        completion = (elapsed / motion_len).clamp(0.0, 1.0)
+
+        terminated = self._env.termination_manager.terminated[probe_env_ids]
+        time_outs = self._env.termination_manager.time_outs[probe_env_ids]
+        motion_end_done = self._env.termination_manager.term_dones.get("motion_ends")
+        if motion_end_done is None:
+            motion_end_done = torch.zeros_like(terminated)
+        else:
+            motion_end_done = motion_end_done[probe_env_ids].to(torch.bool)
+        failure_terminated = terminated & ~motion_end_done
+        fail = failure_terminated | force_fail
+        timeout = time_outs
+        success = (completion >= 0.98) & ~fail & ~timeout
+        alpha = float(self.motion_cfg.probe_completion_alpha)
+
+        for motion_id in motion_ids.unique():
+            mask = motion_ids == motion_id
+            m = int(motion_id.item())
+            completion_mean = completion[mask].mean()
+            success_mean = success[mask].to(torch.float32).mean()
+            fail_mean = fail[mask].to(torch.float32).mean()
+            timeout_mean = timeout[mask].to(torch.float32).mean()
+            self._probe_completion_ema[m] = (1.0 - alpha) * self._probe_completion_ema[m] + alpha * completion_mean
+            self._probe_success_ema[m] = (1.0 - alpha) * self._probe_success_ema[m] + alpha * success_mean
+            self._probe_fail_ema[m] = (1.0 - alpha) * self._probe_fail_ema[m] + alpha * fail_mean
+            self._probe_timeout_ema[m] = (1.0 - alpha) * self._probe_timeout_ema[m] + alpha * timeout_mean
+            self._probe_count[m] += int(mask.sum().item())
+
+            failed_completion = completion[mask & fail]
+            if failed_completion.numel() > 0:
+                fail_bins = torch.clamp(
+                    (failed_completion * self._probe_fail_bin_count).long(),
+                    0,
+                    self._probe_fail_bin_count - 1,
+                )
+                self._probe_fail_bin_hist[m] += torch.bincount(
+                    fail_bins, minlength=self._probe_fail_bin_count
+                ).to(self._probe_fail_bin_hist.dtype)
+
+        self._probe_episode_valid[probe_env_ids] = False
+
+    def update_probe_motion_sampling_weights(self) -> None:
+        if not getattr(self, "_use_start_probe_envs", False):
+            return
+        difficulty = 1.0 - self._probe_success_ema
+        temperature = max(float(self.motion_cfg.probe_priority_temperature), 1e-6)
+        priority = torch.softmax(difficulty / temperature, dim=0)
+        uniform = torch.full_like(priority, 1.0 / max(priority.numel(), 1))
+        uniform_mix = float(self.motion_cfg.probe_uniform_mix)
+        target = uniform_mix * uniform + (1.0 - uniform_mix) * priority
+        beta = float(self.motion_cfg.probe_weight_beta)
+        self._normal_motion_sampling_weights[:] = (
+            (1.0 - beta) * self._normal_motion_sampling_weights + beta * target
+        )
+        self._normal_motion_sampling_weights[:] = self._normal_motion_sampling_weights / (
+            self._normal_motion_sampling_weights.sum().clamp(min=1e-8)
+        )
+
+    def get_motion_learning_progress_metrics(self) -> dict[str, float]:
+        """Return per-motion start-probe learning progress metrics for TensorBoard."""
+        if not getattr(self, "_use_start_probe_envs", False):
+            return {}
+
+        completion = self._probe_completion_ema.detach()
+        success = self._probe_success_ema.detach()
+        fail = self._probe_fail_ema.detach()
+        timeout = self._probe_timeout_ema.detach()
+        weights = self._normal_motion_sampling_weights.detach()
+        difficulty = 1.0 - success
+        min_completion, min_completion_motion = completion.min(dim=0)
+        min_success, min_success_motion = success.min(dim=0)
+        max_difficulty, max_difficulty_motion = difficulty.max(dim=0)
+        max_weight, max_weight_motion = weights.max(dim=0)
+
+        metrics: dict[str, float] = {
+            "progress_ema_mean": float(completion.mean().item()),
+            "progress_ema_min": float(min_completion.item()),
+            "progress_ema_min_motion": float(min_completion_motion.item()),
+            "completion_ema_mean": float(completion.mean().item()),
+            "completion_ema_min": float(min_completion.item()),
+            "completion_ema_min_motion": float(min_completion_motion.item()),
+            "start_to_end_success_ema_mean": float(success.mean().item()),
+            "start_to_end_success_ema_min": float(min_success.item()),
+            "start_to_end_success_ema_min_motion": float(min_success_motion.item()),
+            "fail_ema_mean": float(fail.mean().item()),
+            "timeout_ema_mean": float(timeout.mean().item()),
+            "timeout_ema_max": float(timeout.max().item()),
+            "difficulty_mean": float(difficulty.mean().item()),
+            "difficulty_max": float(max_difficulty.item()),
+            "difficulty_max_motion": float(max_difficulty_motion.item()),
+            "normal_motion_weight_max": float(max_weight.item()),
+            "normal_motion_weight_max_motion": float(max_weight_motion.item()),
+            "probe_num_envs": float(self._num_probe_envs),
+            "probe_env_per_motion": float(self._probe_env_per_motion),
+        }
+
+        for motion_id in range(int(self.motion.num_motions)):
+            prefix = f"motion_{motion_id:02d}"
+            metrics[f"{prefix}/progress_ema"] = float(completion[motion_id].item())
+            metrics[f"{prefix}/completion_ema"] = float(completion[motion_id].item())
+            metrics[f"{prefix}/start_to_end_success_ema"] = float(success[motion_id].item())
+
+        return metrics
 
     def update_metrics(self):
         """Update the metrics. After action, before step() is called."""
-        self.metrics["motion/error_ref_pos"] = torch.norm(self.ref_pos_w - self.robot_ref_pos_w, dim=-1)
-        self.metrics["motion/error_ref_rot"] = quat_error_magnitude(self.ref_quat_w, self.robot_ref_quat_w)
-        self.metrics["motion/error_ref_lin_vel"] = torch.norm(self.ref_lin_vel_w - self.robot_ref_lin_vel_w, dim=-1)
-        self.metrics["motion/error_ref_ang_vel"] = torch.norm(self.ref_ang_vel_w - self.robot_ref_ang_vel_w, dim=-1)
+        self.metrics["motion/root_error_pos"] = torch.norm(self.ref_pos_w - self.robot_ref_pos_w, dim=-1)
+        self.metrics["motion/root_error_rot"] = quat_error_magnitude(self.ref_quat_w, self.robot_ref_quat_w)
+        self.metrics["motion/root_error_lin_vel"] = torch.norm(self.ref_lin_vel_w - self.robot_ref_lin_vel_w, dim=-1)
+        self.metrics["motion/root_error_ang_vel"] = torch.norm(self.ref_ang_vel_w - self.robot_ref_ang_vel_w, dim=-1)
 
-        self.metrics["motion/error_body_pos"] = torch.norm(
-            self.body_pos_relative_w - self.robot_body_pos_w, dim=-1
-        ).mean(dim=-1)
+        body_pos_error = torch.norm(self.body_pos_relative_w - self.robot_body_pos_w, dim=-1)
+        body_rot_error = quat_error_magnitude(self.body_quat_relative_w, self.robot_body_quat_w)
+        body_lin_vel_error = torch.norm(self.body_lin_vel_w - self.robot_body_lin_vel_w, dim=-1)
+        body_ang_vel_error = torch.norm(self.body_ang_vel_w - self.robot_body_ang_vel_w, dim=-1)
 
-        self.metrics["motion/error_body_rot"] = quat_error_magnitude(
-            self.body_quat_relative_w, self.robot_body_quat_w
-        ).mean(dim=-1)
+        self.metrics["motion/full_body_error_pos"] = body_pos_error.mean(dim=-1)
+        self.metrics["motion/full_body_error_rot"] = body_rot_error.mean(dim=-1)
+        self.metrics["motion/full_body_error_lin_vel"] = body_lin_vel_error.mean(dim=-1)
+        self.metrics["motion/full_body_error_ang_vel"] = body_ang_vel_error.mean(dim=-1)
+        self.metrics["motion/full_body_error_joint_pos"] = torch.norm(self.joint_pos - self.robot_joint_pos, dim=-1)
+        self.metrics["motion/full_body_error_joint_vel"] = torch.norm(self.joint_vel - self.robot_joint_vel, dim=-1)
 
-        self.metrics["motion/error_body_lin_vel"] = torch.norm(
-            self.body_lin_vel_w - self.robot_body_lin_vel_w, dim=-1
-        ).mean(dim=-1)
-        self.metrics["motion/error_body_ang_vel"] = torch.norm(
-            self.body_ang_vel_w - self.robot_body_ang_vel_w, dim=-1
-        ).mean(dim=-1)
+        limb_idx = self.a2a_limb_body_indexes_in_track
+        active_mask = self.active_part_mask[:, : len(A2A_LIMB_REF_BODY_NAMES)].to(body_pos_error.dtype)
+        support_mask = self.support_part_mask[:, : len(A2A_LIMB_REF_BODY_NAMES)].to(body_pos_error.dtype)
+        active_count = active_mask.sum(dim=1)
+        support_count = support_mask.sum(dim=1)
+        active_den = active_count.clamp(min=1.0)
 
-        self.metrics["motion/error_joint_pos"] = torch.norm(self.joint_pos - self.robot_joint_pos, dim=-1)
-        self.metrics["motion/error_joint_vel"] = torch.norm(self.joint_vel - self.robot_joint_vel, dim=-1)
+        limb_pos_error = body_pos_error[:, limb_idx]
+        limb_rot_error = body_rot_error[:, limb_idx]
+        limb_lin_vel_error = body_lin_vel_error[:, limb_idx]
+        limb_ang_vel_error = body_ang_vel_error[:, limb_idx]
 
-        if self.motion_cfg.use_adaptive_timesteps_sampler:
+        self.metrics["motion/num_active_parts"] = active_count
+        self.metrics["motion/num_support_parts"] = support_count
+        self.metrics["motion/active_limb_error_pos"] = (limb_pos_error * active_mask).sum(dim=1) / active_den
+        self.metrics["motion/active_limb_error_rot"] = (limb_rot_error * active_mask).sum(dim=1) / active_den
+        self.metrics["motion/active_limb_error_lin_vel"] = (limb_lin_vel_error * active_mask).sum(dim=1) / active_den
+        self.metrics["motion/active_limb_error_ang_vel"] = (limb_ang_vel_error * active_mask).sum(dim=1) / active_den
+
+        support_slip = torch.norm(self.robot_body_lin_vel_w[:, limb_idx, :2], dim=-1)
+        support_contact = self.contact_part_mask[:, : len(A2A_LIMB_REF_BODY_NAMES)].to(support_slip.dtype)
+        support_slip = support_slip * support_contact * support_mask
+        support_den = support_count.clamp(min=1.0)
+        self.metrics["motion/support_slip_mean"] = support_slip.sum(dim=1) / support_den
+        self.metrics["motion/support_slip_max"] = support_slip.max(dim=1)[0]
+
+        if hasattr(self, "adaptive_timesteps_sampler"):
             self.adaptive_timesteps_sampler.get_stats()
             self.metrics["motion/adaptive_timesteps_sampler_entropy"] = self.adaptive_timesteps_sampler.metrics[
                 "sampling_entropy"
@@ -1033,10 +2432,568 @@ class MotionCommand(CommandTermBase):
             self.metrics["motion/adaptive_timesteps_sampler_top1_bin"] = self.adaptive_timesteps_sampler.metrics[
                 "sampling_top1_bin"
             ]
+        if hasattr(self, "adaptive_timesteps_sampler") and self.adaptive_timesteps_sampler.uses_external_bins:
+            counts = self.adaptive_timesteps_sampler.num_bins_per_motion.to(dtype=torch.float32)
+            coverage_frames = self.adaptive_timesteps_sampler.bin_lengths.sum(dim=1).to(dtype=torch.float32)
+            motion_lengths = (self.motion.motion_end_idx - self.motion.motion_start_idx).to(torch.float32)
+            self.metrics["motion/proto_reset_bin_count_mean"] = counts.mean()
+            self.metrics["motion/proto_reset_bin_count_min"] = counts.min()
+            self.metrics["motion/proto_reset_bin_coverage_ratio_mean"] = (
+                coverage_frames / motion_lengths.clamp(min=1.0)
+            ).mean()
+        self.metrics["motion/num_motions"] = torch.tensor(float(self.motion.num_motions), device=self.device)
+        if self._uses_failure_window_sampler:
+            count = self._failure_window_reset_count.clamp(min=1.0)
+            total_count = self._failure_window_total_reset_count.clamp(min=1.0)
+            self.metrics["motion/failure_window_last_reset_count"] = self._failure_window_reset_count
+            self.metrics["motion/failure_window_last_before_ratio"] = self._failure_window_before_count / count
+            self.metrics["motion/failure_window_last_mean_offset_frames"] = self._failure_window_offset_sum / count
+            self.metrics["motion/failure_window_total_reset_count"] = self._failure_window_total_reset_count
+            self.metrics["motion/failure_window_total_before_ratio"] = (
+                self._failure_window_total_before_count / total_count
+            )
+            self.metrics["motion/failure_window_total_mean_offset_frames"] = (
+                self._failure_window_total_offset_sum / total_count
+            )
+            self.metrics["motion/failure_window_success_horizon_reset_count"] = (
+                self._failure_window_success_horizon_reset_count
+            )
+            self.metrics["motion/failure_window_total_success_horizon_reset_count"] = (
+                self._failure_window_total_success_horizon_reset_count
+            )
+            self.metrics["motion/failure_window_success_horizon_frames"] = torch.tensor(
+                float(self.motion_cfg.failure_window_success_horizon_frames), device=self.device
+            )
+            hist_total = self._failure_window_failure_hist.sum().clamp(min=1.0)
+            hist_prob = self._failure_window_failure_hist / hist_total
+            flat_top = torch.argmax(hist_prob)
+            top_motion = torch.div(flat_top, self._failure_window_log_bin_count, rounding_mode="floor")
+            top_bin = flat_top - top_motion * self._failure_window_log_bin_count
+            top_prob = hist_prob.flatten()[flat_top]
+            top_start = top_bin.to(torch.float32) * float(self._failure_window_log_bin_frames)
+            top_end = top_start + float(self._failure_window_log_bin_frames)
+            hist_entropy = -(hist_prob * (hist_prob + 1e-12).log()).sum()
+            hist_entropy = hist_entropy / torch.log(
+                torch.tensor(float(hist_prob.numel()), dtype=torch.float32, device=self.device)
+            ).clamp(min=1e-8)
+            self.metrics["motion/failure_window_top_failure_motion"] = top_motion.to(torch.float32)
+            self.metrics["motion/failure_window_top_failure_bin"] = top_bin.to(torch.float32)
+            self.metrics["motion/failure_window_top_failure_start_frame"] = top_start
+            self.metrics["motion/failure_window_top_failure_end_frame"] = top_end
+            self.metrics["motion/failure_window_top_failure_start_time_s"] = top_start / float(max(self.motion.fps, 1))
+            self.metrics["motion/failure_window_top_failure_end_time_s"] = top_end / float(max(self.motion.fps, 1))
+            self.metrics["motion/failure_window_top_failure_prob"] = top_prob
+            self.metrics["motion/failure_window_failure_hist_entropy"] = hist_entropy
+        if self._uses_hotspot_failure_sampler:
+            weights = self._hotspot_failure_weights
+            total_weight = weights.sum().clamp(min=1e-8)
+            prob = weights / total_weight
+            flat_top = torch.argmax(prob)
+            top_motion = torch.div(flat_top, weights.shape[1], rounding_mode="floor")
+            top_local_frame = flat_top - top_motion * weights.shape[1]
+            top_prob = prob.flatten()[flat_top]
+            entropy = -(prob * (prob + 1e-12).log()).sum()
+            valid_frames = (self.motion.motion_end_idx - self.motion.motion_start_idx).sum().to(torch.float32)
+            entropy = entropy / torch.log(valid_frames.clamp(min=2.0)).clamp(min=1e-8)
+            self.metrics["motion/hotspot_failure_total_weight"] = weights.sum()
+            self.metrics["motion/hotspot_failure_top_motion"] = top_motion.to(torch.float32)
+            self.metrics["motion/hotspot_failure_top_frame"] = top_local_frame.to(torch.float32)
+            self.metrics["motion/hotspot_failure_top_prob"] = top_prob
+            self.metrics["motion/hotspot_failure_entropy"] = entropy
+            self.metrics["motion/hotspot_failure_last_sample_count"] = self._hotspot_failure_last_sample_count
+            self.metrics["motion/hotspot_failure_total_sample_count"] = self._hotspot_failure_total_sample_count
+        if getattr(self, "_use_start_probe_envs", False):
+            weights = self._normal_motion_sampling_weights
+            max_weight, max_motion = weights.max(dim=0)
+            min_completion, min_completion_motion = self._probe_completion_ema.min(dim=0)
+            min_success, min_success_motion = self._probe_success_ema.min(dim=0)
+            self.metrics["motion/start_probe_num_envs"] = torch.tensor(float(self._num_probe_envs), device=self.device)
+            self.metrics["motion/start_probe_progress_ema_mean"] = self._probe_completion_ema.mean()
+            self.metrics["motion/start_probe_completion_ema_mean"] = self._probe_completion_ema.mean()
+            self.metrics["motion/start_probe_start_to_end_success_ema_mean"] = self._probe_success_ema.mean()
+            self.metrics["motion/start_probe_fail_ema_mean"] = self._probe_fail_ema.mean()
+            self.metrics["motion/start_probe_timeout_ema_mean"] = self._probe_timeout_ema.mean()
+            self.metrics["motion/start_probe_min_completion"] = min_completion
+            self.metrics["motion/start_probe_min_completion_motion"] = min_completion_motion.to(torch.float32)
+            self.metrics["motion/start_probe_min_progress"] = min_completion
+            self.metrics["motion/start_probe_min_progress_motion"] = min_completion_motion.to(torch.float32)
+            self.metrics["motion/start_probe_min_start_to_end_success"] = min_success
+            self.metrics["motion/start_probe_min_start_to_end_success_motion"] = min_success_motion.to(torch.float32)
+            self.metrics["motion/start_probe_max_weight"] = max_weight
+            self.metrics["motion/start_probe_max_weight_motion"] = max_motion.to(torch.float32)
+
+        for key, value in list(self.metrics.items()):
+            if torch.is_tensor(value):
+                self.metrics[key] = torch.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0)
+
+    def write_adaptive_sampling_distribution(
+        self, log_dir: str | os.PathLike[str], iteration: int, interval: int = 100
+    ):
+        """Append the full adaptive reset sampling distribution to a per-run CSV."""
+        if not hasattr(self, "adaptive_timesteps_sampler"):
+            return
+        if interval <= 0 or iteration % interval != 0:
+            return
+
+        sampler = self.adaptive_timesteps_sampler
+        probabilities = sampler.sampling_probabilities.detach().to("cpu")
+        failed_count = sampler.bin_failed_count.detach().to("cpu")
+        current_failed_count = sampler.current_bin_failed_count.detach().to("cpu")
+        env_fps = float(max(sampler.env_fps, 1))
+        motion_weights = getattr(
+            self.motion,
+            "motion_sampling_weights",
+            torch.full((self.motion.num_motions,), 1.0 / max(self.motion.num_motions, 1), device=self.device),
+        ).detach().to("cpu")
+        if getattr(self, "_use_start_probe_envs", False):
+            motion_weights = self._normal_motion_sampling_weights.detach().to("cpu")
+        motion_files = getattr(self.motion, "motion_files", [])
+        motion_start_idx = self.motion.motion_start_idx.detach().to("cpu")
+        motion_end_idx = self.motion.motion_end_idx.detach().to("cpu")
+        motion_lengths = (motion_end_idx - motion_start_idx).clamp(min=1)
+        num_bins_per_motion = sampler.num_bins_per_motion.detach().to("cpu")
+        bin_start_local = sampler.bin_start_local.detach().to("cpu")
+        bin_end_local = sampler.bin_end_local.detach().to("cpu")
+
+        path = Path(log_dir) / "adaptive_reset_sampling_distribution.csv"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_header = not path.exists()
+        with path.open("a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=[
+                    "iteration",
+                    "motion_id",
+                    "motion_file",
+                    "motion_weight",
+                    "num_bins",
+                    "bin_id",
+                    "bin_start_frame",
+                    "bin_end_frame",
+                    "bin_center_frame",
+                    "global_bin_start_frame",
+                    "global_bin_end_frame",
+                    "global_bin_center_frame",
+                    "bin_start_time_s",
+                    "bin_end_time_s",
+                    "bin_center_time_s",
+                    "sampling_probability",
+                    "bin_failed_count",
+                    "current_bin_failed_count",
+                ],
+            )
+            if write_header:
+                writer.writeheader()
+            for motion_id in range(int(self.motion.num_motions)):
+                num_bins = int(num_bins_per_motion[motion_id].item())
+                motion_start = int(motion_start_idx[motion_id].item())
+                for bin_id in range(num_bins):
+                    local_start = int(bin_start_local[motion_id, bin_id].item())
+                    local_end = int(bin_end_local[motion_id, bin_id].item())
+                    local_center = 0.5 * (local_start + local_end)
+                    global_start = motion_start + local_start
+                    global_end = motion_start + local_end
+                    global_center = motion_start + local_center
+                    writer.writerow(
+                        {
+                            "iteration": int(iteration),
+                            "motion_id": motion_id,
+                            "motion_file": motion_files[motion_id] if motion_id < len(motion_files) else "",
+                            "motion_weight": f"{float(motion_weights[motion_id]):.8g}",
+                            "num_bins": num_bins,
+                            "bin_id": bin_id,
+                            "bin_start_frame": local_start,
+                            "bin_end_frame": local_end,
+                            "bin_center_frame": f"{local_center:.3f}",
+                            "global_bin_start_frame": global_start,
+                            "global_bin_end_frame": global_end,
+                            "global_bin_center_frame": f"{global_center:.3f}",
+                            "bin_start_time_s": f"{local_start / env_fps:.6g}",
+                            "bin_end_time_s": f"{local_end / env_fps:.6g}",
+                            "bin_center_time_s": f"{local_center / env_fps:.6g}",
+                            "sampling_probability": f"{float(probabilities[motion_id, bin_id]):.8g}",
+                            "bin_failed_count": f"{float(failed_count[motion_id, bin_id]):.8g}",
+                            "current_bin_failed_count": f"{float(current_failed_count[motion_id, bin_id]):.8g}",
+                        }
+                    )
+
+    def write_start_probe_distribution(
+        self, log_dir: str | os.PathLike[str], iteration: int, interval: int = 100
+    ) -> None:
+        """Append per-motion start-probe stats and normal-env motion weights to a CSV."""
+        if not getattr(self, "_use_start_probe_envs", False):
+            return
+        if interval <= 0 or iteration % interval != 0:
+            return
+
+        motion_files = getattr(self.motion, "motion_files", [])
+        weights = self._normal_motion_sampling_weights.detach().to("cpu")
+        completion = self._probe_completion_ema.detach().to("cpu")
+        success = self._probe_success_ema.detach().to("cpu")
+        fail = self._probe_fail_ema.detach().to("cpu")
+        timeout = self._probe_timeout_ema.detach().to("cpu")
+        counts = self._probe_count.detach().to("cpu")
+        fail_bins = self._probe_fail_bin_hist.detach().to("cpu")
+
+        path = Path(log_dir) / "start_probe_motion_distribution.csv"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_header = not path.exists()
+        bin_fields = [f"fail_bin_{i}" for i in range(self._probe_fail_bin_count)]
+        with path.open("a", newline="", encoding="utf-8") as f:
+            fieldnames = [
+                "iteration",
+                "motion_id",
+                "motion_file",
+                "probe_env_per_motion",
+                "probe_count",
+                "progress_ema",
+                "completion_ema",
+                "start_to_end_success_ema",
+                "fail_ema",
+                "timeout_ema",
+                "normal_motion_weight",
+                *bin_fields,
+            ]
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if write_header:
+                writer.writeheader()
+            for motion_id in range(int(self.motion.num_motions)):
+                row = {
+                    "iteration": int(iteration),
+                    "motion_id": motion_id,
+                    "motion_file": motion_files[motion_id] if motion_id < len(motion_files) else "",
+                    "probe_env_per_motion": int(self._probe_env_per_motion),
+                    "probe_count": int(counts[motion_id].item()),
+                    "progress_ema": f"{float(completion[motion_id]):.8g}",
+                    "completion_ema": f"{float(completion[motion_id]):.8g}",
+                    "start_to_end_success_ema": f"{float(success[motion_id]):.8g}",
+                    "fail_ema": f"{float(fail[motion_id]):.8g}",
+                    "timeout_ema": f"{float(timeout[motion_id]):.8g}",
+                    "normal_motion_weight": f"{float(weights[motion_id]):.8g}",
+                }
+                row.update(
+                    {
+                        f"fail_bin_{bin_id}": f"{float(fail_bins[motion_id, bin_id]):.8g}"
+                        for bin_id in range(self._probe_fail_bin_count)
+                    }
+                )
+                writer.writerow(row)
+
+    def write_failure_window_distribution(
+        self, log_dir: str | os.PathLike[str], iteration: int, interval: int = 100
+    ) -> None:
+        """Append failure-window failure-frame histogram stats to a per-run CSV."""
+        if not self._uses_failure_window_sampler:
+            return
+        if interval <= 0 or iteration % interval != 0:
+            return
+
+        hist = self._failure_window_failure_hist.detach().to("cpu")
+        total = hist.sum().clamp(min=1.0)
+        probabilities = hist / total
+        flat_top = int(torch.argmax(probabilities).item())
+        top_motion = flat_top // int(self._failure_window_log_bin_count)
+        top_bin = flat_top - top_motion * int(self._failure_window_log_bin_count)
+        motion_files = getattr(self.motion, "motion_files", [])
+        fps = float(max(self.motion.fps, 1))
+
+        path = Path(log_dir) / "failure_window_reset_distribution.csv"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_header = not path.exists()
+        with path.open("a", newline="", encoding="utf-8") as f:
+            fieldnames = [
+                "iteration",
+                "motion_id",
+                "motion_file",
+                "bin_id",
+                "bin_start_frame",
+                "bin_end_frame",
+                "bin_center_frame",
+                "bin_start_time_s",
+                "bin_end_time_s",
+                "bin_center_time_s",
+                "failure_count",
+                "failure_probability",
+                "is_top_failure_bin",
+                "top_failure_motion",
+                "top_failure_bin",
+            ]
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if write_header:
+                writer.writeheader()
+
+            bin_width = int(self._failure_window_log_bin_frames)
+            for motion_id in range(int(self.motion.num_motions)):
+                for bin_id in range(int(self._failure_window_log_bin_count)):
+                    start = bin_id * bin_width
+                    end = start + bin_width
+                    center = 0.5 * (start + end)
+                    writer.writerow(
+                        {
+                            "iteration": int(iteration),
+                            "motion_id": motion_id,
+                            "motion_file": motion_files[motion_id] if motion_id < len(motion_files) else "",
+                            "bin_id": bin_id,
+                            "bin_start_frame": start,
+                            "bin_end_frame": end,
+                            "bin_center_frame": f"{center:.3f}",
+                            "bin_start_time_s": f"{start / fps:.6g}",
+                            "bin_end_time_s": f"{end / fps:.6g}",
+                            "bin_center_time_s": f"{center / fps:.6g}",
+                            "failure_count": f"{float(hist[motion_id, bin_id]):.8g}",
+                            "failure_probability": f"{float(probabilities[motion_id, bin_id]):.8g}",
+                            "is_top_failure_bin": int(motion_id == top_motion and bin_id == top_bin),
+                            "top_failure_motion": top_motion,
+                            "top_failure_bin": top_bin,
+                        }
+                    )
 
     #########################################################################################
     ## Internal helpers
     #########################################################################################
+    @property
+    def _reference_env_origins(self) -> torch.Tensor:
+        terrain_state = self._env.terrain_manager.get_state("locomotion_terrain")
+        terrain = getattr(terrain_state, "terrain", None)
+        if getattr(terrain, "has_motion_matched_origins", False):
+            return terrain_state.env_origins
+        return self._env.simulator.scene.env_origins
+
+    def _use_local_segment_reference(self) -> bool:
+        return bool(self.motion_cfg.local_motion_segment_reference) and bool(self._env.is_evaluating)
+
+    def _reset_local_segment_anchors(self, env_ids: torch.Tensor) -> None:
+        if not self._use_local_segment_reference() or env_ids.numel() == 0:
+            return
+        motion_ids = self.motion_ids[env_ids]
+        start_steps = self.motion.motion_start_idx[motion_ids]
+        self._local_segment_anchor_motion_ids[env_ids] = motion_ids
+        self._local_segment_motion_ref_pos_w[env_ids] = self.motion.body_pos_w[start_steps, self.ref_body_index]
+        self._local_segment_motion_ref_quat_w[env_ids] = self.motion.body_quat_w[start_steps, self.ref_body_index]
+        self._local_segment_robot_ref_pos_w[env_ids] = self.robot_ref_pos_w[env_ids].detach()
+        self._local_segment_robot_ref_quat_w[env_ids] = self.robot_ref_quat_w[env_ids].detach()
+
+    def _ensure_local_segment_anchors(self) -> None:
+        if not self._use_local_segment_reference():
+            return
+        missing = self._local_segment_anchor_motion_ids != self.motion_ids
+        if torch.any(missing):
+            self._reset_local_segment_anchors(torch.where(missing)[0])
+
+    def _local_segment_delta_quat(self, env_ids: torch.Tensor | None = None) -> torch.Tensor:
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+        return yaw_quat(
+            quat_mul(
+                self._local_segment_robot_ref_quat_w[env_ids],
+                quat_inverse(self._local_segment_motion_ref_quat_w[env_ids], w_last=True),
+                w_last=True,
+            ),
+            w_last=True,
+        )
+
+    def _localize_motion_pos_quat(
+        self,
+        pos_w: torch.Tensor,
+        quat_w: torch.Tensor,
+        env_ids: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if env_ids is None:
+            env_ids = torch.arange(pos_w.shape[0], device=self.device)
+        if not self._use_local_segment_reference():
+            return pos_w + self._reference_env_origins[env_ids, None, :], quat_w
+        self._ensure_local_segment_anchors()
+        delta_quat = self._local_segment_delta_quat(env_ids)
+        pos_delta = pos_w - self._local_segment_motion_ref_pos_w[env_ids, None, :]
+        delta_quat = delta_quat[:, None, :].expand_as(quat_w)
+        localized_pos = self._local_segment_robot_ref_pos_w[env_ids, None, :] + quat_apply(
+            delta_quat, pos_delta, w_last=True
+        )
+        localized_quat = quat_mul(delta_quat, quat_w, w_last=True)
+        return localized_pos, localized_quat
+
+    def _localize_motion_velocity(
+        self,
+        vel_w: torch.Tensor,
+        env_ids: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if env_ids is None:
+            env_ids = torch.arange(vel_w.shape[0], device=self.device)
+        if not self._use_local_segment_reference():
+            return vel_w
+        self._ensure_local_segment_anchors()
+        delta_quat = self._local_segment_delta_quat(env_ids)
+        delta_quat = delta_quat[:, None, :].expand(*vel_w.shape[:-1], 4)
+        return quat_apply(delta_quat, vel_w, w_last=True)
+
+    def _localize_motion_pos_quat_future(
+        self,
+        pos_w: torch.Tensor,
+        quat_w: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if not self._use_local_segment_reference():
+            return pos_w + self._reference_env_origins[:, None, None, :], quat_w
+        self._ensure_local_segment_anchors()
+        env_ids = torch.arange(self.num_envs, device=self.device)
+        delta_quat = self._local_segment_delta_quat(env_ids)
+        pos_delta = pos_w - self._local_segment_motion_ref_pos_w[:, None, None, :]
+        delta_quat = delta_quat[:, None, None, :].expand_as(quat_w)
+        localized_pos = self._local_segment_robot_ref_pos_w[:, None, None, :] + quat_apply(
+            delta_quat, pos_delta, w_last=True
+        )
+        localized_quat = quat_mul(delta_quat, quat_w, w_last=True)
+        return localized_pos, localized_quat
+
+    def future_body_pos_quat_w(self, future_steps: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        body_pos_w = self.motion.body_pos_w[future_steps][:, :, self.tracked_body_indexes]
+        body_quat_w = self.motion.body_quat_w[future_steps][:, :, self.tracked_body_indexes]
+        return self._localize_motion_pos_quat_future(body_pos_w, body_quat_w)
+
+    def _maybe_sample_motion_matched_origins(self, env_ids: torch.Tensor) -> None:
+        terrain_state = self._env.terrain_manager.get_state("locomotion_terrain")
+        terrain = getattr(terrain_state, "terrain", None)
+        if not getattr(terrain, "has_motion_matched_origins", False):
+            return
+        motion_terrain_ids = self.motion.motion_terrain_ids[self.motion_ids[env_ids]]
+        sample_origins = getattr(terrain_state, "sample_motion_matched_origins", None)
+        if not callable(sample_origins):
+            raise RuntimeError("Motion-matched terrain state must provide sample_motion_matched_origins().")
+        sample_origins(env_ids, motion_terrain_ids)
+
+    def _get_failure_window_reset_mask(self, env_ids: torch.Tensor) -> torch.Tensor:
+        if self._env.is_evaluating or not self._uses_failure_window_sampler:
+            return torch.zeros(env_ids.shape, dtype=torch.bool, device=self.device)
+        mask = _get_bad_tracking_done_mask(self._env.termination_manager.term_dones, env_ids)
+        if mask is None:
+            return torch.zeros(env_ids.shape, dtype=torch.bool, device=self.device)
+        if getattr(self, "_use_start_probe_envs", False):
+            mask = mask & ~self._probe_env_mask[env_ids]
+        return mask
+
+    def _sample_failure_window_time_steps(
+        self,
+        env_ids: torch.Tensor,
+        failed_time_steps: torch.Tensor,
+    ) -> torch.Tensor:
+        motion_ids = self.motion_ids[env_ids]
+        start_idx = self.motion.motion_start_idx[motion_ids]
+        end_idx = self.motion.motion_end_idx[motion_ids]
+        last_idx = torch.maximum(start_idx, end_idx - 2)
+        failed_idx = torch.minimum(torch.maximum(failed_time_steps, start_idx), last_idx)
+
+        pre_frames = max(int(self.motion_cfg.failure_window_pre_frames), 0)
+        post_frames = max(int(self.motion_cfg.failure_window_post_frames), 0)
+        before_prob = min(max(float(self.motion_cfg.failure_window_before_prob), 0.0), 1.0)
+
+        use_before = torch.rand(env_ids.numel(), device=self.device) < before_prob
+        before_start = torch.maximum(start_idx, failed_idx - pre_frames)
+        before_end = failed_idx
+        after_start = failed_idx
+        after_end = torch.minimum(last_idx, failed_idx + post_frames)
+
+        sample_start = torch.where(use_before, before_start, after_start)
+        sample_end = torch.where(use_before, before_end, after_end)
+        span = (sample_end - sample_start + 1).clamp(min=1)
+        offsets = torch.floor(torch.rand(env_ids.numel(), device=self.device) * span.to(torch.float32)).long()
+        sampled = sample_start + offsets
+
+        self._failure_window_reset_count = torch.tensor(
+            float(env_ids.numel()), dtype=torch.float32, device=self.device
+        )
+        self._failure_window_before_count = use_before.to(torch.float32).sum()
+        self._failure_window_offset_sum = (sampled - failed_idx).to(torch.float32).sum()
+        self._failure_window_total_reset_count += self._failure_window_reset_count
+        self._failure_window_total_before_count += self._failure_window_before_count
+        self._failure_window_total_offset_sum += self._failure_window_offset_sum
+        local_failed_idx = failed_idx - start_idx
+        hist_bins = torch.div(local_failed_idx, self._failure_window_log_bin_frames, rounding_mode="floor")
+        hist_bins = hist_bins.clamp(min=0, max=self._failure_window_log_bin_count - 1)
+        flat_idx = motion_ids * self._failure_window_log_bin_count + hist_bins
+        counts = torch.bincount(
+            flat_idx,
+            minlength=int(self.motion.num_motions) * self._failure_window_log_bin_count,
+        ).to(torch.float32)
+        self._failure_window_failure_hist += counts.view(int(self.motion.num_motions), self._failure_window_log_bin_count)
+        self._update_hotspot_failure_weights(motion_ids, local_failed_idx)
+        return sampled
+
+    def _sample_hotspot_failure_time_steps(self, env_ids: torch.Tensor) -> torch.Tensor:
+        self._hotspot_failure_last_sample_count.zero_()
+        motion_ids = self.motion_ids[env_ids]
+        start_idx = self.motion.motion_start_idx[motion_ids]
+        end_idx = self.motion.motion_end_idx[motion_ids]
+        last_idx = torch.maximum(start_idx, end_idx - 2)
+        motion_len = (end_idx - start_idx).clamp(min=1)
+        sampled = start_idx + torch.floor(torch.rand(env_ids.numel(), device=self.device) * (motion_len - 1).clamp(min=1).to(torch.float32)).long()
+
+        uniform_mix = min(max(float(self.motion_cfg.hotspot_failure_uniform_mix), 0.0), 1.0)
+        min_count = max(float(self.motion_cfg.hotspot_failure_min_count), 0.0)
+        use_hotspot = torch.rand(env_ids.numel(), device=self.device) >= uniform_mix
+        actual_hotspot_count = 0
+
+        for motion_id in motion_ids.unique():
+            selected = motion_ids == motion_id
+            if not torch.any(selected):
+                continue
+            mid = int(motion_id.item())
+            local_len = int((self.motion.motion_end_idx[mid] - self.motion.motion_start_idx[mid]).item())
+            if local_len <= 1:
+                continue
+            weights = self._hotspot_failure_weights[mid, :local_len].clamp(min=0.0)
+            total = float(weights.sum().item())
+            if total < min_count:
+                continue
+            local_use = use_hotspot[selected]
+            if not torch.any(local_use):
+                continue
+            local_indices = torch.where(selected)[0][local_use]
+            target_local = torch.multinomial(weights / weights.sum().clamp(min=1e-8), local_indices.numel(), replacement=True)
+            target_global = self.motion.motion_start_idx[mid] + target_local
+            sampled[local_indices] = self._sample_around_failure_frames(
+                torch.full((local_indices.numel(),), mid, dtype=torch.long, device=self.device),
+                target_global,
+            )
+            actual_hotspot_count += int(local_indices.numel())
+
+        sampled = torch.minimum(torch.maximum(sampled, start_idx), last_idx)
+        self._hotspot_failure_last_sample_count = torch.tensor(
+            float(actual_hotspot_count), dtype=torch.float32, device=self.device
+        )
+        self._hotspot_failure_total_sample_count += self._hotspot_failure_last_sample_count
+        return sampled
+
+    def _sample_around_failure_frames(self, motion_ids: torch.Tensor, failed_time_steps: torch.Tensor) -> torch.Tensor:
+        start_idx = self.motion.motion_start_idx[motion_ids]
+        end_idx = self.motion.motion_end_idx[motion_ids]
+        last_idx = torch.maximum(start_idx, end_idx - 2)
+        failed_idx = torch.minimum(torch.maximum(failed_time_steps, start_idx), last_idx)
+        pre_frames = max(int(self.motion_cfg.failure_window_pre_frames), 0)
+        post_frames = max(int(self.motion_cfg.failure_window_post_frames), 0)
+        before_prob = min(max(float(self.motion_cfg.failure_window_before_prob), 0.0), 1.0)
+        use_before = torch.rand(motion_ids.numel(), device=self.device) < before_prob
+        before_start = torch.maximum(start_idx, failed_idx - pre_frames)
+        before_end = failed_idx
+        after_start = failed_idx
+        after_end = torch.minimum(last_idx, failed_idx + post_frames)
+        sample_start = torch.where(use_before, before_start, after_start)
+        sample_end = torch.where(use_before, before_end, after_end)
+        span = (sample_end - sample_start + 1).clamp(min=1)
+        offsets = torch.floor(torch.rand(motion_ids.numel(), device=self.device) * span.to(torch.float32)).long()
+        return sample_start + offsets
+
+    def _update_hotspot_failure_weights(self, motion_ids: torch.Tensor, local_failed_idx: torch.Tensor) -> None:
+        if not self._uses_hotspot_failure_sampler or motion_ids.numel() == 0:
+            return
+        decay = min(max(float(self.motion_cfg.hotspot_failure_decay), 0.0), 1.0)
+        self._hotspot_failure_weights.mul_(decay)
+        local_failed_idx = local_failed_idx.clamp(min=0, max=self._hotspot_failure_weights.shape[1] - 1)
+        flat_idx = motion_ids * self._hotspot_failure_weights.shape[1] + local_failed_idx
+        counts = torch.bincount(
+            flat_idx,
+            minlength=int(self.motion.num_motions) * self._hotspot_failure_weights.shape[1],
+        ).to(torch.float32)
+        self._hotspot_failure_weights += counts.view_as(self._hotspot_failure_weights)
+
     def _maybe_add_default_pose_transition(self, *, prepend: bool) -> None:
         """Shared path for optionally inserting default-pose interpolation before/after the clip."""
         enabled = self.motion_cfg.enable_default_pose_prepend if prepend else self.motion_cfg.enable_default_pose_append
@@ -1205,8 +3162,8 @@ class MotionCommand(CommandTermBase):
     ) -> dict[str, torch.Tensor]:
         """Capture body states by temporarily setting the robot state in the simulator."""
         simulator = self._env.simulator
-        assert simulator.get_simulator_type() == SimulatorType.ISAACSIM, (
-            "Default-pose interpolation only supports IsaacSim; IsaacGym write_state_updates does not run FK."
+        assert simulator.get_simulator_type() == SimulatorType.ISAACLAB3_NEWTON, (
+            "Default-pose interpolation only supports the IsaacLab3 Newton backend in this migration copy."
         )
         env_id = 0
         env_origin = simulator.scene.env_origins[env_id].to(self.device)
@@ -1329,6 +3286,25 @@ class MotionCommand(CommandTermBase):
             "body_lin_vel": _lerp(start["body_lin_vel"], target["body_lin_vel"], alphas_body),
             "body_ang_vel": _lerp(start["body_ang_vel"], target["body_ang_vel"], alphas_body),
             "body_quat": self._slerp_quat_sequence(start["body_quat"], target["body_quat"], alphas),
+            "part_mask": torch.zeros(
+                alphas.shape[0],
+                self.motion._active_part_mask.shape[1],
+                dtype=torch.bool,
+                device=alphas.device,
+            ),
+            "contact_force_part": torch.zeros(
+                alphas.shape[0],
+                self.motion._contact_force_part_w.shape[1],
+                3,
+                dtype=start["body_pos"].dtype,
+                device=alphas.device,
+            ),
+            "contact_force_part_mask": torch.zeros(
+                alphas.shape[0],
+                self.motion._contact_force_part_w.shape[1],
+                dtype=torch.bool,
+                device=alphas.device,
+            ),
         }
 
         if self.motion.has_object:

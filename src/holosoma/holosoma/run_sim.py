@@ -15,11 +15,17 @@ from loguru import logger
 
 from holosoma.config_types.run_sim import RunSimConfig
 from holosoma.utils.eval_utils import init_eval_logging
-from holosoma.utils.sim_utils import DirectSimulation, setup_simulation_environment
+from holosoma.utils.sim_utils import (
+    DirectSimulation,
+    parse_isaaclab_launcher_args,
+    setup_simulation_environment,
+    sync_launcher_headless_config,
+)
 from holosoma.utils.tyro_utils import TYRO_CONIFG
+from holosoma.utils.viewport_camera import prime_overview_viewport
 
 
-def run_simulation(config: RunSimConfig):
+def run_simulation(config: RunSimConfig, launcher_args=None):
     """Run simulation with direct simulator control.
 
     This function provides direct access to the simulator for continuous simulation
@@ -49,10 +55,13 @@ def run_simulation(config: RunSimConfig):
 
     try:
         # Use shared utils for setup
-        env, device, simulation_app = setup_simulation_environment(config, device=config.device)
+        env, device, simulation_app = setup_simulation_environment(
+            config, device=config.device, launcher_args=launcher_args
+        )
 
         # Create and run direct simulation using context manager for automatic clean-up
         with DirectSimulation(config, env, device, simulation_app) as sim:
+            prime_overview_viewport(env, label="RunSim")
             sim.run()
 
     except Exception as e:
@@ -63,6 +72,8 @@ def run_simulation(config: RunSimConfig):
 
 def main() -> None:
     """Main function using tyro configuration with compositional subcommands."""
+    launcher_args = parse_isaaclab_launcher_args("Run Holosoma direct simulation.")
+
     # Initialize logging
     init_eval_logging()
 
@@ -76,13 +87,13 @@ def main() -> None:
         "Usage: python -m holosoma.run_sim simulator:<sim> robot:<robot> terrain:<terrain>\n"
         "Examples:\n"
         "  python -m holosoma.run_sim # defaults \n"
-        "  python -m holosoma.run_sim simulator:mujoco robot:t1_29dof_waist_wrist terrain:terrain_locomotion_plane\n"
-        "  python -m holosoma.run_sim simulator:isaacgym robot:g1_29dof terrain:terrain_locomotion_mix",
+        "  python -m holosoma.run_sim simulator:mujoco robot:g1_29dof terrain:terrain_motion_matched",
         config=TYRO_CONIFG,
     )
+    config = sync_launcher_headless_config(config, launcher_args)
 
     # Run simulation directly with parsed config
-    run_simulation(config)
+    run_simulation(config, launcher_args=launcher_args)
 
 
 if __name__ == "__main__":

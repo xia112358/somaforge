@@ -1,7 +1,5 @@
-# Base image with IsaacSim 5.1
-# Using IsaacSim as base for all environments (IsaacGym/MuJoCo/IsaacSim) to ensure
-# compatibility across simulators
-FROM nvcr.io/nvidia/isaac-sim:5.1.0
+# Base CUDA image. Isaac Sim is installed into the project-scoped conda env.
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 
 # Switch to root user for installation
 USER root

@@ -166,16 +166,21 @@ class RewardManager:
                     f"Reward term '{term_name}' returned wrong shape. "
                     f"Expected [{self.env.num_envs}], got {rew_raw.shape}"
                 )
+            rew_raw = torch.nan_to_num(rew_raw, nan=0.0, posinf=0.0, neginf=0.0)
 
             # Scale by weight and dt
-            rew_scaled = rew_raw * term_cfg.weight * dt
+            rew_scaled = torch.nan_to_num(rew_raw * term_cfg.weight * dt, nan=0.0, posinf=0.0, neginf=0.0)
 
             # Accumulate
-            self._reward_buf += rew_scaled
+            self._reward_buf = torch.nan_to_num(self._reward_buf + rew_scaled, nan=0.0, posinf=0.0, neginf=0.0)
 
             # Track episodic sums
-            self._episode_sums[term_name] += rew_scaled
-            self._episode_sums_raw[term_name] += rew_raw
+            self._episode_sums[term_name] = torch.nan_to_num(
+                self._episode_sums[term_name] + rew_scaled, nan=0.0, posinf=0.0, neginf=0.0
+            )
+            self._episode_sums_raw[term_name] = torch.nan_to_num(
+                self._episode_sums_raw[term_name] + rew_raw, nan=0.0, posinf=0.0, neginf=0.0
+            )
 
         # Optionally clip to positive
         if self.cfg.only_positive_rewards:
@@ -228,7 +233,9 @@ class RewardManager:
 
         # Populate scaled reward statistics
         for term_name in self._term_names:
-            rew_all = self._episode_sums[term_name] / self.env.max_episode_length_s
+            rew_all = torch.nan_to_num(
+                self._episode_sums[term_name] / self.env.max_episode_length_s, nan=0.0, posinf=0.0, neginf=0.0
+            )
             extras["episode_all"][f"rew_{term_name}"] = _clone(rew_all)
             if env_ids_tensor is None:
                 extras["episode"][f"rew_{term_name}"] = _clone(rew_all)
@@ -240,7 +247,12 @@ class RewardManager:
 
         # Populate raw (unscaled) reward statistics
         for term_name in self._term_names:
-            rew_raw_all = self._episode_sums_raw[term_name] / self.env.max_episode_length_s
+            rew_raw_all = torch.nan_to_num(
+                self._episode_sums_raw[term_name] / self.env.max_episode_length_s,
+                nan=0.0,
+                posinf=0.0,
+                neginf=0.0,
+            )
             extras["raw_episode_all"][f"raw_rew_{term_name}"] = _clone(rew_raw_all)
             if env_ids_tensor is None:
                 extras["raw_episode"][f"raw_rew_{term_name}"] = _clone(rew_raw_all)

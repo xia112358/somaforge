@@ -215,7 +215,7 @@ class BaseTask:
         """Synchronize curriculum-related state across distributed processes."""
         return
 
-    def reset_all(self):
+    def reset_all(self, step_after_reset: bool = True, pre_step_actor_state: dict | None = None, pre_step_callback=None):
         """Reset all robots"""
         env_ids = torch.arange(self.num_envs, device=self.device)
         self.reset_envs_idx(env_ids)
@@ -223,9 +223,26 @@ class BaseTask:
         self.simulator.set_actor_root_state_tensor_robots(env_ids, self.simulator.robot_root_states)
         self.simulator.set_dof_state_tensor_robots(env_ids, self.simulator.dof_state)
 
+        if not step_after_reset:
+            self._refresh_sim_tensors()
+            self._pre_compute_observations_callback()
+            self._compute_observations()
+            self._post_compute_observations_callback()
+            self._clip_observations()
+            return self.obs_buf_dict
+
         actions = torch.zeros(self.num_envs, self.dim_actions, device=self.device, requires_grad=False)
         actor_state = {}
         actor_state["actions"] = actions
+        if pre_step_actor_state is not None:
+            self._refresh_sim_tensors()
+            self._pre_compute_observations_callback()
+            self._compute_observations()
+            self._post_compute_observations_callback()
+            self._clip_observations()
+            pre_step_actor_state.update({"obs": self.obs_buf_dict, "actions": actions})
+            if pre_step_callback is not None:
+                pre_step_callback(pre_step_actor_state)
         obs_dict, _, _, _ = self.step(actor_state)
         return obs_dict
 
@@ -415,10 +432,15 @@ class BaseTask:
             self.action_manager.process_actions(actions)
 
     def _physics_step(self):
-        self.render()
+        if not self._simulator_renders_during_physics_step():
+            self.render()
         for _ in range(self.simulator.simulator_config.sim.control_decimation):
             self._apply_force_in_physics_step()
             self.simulator.simulate_at_each_physics_step()
+
+    def _simulator_renders_during_physics_step(self) -> bool:
+        module_name = type(self.simulator).__module__
+        return module_name.endswith(".isaacsim.isaacsim")
 
     def _apply_force_in_physics_step(self):
         if self.action_manager is not None:
@@ -444,9 +466,18 @@ class BaseTask:
         self._update_log_dict()
 
         env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
+        final_obs_env_ids = (
+            self.reset_buf.bool() & self.time_out_buf.bool()
+        ).nonzero(as_tuple=False).flatten()
         final_obs_dict = {}
-        if env_ids.numel() > 0:
+        if final_obs_env_ids.numel() > 0:
             final_obs_dict = self._compute_final_observations()
+
+        if self.termination_manager is not None:
+            self.extras["term_dones"] = {
+                name: values.clone()
+                for name, values in self.termination_manager.term_dones.items()
+            }
 
         self.reset_envs_idx(env_ids)
 
@@ -459,9 +490,9 @@ class BaseTask:
 
         self._compute_observations()
 
-        if env_ids.numel() > 0 and final_obs_dict:
-            env_ids_long = self._ensure_long_tensor(env_ids)
-            self._store_final_observations(env_ids_long, final_obs_dict)
+        if final_obs_env_ids.numel() > 0 and final_obs_dict:
+            final_obs_env_ids_long = self._ensure_long_tensor(final_obs_env_ids)
+            self._store_final_observations(final_obs_env_ids_long, final_obs_dict)
 
         self._post_compute_observations_callback()
         self._clip_observations()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import os
 
 import tyro
@@ -17,11 +18,15 @@ from holosoma.utils.eval_utils import (
 )
 from holosoma.utils.experiment_paths import get_experiment_dir, get_timestamp
 from holosoma.utils.helpers import get_class
+from holosoma.utils.motion_matched_config import normalize_motion_matched_config
 from holosoma.utils.sim_utils import (
     close_simulation_app,
+    parse_isaaclab_launcher_args,
     setup_simulation_environment,
+    sync_launcher_headless_config,
 )
 from holosoma.utils.tyro_utils import TYRO_CONIFG
+from holosoma.utils.viewport_camera import prime_overview_viewport
 
 
 def run_eval_with_tyro(
@@ -30,9 +35,13 @@ def run_eval_with_tyro(
     saved_config: ExperimentConfig,
     saved_wandb_path: str | None,
     eval_cbs_cfg: EvalCallbacksConfig | None = None,
+    launcher_args: argparse.Namespace | None = None,
 ):
+    tyro_config = normalize_motion_matched_config(tyro_config)
+
     # Use shared simulation environment setup
-    env, device, simulation_app = setup_simulation_environment(tyro_config)
+    env, device, simulation_app = setup_simulation_environment(tyro_config, launcher_args=launcher_args)
+    prime_overview_viewport(env, label="Eval")
 
     eval_log_dir = get_experiment_dir(tyro_config.logger, tyro_config.training, get_timestamp(), task_name="eval")
     eval_log_dir.mkdir(parents=True, exist_ok=True)
@@ -79,6 +88,7 @@ def run_eval_with_tyro(
         algo.export(onnx_file_path=exported_onnx_path)  # type: ignore[attr-defined]
         logger.info(f"Exported policy as onnx to: {exported_onnx_path}")
 
+    prime_overview_viewport(env, label="Eval")
     algo.evaluate_policy(
         max_eval_steps=tyro_config.training.max_eval_steps,
     )
@@ -90,6 +100,7 @@ def run_eval_with_tyro(
 
 def main() -> None:
     init_eval_logging()
+    launcher_args = parse_isaaclab_launcher_args("Evaluate a Holosoma agent.")
     checkpoint_cfg, remaining_args = tyro.cli(CheckpointConfig, return_unknown_args=True, add_help=False)
     eval_cbs_cfg, remaining_args = tyro.cli(
         EvalCallbacksConfig, return_unknown_args=True, add_help=False, args=remaining_args
@@ -103,8 +114,16 @@ def main() -> None:
         description="Overriding config on top of what's loaded.",
         config=TYRO_CONIFG,
     )
+    overwritten_tyro_config = sync_launcher_headless_config(overwritten_tyro_config, launcher_args)
 
-    run_eval_with_tyro(overwritten_tyro_config, checkpoint_cfg, saved_cfg, saved_wandb_path, eval_cbs_cfg=eval_cbs_cfg)
+    run_eval_with_tyro(
+        overwritten_tyro_config,
+        checkpoint_cfg,
+        saved_cfg,
+        saved_wandb_path,
+        eval_cbs_cfg=eval_cbs_cfg,
+        launcher_args=launcher_args,
+    )
 
 
 if __name__ == "__main__":

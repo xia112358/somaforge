@@ -7,6 +7,7 @@ from typing import Any
 
 from holosoma.config_types.randomization import RandomizationManagerCfg, RandomizationTermCfg
 from holosoma.managers.randomization.exceptions import RandomizerNotSupportedError
+from holosoma.utils.simulator_config import SimulatorType
 
 from .base import RandomizationTermBase
 
@@ -208,7 +209,7 @@ class RandomizationManager:
         # For manager-based environments, setup() is called BEFORE prepare_sim(), so tensors
         # haven't been acquired yet. The tensors will be properly initialized in prepare_sim().
         # For IsaacSim, we still need to write data and refresh.
-        if type(self.env.simulator).__name__ == "IsaacSim":
+        if self.env.simulator.get_simulator_type() in (SimulatorType.ISAACSIM, SimulatorType.ISAACLAB3_NEWTON):
             self.env.simulator.scene.write_data_to_sim()
             self.env.simulator.refresh_sim_tensors()
 

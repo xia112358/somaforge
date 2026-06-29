@@ -74,6 +74,8 @@ class RobotForceControlConfig:
 @dataclass(frozen=True)
 class ObjectConfig:
     object_urdf_path: str | None = None
+    fix_base: bool = False
+    init_pos: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.5])
 
 
 @dataclass(frozen=True)

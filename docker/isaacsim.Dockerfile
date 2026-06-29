@@ -1,7 +1,7 @@
-# IsaacSim-only image
-# Runs setup_isaacsim.sh to create the hssim conda environment (Python 3.11)
-# with IsaacSim 5.1.0, IsaacLab v2.3.0, and holosoma installed.
-FROM nvcr.io/nvidia/isaac-sim:5.1.0
+# Isaac Lab 3 Newton image
+# Runs setup_isaaclab3_newton.sh to create the env_holosoma_isaaclab3_newton
+# conda environment with Isaac Sim 6.0 and Isaac Lab Newton.
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 
 USER root
 
@@ -39,8 +39,8 @@ COPY . ./holosoma
 
 RUN . $CONDA_ROOT/etc/profile.d/conda.sh && \
     cd /workspace/holosoma/scripts && \
-    chmod +x setup_isaacsim.sh && \
-    OMNI_KIT_ACCEPT_EULA=1 ./setup_isaacsim.sh
+    chmod +x setup_isaaclab3_newton.sh && \
+    OMNI_KIT_ACCEPT_EULA=1 ./setup_isaaclab3_newton.sh
 
 
 WORKDIR /workspace/holosoma

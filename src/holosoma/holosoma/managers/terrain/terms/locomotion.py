@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Tuple
 
+import numpy as np
+
 from holosoma.managers.terrain.base import TerrainTermBase
 from holosoma.simulator.shared.terrain import Terrain
 from holosoma.utils import draw, warp_utils
@@ -118,10 +120,22 @@ class TerrainLocomotion(TerrainTermBase):
         if self._cfg.spawn.randomize_tiles:
             # Training mode: random terrain tiles for curriculum learning
             self._env_origins[:] = torch.from_numpy(self.terrain.sample_env_origins()).to(self.device).to(torch.float)
+        elif self.terrain.has_motion_matched_origins:
+            terrain_id = np.array([min(self.terrain._motion_matched_terrain_origins)], dtype=np.int64)
+            origin_0_0 = torch.from_numpy(self.terrain.sample_motion_matched_origins(terrain_id)[0]).to(self.device)
+            self._env_origins[:] = origin_0_0.to(torch.float)
         else:
             # Eval mode: all robots at tile (0,0) for deterministic evaluation
             origin_0_0 = torch.from_numpy(self.terrain._env_origins[0, 0]).to(self.device).to(torch.float)
             self._env_origins[:] = origin_0_0  # Broadcast to all robots
+
+    def sample_motion_matched_origins(self, env_ids: torch.Tensor, terrain_ids: torch.Tensor) -> torch.Tensor:
+        """Sample terrain origins that match the provided per-environment terrain ids."""
+        terrain_ids_np = terrain_ids.detach().to("cpu").numpy().astype(np.int64)
+        origins_np = self.terrain.sample_motion_matched_origins(terrain_ids_np)
+        origins = torch.from_numpy(origins_np).to(self.device).to(torch.float)
+        self._env_origins[env_ids] = origins
+        return origins
 
     def _init_base_height_points(self):
         """Returns points at which the height measurments are sampled (in base frame)

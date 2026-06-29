@@ -44,7 +44,7 @@ elif simulator_type == SimulatorType.MUJOCO:
         draw_points,
         draw_sphere,
     )
-elif simulator_type == SimulatorType.ISAACSIM:
+elif simulator_type in (SimulatorType.ISAACSIM, SimulatorType.ISAACLAB3_NEWTON):
     # Import IsaacSim drawing functions
     from holosoma.utils.adapters.isaacsim_draw_adapter import (
         clear_lines,

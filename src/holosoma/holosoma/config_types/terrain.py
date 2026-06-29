@@ -199,6 +199,9 @@ class TerrainTermCfg:
     obj_file_path: str = ""
     """Path to OBJ file for custom terrain mesh."""
 
+    motion_matched_manifest: str = ""
+    """JSON/YAML manifest that binds terrain mesh files to terrain ids for motion-matched WBT."""
+
     scale_factor: float = 1.0
     """Use for performance to scale border_size, terrain_length, terrain_width, num_ros and num_cols."""
 

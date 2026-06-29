@@ -1,7 +1,6 @@
 """Action terms for joint-level control."""
 
 from __future__ import annotations
-
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -114,6 +113,7 @@ class JointPositionActionTerm(ActionTermBase):
             actions: Raw action tensor [num_envs, action_dim]
         """
         self._substep_idx = 0
+        actions = torch.nan_to_num(actions, nan=0.0, posinf=1.0, neginf=-1.0)
         # Store raw actions
         assert self._raw_actions is not None
         self._raw_actions[:] = actions
@@ -165,7 +165,7 @@ class JointPositionActionTerm(ActionTermBase):
         # Apply torques to simulator
         self.env.simulator.apply_torques_at_dof(self.torques)
         # Cache velocities for next derivative computation
-        self._prev_dof_vel.copy_(self.env.simulator.dof_vel)
+        self._prev_dof_vel.copy_(torch.nan_to_num(self.env.simulator.dof_vel, nan=0.0, posinf=0.0, neginf=0.0))
 
     def _compute_torques(self, actions: torch.Tensor) -> torch.Tensor:
         """Compute torques from actions using PD controller.
@@ -181,18 +181,20 @@ class JointPositionActionTerm(ActionTermBase):
 
         # Compute torques based on control type
         control_type = self.env.robot_config.control.control_type
+        dof_pos = torch.nan_to_num(self.env.simulator.dof_pos, nan=0.0, posinf=0.0, neginf=0.0)
+        dof_vel = torch.nan_to_num(self.env.simulator.dof_vel, nan=0.0, posinf=0.0, neginf=0.0)
 
         if control_type == "P":
             # Position control
             torques = (
-                self._kp_scale * self.p_gains * (actions_scaled + self.env.default_dof_pos - self.env.simulator.dof_pos)
-                - self._kd_scale * self.d_gains * self.env.simulator.dof_vel
+                self._kp_scale * self.p_gains * (actions_scaled + self.env.default_dof_pos - dof_pos)
+                - self._kd_scale * self.d_gains * dof_vel
             )
         elif control_type == "V":
             # Velocity control
             torques = (
-                self._kp_scale * self.p_gains * (actions_scaled - self.env.simulator.dof_vel)
-                - self._kd_scale * self.d_gains * (self.env.simulator.dof_vel - self._prev_dof_vel) / self.env.sim_dt
+                self._kp_scale * self.p_gains * (actions_scaled - dof_vel)
+                - self._kd_scale * self.d_gains * (dof_vel - self._prev_dof_vel) / self.env.sim_dt
             )
         elif control_type == "T":
             # Torque control
@@ -206,6 +208,8 @@ class JointPositionActionTerm(ActionTermBase):
                 torques
                 + (torch.rand_like(torques) * 2.0 - 1.0) * self._rfi_lim * self._rfi_lim_scale * self.env.torque_limits
             )
+
+        torques = torch.nan_to_num(torques, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Clip torques if configured
         if self.env.robot_config.control.clip_torques:
@@ -222,7 +226,7 @@ class JointPositionActionTerm(ActionTermBase):
         super().reset(env_ids)
 
         # Reset action delay queue if applicable
-        if self.env._randomize_ctrl_delay and self.action_queue is not None:
+        if getattr(self.env, "_randomize_ctrl_delay", False) and self.action_queue is not None:
             if env_ids is None:
                 self.action_queue.zero_()
             else:

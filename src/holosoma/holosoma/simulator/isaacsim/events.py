@@ -8,6 +8,12 @@ from isaaclab.assets import Articulation, RigidObject
 from isaaclab.envs import ManagerBasedEnv
 from isaaclab.managers import SceneEntityCfg
 
+from holosoma.simulator.isaaclab3_newton.backend import (
+    body_ids_for_newton,
+    env_ids_for_newton,
+    set_newton_body_coms,
+)
+
 
 def resolve_dist_fn(
     distribution: Literal["uniform", "log_uniform", "gaussian"] = "uniform",
@@ -48,25 +54,10 @@ def randomize_body_com(
     # extract the used quantities (to enable type-hinting)
     asset: RigidObject | Articulation = env.scene[asset_cfg.name]
 
-    # resolve environment ids
-    if env_ids is None:
-        env_ids = torch.arange(num_envs, device="cpu")
-    else:
-        env_ids = env_ids.cpu()
+    coms = env.default_coms.clone()
+    env_ids = env_ids_for_newton(env_ids, num_envs, coms.device)
+    body_ids = body_ids_for_newton(asset, asset_cfg.body_ids, asset_cfg.body_names, coms.device)
 
-    # resolve body indices
-    if asset_cfg.body_ids == slice(None):
-        # Check if body_names is provided, if so resolve them to indices
-        if asset_cfg.body_names is not None:
-            body_ids, _ = asset.find_bodies(asset_cfg.body_names)
-            body_ids = torch.tensor(body_ids, dtype=torch.int, device="cpu")
-        else:
-            body_ids = torch.arange(asset.num_bodies, dtype=torch.int, device="cpu")
-    else:
-        body_ids = torch.tensor(asset_cfg.body_ids, dtype=torch.int, device="cpu")
-
-    # get the current masses of the bodies (num_assets, num_bodies)
-    coms = asset.root_physx_view.get_coms()
     # apply randomization on default values
     coms[env_ids[:, None], body_ids] = env.default_coms[env_ids[:, None], body_ids].clone()
 
@@ -90,8 +81,7 @@ def randomize_body_com(
         raise ValueError(
             f"Unknown operation: '{operation}' for property randomization. Please use 'add', 'abs' or 'scale'."
         )
-    # set the mass into the physics simulation
-    asset.root_physx_view.set_coms(coms, env_ids)
+    set_newton_body_coms(asset, coms, env_ids, body_ids)
 
 
 def randomize_rigid_body_inertia(
@@ -114,25 +104,15 @@ def randomize_rigid_body_inertia(
     # extract the used quantities (to enable type-hinting)
     asset: RigidObject | Articulation = env.scene[asset_cfg.name]
 
-    # resolve environment ids
-    if env_ids is None:
-        env_ids = torch.arange(env.scene.num_envs, device="cpu")
-    else:
-        env_ids = env_ids.cpu()
+    body_inertia = getattr(getattr(asset, "data", None), "body_inertia", None)
+    if body_inertia is None or not hasattr(asset, "set_inertias_index"):
+        raise RuntimeError(f"Asset '{type(asset).__name__}' does not expose Newton body inertia setters.")
 
-    # resolve body indices
-    if asset_cfg.body_ids == slice(None):
-        # Check if body_names is provided, if so resolve them to indices
-        if asset_cfg.body_names is not None:
-            body_ids, _ = asset.find_bodies(asset_cfg.body_names)
-            body_ids = torch.tensor(body_ids, dtype=torch.int, device="cpu")
-        else:
-            body_ids = torch.arange(asset.num_bodies, dtype=torch.int, device="cpu")
-    else:
-        body_ids = torch.tensor(asset_cfg.body_ids, dtype=torch.int, device="cpu")
+    inertias_original = getattr(body_inertia, "torch", body_inertia)
+    env_ids = env_ids_for_newton(env_ids, env.scene.num_envs, inertias_original.device)
+    body_ids = body_ids_for_newton(asset, asset_cfg.body_ids, asset_cfg.body_names, inertias_original.device)
 
     dist_fn = resolve_dist_fn(distribution)
-    inertias_original = asset.root_physx_view.get_inertias()  # (num_envs, 9) or (num_envs, num_bodies, 9)
 
     if inertias_original.ndim == 2:
         inertias = inertias_original.unsqueeze(1).clone()  # Add body_ids dimension (num_envs, 1, 9)
@@ -141,7 +121,10 @@ def randomize_rigid_body_inertia(
 
     # The inertia distribution params is stored in the order of Ixx, Iyy, Izz, Ixy, Iyz, Ixz.
     inertia_random = dist_fn(
-        *inertia_distribution_params, (env_ids.shape[0], body_ids.shape[0], 6), device=inertias.device
+        inertia_distribution_params[0].to(inertias.device),
+        inertia_distribution_params[1].to(inertias.device),
+        (env_ids.shape[0], body_ids.shape[0], 6),
+        device=inertias.device,
     )
 
     # Storage order: Ixx, Iyx, Izx, Ixy, Iyy, Izy, Ixz, Iyz, Izz (indices 0-8)
@@ -174,4 +157,4 @@ def randomize_rigid_body_inertia(
     if inertias_original.ndim == 2:
         inertias = inertias.squeeze(1)
 
-    asset.root_physx_view.set_inertias(inertias, env_ids)
+    asset.set_inertias_index(inertias=inertias[env_ids[:, None], body_ids], body_ids=body_ids, env_ids=env_ids)

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from holosoma.managers.command.terms.wbt import MotionCommand
-from holosoma.utils.rotations import quat_rotate_inverse, quaternion_to_matrix, subtract_frame_transforms
+from holosoma.utils.rotations import quat_apply_yaw, quat_rotate_inverse, quaternion_to_matrix, subtract_frame_transforms
 from holosoma.utils.torch_utils import get_axis_params, to_torch
 
 if TYPE_CHECKING:
@@ -118,6 +118,29 @@ def actions(env: WholeBodyTrackingManager) -> torch.Tensor:
     return env.action_manager.action
 
 
+def proto_command(
+    env: WholeBodyTrackingManager,
+    root_goal_offset: tuple[float, float, float] = (0.8, 0.0, 0.45),
+    active_region_center_offset: tuple[float, float, float] = (0.65, 0.0, 0.75),
+    forward_axis: tuple[float, float] = (1.0, 0.0),
+) -> torch.Tensor:
+    """Task-level proto command without per-frame demo references."""
+    root_goal = torch.tensor(root_goal_offset, dtype=torch.float32, device=env.device).expand(env.num_envs, -1)
+    active_region = torch.tensor(active_region_center_offset, dtype=torch.float32, device=env.device).expand(
+        env.num_envs, -1
+    )
+    forward = torch.tensor(forward_axis, dtype=torch.float32, device=env.device).expand(env.num_envs, -1)
+    return torch.cat((root_goal, active_region, forward), dim=-1)
+
+
+def php_velocity_command(
+    env: WholeBodyTrackingManager,
+    command: tuple[float, float] = (1.0, 0.0),
+) -> torch.Tensor:
+    """2D velocity command used by PHP-style student policies."""
+    return torch.tensor(command, dtype=torch.float32, device=env.device).expand(env.num_envs, -1)
+
+
 #########################################################################################################
 ## terms specific to Whole Body Tracking
 #########################################################################################################
@@ -133,6 +156,269 @@ def _get_motion_command_and_assert_type(env: WholeBodyTrackingManager) -> Motion
 def motion_command(env: WholeBodyTrackingManager) -> torch.Tensor:
     motion_command = _get_motion_command_and_assert_type(env)
     return motion_command.command
+
+
+def motion_ref_joint_pos(env: WholeBodyTrackingManager) -> torch.Tensor:
+    motion_command = _get_motion_command_and_assert_type(env)
+    return motion_command.joint_pos - env.default_dof_pos
+
+
+def motion_ref_joint_vel(env: WholeBodyTrackingManager) -> torch.Tensor:
+    motion_command = _get_motion_command_and_assert_type(env)
+    return motion_command.joint_vel
+
+
+def _future_motion_time_steps(motion_command: MotionCommand, offsets: tuple[int, ...]) -> torch.Tensor:
+    offsets_t = torch.tensor(offsets, dtype=torch.long, device=motion_command.device)
+    future_steps = motion_command.time_steps[:, None] + offsets_t[None, :]
+    start_idx = motion_command.motion.motion_start_idx[motion_command.motion_ids][:, None]
+    end_idx = motion_command.motion.motion_end_idx[motion_command.motion_ids][:, None]
+    return future_steps.clamp(min=start_idx, max=end_idx - 1)
+
+
+def future_motion_ref_joint_pos(
+    env: WholeBodyTrackingManager,
+    offsets: tuple[int, ...] = (1, 2, 4, 8),
+) -> torch.Tensor:
+    motion_command = _get_motion_command_and_assert_type(env)
+    future_steps = _future_motion_time_steps(motion_command, offsets)
+    joint_pos = motion_command.motion.joint_pos[future_steps]
+    joint_pos = joint_pos - env.default_dof_pos[:, None, :]
+    return joint_pos.reshape(env.num_envs, -1)
+
+
+def future_motion_ref_pos_b(
+    env: WholeBodyTrackingManager,
+    offsets: tuple[int, ...] = (1, 2, 4, 8),
+) -> torch.Tensor:
+    motion_command = _get_motion_command_and_assert_type(env)
+    future_steps = _future_motion_time_steps(motion_command, offsets)
+    num_offsets = len(offsets)
+    num_bodies = len(motion_command.motion_cfg.body_names_to_track)
+
+    body_pos_w, body_quat_w = motion_command.future_body_pos_quat_w(future_steps)
+
+    ref_pos_w = motion_command.robot_ref_pos_w[:, None, None, :].expand(-1, num_offsets, num_bodies, -1)
+    ref_quat_w = motion_command.robot_ref_quat_w[:, None, None, :].expand(-1, num_offsets, num_bodies, -1)
+    pos_b, _ = subtract_frame_transforms(
+        ref_pos_w.reshape(-1, 3),
+        ref_quat_w.reshape(-1, 4),
+        body_pos_w.reshape(-1, 3),
+        body_quat_w.reshape(-1, 4),
+    )
+    return pos_b.reshape(env.num_envs, -1)
+
+
+def future_motion_ref_ori_b(
+    env: WholeBodyTrackingManager,
+    offsets: tuple[int, ...] = (1, 2, 4, 8),
+) -> torch.Tensor:
+    motion_command = _get_motion_command_and_assert_type(env)
+    future_steps = _future_motion_time_steps(motion_command, offsets)
+    num_offsets = len(offsets)
+    num_bodies = len(motion_command.motion_cfg.body_names_to_track)
+
+    body_pos_w, body_quat_w = motion_command.future_body_pos_quat_w(future_steps)
+
+    ref_pos_w = motion_command.robot_ref_pos_w[:, None, None, :].expand(-1, num_offsets, num_bodies, -1)
+    ref_quat_w = motion_command.robot_ref_quat_w[:, None, None, :].expand(-1, num_offsets, num_bodies, -1)
+    _, ori_b = subtract_frame_transforms(
+        ref_pos_w.reshape(-1, 3),
+        ref_quat_w.reshape(-1, 4),
+        body_pos_w.reshape(-1, 3),
+        body_quat_w.reshape(-1, 4),
+    )
+    mat = quaternion_to_matrix(ori_b, w_last=True)
+    return mat[..., :2].reshape(env.num_envs, -1)
+
+
+def pelvis_global_pos(env: WholeBodyTrackingManager) -> torch.Tensor:
+    return env.simulator.robot_root_states[:, :3]
+
+
+def pelvis_global_lin_vel(env: WholeBodyTrackingManager) -> torch.Tensor:
+    return env.simulator.robot_root_states[:, 7:10]
+
+
+def terrain_height_scan(
+    env: WholeBodyTrackingManager,
+    scan_size: float = 0.7,
+    num_points_per_axis: int = 7,
+    offset: float = 0.5,
+) -> torch.Tensor:
+    scene = getattr(env.simulator, "scene", None)
+    height_scanner = getattr(scene, "sensors", {}).get("height_scanner") if scene is not None else None
+    if height_scanner is not None:
+        ray_hits_w = height_scanner.data.ray_hits_w.torch
+        sensor_pos_w = height_scanner.data.pos_w.torch
+        if ray_hits_w.shape[0] != env.num_envs:
+            raise RuntimeError(
+                f"Height scanner returned {ray_hits_w.shape[0]} scanner frames for {env.num_envs} envs."
+            )
+        return sensor_pos_w[:, 2].unsqueeze(1) - ray_hits_w[..., 2] - offset
+
+    terrain_state = env.terrain_manager.get_state("locomotion_terrain")
+    query_terrain_heights = getattr(terrain_state, "query_terrain_heights", None)
+    if not callable(query_terrain_heights):
+        return torch.zeros(env.num_envs, num_points_per_axis * num_points_per_axis, device=env.device)
+
+    half_extent = scan_size / 2.0
+    points_1d = torch.linspace(-half_extent, half_extent, num_points_per_axis, device=env.device)
+    grid_x, grid_y = torch.meshgrid(points_1d, points_1d, indexing="ij")
+    scan_points_b = torch.zeros(env.num_envs, num_points_per_axis * num_points_per_axis, 3, device=env.device)
+    scan_points_b[:, :, 0] = grid_x.flatten()
+    scan_points_b[:, :, 1] = grid_y.flatten()
+
+    scan_points_w = quat_apply_yaw(env.base_quat.repeat(1, scan_points_b.shape[1]), scan_points_b, True)
+    scan_points_w = scan_points_w + env.simulator.robot_root_states[:, None, :3]
+    terrain_heights = query_terrain_heights(scan_points_w[:, :, :2].reshape(-1, 2))
+    terrain_heights = terrain_heights.reshape(env.num_envs, -1)
+    return terrain_heights - env.simulator.robot_root_states[:, 2:3]
+
+
+def active_part_mask(env: WholeBodyTrackingManager) -> torch.Tensor:
+    motion_command = _get_motion_command_and_assert_type(env)
+    return motion_command.active_part_mask.to(torch.float32)
+
+
+def support_part_mask(env: WholeBodyTrackingManager) -> torch.Tensor:
+    motion_command = _get_motion_command_and_assert_type(env)
+    return motion_command.support_part_mask.to(torch.float32)
+
+
+def contact_part_mask(env: WholeBodyTrackingManager) -> torch.Tensor:
+    motion_command = _get_motion_command_and_assert_type(env)
+    return motion_command.contact_part_mask.to(torch.float32)
+
+
+def contact_force_ref_b(env: WholeBodyTrackingManager, force_scale: float = 300.0) -> torch.Tensor:
+    """Reference part contact forces from rollout demos in the current reference frame.
+
+    Layout follows the motion's contact-force part order, each with force xyz plus a true-contact mask.
+    The mask is generated from measured rollout contact forces, not from proto/support labels.
+    """
+    motion_command = _get_motion_command_and_assert_type(env)
+    force_w = motion_command.contact_force_part_w
+    num_parts = force_w.shape[1]
+    quat = motion_command.robot_ref_quat_w[:, None, :].expand(-1, num_parts, -1).reshape(-1, 4)
+    force_b = quat_rotate_inverse(quat, force_w.reshape(-1, 3), w_last=True).reshape(env.num_envs, num_parts, 3)
+    force_b = force_b / max(float(force_scale), 1e-6)
+    mask = motion_command.contact_force_part_mask[:, :num_parts].to(force_b.dtype).unsqueeze(-1)
+    return torch.cat([force_b, mask], dim=-1).reshape(env.num_envs, -1)
+
+
+def limb_state(env: WholeBodyTrackingManager) -> torch.Tensor:
+    """A2A limb state for [left_foot, right_foot, left_hand, right_hand].
+
+    Encoding: active=1, free=0, support=-1.
+    """
+    motion_command = _get_motion_command_and_assert_type(env)
+    active = motion_command.active_part_mask[:, :4]
+    support = motion_command.support_part_mask[:, :4]
+    return torch.where(
+        support,
+        torch.full_like(active, -1.0, dtype=torch.float32),
+        active.to(torch.float32),
+    )
+
+
+def a2a_root_ref(env: WholeBodyTrackingManager) -> torch.Tensor:
+    """Root/reference-body target in the current robot reference frame.
+
+    Layout: position(3), orientation 6D(6), linear velocity(3), angular velocity(3).
+    """
+    motion_command = _get_motion_command_and_assert_type(env)
+    pos, ori = subtract_frame_transforms(
+        motion_command.robot_ref_pos_w,
+        motion_command.robot_ref_quat_w,
+        motion_command.ref_pos_w,
+        motion_command.ref_quat_w,
+    )
+    ori_6d = quaternion_to_matrix(ori, w_last=True)[..., :2].reshape(env.num_envs, -1)
+    lin_vel = quat_rotate_inverse(
+        motion_command.robot_ref_quat_w,
+        motion_command.ref_lin_vel_w - motion_command.robot_ref_lin_vel_w,
+        w_last=True,
+    )
+    ang_vel = quat_rotate_inverse(
+        motion_command.robot_ref_quat_w,
+        motion_command.ref_ang_vel_w - motion_command.robot_ref_ang_vel_w,
+        w_last=True,
+    )
+    return torch.cat([pos, ori_6d, lin_vel, ang_vel], dim=-1)
+
+
+_A2A_LIMB_REF_BODY_NAMES = (
+    "left_ankle_roll_link",
+    "right_ankle_roll_link",
+    "left_wrist_yaw_link",
+    "right_wrist_yaw_link",
+)
+
+
+def a2a_active_limb_ref(env: WholeBodyTrackingManager) -> torch.Tensor:
+    """Fixed-slot active limb references for LF/RF/LH/RH.
+
+    Each slot contains position(3), orientation 6D(6), linear velocity(3), angular velocity(3).
+    Non-active slots are zeroed, so the actor input shape is fixed while active count can vary.
+    """
+    motion_command = _get_motion_command_and_assert_type(env)
+    body_names = list(motion_command.motion_cfg.body_names_to_track)
+    num_slots = len(_A2A_LIMB_REF_BODY_NAMES)
+    slot_dim = 15
+    refs = torch.zeros(env.num_envs, num_slots, slot_dim, device=env.device)
+
+    for slot, body_name in enumerate(_A2A_LIMB_REF_BODY_NAMES):
+        if body_name not in body_names:
+            continue
+        body_idx = body_names.index(body_name)
+        pos, ori = subtract_frame_transforms(
+            motion_command.robot_ref_pos_w,
+            motion_command.robot_ref_quat_w,
+            motion_command.body_pos_relative_w[:, body_idx],
+            motion_command.body_quat_relative_w[:, body_idx],
+        )
+        ori_6d = quaternion_to_matrix(ori, w_last=True)[..., :2].reshape(env.num_envs, -1)
+        lin_vel = quat_rotate_inverse(
+            motion_command.robot_ref_quat_w,
+            motion_command.body_lin_vel_w[:, body_idx] - motion_command.robot_ref_lin_vel_w,
+            w_last=True,
+        )
+        ang_vel = quat_rotate_inverse(
+            motion_command.robot_ref_quat_w,
+            motion_command.body_ang_vel_w[:, body_idx] - motion_command.robot_ref_ang_vel_w,
+            w_last=True,
+        )
+        refs[:, slot] = torch.cat([pos, ori_6d, lin_vel, ang_vel], dim=-1)
+
+    active = motion_command.active_part_mask[:, :num_slots].to(refs.dtype).unsqueeze(-1)
+    return (refs * active).reshape(env.num_envs, -1)
+
+
+def a2a_contact_transition_tag(env: WholeBodyTrackingManager) -> torch.Tensor:
+    """Contact transition tags for LF/RF/LH/RH.
+
+    Layout: touchdown(4), liftoff(4), computed from previous frame to current frame.
+    """
+    motion_command = _get_motion_command_and_assert_type(env)
+    current = motion_command.contact_part_mask[:, :4].to(torch.bool)
+    start_idx = motion_command.motion.motion_start_idx[motion_command.motion_ids]
+    prev_steps = torch.maximum(motion_command.time_steps - 1, start_idx)
+    previous = motion_command.motion.contact_part_mask[prev_steps, :4].to(torch.bool)
+    touchdown = current & ~previous
+    liftoff = previous & ~current
+    return torch.cat([touchdown, liftoff], dim=-1).to(torch.float32)
+
+
+def a2a_phase_duration(env: WholeBodyTrackingManager) -> torch.Tensor:
+    """Normalized phase and duration for the currently sampled motion clip."""
+    motion_command = _get_motion_command_and_assert_type(env)
+    start_idx = motion_command.motion.motion_start_idx[motion_command.motion_ids]
+    end_idx = motion_command.motion.motion_end_idx[motion_command.motion_ids]
+    length = (end_idx - start_idx).clamp(min=1)
+    phase = (motion_command.time_steps - start_idx).to(torch.float32) / (length - 1).clamp(min=1).to(torch.float32)
+    duration = length.to(torch.float32) / float(motion_command.motion.fps)
+    return torch.stack([phase, duration], dim=-1)
 
 
 def motion_ref_pos_b(env: WholeBodyTrackingManager) -> torch.Tensor:

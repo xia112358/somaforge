@@ -14,12 +14,13 @@ from holosoma.managers.randomization.base import RandomizationTermBase
 from holosoma.managers.randomization.exceptions import RandomizerNotSupportedError
 from holosoma.simulator import mujoco_required_field
 from holosoma.simulator.shared.field_decorators import MUJOCO_FIELD_ATTR
+from holosoma.utils.simulator_config import SimulatorType
 from holosoma.utils.torch_utils import torch_rand_float
 
 if TYPE_CHECKING:
     from isaaclab.managers import SceneEntityCfg
 
-    from holosoma.simulator.isaacsim.isaacsim import IsaacSim
+    from holosoma.simulator.isaaclab3_newton.isaaclab3_newton import IsaacLab3Newton
 
 
 def _ensure_env_ids_tensor(env: Any, env_ids: torch.Tensor | Sequence[int] | None) -> torch.Tensor:
@@ -29,6 +30,11 @@ def _ensure_env_ids_tensor(env: Any, env_ids: torch.Tensor | Sequence[int] | Non
     if isinstance(env_ids, torch.Tensor):
         return env_ids.to(device=env.device, dtype=torch.long)
     return torch.as_tensor(list(env_ids), device=env.device, dtype=torch.long)
+
+
+def _is_isaaclab_newton_backend(simulator: Any) -> bool:
+    get_simulator_type = getattr(simulator, "get_simulator_type", None)
+    return callable(get_simulator_type) and get_simulator_type() == SimulatorType.ISAACLAB3_NEWTON
 
 
 def _get_joint_action_term(env: Any) -> JointPositionActionTerm | None:
@@ -52,8 +58,8 @@ def _get_joint_action_term(env: Any) -> JointPositionActionTerm | None:
     return None
 
 
-def _isaacsim_randomize_rigid_body_mass(
-    simulator: IsaacSim,
+def _newton_randomize_rigid_body_mass(
+    simulator: IsaacLab3Newton,
     env_ids_cpu: torch.Tensor,
     asset_cfg: SceneEntityCfg,
     mass_distribution_params: tuple[float, float],
@@ -63,7 +69,7 @@ def _isaacsim_randomize_rigid_body_mass(
         from isaaclab.envs import mdp
         from isaaclab.managers import EventTermCfg
     except ImportError as exc:  # pragma: no cover - defensive
-        raise RuntimeError("IsaacSim mass randomization requires isaaclab.") from exc
+        raise RuntimeError("Newton mass randomization requires isaaclab.") from exc
     func = mdp.randomize_rigid_body_mass(
         EventTermCfg(
             func=mdp.randomize_rigid_body_mass,
@@ -86,8 +92,8 @@ def _isaacsim_randomize_rigid_body_mass(
     )
 
 
-def _isaacsim_randomize_rigid_body_material(
-    simulator: IsaacSim,
+def _newton_randomize_rigid_body_material(
+    simulator: IsaacLab3Newton,
     env_ids_cpu: torch.Tensor,
     asset_cfg: SceneEntityCfg,
     static_friction_range: tuple[float, float],
@@ -99,7 +105,7 @@ def _isaacsim_randomize_rigid_body_material(
         from isaaclab.envs import mdp
         from isaaclab.managers import EventTermCfg
     except ImportError as exc:  # pragma: no cover - defensive
-        raise RuntimeError("IsaacSim material randomization requires isaaclab.") from exc
+        raise RuntimeError("Newton material randomization requires isaaclab.") from exc
     func = mdp.randomize_rigid_body_material(
         EventTermCfg(
             func=mdp.randomize_rigid_body_material,
@@ -644,11 +650,11 @@ def randomize_base_com_startup(
             body_props[body_index].com.y += bias[1].item()
             body_props[body_index].com.z += bias[2].item()
             gym.set_actor_rigid_body_properties(env_ptr, actor, body_props, recomputeInertia=True)
-    elif simulator.__class__.__name__ == "IsaacSim":
+    elif _is_isaaclab_newton_backend(simulator):
         try:
             from isaaclab.managers import SceneEntityCfg
         except ImportError as exc:  # pragma: no cover - dependency optional
-            raise RuntimeError("IsaacSim base COM randomization requires isaaclab.") from exc
+            raise RuntimeError("Newton base COM randomization requires isaaclab.") from exc
         from holosoma.simulator.isaacsim.events import randomize_body_com
 
         torso_name = env.robot_config.torso_name
@@ -775,11 +781,11 @@ def randomize_mass_startup(
                 delta = np.random.uniform(added_mass_range[0], added_mass_range[1])
                 body_props[base_index].mass += delta  # Add operation: offset by delta
             gym.set_actor_rigid_body_properties(env_ptr, actor, body_props, recomputeInertia=True)
-    elif simulator.__class__.__name__ == "IsaacSim":
+    elif _is_isaaclab_newton_backend(simulator):
         try:
             from isaaclab.managers import SceneEntityCfg
         except ImportError as exc:  # pragma: no cover - defensive
-            raise RuntimeError("IsaacSim mass randomization requires isaaclab.") from exc
+            raise RuntimeError("Newton mass randomization requires isaaclab.") from exc
 
         env_ids_cpu = idx.to(device="cpu", dtype=torch.long)
         if env_ids_cpu.numel() == 0:
@@ -788,7 +794,7 @@ def randomize_mass_startup(
         if enable_link_mass:
             asset_cfg = SceneEntityCfg("robot", body_names=env.robot_config.randomize_link_body_names)
             asset_cfg.resolve(simulator.scene)  # Required to avoid applying randomization to all bodies
-            _isaacsim_randomize_rigid_body_mass(
+            _newton_randomize_rigid_body_mass(
                 simulator,
                 env_ids_cpu,
                 asset_cfg,
@@ -799,7 +805,7 @@ def randomize_mass_startup(
         if enable_base_mass:
             asset_cfg = SceneEntityCfg("robot", body_names=[env.robot_config.torso_name])
             asset_cfg.resolve(simulator.scene)  # Required to avoid applying randomization to all bodies
-            _isaacsim_randomize_rigid_body_mass(
+            _newton_randomize_rigid_body_mass(
                 simulator,
                 env_ids_cpu,
                 asset_cfg,
@@ -895,11 +901,11 @@ def randomize_friction_startup(
             for prop in shape_props:
                 prop.friction = friction_value
             gym.set_actor_rigid_shape_properties(env_ptr, actor, shape_props)
-    elif simulator.__class__.__name__ == "IsaacSim":
+    elif _is_isaaclab_newton_backend(simulator):
         try:
             from isaaclab.managers import SceneEntityCfg
         except ImportError as exc:  # pragma: no cover - defensive
-            raise RuntimeError("IsaacSim friction randomization requires isaaclab.") from exc
+            raise RuntimeError("Newton friction randomization requires isaaclab.") from exc
         env_ids_cpu = idx.to(device="cpu", dtype=torch.long)
         if env_ids_cpu.numel() == 0:
             return
@@ -907,7 +913,7 @@ def randomize_friction_startup(
         asset_cfg = SceneEntityCfg("robot", body_names=".*")
         asset_cfg.resolve(simulator.scene)  # Not stricly required, but a good practice
 
-        _isaacsim_randomize_rigid_body_material(
+        _newton_randomize_rigid_body_material(
             simulator,
             env_ids_cpu,
             asset_cfg,
@@ -954,15 +960,15 @@ def randomize_robot_rigid_body_material_startup(
         return
 
     simulator = env.simulator
-    if simulator.__class__.__name__ != "IsaacSim":
+    if not _is_isaaclab_newton_backend(simulator):
         raise RandomizerNotSupportedError(
-            f"randomize_robot_rigid_body_material_startup only supports IsaacSim, got {type(simulator).__name__}"
+            f"randomize_robot_rigid_body_material_startup only supports Newton, got {type(simulator).__name__}"
         )
 
     try:
         from isaaclab.managers import SceneEntityCfg
     except ImportError as exc:  # pragma: no cover - defensive
-        raise RuntimeError("IsaacSim material randomization requires isaaclab.") from exc
+        raise RuntimeError("Newton material randomization requires isaaclab.") from exc
 
     env_ids_cpu = idx.to(device="cpu", dtype=torch.long)
     if env_ids_cpu.numel() == 0:
@@ -972,7 +978,7 @@ def randomize_robot_rigid_body_material_startup(
     asset_cfg.resolve(simulator.scene)
 
     num_buckets = 64
-    _isaacsim_randomize_rigid_body_material(
+    _newton_randomize_rigid_body_material(
         simulator,
         env_ids_cpu,
         asset_cfg,
@@ -1002,15 +1008,15 @@ def randomize_object_rigid_body_material_startup(
         return
 
     simulator = env.simulator
-    if simulator.__class__.__name__ != "IsaacSim":
+    if not _is_isaaclab_newton_backend(simulator):
         raise RandomizerNotSupportedError(
-            f"randomize_object_rigid_body_material_startup only supports IsaacSim, got {type(simulator).__name__}"
+            f"randomize_object_rigid_body_material_startup only supports Newton, got {type(simulator).__name__}"
         )
 
     try:
         from isaaclab.managers import SceneEntityCfg
     except ImportError as exc:  # pragma: no cover - defensive
-        raise RuntimeError("IsaacSim material randomization requires isaaclab.") from exc
+        raise RuntimeError("Newton material randomization requires isaaclab.") from exc
 
     env_ids_cpu = idx.to(device="cpu", dtype=torch.long)
     if env_ids_cpu.numel() == 0:
@@ -1020,7 +1026,7 @@ def randomize_object_rigid_body_material_startup(
     asset_cfg.resolve(simulator.scene)
 
     num_buckets = 64
-    _isaacsim_randomize_rigid_body_material(
+    _newton_randomize_rigid_body_material(
         simulator,
         env_ids_cpu,
         asset_cfg,
@@ -1048,16 +1054,16 @@ def randomize_object_rigid_body_mass_startup(
         return
 
     simulator = env.simulator
-    if simulator.__class__.__name__ != "IsaacSim":
+    if not _is_isaaclab_newton_backend(simulator):
         raise RandomizerNotSupportedError(
-            f"randomize_object_rigid_body_mass_startup only supports IsaacSim, got {type(simulator).__name__}"
+            f"randomize_object_rigid_body_mass_startup only supports Newton, got {type(simulator).__name__}"
         )
 
     try:
         from isaaclab.managers import SceneEntityCfg
 
     except ImportError as exc:  # pragma: no cover - defensive
-        raise RuntimeError("IsaacSim mass randomization requires isaaclab.") from exc
+        raise RuntimeError("Newton mass randomization requires isaaclab.") from exc
 
     env_ids_cpu = idx.to(device="cpu", dtype=torch.long)
     if env_ids_cpu.numel() == 0:
@@ -1066,7 +1072,7 @@ def randomize_object_rigid_body_mass_startup(
     asset_cfg = SceneEntityCfg("object", body_names=".*")
     asset_cfg.resolve(simulator.scene)
 
-    _isaacsim_randomize_rigid_body_mass(
+    _newton_randomize_rigid_body_mass(
         simulator,
         env_ids_cpu,
         asset_cfg,
@@ -1092,15 +1098,15 @@ def randomize_object_rigid_body_inertia_startup(
         return
 
     simulator = env.simulator
-    if simulator.__class__.__name__ != "IsaacSim":
+    if not _is_isaaclab_newton_backend(simulator):
         raise RandomizerNotSupportedError(
-            f"randomize_object_rigid_body_inertia_startup only supports IsaacSim, got {type(simulator).__name__}"
+            f"randomize_object_rigid_body_inertia_startup only supports Newton, got {type(simulator).__name__}"
         )
 
     try:
         from isaaclab.managers import SceneEntityCfg
     except ImportError as exc:  # pragma: no cover - defensive
-        raise RuntimeError("IsaacSim inertia randomization requires isaaclab.") from exc
+        raise RuntimeError("Newton inertia randomization requires isaaclab.") from exc
 
     from holosoma.simulator.isaacsim.events import randomize_rigid_body_inertia
 

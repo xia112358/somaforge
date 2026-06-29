@@ -1,7 +1,5 @@
-# Base image with IsaacSim 5.1
-# Using IsaacSim as base for all environments (IsaacGym/MuJoCo/IsaacSim) to ensure
-# compatibility across simulators
-FROM nvcr.io/nvidia/isaac-sim:5.1.0
+# Base image for retargeting without binding this project to an IsaacSim release.
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 
 # Switch to root user for installation
 USER root
@@ -56,7 +54,7 @@ CMD ["/bin/bash"]
 # Retargeting-only image
 # Runs setup_retargeting.sh to create the hsretargeting conda environment (Python 3.11)
 # with holosoma_retargeting installed.
-FROM nvcr.io/nvidia/isaac-sim:5.1.0
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 
 USER root
 

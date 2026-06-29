@@ -1,22 +1,19 @@
-"""State adapter for IsaacSim with quaternion format conversion.
+"""State adapter for IsaacLab Newton state access.
 
 This module provides a lightweight adapter that handles object state access
-with automatic quaternion format conversion between IsaacSim's native wxyz
-format and holosoma's standard xyzw format.
+using Newton-native xyzw quaternions, matching holosoma's task-side convention.
 """
 
 from __future__ import annotations
 
 import torch
-from .state_utils import fullstate_wxyz_to_xyzw, fullstate_xyzw_to_wxyz
 
 
 class IsaacSimStateAdapter:
-    """Lightweight adapter for IsaacSim state access with quaternion conversion.
+    """Lightweight adapter for IsaacLab Newton state access.
 
     This adapter provides a clean interface for object state management while
-    handling the quaternion format conversion between IsaacSim (wxyz) and
-    holosoma (xyzw) automatically.
+    keeping quaternions in Newton-native xyzw order.
 
     Parameters
     ----------
@@ -27,7 +24,7 @@ class IsaacSimStateAdapter:
     scene : InteractiveScene
         IsaacLab scene containing rigid objects
     robot_states : RootStatesProxy
-        Robot states proxy (already handles wxyz->xyzw conversion)
+        Robot states proxy exposing xyzw root states
     """
 
     def __init__(self, device: torch.device, object_registry, scene, robot, robot_states):
@@ -54,7 +51,7 @@ class IsaacSimStateAdapter:
         return self._object_registry.resolve_indices(indices)
 
     def get_object_states(self, obj_name: str, env_ids: torch.Tensor) -> torch.Tensor:
-        """Get object states with automatic wxyz->xyzw conversion.
+        """Get object states in Newton-native xyzw format.
 
         Parameters
         ----------
@@ -76,27 +73,22 @@ class IsaacSimStateAdapter:
         obj_type = self._object_registry.get_object_type(obj_name)
 
         if obj_type == "robot":
-            # Robot states already converted to xyzw via RootStatesProxy
             return self._robot_states[env_ids]
 
         elif obj_type == "individual":
-            # Individual rigid objects - convert from wxyz to xyzw
             rigid_object = self._scene.rigid_objects[obj_name]
-            raw_states = rigid_object.data.root_state_w[env_ids]
-            return fullstate_wxyz_to_xyzw(raw_states)
+            return rigid_object.data.root_state_w[env_ids].clone()
 
         elif obj_type == "scene":
-            # Scene collection objects - convert from wxyz to xyzw
             scene_collection = self._scene.rigid_objects["usd_scene_objects"]
             object_index = self._object_registry.get_scene_position(obj_name)
-            raw_states = scene_collection.data.object_state_w[env_ids, object_index]
-            return fullstate_wxyz_to_xyzw(raw_states)
+            return scene_collection.data.object_state_w[env_ids, object_index].clone()
 
         else:
             raise ValueError(f"Unknown object type '{obj_type}' for object '{obj_name}'")
 
     def write_object_states(self, obj_name: str, states: torch.Tensor, env_ids: torch.Tensor) -> None:
-        """Write object states with automatic xyzw->wxyz conversion.
+        """Write object states in Newton-native xyzw format.
 
         Parameters
         ----------
@@ -110,30 +102,24 @@ class IsaacSimStateAdapter:
         obj_type = self._object_registry.get_object_type(obj_name)
 
         if obj_type == "robot":
-            # Write robot states
-            # Converts manually and skips RootStatesProxy due to unified interface via AllRootStatesProxy
             # NOTE: Intentionally does NOT apply env origins offsets for backwards compatibilty
             #       with existing robot root state setters
-            converted_states = fullstate_xyzw_to_wxyz(states)
-            self._robot.write_root_pose_to_sim(converted_states[:, :7], env_ids)
-            self._robot.write_root_velocity_to_sim(converted_states[:, 7:], env_ids)
+            self._robot.write_root_pose_to_sim(states[:, :7], env_ids)
+            self._robot.write_root_velocity_to_sim(states[:, 7:], env_ids)
 
         elif obj_type == "individual":
-            # Individual rigid objects - convert to wxyz and apply env origins
             rigid_object = self._scene.rigid_objects[obj_name]
-            converted_states = fullstate_xyzw_to_wxyz(states)
             # For now, do NOT apply env origins as WBT does this itself. We need to update WBT first
             # before uncommenting this.
-            # converted_states[:, 0:3] += self._scene.env_origins[env_ids]  # Apply environment origins
-            rigid_object.write_root_pose_to_sim(converted_states[:, :7], env_ids)
-            rigid_object.write_root_velocity_to_sim(converted_states[:, 7:], env_ids)
+            # states[:, 0:3] += self._scene.env_origins[env_ids]  # Apply environment origins
+            rigid_object.write_root_pose_to_sim(states[:, :7], env_ids)
+            rigid_object.write_root_velocity_to_sim(states[:, 7:], env_ids)
 
         elif obj_type == "scene":
-            # Scene collection objects - convert to wxyz and write to collection
             scene_collection = self._scene.rigid_objects["usd_scene_objects"]
             object_index = self._object_registry.get_scene_position(obj_name)
 
-            converted_states = fullstate_xyzw_to_wxyz(states)
+            converted_states = states.clone()
             converted_states[:, 0:3] += self._scene.env_origins[env_ids]  # Apply environment origins
 
             # Update the collection's state tensor

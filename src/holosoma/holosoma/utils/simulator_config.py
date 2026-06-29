@@ -12,6 +12,7 @@ class SimulatorType(Enum):
 
     ISAACGYM = "isaacgym"
     ISAACSIM = "isaacsim"
+    ISAACLAB3_NEWTON = "isaaclab3_newton"
     MUJOCO = "mujoco"
 
     def __str__(self) -> str:
@@ -37,6 +38,9 @@ class SimulatorConfig:
         simulator_type = config._target_
         simulator_type_name = simulator_type.split(".")[-1].lower()
         simulator_config_name = config.config.name
+        if simulator_config_name == "isaaclab3_newton":
+            cls._simulator_type = SimulatorType.ISAACLAB3_NEWTON
+            return
         if simulator_config_name != simulator_type_name:
             raise ValueError(
                 f"Config mismatch: simulator._target_ type '{simulator_type}' inconsistent with "
@@ -100,3 +104,7 @@ def set_simulator_type_enum(simulator_type: SimulatorType) -> None:
 def get_simulator_type() -> SimulatorType:
     """Get the currently configured simulator type."""
     return simulator_config.get_simulator_type()
+
+
+def is_isaaclab_simulator_type(simulator_type: SimulatorType) -> bool:
+    return simulator_type in {SimulatorType.ISAACSIM, SimulatorType.ISAACLAB3_NEWTON}

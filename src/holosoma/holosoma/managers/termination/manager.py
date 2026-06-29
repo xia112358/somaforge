@@ -50,6 +50,7 @@ class TerminationManager:
         # would arise from maintaining a parallel copy.
         self.terminated = torch.zeros(self.env.num_envs, dtype=torch.bool, device=self.device)
         self.time_outs = torch.zeros_like(self.terminated)
+        self.term_dones: dict[str, torch.Tensor] = {}
 
         self._initialize_terms()
 
@@ -89,6 +90,7 @@ class TerminationManager:
         """
         reset_flags = torch.zeros(self.env.num_envs, dtype=torch.bool, device=self.device)
         timeout_flags = torch.zeros_like(reset_flags)
+        self.term_dones = {}
 
         for term_name, term_cfg in zip(self._term_names, self._term_cfgs):
             if term_name in self._term_instances:
@@ -100,6 +102,7 @@ class TerminationManager:
                 raise TypeError(
                     f"Termination term '{term_name}' returned dtype {result.dtype}, expected torch.bool tensor."
                 )
+            self.term_dones[term_name] = result.clone()
 
             if term_cfg.is_timeout:
                 timeout_flags |= result
@@ -124,6 +127,10 @@ class TerminationManager:
         if env_ids is None:
             self.terminated.zero_()
             self.time_outs.zero_()
+            for done in self.term_dones.values():
+                done.zero_()
         else:
             self.terminated[env_ids] = False
             self.time_outs[env_ids] = False
+            for done in self.term_dones.values():
+                done[env_ids] = False

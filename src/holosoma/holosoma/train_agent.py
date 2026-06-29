@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 import traceback
+import argparse
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, TypedDict, cast
@@ -21,20 +22,23 @@ from holosoma.utils.eval_utils import (
     load_checkpoint,
 )
 from holosoma.utils.helpers import get_class
-from holosoma.utils.sim_utils import close_simulation_app
+from holosoma.utils.motion_matched_config import normalize_motion_matched_config
+from holosoma.utils.sim_utils import close_simulation_app, parse_isaaclab_launcher_args, sync_launcher_headless_config
 from holosoma.utils.tyro_utils import TYRO_CONIFG
+from holosoma.utils.viewport_camera import prime_overview_viewport
 
 
 class TrainingContext:
     """Context manager for training lifecycle and resource management."""
 
-    def __init__(self, config: ExperimentConfig):
-        self.config = config
+    def __init__(self, config: ExperimentConfig, launcher_args: argparse.Namespace | None = None):
+        self.config = normalize_motion_matched_config(config)
+        self.launcher_args = launcher_args
         self.simulation_app: Any | None = None
 
     def __enter__(self):
         # Initialize simulation app
-        self.simulation_app = init_sim_imports(self.config)
+        self.simulation_app = init_sim_imports(self.config, launcher_args=self.launcher_args)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -47,9 +51,9 @@ class TrainingContext:
 
 
 @contextmanager
-def training_context(config: ExperimentConfig):
+def training_context(config: ExperimentConfig, launcher_args: argparse.Namespace | None = None):
     """Context manager function for training."""
-    with TrainingContext(config) as ctx:
+    with TrainingContext(config, launcher_args=launcher_args) as ctx:
         yield ctx
 
 
@@ -144,7 +148,11 @@ def configure_logging(distributed_conf: MultGPUConfig | None = None, log_dir: Pa
     logging.getLogger().addHandler(LoguruLoggingBridge())
 
 
-def train(tyro_config: ExperimentConfig, training_context: TrainingContext | None = None) -> None:
+def train(
+    tyro_config: ExperimentConfig,
+    training_context: TrainingContext | None = None,
+    launcher_args: argparse.Namespace | None = None,
+) -> None:
     """Train an agent with optional context for sim app management.
 
     Parameters
@@ -154,13 +162,15 @@ def train(tyro_config: ExperimentConfig, training_context: TrainingContext | Non
         If None, creates and manages sim app automatically.
     """
 
+    tyro_config = normalize_motion_matched_config(tyro_config)
+
     if training_context is not None:
         # Use the context's pre-initialized sim app
         simulation_app = training_context.simulation_app
         auto_close = False  # Context will handle closing
     else:
         # Default behavior - create and manage sim app ourselves
-        simulation_app = init_sim_imports(tyro_config)
+        simulation_app = init_sim_imports(tyro_config, launcher_args=launcher_args)
         auto_close = True
 
     try:
@@ -259,6 +269,7 @@ def train(tyro_config: ExperimentConfig, training_context: TrainingContext | Non
 
         tyro_env_config = get_tyro_env_config(tyro_config)
         env = get_class(env_target)(tyro_env_config, device=device)
+        prime_overview_viewport(env, label="Training")
 
         # For manager system, pre-process config AFTER env creation
         # (need managers to compute dims)
@@ -288,6 +299,7 @@ def train(tyro_config: ExperimentConfig, training_context: TrainingContext | Non
             multi_gpu_cfg=distributed_conf,
         )
         algo.setup()
+        prime_overview_viewport(env, label="Training")
         algo.attach_checkpoint_metadata(tyro_config, wandb_run_path)
         if tyro_config.training.checkpoint is not None:
             loaded_checkpoint = load_checkpoint(tyro_config.training.checkpoint, str(experiment_save_dir))
@@ -320,9 +332,11 @@ def train(tyro_config: ExperimentConfig, training_context: TrainingContext | Non
 
 
 def main() -> None:
+    launcher_args = parse_isaaclab_launcher_args("Train a Holosoma agent.")
     tyro_cfg = tyro.cli(AnnotatedExperimentConfig, config=TYRO_CONIFG)
+    tyro_cfg = sync_launcher_headless_config(tyro_cfg, launcher_args)
     print(tyro_cfg.curriculum)
-    train(tyro_cfg)
+    train(tyro_cfg, launcher_args=launcher_args)
 
 
 if __name__ == "__main__":

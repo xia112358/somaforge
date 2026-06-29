@@ -44,8 +44,7 @@ class RunSimConfig:
     Minimal configuration for direct simulation via run_sim.py.
 
     Usage Examples:
-        python -m holosoma.run_sim simulator:mujoco robot:t1 terrain:terrain-locomotion-plane
-        python -m holosoma.run_sim simulator:isaacgym robot:g1 terrain:terrain-locomotion-mix
+        python -m holosoma.run_sim simulator:mujoco robot:g1 terrain:terrain-motion-matched
     """
 
     # Core components for simulation - using Annotated subcommands like ExperimentConfig
@@ -62,7 +61,7 @@ class RunSimConfig:
     terrain: Annotated[
         TerrainManagerCfg,
         tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.terrain.DEFAULTS)),
-    ] = holosoma.config_values.terrain.terrain_locomotion_plane
+    ] = holosoma.config_values.terrain.terrain_motion_matched
 
     # Minimal configs needed for FullSimConfig
     training: TrainingConfig = field(default_factory=default_training_config)

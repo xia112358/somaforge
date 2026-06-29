@@ -18,7 +18,10 @@ class RecordingConfig:
     """Path to save NPZ recording."""
 
     env_id: int = 0
-    """Environment ID to record."""
+    """Environment ID to record. Use -1 to record all eval environments."""
+
+    record_initial_state: bool = False
+    """Record the reset state before the first evaluation environment step."""
 
 
 @dataclass(frozen=True)

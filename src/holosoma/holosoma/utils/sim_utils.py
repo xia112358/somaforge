@@ -7,6 +7,7 @@ shared between eval_agent.py and run_sim.py.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
 import sys
 import threading
@@ -24,10 +25,84 @@ from holosoma.config_types.run_sim import RunSimConfig
 from holosoma.managers.terrain.manager import TerrainManager
 from holosoma.utils.common import seeding
 from holosoma.utils.helpers import get_class
+from holosoma.utils.motion_matched_config import normalize_motion_matched_config
 from holosoma.utils.rate import RateLimiter
 from holosoma.utils.safe_torch_import import torch
 from holosoma.utils.simulator_config import SimulatorType, get_simulator_type, set_simulator_type
 from holosoma.utils.torch_utils import to_torch
+
+
+def parse_isaaclab_launcher_args(description: str) -> argparse.Namespace:
+    """Parse IsaacLab AppLauncher args before Tyro sees project config args."""
+    from isaaclab.app import AppLauncher
+
+    parser = argparse.ArgumentParser(description=description, add_help=False)
+    parser.add_argument("--_holosoma-launcher-parser", action="store_true", help=argparse.SUPPRESS)
+    AppLauncher.add_app_launcher_args(parser)
+    launcher_args, remaining_args = parser.parse_known_args()
+    sys.argv = [sys.argv[0]] + fold_preset_tokens(remaining_args)
+    return launcher_args
+
+
+def fold_preset_tokens(tokens: list[str]) -> list[str]:
+    """Fold IsaacLab preset selector tokens without importing isaaclab_tasks."""
+    names: list[str] = []
+    kept: list[str] = []
+    for token in tokens:
+        if "=" not in token:
+            kept.append(token)
+            continue
+        key, val = token.split("=", 1)
+        if key in {"physics", "renderer"}:
+            stripped = val.strip()
+            if stripped:
+                names.append(stripped)
+        elif key == "presets":
+            names.extend(name.strip() for name in val.split(",") if name.strip())
+        else:
+            kept.append(token)
+
+    if not names:
+        return list(kept)
+
+    seen: set[str] = set()
+    deduped = [name for name in names if not (name in seen or seen.add(name))]
+    return [f"presets={','.join(deduped)}", *kept]
+
+
+def get_launcher_visualizers(launcher_args: argparse.Namespace | None) -> set[str]:
+    """Return normalized visualizer names requested through AppLauncher CLI args."""
+    if launcher_args is None:
+        return set()
+    visualizers = getattr(launcher_args, "visualizer", None)
+    if not visualizers:
+        return set()
+    if isinstance(visualizers, str):
+        visualizers = [token.strip() for token in visualizers.split(",")]
+    return {str(v).strip().lower() for v in visualizers if str(v).strip()}
+
+
+def sync_launcher_headless_config(
+    tyro_config: ExperimentConfig | RunSimConfig, launcher_args: argparse.Namespace | None
+) -> ExperimentConfig | RunSimConfig:
+    """Mirror IsaacLab launcher display intent into Holosoma's config."""
+    if launcher_args is None:
+        return tyro_config
+
+    if getattr(launcher_args, "headless_explicit", False) and getattr(launcher_args, "headless", False):
+        # Headless remains the strongest explicit AppLauncher request.
+        launcher_args.visualizer = []
+        headless = True
+    elif getattr(launcher_args, "visualizer_explicit", False):
+        visualizer_set = get_launcher_visualizers(launcher_args)
+        headless = False if "kit" in visualizer_set else True
+    else:
+        headless = True
+
+    launcher_args.headless = headless
+    if tyro_config.training.headless == headless:
+        return tyro_config
+    return dataclasses.replace(tyro_config, training=dataclasses.replace(tyro_config.training, headless=headless))
 
 
 def setup_simulator_imports(config: ExperimentConfig | RunSimConfig) -> None:
@@ -53,7 +128,11 @@ def setup_simulator_imports(config: ExperimentConfig | RunSimConfig) -> None:
     # IsaacSim imports handled in setup_isaaclab_launcher
 
 
-def setup_isaaclab_launcher(config: ExperimentConfig | RunSimConfig, device: str | None = None) -> Any | None:
+def setup_isaaclab_launcher(
+    config: ExperimentConfig | RunSimConfig,
+    device: str | None = None,
+    launcher_args: argparse.Namespace | None = None,
+) -> Any | None:
     """Handle IsaacSim-specific launcher setup.
 
     Parameters
@@ -70,15 +149,17 @@ def setup_isaaclab_launcher(config: ExperimentConfig | RunSimConfig, device: str
     """
     from isaaclab.app import AppLauncher
 
-    parser = argparse.ArgumentParser(description="Run simulation with IsaacSim.")
-    parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
-    parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
-    parser.add_argument("--env_spacing", type=int, default=20, help="Distance between environments in simulator.")
-    parser.add_argument("--output_dir", type=str, default="logs", help="Directory to store the output.")
-    AppLauncher.add_app_launcher_args(parser)
-
-    # Parse known arguments to get argparse params
-    args_cli, unknown_args = parser.parse_known_args()
+    unknown_args: list[str] = []
+    if launcher_args is None:
+        parser = argparse.ArgumentParser(description="Run simulation with IsaacSim.")
+        parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
+        parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
+        parser.add_argument("--env_spacing", type=int, default=20, help="Distance between environments in simulator.")
+        parser.add_argument("--output_dir", type=str, default="logs", help="Directory to store the output.")
+        AppLauncher.add_app_launcher_args(parser)
+        args_cli, unknown_args = parser.parse_known_args()
+    else:
+        args_cli = launcher_args
 
     # Set values from config — divide by world_size for multi-GPU so each rank's
     # AppLauncher only allocates resources for its share of environments.
@@ -90,6 +171,20 @@ def setup_isaaclab_launcher(config: ExperimentConfig | RunSimConfig, device: str
     args_cli.env_spacing = config.simulator.config.scene.env_spacing
     args_cli.output_dir = config.logger.base_dir
     args_cli.headless = config.training.headless
+    if getattr(args_cli, "experience", None) in (None, ""):
+        headless_experience = os.environ.get("HOLOSOMA_ISAACLAB3_NEWTON_HEADLESS_EXPERIENCE")
+        kit_experience = os.environ.get("HOLOSOMA_ISAACLAB3_NEWTON_KIT_EXPERIENCE")
+        visualizer_set = get_launcher_visualizers(args_cli)
+        use_kit_experience = "kit" in visualizer_set or not bool(getattr(args_cli, "headless", True))
+        default_experience = kit_experience if use_kit_experience else headless_experience
+        if default_experience:
+            args_cli.experience = default_experience
+    isaaclab_path = os.environ.get("ISAACLAB_PATH")
+    if isaaclab_path:
+        ext_folder_arg = f"--ext-folder {os.path.join(isaaclab_path, 'source')}"
+        kit_args = getattr(args_cli, "kit_args", "") or ""
+        if ext_folder_arg not in kit_args:
+            args_cli.kit_args = f"{kit_args} {ext_folder_arg}".strip()
     if int(os.environ.get("WORLD_SIZE", "1")) > 1:
         # Distribute simulator across GPUs when using multi-gpu training
         args_cli.device = f"cuda:{int(os.environ.get('LOCAL_RANK', '0'))}"
@@ -110,7 +205,8 @@ def setup_isaaclab_launcher(config: ExperimentConfig | RunSimConfig, device: str
 
     logger.info(f"IsaacSim args_cli: {args_cli}")
     logger.info(f"IsaacSim unknown_args: {unknown_args}")
-    sys.argv = [sys.argv[0]] + unknown_args
+    if launcher_args is None:
+        sys.argv = [sys.argv[0]] + unknown_args
 
     return simulation_app
 
@@ -176,7 +272,9 @@ def setup_keyboard_listener(env) -> threading.Thread:
 
 
 def setup_simulation_environment(
-    config: ExperimentConfig | RunSimConfig, device: str | None = None
+    config: ExperimentConfig | RunSimConfig,
+    device: str | None = None,
+    launcher_args: argparse.Namespace | None = None,
 ) -> tuple[Any, str, Any]:
     """Setup simulation environment with shared infrastructure.
 
@@ -192,6 +290,8 @@ def setup_simulation_environment(
         Configuration containing all simulation settings.
     device : str | None, optional
         Device to use for simulation. If None, auto-detects CUDA availability.
+    launcher_args : argparse.Namespace | None, optional
+        Pre-parsed IsaacLab AppLauncher arguments.
 
     Returns
     -------
@@ -200,6 +300,9 @@ def setup_simulation_environment(
         simulation_app is None for simulators that don't need it (MuJoCo, IsaacGym).
     """
     logger.info("🚀 Setting up simulation environment...")
+
+    if isinstance(config, ExperimentConfig):
+        config = normalize_motion_matched_config(config)
 
     # Setup simulator imports
     setup_simulator_imports(config)
@@ -211,8 +314,8 @@ def setup_simulation_environment(
 
     # Handle IsaacSim launcher if needed (for both ExperimentConfig and RunSimConfig)
     simulation_app = None
-    if get_simulator_type() == SimulatorType.ISAACSIM:
-        simulation_app = setup_isaaclab_launcher(config, device)
+    if get_simulator_type() in (SimulatorType.ISAACSIM, SimulatorType.ISAACLAB3_NEWTON):
+        simulation_app = setup_isaaclab_launcher(config, device, launcher_args=launcher_args)
 
     # Set random seed if specified (only for ExperimentConfig)
     if isinstance(config, ExperimentConfig) and config.training.seed is not None:
@@ -244,6 +347,8 @@ def setup_simulation_environment(
         class DirectSimWrapper:
             def __init__(self, simulator):
                 self.sim = simulator
+                self.simulator = simulator
+                self.headless = config.training.headless
 
             def reset(self):
                 # Basic reset - just initialize the simulator if needed
@@ -292,7 +397,7 @@ def close_simulation_app(simulation_app):
         The simulation app instance returned by init_sim_imports().
         Can be None for simulators that don't have an app (e.g., IsaacGym).
     """
-    if simulation_app is not None and get_simulator_type() == SimulatorType.ISAACSIM:
+    if simulation_app is not None and get_simulator_type() in (SimulatorType.ISAACSIM, SimulatorType.ISAACLAB3_NEWTON):
         logger.info("Shutting down simulation app...")
         try:
             # Work-around for IsaacLab hanging headless.
@@ -472,7 +577,7 @@ class DirectSimulation:
         # MuJoCo: no pre-step refresh needed because we are NOT running an envs/tasks requiring
         #         those tensors e.g, _rigid_body_rot, _rigid_body_vel, etc.
         simulator_type = get_simulator_type()
-        if simulator_type in [SimulatorType.ISAACGYM, SimulatorType.ISAACSIM]:
+        if simulator_type in [SimulatorType.ISAACGYM, SimulatorType.ISAACSIM, SimulatorType.ISAACLAB3_NEWTON]:
             pre_step_refresh = self.simulator.refresh_sim_tensors
         else:
             pre_step_refresh = lambda: None  # noqa: E731  (No-op for MuJoCo)

@@ -6,7 +6,7 @@
 # To enable GPU-accelerated MuJoCo Warp, rebuild without the --no-warp flag:
 #   docker build --build-arg WARP=true -f docker/mujoco.Dockerfile ...
 # and ensure NVIDIA driver >= 550.54.14 is present on the host.
-FROM nvcr.io/nvidia/isaac-sim:5.1.0
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 
 USER root
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import field
-from typing import Any
+from typing import Any, Literal
 
 from pydantic.dataclasses import dataclass
 
@@ -99,9 +99,47 @@ class MotionConfig:
     """Directory (or comma-separated directories) of .npz motion files.
     When non-empty, takes precedence over motion_file."""
 
+    motion_manifest: str = ""
+    """JSON/YAML manifest that binds motion files to terrain ids.
+    When non-empty, takes precedence over motion_dir and motion_file."""
+
     # motion sampling related
-    use_adaptive_timesteps_sampler: bool = False
-    """During training, whether to prioritize training on motion segments where the robot fails often."""
+    reset_sampler: Literal[
+        "uniform",
+        "adaptive",
+        "proto_adaptive",
+        "failure_window",
+        "adaptive_failure_window",
+        "hotspot_failure_window",
+    ] = "uniform"
+    """Reset timestep sampler: uniform RSI, adaptive fixed-bin, adaptive proto-bin, failure-window variants."""
+
+    touchdown_lift_min_window_frames: int = 2
+    """Minimum proto bin length, in motion frames, to use for reset sampling."""
+
+    failure_window_pre_frames: int = 20
+    """Number of frames before a bad-tracking failure frame to sample from."""
+
+    failure_window_post_frames: int = 20
+    """Number of frames after a bad-tracking failure frame to sample from."""
+
+    failure_window_before_prob: float = 0.5
+    """Probability of sampling from the pre-failure side of the failure window."""
+
+    failure_window_log_bin_frames: int = 25
+    """Frame width used only for logging failure-frame histogram stats."""
+
+    failure_window_success_horizon_frames: int = 50
+    """Internal-reset a failure-window retry after it runs this many frames past the original failure frame."""
+
+    hotspot_failure_uniform_mix: float = 0.3
+    """Probability of using ordinary uniform RSI instead of hotspot replay for hotspot_failure_window normal resets."""
+
+    hotspot_failure_decay: float = 0.995
+    """EMA decay applied when converting recent hotspot failure counts into replay weights."""
+
+    hotspot_failure_min_count: float = 1.0
+    """Minimum total hotspot weight before hotspot replay is used."""
 
     start_at_timestep_zero_prob: float = 0.0
     """Probability of starting at timestep zero."""
@@ -110,6 +148,76 @@ class MotionConfig:
     """When starting at timestep 0, probability of freezing motion counter at 0 (not advancing).
     This makes the robot practice holding the initial pose. Only applies when episode starts at timestep 0.
     Sampled independently each policy step; expected wait is roughly 1 / (1 - p) steps before unfreezing."""
+
+    use_start_probe_envs: bool = True
+    """Reserve motion-balanced probe environments for multi-motion commands.
+    Probe environments always reset from each motion's first frame and are used to estimate per-motion
+    start-to-end success rates and adapt normal-env motion sampling. Single-motion commands ignore this default."""
+
+    chain_motion_segments: bool = False
+    """When a sampled motion segment ends, continue into the next consecutive segment without resetting the robot.
+    This preserves natural motion continuity for normal training environments. Probe environments still reset to
+    their assigned segment starts so they can estimate per-motion completion."""
+
+    hold_at_motion_end_in_eval: bool = False
+    """During evaluation only, hold commands at the final motion frame instead of resetting when the motion ends."""
+
+    local_motion_segment_reference: bool = False
+    """During evaluation, treat each motion segment as a local template anchored at the robot state on segment entry."""
+
+    relative_reference_rotation: Literal["yaw", "full"] = "yaw"
+    """Rotation alignment used when adapting motion body targets to the current robot reference frame."""
+
+    require_chain_boundary_success: bool = True
+    """When chaining consecutive motion segments, require boundary tracking/contact checks before switching segments."""
+
+    chain_gate_before_transition: bool = False
+    """If True, require boundary success before switching to the next chained motion segment."""
+
+    chain_boundary_contact_threshold: float = 10.0
+    """Minimum contact force for an expected support limb to count as established at a chained segment boundary."""
+
+    chain_boundary_tracking_threshold: float = 0.25
+    """Maximum z tracking error for key limbs at a chained segment boundary."""
+
+    chain_transition_grace_steps: int = 8
+    """Number of steps after chaining into the next segment allowed for contact/tracking to settle."""
+
+    chain_transition_success_window: int = 3
+    """Number of consecutive successful post-chain checks required to accept the transition."""
+
+    chain_require_touchdown_completion: bool = False
+    """If True, hold at a chained segment tail until time, tracking/contact, and expected touchdown are satisfied."""
+
+    chain_completion_exit_window_steps: int = 5
+    """Number of frames before segment end where expected touchdown events may be latched."""
+
+    chain_completion_max_hold_steps: int = 10
+    """Maximum frames to hold at a segment tail waiting for touchdown completion before resetting."""
+
+    chain_touchdown_free_window_steps: int = 3
+    """A part must be contact-free for this many recent frames before a touchdown edge can latch."""
+
+    chain_touchdown_stable_steps: int = 2
+    """A part must be in contact for this many consecutive frames to count as touchdown."""
+
+    probe_env_per_motion: int = 10
+    """Number of fixed from-zero probe environments assigned to each motion when use_start_probe_envs is True."""
+
+    probe_completion_alpha: float = 0.02
+    """EMA update rate for per-motion start-probe completion, success, and failure statistics."""
+
+    probe_weight_beta: float = 0.05
+    """EMA update rate for normal-env motion sampling weights derived from start-to-end probe success."""
+
+    probe_uniform_mix: float = 0.4
+    """Uniform mixture in adapted normal-env motion weights. The rest prioritizes probe difficulty."""
+
+    probe_priority_temperature: float = 0.2
+    """Softmax temperature for converting per-motion probe difficulty into sampling priority."""
+
+    probe_fail_bin_count: int = 32
+    """Number of phase bins used to record from-zero probe failure locations."""
 
     enable_default_pose_prepend: bool = False
     """If True, pre-append interpolated frames from default pose to the motion's first pose.

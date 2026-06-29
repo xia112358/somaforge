@@ -78,12 +78,26 @@ class WholeBodyTrackingManager(BaseTask):
         motion_command = self.command_manager.get_state("motion_command")
         motion_command.update_metrics()
         self.log_dict.update(motion_command.metrics)
+        if self.termination_manager is not None:
+            terminated = self.termination_manager.terminated.to(torch.float32)
+            time_outs = self.termination_manager.time_outs.to(torch.float32)
+            self.log_dict["termination/reset_rate"] = terminated.mean().detach().cpu()
+            self.log_dict["termination/timeout_rate"] = time_outs.mean().detach().cpu()
+            for term_name, term_done in self.termination_manager.term_dones.items():
+                self.log_dict[f"termination/{term_name}_rate"] = term_done.to(torch.float32).mean().detach().cpu()
+            for term_name, term in self.termination_manager._term_instances.items():
+                for metric_name, value in getattr(term, "metrics", {}).items():
+                    self.log_dict[f"termination/{term_name}/{metric_name}"] = value.detach().cpu()
 
-    def reset_all(self):
+    def reset_all(self, step_after_reset: bool = True, pre_step_actor_state: dict | None = None, pre_step_callback=None):
         # If reset_all is called several times, clear buffer in motion_command
         motion_command = self.command_manager.get_state("motion_command")
         motion_command.init_buffers()
-        return super().reset_all()
+        return super().reset_all(
+            step_after_reset=step_after_reset,
+            pre_step_actor_state=pre_step_actor_state,
+            pre_step_callback=pre_step_callback,
+        )
 
     def _reset_robot_states_callback(self, env_ids, target_states=None):
         # TODO(jchen): Now,reset robot/object states is implemented in command/terms/wbt.MotionCommand.reset
@@ -134,36 +148,41 @@ class WholeBodyTrackingManager(BaseTask):
 
     def _draw_debug_vis_isaacsim(self):
         motion_command = self.command_manager.get_state("motion_command")
+        markers = getattr(motion_command, "visualization_markers", None)
+        if not markers:
+            return
         # torso link
         real_robot_pos_xyz = motion_command.robot_ref_pos_w.clone()
         real_robot_quat_xyzw = motion_command.robot_ref_quat_w.clone()
         real_robot_quat_wxyz = real_robot_quat_xyzw[:, [3, 0, 1, 2]]
-        motion_command.visualization_markers["real_robot"].visualize(real_robot_pos_xyz, real_robot_quat_wxyz)
+        if "real_robot" in markers:
+            markers["real_robot"].visualize(real_robot_pos_xyz, real_robot_quat_wxyz)
 
         motion_robot_pos_xyz = motion_command.ref_pos_w.clone()
         motion_robot_quat_xyzw = motion_command.ref_quat_w.clone()
         motion_robot_quat_wxyz = motion_robot_quat_xyzw[:, [3, 0, 1, 2]]
-        motion_command.visualization_markers["motion_robot"].visualize(motion_robot_pos_xyz, motion_robot_quat_wxyz)
+        if "motion_robot" in markers:
+            markers["motion_robot"].visualize(motion_robot_pos_xyz, motion_robot_quat_wxyz)
 
         for body_idx, body_names in enumerate(motion_command.motion_cfg.body_names_to_track):
             motion_robot_body_pos_xyz = motion_command.body_pos_w[0, body_idx].clone()
-            motion_command.visualization_markers[f"motion_{body_names}"].visualize(
-                motion_robot_body_pos_xyz.unsqueeze(0)
-            )
+            marker = markers.get(f"motion_{body_names}")
+            if marker is not None:
+                marker.visualize(motion_robot_body_pos_xyz.unsqueeze(0))
 
         # object
         if motion_command.motion.has_object:
             real_object_pos_xyz = motion_command.simulator_object_pos_w.clone()
             real_object_quat_xyzw = motion_command.simulator_object_quat_w.clone()
             real_object_quat_wxyz = real_object_quat_xyzw[:, [3, 0, 1, 2]]
-            motion_command.visualization_markers["real_object"].visualize(real_object_pos_xyz, real_object_quat_wxyz)
+            if "real_object" in markers:
+                markers["real_object"].visualize(real_object_pos_xyz, real_object_quat_wxyz)
 
             motion_object_pos_xyz = motion_command.object_pos_w.clone()
             motion_object_quat_xyzw = motion_command.object_quat_w.clone()
             motion_object_quat_wxyz = motion_object_quat_xyzw[:, [3, 0, 1, 2]]
-            motion_command.visualization_markers["motion_object"].visualize(
-                motion_object_pos_xyz, motion_object_quat_wxyz
-            )
+            if "motion_object" in markers:
+                markers["motion_object"].visualize(motion_object_pos_xyz, motion_object_quat_wxyz)
 
     def _draw_debug_vis_isaacgym(self):
         self.simulator.clear_lines()
@@ -188,7 +207,7 @@ class WholeBodyTrackingManager(BaseTask):
             )
 
     def _draw_debug_vis(self):
-        if self.simulator.get_simulator_type() == SimulatorType.ISAACSIM:
+        if self.simulator.get_simulator_type() == SimulatorType.ISAACLAB3_NEWTON:
             self._draw_debug_vis_isaacsim()
         elif self.simulator.get_simulator_type() == SimulatorType.ISAACGYM:
             self._draw_debug_vis_isaacgym()
@@ -241,4 +260,6 @@ class WholeBodyTrackingManager(BaseTask):
 
         time.sleep(dt)
 
-        return motion_command.time_steps[0].item() >= motion_command.motion.time_step_total - 2
+        env0_motion_id = motion_command.motion_ids[0]
+        env0_end_idx = motion_command.motion.motion_end_idx[env0_motion_id]
+        return motion_command.time_steps[0].item() >= env0_end_idx.item() - 2
