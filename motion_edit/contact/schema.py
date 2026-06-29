@@ -22,6 +22,7 @@ ContactTransitionType = Literal[
     "unknown",
 ]
 ContactSurfaceType = Literal["plane", "box_face", "mesh_face", "heightfield", "unknown"]
+FRAME_INTERVAL_SEMANTICS = "half_open_[start_frame,end_frame)"
 
 
 @dataclass(frozen=True)
@@ -96,6 +97,8 @@ class ContactEventRecord:
 
 @dataclass(frozen=True)
 class ContactAnchorRecord:
+    """Contact interval using the repository-wide half-open ``[start, end)`` convention."""
+
     motion_id: str
     anchor_id: str
     body: str
@@ -125,7 +128,7 @@ class ContactAnchorRecord:
         if self.start_frame < 0:
             raise ValueError(f"{self.anchor_id}: start_frame must be >= 0")
         if self.end_frame <= self.start_frame:
-            raise ValueError(f"{self.anchor_id}: end_frame must be > start_frame")
+            raise ValueError(f"{self.anchor_id}: end_frame must be > start_frame for half-open intervals")
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
@@ -160,6 +163,8 @@ class ContactPatchRecord:
 
 @dataclass(frozen=True)
 class ContactAnchorEditRecord:
+    """Anchor edit whose ``affected_frames`` interval is half-open ``[start, end)``."""
+
     edit_id: str
     motion_id: str
     anchor_id: str
@@ -194,8 +199,18 @@ class ContactAnchorEditRecord:
             raise ValueError(f"{self.edit_id}: requested_delta_world must have length 3")
         if self.tangent_delta is not None and len(self.tangent_delta) != 2:
             raise ValueError(f"{self.edit_id}: tangent_delta must have length 2")
+        if self.delta_object is not None and len(self.delta_object) != 3:
+            raise ValueError(f"{self.edit_id}: delta_object must have length 3")
         if self.surface_normal is not None and len(self.surface_normal) != 3:
             raise ValueError(f"{self.edit_id}: surface_normal must have length 3")
+        if self.affected_frames is not None:
+            if len(self.affected_frames) != 2:
+                raise ValueError(f"{self.edit_id}: affected_frames must be [start_frame, end_frame)")
+            start, end = int(self.affected_frames[0]), int(self.affected_frames[1])
+            if start < 0:
+                raise ValueError(f"{self.edit_id}: affected_frames start must be >= 0")
+            if end <= start:
+                raise ValueError(f"{self.edit_id}: affected_frames must be a non-empty half-open interval")
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()

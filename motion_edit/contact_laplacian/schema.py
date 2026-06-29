@@ -6,19 +6,80 @@ from typing import Any, Literal
 import numpy as np
 
 
+# The batch backend is intended to solve one deformation field with two
+# Laplacian families: temporal offset propagation and spatial body/interaction
+# preservation. Contact handles are the constraints; the pose prior is only a
+# weak gauge term and first-difference q smoothing is disabled by default.
+DUAL_LAPLACIAN_DEFAULT_WEIGHTS = {
+    "edit_contact_weight": 1000.0,
+    "fixed_contact_weight": 1000.0,
+    "temporal_laplacian_weight": 40.0,
+    "body_relative_weight": 10.0,
+    "q_prior_weight": 0.02,
+    "q_smooth_weight": 0.0,
+    "mesh_laplacian_weight": 1.0,
+}
+
+# Older generation callers explicitly supplied these temporal/prior defaults.
+# The mesh weight was sometimes overridden independently, so migration detects
+# the old temporal core rather than requiring an exact seven-value tuple.
+_LEGACY_TEMPORAL_CORE_SIGNATURE = (10.0, 10.0, 1.0, 1.0)
+
+
 @dataclass(frozen=True)
 class BatchContactLaplacianConfig:
-    num_iters: int = 5
+    num_iters: int = 8
     damping: float = 1.0e-4
     trust_region: float = 0.05
-    edit_contact_weight: float = 1000.0
-    fixed_contact_weight: float = 1000.0
-    temporal_laplacian_weight: float = 10.0
-    body_relative_weight: float = 10.0
-    q_prior_weight: float = 1.0
-    q_smooth_weight: float = 1.0
-    mesh_laplacian_weight: float = 0.0
+    edit_contact_weight: float = DUAL_LAPLACIAN_DEFAULT_WEIGHTS["edit_contact_weight"]
+    fixed_contact_weight: float = DUAL_LAPLACIAN_DEFAULT_WEIGHTS["fixed_contact_weight"]
+    temporal_laplacian_weight: float = DUAL_LAPLACIAN_DEFAULT_WEIGHTS["temporal_laplacian_weight"]
+    body_relative_weight: float = DUAL_LAPLACIAN_DEFAULT_WEIGHTS["body_relative_weight"]
+    q_prior_weight: float = DUAL_LAPLACIAN_DEFAULT_WEIGHTS["q_prior_weight"]
+    q_smooth_weight: float = DUAL_LAPLACIAN_DEFAULT_WEIGHTS["q_smooth_weight"]
+    mesh_laplacian_weight: float = DUAL_LAPLACIAN_DEFAULT_WEIGHTS["mesh_laplacian_weight"]
     finite_difference_eps: float = 1.0e-4
+    line_search_max_steps: int = 8
+    relative_cost_tolerance: float = 1.0e-8
+    step_tolerance: float = 1.0e-10
+    transport_structure_prior: bool = True
+    transport_structure_damping: float = 1.0e-4
+    transport_structure_max_step: float = 0.0
+
+    def __post_init__(self) -> None:
+        temporal_core = (
+            float(self.temporal_laplacian_weight),
+            float(self.body_relative_weight),
+            float(self.q_prior_weight),
+            float(self.q_smooth_weight),
+        )
+        if temporal_core == _LEGACY_TEMPORAL_CORE_SIGNATURE:
+            object.__setattr__(self, "temporal_laplacian_weight", DUAL_LAPLACIAN_DEFAULT_WEIGHTS["temporal_laplacian_weight"])
+            object.__setattr__(self, "body_relative_weight", DUAL_LAPLACIAN_DEFAULT_WEIGHTS["body_relative_weight"])
+            object.__setattr__(self, "q_prior_weight", DUAL_LAPLACIAN_DEFAULT_WEIGHTS["q_prior_weight"])
+            object.__setattr__(self, "q_smooth_weight", DUAL_LAPLACIAN_DEFAULT_WEIGHTS["q_smooth_weight"])
+            if float(self.mesh_laplacian_weight) == 0.0:
+                object.__setattr__(self, "mesh_laplacian_weight", DUAL_LAPLACIAN_DEFAULT_WEIGHTS["mesh_laplacian_weight"])
+            if int(self.num_iters) == 5:
+                object.__setattr__(self, "num_iters", 8)
+        for name in (
+            "edit_contact_weight",
+            "fixed_contact_weight",
+            "temporal_laplacian_weight",
+            "body_relative_weight",
+            "q_prior_weight",
+            "q_smooth_weight",
+            "mesh_laplacian_weight",
+            "damping",
+            "transport_structure_damping",
+            "transport_structure_max_step",
+        ):
+            value = float(getattr(self, name))
+            if value < 0.0 or not np.isfinite(value):
+                raise ValueError(f"{name} must be finite and nonnegative")
+        for name in ("line_search_max_steps", "num_iters"):
+            if int(getattr(self, name)) < 0:
+                raise ValueError(f"{name} must be nonnegative")
 
 
 @dataclass(frozen=True)

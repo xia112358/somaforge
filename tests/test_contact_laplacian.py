@@ -8,6 +8,7 @@ from motion_edit.contact.graph import ContactGraph
 from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord
 from motion_edit.contact_laplacian import (
     BatchContactLaplacianConfig,
+    BodyPositionTrajectoryKinematicsProvider,
     ContactHandleSpec,
     InteractionMeshSpec,
     LinearPointKinematicsProvider,
@@ -157,6 +158,101 @@ class BatchContactLaplacianTests(unittest.TestCase):
         no_temporal_lap = np.linalg.norm(no_temporal.q[:-2] - 2.0 * no_temporal.q[1:-1] + no_temporal.q[2:])
         temporal_lap = np.linalg.norm(temporal.q[:-2] - 2.0 * temporal.q[1:-1] + temporal.q[2:])
         self.assertLess(float(temporal_lap), float(no_temporal_lap))
+
+    def test_default_semantic_body_edges_are_active(self) -> None:
+        names = ("root", "torso", "left_hand", "right_hand", "left_foot", "right_foot")
+        provider = BodyPositionTrajectoryKinematicsProvider(names)
+        q = np.zeros((3, provider.nq), dtype=np.float64)
+        prior = np.zeros_like(q)
+        left_foot_x = 3 * names.index("left_foot")
+        prior[:, left_foot_x] = 1.0
+
+        result = solve_batch_contact_laplacian(
+            q,
+            provider,
+            [],
+            list(names),
+            BatchContactLaplacianConfig(
+                num_iters=4,
+                trust_region=10.0,
+                body_relative_weight=100.0,
+                q_prior_weight=0.0,
+                q_smooth_weight=0.0,
+                temporal_laplacian_weight=0.0,
+            ),
+            q_prior=prior,
+        )
+
+        self.assertIn(["root", "left_foot"], result.metadata["body_edges"])
+        points = result.q.reshape(3, len(names), 3)
+        root_x = points[:, names.index("root"), 0]
+        foot_x = points[:, names.index("left_foot"), 0]
+        self.assertGreater(float(np.mean(foot_x - root_x)), 0.9)
+        labels = result.metadata["iterations"][-1]["residual_norms_by_label"]
+        self.assertIn("body_relative", labels)
+
+    def test_accepted_step_reports_actual_residual_and_respects_trust_region(self) -> None:
+        provider = LinearPointKinematicsProvider(
+            base_points={"left_foot": np.zeros(3)},
+            weights={"left_foot": np.asarray([[1.0], [0.0], [0.0]], dtype=np.float64)},
+        )
+        q = np.zeros((2, 1), dtype=np.float64)
+        handle = ContactHandleSpec(
+            anchor_id="anchor_lf",
+            body="left_foot",
+            semantic_name="left_foot",
+            frames=np.asarray([0], dtype=np.int64),
+            target_xyz=np.asarray([[1.0, 0.0, 0.0]], dtype=np.float64),
+            kind="edited_contact",
+            weight=1000.0,
+        )
+        result = solve_batch_contact_laplacian(
+            q,
+            provider,
+            [handle],
+            ["left_foot"],
+            BatchContactLaplacianConfig(
+                num_iters=1,
+                trust_region=0.05,
+                body_relative_weight=0.0,
+                q_prior_weight=0.0,
+                q_smooth_weight=0.0,
+                temporal_laplacian_weight=0.0,
+            ),
+        )
+
+        iteration = result.metadata["iterations"][0]
+        self.assertTrue(iteration["accepted"])
+        self.assertLessEqual(float(iteration["max_frame_step"]), 0.05 + 1.0e-9)
+        self.assertLessEqual(float(iteration["objective_after"]), float(iteration["objective_before"]) + 1.0e-9)
+        self.assertAlmostEqual(float(iteration["residual_norm"]) ** 2, float(iteration["objective_after"]), places=7)
+
+    def test_contact_edit_intervals_are_half_open_and_validated(self) -> None:
+        edit = ContactAnchorEditRecord(
+            edit_id="edit_interval",
+            motion_id="motion_a",
+            anchor_id="anchor_lf",
+            body="left_foot",
+            delta_world=[0.1, 0.0, 0.0],
+            affected_frames=[3, 12],
+        )
+        edit.validate()
+        self.assertEqual(list(range(*edit.affected_frames)), list(range(3, 12)))
+        self.assertEqual(len(range(*edit.affected_frames)), 9)
+
+        invalid_intervals = ([3], [3, 3], [-1, 3])
+        for affected_frames in invalid_intervals:
+            with self.subTest(affected_frames=affected_frames):
+                invalid = ContactAnchorEditRecord(
+                    edit_id="bad_interval",
+                    motion_id="motion_a",
+                    anchor_id="anchor_lf",
+                    body="left_foot",
+                    delta_world=[0.1, 0.0, 0.0],
+                    affected_frames=list(affected_frames),
+                )
+                with self.assertRaises(ValueError):
+                    invalid.validate()
 
     def test_contact_handle_metadata_counts(self) -> None:
         provider = _provider_shared_root()

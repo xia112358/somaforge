@@ -12,7 +12,7 @@ class ContactEditorPackageTests(unittest.TestCase):
 
 
 class GenerationPackageTests(unittest.TestCase):
-    def test_generation_facade_imports_lte_fullbody_backend(self) -> None:
+    def test_contact_generation_facade_imports_current_generation_facade(self) -> None:
         from motion_edit.contact.generation import apply_contact_edit_plan_to_motion as legacy_apply
         from motion_edit.generation import apply_contact_edit_plan_to_motion
 
