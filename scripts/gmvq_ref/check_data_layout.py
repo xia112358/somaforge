@@ -89,10 +89,16 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    manifests = [REPO_ROOT / item for item in DEFAULT_MANIFESTS]
-    manifests.extend(Path(item) if Path(item).is_absolute() else REPO_ROOT / item for item in args.manifest)
+    manifests: list[Path] = []
     if args.all:
+        # In CI / remote checkouts, ignored tmp/ manifests are intentionally absent.
+        # When they exist locally, include them; otherwise check only repository manifests.
+        manifests.extend(REPO_ROOT / item for item in DEFAULT_MANIFESTS if (REPO_ROOT / item).exists())
         manifests.extend(sorted((REPO_ROOT / "configs/motion_matched").rglob("*.json")))
+    else:
+        manifests.extend(REPO_ROOT / item for item in DEFAULT_MANIFESTS)
+
+    manifests.extend(Path(item) if Path(item).is_absolute() else REPO_ROOT / item for item in args.manifest)
 
     seen: set[Path] = set()
     errors: list[str] = []
