@@ -39,6 +39,7 @@ from .contact import (
     write_contact_surfaces,
 )
 from .contact.graph import ContactGraph
+from .contact.jitter import DEFAULT_JITTER_BODIES, generate_contact_jitter_plans
 from .generation import apply_contact_edit_plan_to_motion
 from .contact.layers import read_contact_graph
 from .contact.patches import patches_from_anchors
@@ -817,6 +818,108 @@ def _cmd_generate_lte_augmentation(args: argparse.Namespace) -> None:
         print(f"warning: {warning}")
 
 
+def _cmd_generate_contact_jitter_plans(args: argparse.Namespace) -> None:
+    results, stats = generate_contact_jitter_plans(
+        args.cut_summary,
+        args.output_dir,
+        augmentations_per_motion=args.augmentations_per_motion,
+        offset_radius=args.offset_radius,
+        edit_probability=args.edit_probability,
+        max_edits=args.max_edits,
+        max_attempts=args.max_attempts,
+        seed=args.seed,
+        bodies=args.body or DEFAULT_JITTER_BODIES,
+        mode=args.mode,
+        limit_motions=args.limit_motions,
+    )
+    print(
+        "generated contact jitter plans "
+        f"plans={stats['plan_count']} motions={stats['source_motion_count']} "
+        f"skipped_no_edits={stats['skipped_no_edits']} output_dir={args.output_dir}"
+    )
+    if results:
+        print(f"manifest: {Path(args.output_dir).expanduser() / 'manifest.json'}")
+
+
+def _cmd_batch_generate_lte_augmentations(args: argparse.Namespace) -> None:
+    manifest_path = Path(args.plan_manifest).expanduser()
+    manifest = read_jsonl(manifest_path) if manifest_path.suffix == ".jsonl" else None
+    if manifest is None:
+        import json
+
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = payload.get("plans", []) if isinstance(payload, dict) else payload
+    if not isinstance(manifest, list):
+        raise ValueError(f"plan manifest must contain a list of plans: {manifest_path}")
+
+    total = 0
+    generated = 0
+    skipped = 0
+    failed = 0
+    for index, item in enumerate(manifest):
+        if args.limit is not None and total >= args.limit:
+            break
+        if index < args.start_index:
+            continue
+        total += 1
+        plan_path = Path(str(item.get("plan_path") if isinstance(item, dict) else item)).expanduser()
+        plan = read_contact_edit_plan(plan_path)
+        output_motion = Path(plan.output_motion_path or f"data/motions/generated/{plan.plan_id}.npz")
+        if args.output_motion_dir:
+            output_motion = Path(args.output_motion_dir).expanduser() / output_motion.name
+        output_contact_layer = plan.output_contact_layer
+        output_segment_layer = plan.output_segment_layer
+        output_motion_version_id = args.motion_version_prefix + plan.plan_id if args.motion_version_prefix else plan.plan_id
+        if output_motion.exists() and not args.overwrite:
+            skipped += 1
+            print(f"skip existing {output_motion}")
+            continue
+        try:
+            result = apply_contact_edit_plan_to_motion(
+                plan,
+                output_motion_path=output_motion,
+                mode="lte_fullbody",
+                source_plan_path=plan_path,
+                source_contact_layer=args.source_contact_layer,
+                output_contact_layer=output_contact_layer,
+                output_segment_layer=output_segment_layer,
+                output_motion_version_id=output_motion_version_id,
+                overwrite=args.overwrite,
+                dry_run=args.dry_run,
+                register_motion_version=args.register_motion_version,
+                build_canonical=args.build_canonical,
+                allow_draft=args.allow_draft,
+                allow_free=args.allow_free,
+                fullbody_solver=args.fullbody_solver,
+                contact_laplacian_iters=args.contact_laplacian_iters,
+                contact_laplacian_damping=args.contact_laplacian_damping,
+                contact_laplacian_trust=args.contact_laplacian_trust,
+                edit_contact_weight=args.edit_contact_weight,
+                fixed_contact_weight=args.fixed_contact_weight,
+                temporal_laplacian_weight=args.temporal_laplacian_weight,
+                body_relative_weight=args.body_relative_weight,
+                q_prior_weight=args.q_prior_weight,
+                q_smooth_weight=args.q_smooth_weight,
+                mesh_laplacian_weight=args.mesh_laplacian_weight,
+                contact_laplacian_proxy_only=args.contact_laplacian_proxy_only,
+                lte_repo_root=args.lte_repo_root,
+                ik_script=args.ik_script,
+                ik_conda_env=args.ik_conda_env,
+                ik_max_nfev=args.ik_max_nfev,
+                intermediate_dir=args.intermediate_dir,
+            )
+        except Exception as exc:
+            failed += 1
+            print(f"failed {plan_path}: {exc}")
+            if not args.continue_on_error:
+                raise
+            continue
+        generated += 1
+        action = "dry-run" if args.dry_run else "generated"
+        print(f"{action} {result.output_motion_path}")
+    print(f"batch LTE augmentation total={total} generated={generated} skipped={skipped} failed={failed}")
+
+
 def _cmd_register_motion_asset(args: argparse.Namespace) -> None:
     ensure_data_dirs()
     record = MotionAssetRecord(
@@ -1438,6 +1541,7 @@ def build_parser() -> argparse.ArgumentParser:
         "import-force-proto,bind-contact-surfaces,summarize-surface-bindings,"
         "export-surface-binding-report,export-surface-binding-overlay,"
         "contact-editor,validate-contact-edit-plan,generate-lte-augmentation,"
+        "generate-contact-jitter-plans,batch-generate-lte-augmentations,"
         "register-motion-version,build-canonical-segmentation,build-token-catalog,"
         "export-manifest,export-split-npz"
     )
@@ -1627,6 +1731,53 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ik-max-nfev", type=int, default=None)
     p.add_argument("--intermediate-dir", default=None)
     p.set_defaults(func=_cmd_generate_lte_augmentation)
+
+    p = sub.add_parser("generate-contact-jitter-plans")
+    p.add_argument("--cut-summary", required=True)
+    p.add_argument("--output-dir", required=True)
+    p.add_argument("--augmentations-per-motion", type=int, default=8)
+    p.add_argument("--offset-radius", type=float, default=0.05)
+    p.add_argument("--edit-probability", type=float, default=0.35)
+    p.add_argument("--max-edits", type=int, default=12)
+    p.add_argument("--max-attempts", type=int, default=32)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--body", action="append", choices=("left_foot", "right_foot", "left_hand", "right_hand", "left_knee", "right_knee"))
+    p.add_argument("--mode", choices=("reject", "clamp"), default="reject")
+    p.add_argument("--limit-motions", type=int, default=None)
+    p.set_defaults(func=_cmd_generate_contact_jitter_plans)
+
+    p = sub.add_parser("batch-generate-lte-augmentations")
+    p.add_argument("--plan-manifest", required=True)
+    p.add_argument("--start-index", type=int, default=0)
+    p.add_argument("--limit", type=int, default=None)
+    p.add_argument("--output-motion-dir", default=None)
+    p.add_argument("--motion-version-prefix", default="")
+    p.add_argument("--source-contact-layer", default=None)
+    p.add_argument("--allow-draft", action="store_true")
+    p.add_argument("--allow-free", action="store_true")
+    p.add_argument("--fullbody-solver", choices=("ik_subprocess", "batch_contact_laplacian"), default="ik_subprocess")
+    p.add_argument("--contact-laplacian-iters", type=int, default=5)
+    p.add_argument("--contact-laplacian-damping", type=float, default=1.0e-4)
+    p.add_argument("--contact-laplacian-trust", type=float, default=0.05)
+    p.add_argument("--edit-contact-weight", type=float, default=1000.0)
+    p.add_argument("--fixed-contact-weight", type=float, default=1000.0)
+    p.add_argument("--temporal-laplacian-weight", type=float, default=10.0)
+    p.add_argument("--body-relative-weight", type=float, default=10.0)
+    p.add_argument("--q-prior-weight", type=float, default=1.0)
+    p.add_argument("--q-smooth-weight", type=float, default=1.0)
+    p.add_argument("--mesh-laplacian-weight", type=float, default=0.0)
+    p.add_argument("--contact-laplacian-proxy-only", action="store_true")
+    p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--register-motion-version", action="store_true")
+    p.add_argument("--build-canonical", action="store_true")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--continue-on-error", action="store_true")
+    p.add_argument("--lte-repo-root", default="/home/xiaz/lte")
+    p.add_argument("--ik-script", default=None)
+    p.add_argument("--ik-conda-env", default="env_pyroki_climb_projection")
+    p.add_argument("--ik-max-nfev", type=int, default=None)
+    p.add_argument("--intermediate-dir", default=None)
+    p.set_defaults(func=_cmd_batch_generate_lte_augmentations)
 
     p = sub.add_parser("register-motion-asset")
     p.add_argument("--motion-asset-id", required=True)
