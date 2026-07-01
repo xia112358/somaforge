@@ -22,6 +22,7 @@ viewer = [
 [project.scripts]
 motion-edit = "motion_edit.cli:main"
 motion-edit-bake-force = "motion_edit.contact_force.cli:main"
+motion-edit-contact-aware-augment = "motion_edit.generation.contact_aware_cli:main"
 motion-edit-seg = "motion_edit.segmentation.cli:main"
 motion-edit-seg-cutter = "motion_edit.segmentation.cutter:main"
 
