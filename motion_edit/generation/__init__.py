@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from motion_edit.generation.contact_aware import ContactAwareGenerationResult, apply_contact_aware_edit_plan_to_motion
 from motion_edit.generation.contact_force_bake import ContactForceBakeResult, bake_prescribed_contact_forces_for_motion
 from motion_edit.generation.lte_fullbody import (
     LteGenerationResult,
@@ -33,8 +34,10 @@ def apply_contact_edit_plan_to_motion(*args: Any, **kwargs: Any) -> LteGeneratio
 
 
 __all__ = [
+    "ContactAwareGenerationResult",
     "ContactForceBakeResult",
     "LteGenerationResult",
+    "apply_contact_aware_edit_plan_to_motion",
     "apply_contact_edit_plan_to_motion",
     "bake_prescribed_contact_forces_for_motion",
     "resolve_body_index",
