@@ -69,16 +69,13 @@ def solve_prescribed_contact_forces(
     position_prior = _optional_position(contact_part_position_w, n_frames=n_frames, n_parts=n_parts)
 
     force_w = np.zeros((n_frames, n_parts, 3), dtype=np.float64)
-    position_w = (
-        position_prior.copy()
-        if position_prior is not None
-        else np.full((n_frames, n_parts, 3), np.nan, dtype=np.float64)
-    )
+    position_sum = np.zeros((n_frames, n_parts, 3), dtype=np.float64)
     position_weight = np.zeros((n_frames, n_parts), dtype=np.float64)
     observed_mask = np.zeros((n_frames, n_parts), dtype=bool)
+    backend_sample_count = 0
+    used_sample_count = 0
     unknown_samples = 0
     skipped_by_intended_mask = 0
-    sample_count = 0
 
     for frame in range(n_frames):
         samples = backend.solve_frame(
@@ -88,6 +85,7 @@ def solve_prescribed_contact_forces(
             qacc=None if qacc is None else qacc[frame],
             config=cfg,
         )
+        backend_sample_count += len(samples)
         for sample in samples:
             sample.validate()
             part_index = _assign_sample_to_part(
@@ -107,25 +105,20 @@ def solve_prescribed_contact_forces(
             position = np.asarray(sample.position_w, dtype=np.float64)
             force_w[frame, part_index] += force
             weight = max(float(np.linalg.norm(force)), float(cfg.force_norm_eps))
-            if not np.all(np.isfinite(position_w[frame, part_index])):
-                position_w[frame, part_index] = 0.0
-            position_w[frame, part_index] += position * weight
+            position_sum[frame, part_index] += position * weight
             position_weight[frame, part_index] += weight
             observed_mask[frame, part_index] = True
-            sample_count += 1
+            used_sample_count += 1
 
-    weighted = position_weight > 0.0
-    position_w[weighted] = position_w[weighted] / position_weight[weighted, None]
     if position_prior is not None:
-        position_w[~weighted] = position_prior[~weighted]
+        position_w = position_prior.copy()
+    else:
+        position_w = np.zeros((n_frames, n_parts, 3), dtype=np.float64)
+    weighted = position_weight > 0.0
+    position_w[weighted] = position_sum[weighted] / position_weight[weighted][:, None]
     mask = intended_mask.copy() if intended_mask is not None else observed_mask
     if cfg.zero_inactive_contacts and intended_mask is not None:
         force_w[~intended_mask] = 0.0
-    if position_prior is None:
-        # Keep inactive positions finite for downstream npz consumers without
-        # inventing active contact points.
-        inactive = ~mask
-        position_w[inactive] = 0.0
     missing_intended = int(np.count_nonzero(mask & ~observed_mask)) if intended_mask is not None else 0
     force_norm = np.linalg.norm(force_w, axis=2)
     metadata = {
@@ -135,7 +128,8 @@ def solve_prescribed_contact_forces(
         "integrated": False,
         "solve_mode": cfg.solve_mode,
         "part_order": list(part_order),
-        "sample_count": int(sample_count),
+        "backend_sample_count": int(backend_sample_count),
+        "used_sample_count": int(used_sample_count),
         "unknown_sample_count": int(unknown_samples),
         "skipped_by_intended_mask_count": int(skipped_by_intended_mask),
         "missing_intended_contact_frames": int(missing_intended),
