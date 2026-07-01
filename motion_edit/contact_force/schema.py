@@ -15,6 +15,30 @@ DEFAULT_CONTACT_FORCE_PART_ORDER = (
     "right_knee",
 )
 
+WBT_6PART_CONTACT_FORCE_PART_ORDER = (
+    "LF",
+    "RF",
+    "LH",
+    "RH",
+    "LK",
+    "RK",
+)
+
+WBT_6PART_CANONICAL_TO_SHORT = {
+    "left_foot": "LF",
+    "right_foot": "RF",
+    "left_hand": "LH",
+    "right_hand": "RH",
+    "left_knee": "LK",
+    "right_knee": "RK",
+    "LF": "LF",
+    "RF": "RF",
+    "LH": "LH",
+    "RH": "RH",
+    "LK": "LK",
+    "RK": "RK",
+}
+
 
 @dataclass(frozen=True)
 class ContactForceSample:
@@ -80,10 +104,35 @@ class CanonicalContactForceField:
     def to_npz_arrays(self) -> dict[str, np.ndarray]:
         self.validate()
         return {
-            "contact_force_part_order": np.asarray(self.part_order, dtype=object),
+            "contact_force_part_order": np.asarray(self.part_order, dtype=np.str_),
+            "contact_force_part_w": np.asarray(self.force_w, dtype=np.float64),
             "contact_force_part_force_w": np.asarray(self.force_w, dtype=np.float64),
             "contact_force_part_position_w": np.asarray(self.position_w, dtype=np.float64),
             "contact_force_part_mask": np.asarray(self.mask, dtype=bool),
+        }
+
+    def to_wbt_6part_npz_arrays(self) -> dict[str, np.ndarray]:
+        self.validate()
+        source_index = {
+            WBT_6PART_CANONICAL_TO_SHORT.get(str(part), str(part)): index
+            for index, part in enumerate(self.part_order)
+        }
+        force = np.zeros((self.force_w.shape[0], len(WBT_6PART_CONTACT_FORCE_PART_ORDER), 3), dtype=np.float64)
+        position = np.zeros_like(force)
+        mask = np.zeros((self.force_w.shape[0], len(WBT_6PART_CONTACT_FORCE_PART_ORDER)), dtype=bool)
+        for dst_i, part in enumerate(WBT_6PART_CONTACT_FORCE_PART_ORDER):
+            src_i = source_index.get(part)
+            if src_i is None:
+                continue
+            force[:, dst_i] = np.asarray(self.force_w[:, src_i], dtype=np.float64)
+            position[:, dst_i] = np.asarray(self.position_w[:, src_i], dtype=np.float64)
+            mask[:, dst_i] = np.asarray(self.mask[:, src_i], dtype=bool)
+        return {
+            "contact_force_part_order": np.asarray(WBT_6PART_CONTACT_FORCE_PART_ORDER, dtype=np.str_),
+            "contact_force_part_w": force,
+            "contact_force_part_force_w": force,
+            "contact_force_part_position_w": position,
+            "contact_force_part_mask": mask,
         }
 
 

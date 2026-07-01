@@ -2493,6 +2493,17 @@ class WorkbenchCliTests(unittest.TestCase):
             ["export-contact-overlay", "--source", "contact/force_contact", "--motion-id", "motion_a", "--output", "overlay.json"]
         )
         validate_plan_args = parser.parse_args(["validate-contact-edit-plan", "--plan", "plan.json"])
+        ref_args = parser.parse_args(
+            [
+                "generate-ref",
+                "--plan",
+                "plan.json",
+                "--output-motion",
+                "out.npz",
+                "--output-contact-layer",
+                "contact/out",
+            ]
+        )
         generate_args = parser.parse_args(["generate-lte-augmentation", "--plan", "plan.json", "--output-motion", "out.npz"])
         move_anchor_args = parser.parse_args(
             [
@@ -2522,6 +2533,9 @@ class WorkbenchCliTests(unittest.TestCase):
         self.assertEqual(contact_args.cmd, "list-contact-layer")
         self.assertEqual(overlay_args.cmd, "export-contact-overlay")
         self.assertEqual(validate_plan_args.cmd, "validate-contact-edit-plan")
+        self.assertEqual(ref_args.cmd, "generate-ref")
+        self.assertEqual(ref_args.output_contact_layer, "contact/out")
+        self.assertFalse(ref_args.no_check_policy_ref)
         self.assertEqual(generate_args.cmd, "generate-lte-augmentation")
         self.assertFalse(generate_args.allow_draft)
         self.assertEqual(generate_args.mode, "lte_fullbody")
@@ -2559,6 +2573,61 @@ class WorkbenchCliTests(unittest.TestCase):
             fps=50,
             with_terrain=False,
         )
+
+    def test_generate_ref_uses_plan_source_motion_for_force_retarget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan_path = root / "plan.json"
+            plan_path.write_text(
+                json.dumps(
+                    {
+                        "plan_id": "plan_a",
+                        "source_motion_path": "source_full.npz",
+                        "source_motion_id": "motion_a",
+                        "source_contact_layer": "contact/source",
+                        "status": "validated",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = build_parser().parse_args(
+                [
+                    "generate-ref",
+                    "--plan",
+                    str(plan_path),
+                    "--output-motion",
+                    "out.npz",
+                    "--output-contact-layer",
+                    "contact/out",
+                    "--no-check-policy-ref",
+                ]
+            )
+            fake_result = argparse.Namespace(
+                output_motion_path=Path("out.npz"),
+                generation=argparse.Namespace(
+                    output_contact_layer="contact/out",
+                    output_segment_layer=None,
+                    output_motion_version_id=None,
+                ),
+                force_bake=argparse.Namespace(
+                    metadata={
+                        "matched_phase_count": 1,
+                        "unmatched_target_phase_count": 0,
+                        "force_norm_max": 12.0,
+                    }
+                ),
+                warnings=[],
+            )
+            with mock.patch.object(cli, "apply_contact_aware_edit_plan_to_motion", return_value=fake_result) as generate_mock:
+                cli._cmd_generate_ref(args)
+
+        kwargs = generate_mock.call_args.kwargs
+        self.assertEqual(kwargs["force_solve_mode"], "retarget")
+        self.assertIsNone(kwargs["force_source_ref_path"])
+        self.assertEqual(kwargs["force_target_contact_layer_path"], cli.LAYERS_ROOT / "contact/out")
+        self.assertEqual(kwargs["force_target_motion_id"], "motion_a")
+        self.assertEqual(kwargs["fullbody_solver"], "batch_contact_laplacian")
+        self.assertFalse(kwargs["contact_laplacian_proxy_only"])
 
     def test_legacy_accept_reject_command_prints_warning(self) -> None:
         args = argparse.Namespace(

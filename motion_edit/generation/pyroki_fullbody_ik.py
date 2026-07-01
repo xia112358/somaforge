@@ -19,6 +19,8 @@ DEFAULT_ROBOT_URDF = Path(
 TARGET_LINK_ALIASES: dict[str, tuple[str, ...]] = {
     "pelvis": ("pelvis",),
     "torso": ("torso_link",),
+    "left_knee": ("left_knee_link",),
+    "right_knee": ("right_knee_link",),
     "left_foot": ("left_ankle_roll_link", "left_ankle_roll_sphere_1_link"),
     "right_foot": ("right_ankle_roll_link", "right_ankle_roll_sphere_1_link"),
     "left_hand": ("left_sphere_hand_tip_link", "left_sphere_hand_link", "left_wrist_yaw_link"),
@@ -28,6 +30,8 @@ TARGET_LINK_ALIASES: dict[str, tuple[str, ...]] = {
 TARGET_WEIGHTS: dict[str, float] = {
     "pelvis": 10.0,
     "torso": 4.0,
+    "left_knee": 4.0,
+    "right_knee": 4.0,
     "left_foot": 8.0,
     "right_foot": 8.0,
     "left_hand": 5.0,

@@ -5,6 +5,8 @@ from typing import Any, Sequence
 
 import numpy as np
 
+from motion_edit.contact.dynamics import contact_local_phase
+
 from .kinematics import KinematicsProvider
 from .schema import ContactHandleSpec, InteractionMeshSpec
 
@@ -49,15 +51,29 @@ def add_contact_handle_residuals(
         handle.validate()
         frames = np.asarray(handle.frames, dtype=np.int64)
         target = np.asarray(handle.target_xyz, dtype=np.float64)
+        strengths = _compiled_contact_strengths(handle, len(frames))
         for local_index, frame in enumerate(frames):
             if frame < 0 or frame >= n_frames:
                 raise ValueError(f"{handle.anchor_id}: frame {frame} outside trajectory length {n_frames}")
+            effective_weight = float(handle.weight) * float(strengths[local_index])
             point = kinematics.fk_points(q[frame], [handle.semantic_name])[0]
             jac = kinematics.jacobian_points(q[frame], [handle.semantic_name])[0]
             residual = target[local_index] - point
             for axis in range(3):
                 values = {variable_index(frame, dof, nq): jac[axis, dof] for dof in range(nq)}
-                system.add_row(values, residual[axis], f"{handle.kind}:{handle.anchor_id}", float(handle.weight))
+                system.add_row(values, residual[axis], f"{handle.kind}:{handle.anchor_id}", effective_weight)
+
+
+def _compiled_contact_strengths(handle: ContactHandleSpec, frame_count: int) -> np.ndarray:
+    if handle.load_profile is None:
+        return np.ones(int(frame_count), dtype=np.float64)
+    phase = contact_local_phase(int(frame_count))
+    strength = np.asarray(handle.load_profile.evaluate(phase), dtype=np.float64)
+    if strength.shape != (int(frame_count),):
+        raise ValueError(f"{handle.anchor_id}: compiled load strength shape mismatch")
+    if not np.all(np.isfinite(strength)) or np.any(strength < 0.0):
+        raise ValueError(f"{handle.anchor_id}: compiled load strength must be finite and nonnegative")
+    return strength
 
 
 def add_q_prior_residuals(

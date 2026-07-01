@@ -1,6 +1,7 @@
 from .anchors import anchors_from_contact_mask
 from .actions import filter_short_raw_missing_anchors, merge_nearby_contact_anchors, move_anchor_in_contact_layer, move_anchor_in_graph
 from .bindings import bind_segment_to_contact_graph, contact_metadata_for_bounds
+from .dynamics import ContactLoadProfile, build_load_profile_from_force_phase, load_profile_from_motion_force
 from .edits import make_anchor_move_edit, move_contact_anchor, move_contact_anchor_free, move_contact_anchor_on_surface
 from .events import bodies_from_mask, body_names_for_mask, detect_contact_events
 from .graph import ContactGraph, contact_graph_from_masks
@@ -55,6 +56,7 @@ __all__ = [
     "ContactPatchRecord",
     "ContactSurfaceRecord",
     "ContactTransitionRecord",
+    "ContactLoadProfile",
     "anchors_from_contact_mask",
     "append_anchor_edit_to_plan",
     "bind_segment_to_contact_graph",
@@ -65,8 +67,10 @@ __all__ = [
     "body_names_for_mask",
     "contact_graph_from_masks",
     "contact_metadata_for_bounds",
+    "build_load_profile_from_force_phase",
     "detect_contact_events",
     "mask_string",
+    "load_profile_from_motion_force",
     "make_anchor_move_edit",
     "move_contact_anchor",
     "move_contact_anchor_free",

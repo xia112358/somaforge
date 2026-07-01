@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 import numpy as np
 
+from motion_edit.contact.dynamics import ContactLoadProfile
+
 
 # The batch backend is intended to solve one deformation field with two
 # Laplacian families: temporal offset propagation and spatial body/interaction
@@ -93,6 +95,7 @@ class ContactHandleSpec:
     weight: float
     surface_id: str | None = None
     object_id: str | None = None
+    load_profile: ContactLoadProfile | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
@@ -108,6 +111,8 @@ class ContactHandleSpec:
             raise ValueError(f"{self.anchor_id}: target_xyz contains NaN or Inf")
         if float(self.weight) < 0.0 or not np.isfinite(float(self.weight)):
             raise ValueError(f"{self.anchor_id}: weight must be finite and nonnegative")
+        if self.load_profile is not None:
+            self.load_profile.validate()
 
 
 @dataclass(frozen=True)

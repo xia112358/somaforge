@@ -5,6 +5,8 @@ from typing import Sequence
 
 import numpy as np
 
+from motion_edit.contact.dynamics import ContactLoadProfile, contact_local_phase
+
 from .kinematics import KinematicsProvider
 from .schema import BatchContactLaplacianConfig, ContactHandleSpec, ContactLaplacianSolveResult, InteractionMeshSpec
 from .solver import solve_batch_contact_laplacian
@@ -185,10 +187,26 @@ def _slice_handles_for_window(handles: Sequence[ContactHandleSpec], *, start: in
                 weight=float(handle.weight),
                 surface_id=handle.surface_id,
                 object_id=handle.object_id,
+                load_profile=_slice_load_profile(handle, mask),
                 metadata=metadata,
             )
         )
     return local
+
+
+def _slice_load_profile(handle: ContactHandleSpec, mask: np.ndarray) -> ContactLoadProfile | None:
+    if handle.load_profile is None:
+        return None
+    full_phase = contact_local_phase(len(np.asarray(handle.frames, dtype=np.int64)))
+    selected_strength = handle.load_profile.evaluate(full_phase[np.asarray(mask, dtype=bool)])
+    return ContactLoadProfile(
+        phase=contact_local_phase(len(selected_strength)),
+        strength=selected_strength,
+        metadata={
+            **dict(handle.load_profile.metadata),
+            "sliced_for_transfer_window": True,
+        },
+    )
 
 
 def _slice_interaction_mesh(mesh: InteractionMeshSpec | None, *, start: int, end: int) -> InteractionMeshSpec | None:

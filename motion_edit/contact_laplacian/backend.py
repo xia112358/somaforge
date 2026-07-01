@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from motion_edit.contact.dynamics import load_profile_from_motion_force
 from motion_edit.contact.schema import ContactAnchorEditRecord
 
 from .kinematics import KinematicsProvider
@@ -23,10 +24,14 @@ DEFAULT_CONTACT_BODY_TO_SEMANTIC = {
     "right_foot": "right_foot",
     "left_hand": "left_hand",
     "right_hand": "right_hand",
+    "left_knee": "left_knee",
+    "right_knee": "right_knee",
     "lf": "left_foot",
     "rf": "right_foot",
     "lh": "left_hand",
     "rh": "right_hand",
+    "lk": "left_knee",
+    "rk": "right_knee",
 }
 
 
@@ -38,6 +43,8 @@ def build_contact_handle_specs(
     kinematics: KinematicsProvider,
     config: BatchContactLaplacianConfig | None = None,
     body_to_semantic: Mapping[str, str] | None = None,
+    source_motion: Mapping[str, Any] | None = None,
+    min_load_strength: float = 0.05,
     zero_delta_eps: float = 1.0e-9,
 ) -> tuple[list[ContactHandleSpec], dict[str, Any]]:
     cfg = config or BatchContactLaplacianConfig()
@@ -50,6 +57,7 @@ def build_contact_handle_specs(
     edited_by_anchor: dict[str, ContactAnchorEditRecord] = {}
     zero_delta_anchor_ids: set[str] = set()
     skipped: list[dict[str, str]] = []
+    load_profile_count = 0
 
     handles: list[ContactHandleSpec] = []
     for edit in edits:
@@ -67,6 +75,16 @@ def build_contact_handle_specs(
             continue
         start, end = _edit_interval(edit, anchor, n_frames)
         frames = np.arange(start, end, dtype=np.int64)
+        load_profile = _load_profile_for_anchor(
+            source_motion=source_motion,
+            body=edit.body or anchor.body,
+            start=start,
+            end=end,
+            normal=edit.surface_normal or anchor.surface_normal or anchor.normal,
+            min_load_strength=min_load_strength,
+        )
+        if load_profile is not None:
+            load_profile_count += 1
         target = _fk_trajectory(q_ref, kinematics, semantic, frames) + delta[None, :]
         handles.append(
             ContactHandleSpec(
@@ -79,6 +97,7 @@ def build_contact_handle_specs(
                 weight=float(edit.metadata.get("contact_laplacian_weight", cfg.edit_contact_weight)) if isinstance(edit.metadata, dict) else float(cfg.edit_contact_weight),
                 surface_id=edit.surface_id or anchor.surface_id,
                 object_id=anchor.object_id,
+                load_profile=load_profile,
                 metadata={"edit_id": edit.edit_id},
             )
         )
@@ -97,6 +116,16 @@ def build_contact_handle_specs(
             skipped.append({"anchor_id": anchor.anchor_id, "reason": "empty fixed contact interval"})
             continue
         frames = np.arange(start, end, dtype=np.int64)
+        load_profile = _load_profile_for_anchor(
+            source_motion=source_motion,
+            body=anchor.body,
+            start=start,
+            end=end,
+            normal=anchor.surface_normal or anchor.normal,
+            min_load_strength=min_load_strength,
+        )
+        if load_profile is not None:
+            load_profile_count += 1
         handles.append(
             ContactHandleSpec(
                 anchor_id=anchor.anchor_id,
@@ -108,6 +137,7 @@ def build_contact_handle_specs(
                 weight=float(cfg.fixed_contact_weight),
                 surface_id=anchor.surface_id,
                 object_id=anchor.object_id,
+                load_profile=load_profile,
                 metadata={"zero_delta_edit": anchor.anchor_id in zero_delta_anchor_ids},
             )
         )
@@ -118,8 +148,31 @@ def build_contact_handle_specs(
         "zero_delta_edit_count": len(zero_delta_anchor_ids),
         "skipped_anchor_count": len(skipped),
         "skipped_anchors": skipped,
+        "force_load_profile_count": int(load_profile_count),
+        "force_load_profile_source": "source_motion_contact_force_part_w" if source_motion is not None else "none",
     }
     return handles, metadata
+
+
+def _load_profile_for_anchor(
+    *,
+    source_motion: Mapping[str, Any] | None,
+    body: str,
+    start: int,
+    end: int,
+    normal: Sequence[float] | None,
+    min_load_strength: float,
+):
+    if source_motion is None:
+        return None
+    return load_profile_from_motion_force(
+        dict(source_motion),
+        body=body,
+        start_frame=start,
+        end_frame=end,
+        normal_w=normal,
+        min_strength=min_load_strength,
+    )
 
 
 def _resolve_semantic_name(body: str, aliases: Mapping[str, str]) -> str | None:

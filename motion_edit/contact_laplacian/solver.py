@@ -38,8 +38,14 @@ _SEMANTIC_BODY_EDGE_CANDIDATES = (
     ("pelvis", "torso"),
     ("root", "left_foot"),
     ("root", "right_foot"),
+    ("root", "left_knee"),
+    ("root", "right_knee"),
     ("pelvis", "left_foot"),
     ("pelvis", "right_foot"),
+    ("pelvis", "left_knee"),
+    ("pelvis", "right_knee"),
+    ("left_knee", "left_foot"),
+    ("right_knee", "right_foot"),
     ("torso", "left_hand"),
     ("torso", "right_hand"),
 )
@@ -85,6 +91,7 @@ def solve_batch_contact_laplacian(
 
     edited_count = sum(1 for handle in handles if handle.kind == "edited_contact")
     fixed_count = sum(1 for handle in handles if handle.kind == "fixed_contact")
+    force_load_count = sum(1 for handle in handles if handle.load_profile is not None)
     contact_handle_active = bool(edited_count or fixed_count)
 
     warnings: list[str] = []
@@ -228,6 +235,9 @@ def solve_batch_contact_laplacian(
         "edited_handle_count": int(edited_count),
         "fixed_handle_count": int(fixed_count),
         "handle_count": int(len(handles)),
+        "force_load_active": bool(force_load_count),
+        "force_load_handle_count": int(force_load_count),
+        "force_load_weight_mode": "contact_local_phase_profile" if force_load_count else "none",
         "interaction_mesh": mesh_meta,
         "spatial_laplacian_active": bool(body_spatial_active or mesh_spatial_active),
         "temporal_laplacian_active": bool(temporal_active),

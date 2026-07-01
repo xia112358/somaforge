@@ -13,6 +13,7 @@ from typing import Any
 import numpy as np
 
 from motion_edit.contact.io import read_contact_surfaces
+from motion_edit.contact.dynamics import load_profile_from_motion_force
 from motion_edit.contact.layers import read_contact_graph, write_contact_layer
 from motion_edit.contact.patches import patches_from_anchors
 from motion_edit.contact.plans import ContactEditPlan, validate_contact_edit_plan
@@ -64,8 +65,8 @@ LTE_FULLBODY_KEYPOINT_LINKS = {
     "right_hand": ("right_wrist_yaw_link", "right_rubber_hand_link"),
 }
 
-LTE_FULLBODY_CONTACT_NAMES = ("left_hand", "right_hand", "left_foot", "right_foot")
-LTE_HANDLE_KEYPOINT_NAMES = ("root", "torso", "left_hand", "right_hand", "left_foot", "right_foot")
+LTE_FULLBODY_CONTACT_NAMES = ("left_hand", "right_hand", "left_foot", "right_foot", "left_knee", "right_knee")
+LTE_HANDLE_KEYPOINT_NAMES = ("root", "torso", "left_hand", "right_hand", "left_foot", "right_foot", "left_knee", "right_knee")
 
 CONTACT_BODY_LINK_CANDIDATES = {
     "lf": ("left_foot",),
@@ -369,6 +370,8 @@ def _legacy_lte_solver_keypoints(keypoints: dict[str, np.ndarray]) -> dict[str, 
         "right_hand": keypoints["right_hand"],
         "left_foot": keypoints["left_foot"],
         "right_foot": keypoints["right_foot"],
+        "left_knee": keypoints["left_knee"],
+        "right_knee": keypoints["right_knee"],
     }
 
 
@@ -376,7 +379,7 @@ def _merge_solver_keypoints(original: dict[str, np.ndarray], solver_edited: dict
     edited = {name: value.copy() for name, value in original.items()}
     if "root" in solver_edited:
         edited["pelvis"] = np.asarray(solver_edited["root"], dtype=np.float64)
-    for name in ("torso", "left_hand", "right_hand", "left_foot", "right_foot"):
+    for name in ("torso", "left_hand", "right_hand", "left_foot", "right_foot", "left_knee", "right_knee"):
         if name in solver_edited:
             edited[name] = np.asarray(solver_edited[name], dtype=np.float64)
     return edited
@@ -554,7 +557,7 @@ def _batch_contact_laplacian_proxy_motion(
     solver_keypoints = _legacy_lte_solver_keypoints(original_keypoints)
     provider = BodyPositionTrajectoryKinematicsProvider(tuple(solver_keypoints))
     q_init = np.stack([solver_keypoints[name] for name in provider.point_names], axis=1).reshape(len(next(iter(solver_keypoints.values()))), -1)
-    handles = _contact_laplacian_handles_from_edits(edits, solver_keypoints, graph=graph, config=config)
+    handles = _contact_laplacian_handles_from_edits(edits, solver_keypoints, graph=graph, config=config, source_motion=motion)
     surfaces = _read_contact_layer_surfaces(contact_layer_root, graph.motion_id)
     mesh, mesh_warnings = _interaction_mesh_from_motion_and_graph(
         graph=graph,
@@ -598,6 +601,8 @@ def _batch_contact_laplacian_proxy_motion(
         "num_edits": len(edits),
         "moving_contact_handle_count": sum(1 for handle in handles if handle.kind == "edited_contact"),
         "fixed_contact_handle_count": sum(1 for handle in handles if handle.kind == "fixed_contact"),
+        "force_load_profile_count": sum(1 for handle in handles if handle.load_profile is not None),
+        "force_load_profiles_active": any(handle.load_profile is not None for handle in handles),
         "contact_laplacian_config": config.__dict__,
         "solver_metadata": result.metadata,
         "evaluation_summary": evaluation,
@@ -729,11 +734,13 @@ def _contact_laplacian_handles_from_edits(
     *,
     graph: Any,
     config: BatchContactLaplacianConfig,
+    source_motion: dict[str, Any] | None = None,
 ) -> list[ContactHandleSpec]:
     handles: list[ContactHandleSpec] = []
     n_frames = len(next(iter(keypoints.values())))
     edited_anchor_ids: set[str] = set()
     zero_delta_anchor_ids: set[str] = set()
+    anchors_by_id = {anchor.anchor_id: anchor for anchor in graph.anchors}
     for edit in edits:
         name = _resolve_lte_handle_name(edit.body, keypoints)
         if name not in keypoints:
@@ -748,6 +755,14 @@ def _contact_laplacian_handles_from_edits(
             zero_delta_anchor_ids.add(edit.anchor_id)
             continue
         frames = np.arange(start, end, dtype=np.int64)
+        anchor = anchors_by_id.get(edit.anchor_id)
+        load_profile = _contact_load_profile_for_interval(
+            source_motion=source_motion,
+            body=edit.body,
+            start=start,
+            end=end,
+            normal=edit.surface_normal or (anchor.surface_normal if anchor is not None else None) or (anchor.normal if anchor is not None else None),
+        )
         handles.append(
             ContactHandleSpec(
                 anchor_id=edit.anchor_id,
@@ -758,6 +773,7 @@ def _contact_laplacian_handles_from_edits(
                 kind="edited_contact",
                 weight=float(config.edit_contact_weight),
                 surface_id=edit.surface_id,
+                load_profile=load_profile,
                 metadata={"edit_id": edit.edit_id},
             )
         )
@@ -773,6 +789,13 @@ def _contact_laplacian_handles_from_edits(
         if end <= start:
             continue
         frames = np.arange(start, end, dtype=np.int64)
+        load_profile = _contact_load_profile_for_interval(
+            source_motion=source_motion,
+            body=anchor.body,
+            start=start,
+            end=end,
+            normal=anchor.surface_normal or anchor.normal,
+        )
         handles.append(
             ContactHandleSpec(
                 anchor_id=anchor.anchor_id,
@@ -784,10 +807,30 @@ def _contact_laplacian_handles_from_edits(
                 weight=float(config.fixed_contact_weight),
                 surface_id=anchor.surface_id,
                 object_id=anchor.object_id,
+                load_profile=load_profile,
                 metadata={"zero_delta_edit": anchor.anchor_id in zero_delta_anchor_ids},
             )
         )
     return handles
+
+
+def _contact_load_profile_for_interval(
+    *,
+    source_motion: dict[str, Any] | None,
+    body: str,
+    start: int,
+    end: int,
+    normal: list[float] | None,
+):
+    if source_motion is None:
+        return None
+    return load_profile_from_motion_force(
+        source_motion,
+        body=body,
+        start_frame=start,
+        end_frame=end,
+        normal_w=normal,
+    )
 
 
 def _read_contact_layer_surfaces(contact_layer_root: Path, motion_id: str) -> list[Any]:

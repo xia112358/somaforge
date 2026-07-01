@@ -10,10 +10,12 @@ from motion_edit.contact.edits import move_contact_anchor_on_surface
 from motion_edit.contact.layers import read_contact_graph
 from motion_edit.contact.plans import ContactEditPlan, validate_contact_edit_plan, write_contact_edit_plan
 from motion_edit.contact.schema import ContactAnchorRecord
+from motion_edit.contact.surface_geometry import point_in_polygon_uv
 from motion_edit.paths import LAYERS_ROOT
 
 
-DEFAULT_JITTER_BODIES = ("left_foot", "right_foot", "left_hand", "right_hand")
+DEFAULT_JITTER_BODIES = ("left_foot", "right_foot", "left_hand", "right_hand", "left_knee", "right_knee")
+JitterSampler = str
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,100 @@ def _sample_disk(rng: random.Random, radius: float) -> tuple[float, float]:
             return du, dv
 
 
+def _sample_annulus(rng: random.Random, radius: float, min_radius_fraction: float) -> tuple[float, float]:
+    lo = max(0.0, min(1.0, float(min_radius_fraction)))
+    while True:
+        du, dv = _sample_disk(rng, radius)
+        distance = (du * du + dv * dv) ** 0.5
+        if distance >= radius * lo:
+            return du, dv
+
+
+def _latest_surface_polygon(anchor: ContactAnchorRecord) -> list[tuple[float, float]]:
+    bindings = anchor.metadata.get("surface_bindings")
+    if not isinstance(bindings, list) or not bindings:
+        return []
+    latest = bindings[-1]
+    raw = latest.get("polygon_surface_coordinates") if isinstance(latest, dict) else None
+    if not isinstance(raw, list) or len(raw) < 3:
+        return []
+    polygon: list[tuple[float, float]] = []
+    for item in raw:
+        if not isinstance(item, dict) or "u" not in item or "v" not in item:
+            return []
+        polygon.append((float(item["u"]), float(item["v"])))
+    return polygon
+
+
+def _surface_bounds(anchor: ContactAnchorRecord) -> tuple[float, float, float, float] | None:
+    polygon = _latest_surface_polygon(anchor)
+    if polygon:
+        us = [point[0] for point in polygon]
+        vs = [point[1] for point in polygon]
+        return min(us), max(us), min(vs), max(vs)
+    bounds = anchor.surface_bounds
+    if not isinstance(bounds, dict):
+        return None
+    raw_u = bounds.get("u") or bounds.get("u_bounds")
+    raw_v = bounds.get("v") or bounds.get("v_bounds")
+    if raw_u is None or raw_v is None:
+        return None
+    u0, u1 = sorted(float(item) for item in raw_u)
+    v0, v1 = sorted(float(item) for item in raw_v)
+    return u0, u1, v0, v1
+
+
+def _sample_surface_target(anchor: ContactAnchorRecord, rng: random.Random, radius: float) -> dict[str, float]:
+    bounds = _surface_bounds(anchor)
+    if bounds is None:
+        raise ValueError("anchor has no surface polygon or bounds for uniform surface sampling")
+    u0, u1, v0, v1 = bounds
+    polygon = _latest_surface_polygon(anchor)
+    start = anchor.surface_coordinates or {}
+    start_u = float(start.get("u", 0.0))
+    start_v = float(start.get("v", 0.0))
+    u0 = max(u0, start_u - radius)
+    u1 = min(u1, start_u + radius)
+    v0 = max(v0, start_v - radius)
+    v1 = min(v1, start_v + radius)
+    if u1 < u0 or v1 < v0:
+        raise ValueError("surface target radius does not intersect surface bounds")
+    for _ in range(128):
+        u = rng.uniform(u0, u1)
+        v = rng.uniform(v0, v1)
+        if (u - start_u) * (u - start_u) + (v - start_v) * (v - start_v) > radius * radius:
+            continue
+        if not polygon or point_in_polygon_uv((u, v), polygon):
+            return {"u": u, "v": v}
+    raise ValueError("could not sample a point inside the surface polygon")
+
+
+def _radius_for_anchor(anchor: ContactAnchorRecord, radius: float, knee_radius_scale: float) -> float:
+    if anchor.body in {"left_knee", "right_knee"}:
+        return radius * float(knee_radius_scale)
+    return radius
+
+
+def _sample_move(
+    anchor: ContactAnchorRecord,
+    *,
+    rng: random.Random,
+    radius: float,
+    sampler: JitterSampler,
+    min_radius_fraction: float,
+) -> tuple[tuple[float, float] | None, dict[str, float] | None, str]:
+    chosen = sampler
+    if sampler == "mixed":
+        chosen = rng.choice(("local_disk", "local_annulus", "surface_uniform"))
+    if chosen == "local_disk":
+        return _sample_disk(rng, radius), None, chosen
+    if chosen == "local_annulus":
+        return _sample_annulus(rng, radius, min_radius_fraction), None, chosen
+    if chosen == "surface_uniform":
+        return None, _sample_surface_target(anchor, rng, radius), chosen
+    raise ValueError(f"unsupported contact jitter sampler: {sampler}")
+
+
 def _iter_selected_anchors(
     anchors: Iterable[ContactAnchorRecord],
     *,
@@ -89,6 +185,9 @@ def _make_jitter_plan_for_motion(
     max_attempts: int,
     bodies: set[str],
     mode: str,
+    sampler: JitterSampler,
+    min_radius_fraction: float,
+    knee_radius_scale: float,
 ) -> ContactJitterPlanResult | None:
     motion_id = str(item.get("motion_id") or item.get("motion_asset_id") or "")
     motion_path = str(item.get("motion_path") or "")
@@ -111,11 +210,19 @@ def _make_jitter_plan_for_motion(
         attempted += 1
         edit = None
         for _ in range(max_attempts):
-            du, dv = _sample_disk(rng, offset_radius)
+            effective_radius = _radius_for_anchor(anchor, offset_radius, knee_radius_scale)
             try:
+                tangent_delta, surface_target, sampled_mode = _sample_move(
+                    anchor,
+                    rng=rng,
+                    radius=effective_radius,
+                    sampler=sampler,
+                    min_radius_fraction=min_radius_fraction,
+                )
                 _moved, edit_record = move_contact_anchor_on_surface(
                     anchor,
-                    tangent_delta=(du, dv),
+                    tangent_delta=tangent_delta,
+                    new_surface_coordinates=surface_target,
                     mode=mode,
                     source="random_surface_jitter",
                     edit_id=f"{anchor.anchor_id}_jitter_{augmentation_index:04d}",
@@ -129,6 +236,11 @@ def _make_jitter_plan_for_motion(
                     "augmentation_index": augmentation_index,
                     "augmentation_seed": seed,
                     "offset_radius": offset_radius,
+                    "effective_offset_radius": effective_radius,
+                    "jitter_sampler": sampler,
+                    "sampled_jitter_mode": sampled_mode,
+                    "min_radius_fraction": min_radius_fraction,
+                    "knee_radius_scale": knee_radius_scale,
                 }
             )
             break
@@ -159,6 +271,9 @@ def _make_jitter_plan_for_motion(
             "edit_probability": edit_probability,
             "max_edits": max_edits,
             "constraint_mode": mode,
+            "jitter_sampler": sampler,
+            "min_radius_fraction": min_radius_fraction,
+            "knee_radius_scale": knee_radius_scale,
             "source_cut_summary_motion_asset_id": item.get("motion_asset_id"),
         },
     )
@@ -189,6 +304,9 @@ def generate_contact_jitter_plans(
     seed: int = 0,
     bodies: Iterable[str] = DEFAULT_JITTER_BODIES,
     mode: str = "reject",
+    sampler: JitterSampler = "local_disk",
+    min_radius_fraction: float = 0.5,
+    knee_radius_scale: float = 0.5,
     limit_motions: int | None = None,
 ) -> tuple[list[ContactJitterPlanResult], dict[str, int | float | str]]:
     if augmentations_per_motion <= 0:
@@ -201,6 +319,12 @@ def generate_contact_jitter_plans(
         raise ValueError("max_attempts must be positive")
     if mode not in {"reject", "clamp"}:
         raise ValueError("mode must be reject or clamp")
+    if sampler not in {"local_disk", "local_annulus", "surface_uniform", "mixed"}:
+        raise ValueError("sampler must be local_disk, local_annulus, surface_uniform, or mixed")
+    if not 0.0 <= min_radius_fraction <= 1.0:
+        raise ValueError("min_radius_fraction must be in [0, 1]")
+    if knee_radius_scale <= 0.0:
+        raise ValueError("knee_radius_scale must be positive")
 
     out_dir = Path(output_dir).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -227,6 +351,9 @@ def generate_contact_jitter_plans(
                 max_attempts=max_attempts,
                 bodies=body_set,
                 mode=mode,
+                sampler=sampler,
+                min_radius_fraction=min_radius_fraction,
+                knee_radius_scale=knee_radius_scale,
             )
             if result is None:
                 skipped_no_edits += 1
@@ -245,6 +372,9 @@ def generate_contact_jitter_plans(
         "seed": seed,
         "bodies": sorted(body_set),
         "mode": mode,
+        "sampler": sampler,
+        "min_radius_fraction": min_radius_fraction,
+        "knee_radius_scale": knee_radius_scale,
         "source_motion_count": len(items),
         "plan_count": len(results),
         "skipped_no_edits": skipped_no_edits,
@@ -270,5 +400,8 @@ def generate_contact_jitter_plans(
         "offset_radius": offset_radius,
         "edit_probability": edit_probability,
         "mode": mode,
+        "sampler": sampler,
+        "min_radius_fraction": min_radius_fraction,
+        "knee_radius_scale": knee_radius_scale,
     }
     return results, stats

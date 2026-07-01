@@ -4,6 +4,7 @@ import unittest
 
 import numpy as np
 
+from motion_edit.contact.dynamics import ContactLoadProfile
 from motion_edit.contact.graph import ContactGraph
 from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord
 from motion_edit.contact_laplacian import (
@@ -159,6 +160,49 @@ class BatchContactLaplacianTests(unittest.TestCase):
         temporal_lap = np.linalg.norm(temporal.q[:-2] - 2.0 * temporal.q[1:-1] + temporal.q[2:])
         self.assertLess(float(temporal_lap), float(no_temporal_lap))
 
+    def test_contact_load_profile_modulates_contact_residual_by_local_phase(self) -> None:
+        provider = LinearPointKinematicsProvider(
+            base_points={"left_foot": np.zeros(3)},
+            weights={"left_foot": np.asarray([[1.0], [0.0], [0.0]], dtype=np.float64)},
+        )
+        q = np.zeros((5, 1), dtype=np.float64)
+        handle = ContactHandleSpec(
+            anchor_id="anchor_lf",
+            body="left_foot",
+            semantic_name="left_foot",
+            frames=np.arange(5, dtype=np.int64),
+            target_xyz=np.tile(np.asarray([[1.0, 0.0, 0.0]], dtype=np.float64), (5, 1)),
+            kind="edited_contact",
+            weight=100.0,
+            load_profile=ContactLoadProfile(
+                phase=np.asarray([0.0, 0.5, 1.0], dtype=np.float64),
+                strength=np.asarray([0.0, 1.0, 0.0], dtype=np.float64),
+            ),
+        )
+
+        result = solve_batch_contact_laplacian(
+            q,
+            provider,
+            [handle],
+            ["left_foot"],
+            BatchContactLaplacianConfig(
+                num_iters=2,
+                trust_region=10.0,
+                temporal_laplacian_weight=0.0,
+                body_relative_weight=0.0,
+                q_prior_weight=10.0,
+                q_smooth_weight=0.0,
+                mesh_laplacian_weight=0.0,
+            ),
+        )
+
+        self.assertTrue(result.metadata["force_load_active"])
+        self.assertEqual(result.metadata["force_load_weight_mode"], "contact_local_phase_profile")
+        self.assertGreater(float(result.q[2, 0]), float(result.q[1, 0]))
+        self.assertGreater(float(result.q[1, 0]), float(result.q[0, 0]))
+        self.assertGreater(float(result.q[2, 0]), float(result.q[3, 0]))
+        self.assertGreater(float(result.q[3, 0]), float(result.q[4, 0]))
+
     def test_default_semantic_body_edges_are_active(self) -> None:
         names = ("root", "torso", "left_hand", "right_hand", "left_foot", "right_foot")
         provider = BodyPositionTrajectoryKinematicsProvider(names)
@@ -274,6 +318,56 @@ class BatchContactLaplacianTests(unittest.TestCase):
         self.assertEqual(result.metadata["fixed_handle_count"], 1)
         self.assertGreaterEqual(len(result.metadata["iterations"]), 1)
         self.assertIn("weights", result.metadata)
+
+    def test_handle_builder_builds_contact_local_load_profile_from_force_channel(self) -> None:
+        provider = _provider_shared_root()
+        q = np.zeros((5, 2), dtype=np.float64)
+        graph = ContactGraph(
+            motion_id="motion_a",
+            anchors=[
+                ContactAnchorRecord(
+                    "motion_a",
+                    "anchor_lf",
+                    "left_foot",
+                    0,
+                    5,
+                    surface_normal=[0.0, 0.0, 1.0],
+                )
+            ],
+        )
+        source_motion = {
+            "contact_force_part_order": np.asarray(["LF"], dtype=np.str_),
+            "contact_force_part_w": np.asarray(
+                [
+                    [[0.0, 0.0, 0.0]],
+                    [[0.0, 0.0, 1.0]],
+                    [[0.0, 0.0, 2.0]],
+                    [[0.0, 0.0, 1.0]],
+                    [[0.0, 0.0, 0.0]],
+                ],
+                dtype=np.float64,
+            ),
+            "contact_force_part_mask": np.ones((5, 1), dtype=bool),
+        }
+
+        handles, metadata = build_contact_handle_specs(
+            graph=graph,
+            edits=[],
+            q_reference=q,
+            kinematics=provider,
+            source_motion=source_motion,
+            min_load_strength=0.0,
+        )
+
+        self.assertEqual(metadata["force_load_profile_count"], 1)
+        self.assertIsNotNone(handles[0].load_profile)
+        strength = handles[0].load_profile.evaluate(np.asarray([0.0, 0.5, 1.0], dtype=np.float64))
+        self.assertAlmostEqual(float(np.mean(handles[0].load_profile.strength)), 1.0)
+        self.assertGreater(float(strength[1]), 1.0)
+        self.assertLess(float(strength[0]), float(strength[1]))
+        self.assertLess(float(strength[2]), float(strength[1]))
+        self.assertEqual(handles[0].load_profile.metadata["load_component"], "positive_normal_projection")
+        self.assertEqual(handles[0].load_profile.metadata["strength_mean_normalization"], "mean_one")
 
     def test_interaction_mesh_laplacian_pulls_robot_to_reference_relation(self) -> None:
         provider = LinearPointKinematicsProvider(
