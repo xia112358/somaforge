@@ -5,6 +5,15 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from motion_edit.contact.phases import (
+    ContactPhase,
+    contact_local_phase,
+    contiguous_true_ranges,
+    match_source_phase,
+    phases_from_mask,
+    resample_phase_values,
+)
+
 from .schema import CanonicalContactForceField, DEFAULT_CONTACT_FORCE_PART_ORDER
 
 
@@ -103,28 +112,40 @@ def retarget_contact_forces(
     target_normal_source = str(cfg.metadata.get("target_normal_source") or ("provided" if cfg.target_normal_w is not None else "default_up"))
 
     out_force = np.zeros((n_frames, len(parts), 3), dtype=np.float64)
+    source_phases_by_part = phases_from_mask(
+        source_mask,
+        parts=parts,
+        force_envelope_w=source_force,
+        metadata={"phase_source": "source_force_ref_contact_mask"},
+    )
+    target_phases_by_part = phases_from_mask(
+        target_mask,
+        parts=parts,
+        position_w=target_position,
+        metadata={"phase_source": "target_motion_contact_mask"},
+    )
     phase_counts: dict[str, int] = {}
     matched_phase_count = 0
     unmatched_target_phase_count = 0
     for part_index, part in enumerate(parts):
-        source_phases = _contiguous_true_ranges(source_mask[:, part_index])
-        target_phases = _contiguous_true_ranges(target_mask[:, part_index])
+        source_phases = source_phases_by_part[str(part)]
+        target_phases = target_phases_by_part[str(part)]
         phase_counts[str(part)] = int(len(target_phases))
-        for target_phase_index, target_range in enumerate(target_phases):
-            source_range = _match_source_phase(
+        for target_phase_index, target_phase in enumerate(target_phases):
+            source_phase = match_source_phase(
                 source_phases,
-                target_range=target_range,
+                target_phase=target_phase,
                 target_phase_index=target_phase_index,
                 target_frame_count=n_frames,
                 source_frame_count=source_force.shape[0],
             )
-            if source_range is None:
+            if source_phase is None:
                 unmatched_target_phase_count += 1
                 continue
             matched_phase_count += 1
-            src_start, src_end = source_range
-            dst_start, dst_end = target_range
-            src_force = source_force[src_start:src_end, part_index]
+            src_start, src_end = int(source_phase.start_frame), int(source_phase.end_frame)
+            dst_start, dst_end = int(target_phase.start_frame), int(target_phase.end_frame)
+            src_force = _phase_force(source_phase, fallback_force=source_force[:, part_index])
             source_normal = _phase_normal(source_normal_input, start=src_start, end=src_end, part_index=part_index)
             target_normal = _phase_normal(target_normal_input, start=dst_start, end=dst_end, part_index=part_index)
             transformed = _retarget_force_vectors(src_force, source_normal=source_normal, target_normal=target_normal)
@@ -142,7 +163,7 @@ def retarget_contact_forces(
         "integrated": False,
         "retarget_method": "contact_phase_local_force_resampling",
         "part_order": list(parts),
-        "source_phase_count": int(sum(len(_contiguous_true_ranges(source_mask[:, i])) for i in range(len(parts)))),
+        "source_phase_count": int(sum(len(source_phases_by_part[str(part)]) for part in parts)),
         "retarget_phase_count": int(sum(phase_counts.values())),
         "retarget_phase_count_by_part": phase_counts,
         "matched_phase_count": int(matched_phase_count),
@@ -338,19 +359,14 @@ def _retarget_force_vectors(force_w: np.ndarray, *, source_normal: np.ndarray, t
     return np.maximum(0.0, normal_mag)[:, None] * target_normal[None, :] + target_tangent
 
 
+def _phase_force(phase: ContactPhase, *, fallback_force: np.ndarray) -> np.ndarray:
+    if phase.force_envelope_w is not None:
+        return np.asarray(phase.force_envelope_w, dtype=np.float64)
+    return np.asarray(fallback_force, dtype=np.float64)[int(phase.start_frame) : int(phase.end_frame)].copy()
+
+
 def _resample_phase(values: np.ndarray, count: int) -> np.ndarray:
-    n = int(count)
-    if n <= 0:
-        return np.zeros((0, values.shape[1]), dtype=np.float64)
-    if values.shape[0] == n:
-        return values.copy()
-    if values.shape[0] == 0:
-        return np.zeros((n, values.shape[1]), dtype=np.float64)
-    if values.shape[0] == 1:
-        return np.repeat(values, n, axis=0)
-    src_phase = _local_phase(values.shape[0])
-    dst_phase = _local_phase(n)
-    return np.stack([np.interp(dst_phase, src_phase, values[:, axis]) for axis in range(values.shape[1])], axis=1)
+    return resample_phase_values(values, count)
 
 
 def _smooth_phase(values: np.ndarray, window: int) -> np.ndarray:
@@ -384,28 +400,22 @@ def _match_source_phase(
     target_frame_count: int,
     source_frame_count: int,
 ) -> tuple[int, int] | None:
-    if not source_phases:
+    source_phase_objs = [ContactPhase(part="unknown", start_frame=start, end_frame=end) for start, end in source_phases]
+    target_phase = ContactPhase(part="unknown", start_frame=target_range[0], end_frame=target_range[1])
+    matched = match_source_phase(
+        source_phase_objs,
+        target_phase=target_phase,
+        target_phase_index=target_phase_index,
+        target_frame_count=target_frame_count,
+        source_frame_count=source_frame_count,
+    )
+    if matched is None:
         return None
-    if target_phase_index < len(source_phases):
-        return source_phases[target_phase_index]
-    target_center = ((target_range[0] + target_range[1] - 1) * 0.5) / max(1, int(target_frame_count) - 1)
-    source_centers = [((start + end - 1) * 0.5) / max(1, int(source_frame_count) - 1) for start, end in source_phases]
-    return source_phases[int(np.argmin(np.abs(np.asarray(source_centers) - target_center)))]
+    return int(matched.start_frame), int(matched.end_frame)
 
 
 def _contiguous_true_ranges(mask: np.ndarray) -> list[tuple[int, int]]:
-    arr = np.asarray(mask, dtype=bool).reshape(-1)
-    ranges: list[tuple[int, int]] = []
-    start: int | None = None
-    for index, active in enumerate(arr):
-        if active and start is None:
-            start = index
-        elif not active and start is not None:
-            ranges.append((start, index))
-            start = None
-    if start is not None:
-        ranges.append((start, len(arr)))
-    return ranges
+    return contiguous_true_ranges(mask)
 
 
 def _motion_frame_count(motion: Mapping[str, Any]) -> int:
@@ -489,12 +499,7 @@ def _unit_normal(value: Sequence[float] | np.ndarray) -> np.ndarray:
 
 
 def _local_phase(count: int) -> np.ndarray:
-    n = int(count)
-    if n <= 0:
-        return np.zeros((0,), dtype=np.float64)
-    if n == 1:
-        return np.asarray([0.5], dtype=np.float64)
-    return np.linspace(0.0, 1.0, n, dtype=np.float64)
+    return contact_local_phase(count)
 
 
 def _finite_or_zero(values: np.ndarray) -> np.ndarray:

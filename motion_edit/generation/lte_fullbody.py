@@ -603,6 +603,7 @@ def _batch_contact_laplacian_proxy_motion(
         "fixed_contact_handle_count": sum(1 for handle in handles if handle.kind == "fixed_contact"),
         "force_load_profile_count": sum(1 for handle in handles if handle.load_profile is not None),
         "force_load_profiles_active": any(handle.load_profile is not None for handle in handles),
+        "force_load_profile_interval_mapping": "same_frame_interval",
         "contact_laplacian_config": config.__dict__,
         "solver_metadata": result.metadata,
         "evaluation_summary": evaluation,
@@ -774,7 +775,14 @@ def _contact_laplacian_handles_from_edits(
                 weight=float(config.edit_contact_weight),
                 surface_id=edit.surface_id,
                 load_profile=load_profile,
-                metadata={"edit_id": edit.edit_id},
+                metadata={
+                    "edit_id": edit.edit_id,
+                    "source_frame_start": int(start),
+                    "source_frame_end": int(end),
+                    "target_frame_start": int(start),
+                    "target_frame_end": int(end),
+                    "source_target_interval_mapping": "same_frame_interval",
+                },
             )
         )
         edited_anchor_ids.add(edit.anchor_id)
@@ -808,7 +816,14 @@ def _contact_laplacian_handles_from_edits(
                 surface_id=anchor.surface_id,
                 object_id=anchor.object_id,
                 load_profile=load_profile,
-                metadata={"zero_delta_edit": anchor.anchor_id in zero_delta_anchor_ids},
+                metadata={
+                    "zero_delta_edit": anchor.anchor_id in zero_delta_anchor_ids,
+                    "source_frame_start": int(start),
+                    "source_frame_end": int(end),
+                    "target_frame_start": int(start),
+                    "target_frame_end": int(end),
+                    "source_target_interval_mapping": "same_frame_interval",
+                },
             )
         )
     return handles
@@ -830,6 +845,11 @@ def _contact_load_profile_for_interval(
         start_frame=start,
         end_frame=end,
         normal_w=normal,
+        metadata={
+            "target_frame_start": int(start),
+            "target_frame_end": int(end),
+            "source_target_interval_mapping": "same_frame_interval",
+        },
     )
 
 

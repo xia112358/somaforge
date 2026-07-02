@@ -360,6 +360,7 @@ class BatchContactLaplacianTests(unittest.TestCase):
         )
 
         self.assertEqual(metadata["force_load_profile_count"], 1)
+        self.assertEqual(metadata["force_load_profile_interval_mapping"], "same_frame_interval")
         self.assertIsNotNone(handles[0].load_profile)
         strength = handles[0].load_profile.evaluate(np.asarray([0.0, 0.5, 1.0], dtype=np.float64))
         self.assertAlmostEqual(float(np.mean(handles[0].load_profile.strength)), 1.0)
@@ -368,6 +369,10 @@ class BatchContactLaplacianTests(unittest.TestCase):
         self.assertLess(float(strength[2]), float(strength[1]))
         self.assertEqual(handles[0].load_profile.metadata["load_component"], "positive_normal_projection")
         self.assertEqual(handles[0].load_profile.metadata["strength_mean_normalization"], "mean_one")
+        self.assertEqual(handles[0].load_profile.metadata["source_target_interval_mapping"], "same_frame_interval")
+        self.assertEqual(handles[0].metadata["source_target_interval_mapping"], "same_frame_interval")
+        self.assertEqual(handles[0].metadata["source_frame_start"], 0)
+        self.assertEqual(handles[0].metadata["target_frame_end"], 5)
 
     def test_interaction_mesh_laplacian_pulls_robot_to_reference_relation(self) -> None:
         provider = LinearPointKinematicsProvider(

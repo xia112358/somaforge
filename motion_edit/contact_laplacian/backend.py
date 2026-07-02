@@ -98,7 +98,14 @@ def build_contact_handle_specs(
                 surface_id=edit.surface_id or anchor.surface_id,
                 object_id=anchor.object_id,
                 load_profile=load_profile,
-                metadata={"edit_id": edit.edit_id},
+                metadata={
+                    "edit_id": edit.edit_id,
+                    "source_frame_start": int(start),
+                    "source_frame_end": int(end),
+                    "target_frame_start": int(start),
+                    "target_frame_end": int(end),
+                    "source_target_interval_mapping": "same_frame_interval",
+                },
             )
         )
         edited_by_anchor[edit.anchor_id] = edit
@@ -138,7 +145,14 @@ def build_contact_handle_specs(
                 surface_id=anchor.surface_id,
                 object_id=anchor.object_id,
                 load_profile=load_profile,
-                metadata={"zero_delta_edit": anchor.anchor_id in zero_delta_anchor_ids},
+                metadata={
+                    "zero_delta_edit": anchor.anchor_id in zero_delta_anchor_ids,
+                    "source_frame_start": int(start),
+                    "source_frame_end": int(end),
+                    "target_frame_start": int(start),
+                    "target_frame_end": int(end),
+                    "source_target_interval_mapping": "same_frame_interval",
+                },
             )
         )
 
@@ -150,6 +164,7 @@ def build_contact_handle_specs(
         "skipped_anchors": skipped,
         "force_load_profile_count": int(load_profile_count),
         "force_load_profile_source": "source_motion_contact_force_part_w" if source_motion is not None else "none",
+        "force_load_profile_interval_mapping": "same_frame_interval",
     }
     return handles, metadata
 
@@ -172,6 +187,11 @@ def _load_profile_for_anchor(
         end_frame=end,
         normal_w=normal,
         min_strength=min_load_strength,
+        metadata={
+            "target_frame_start": int(start),
+            "target_frame_end": int(end),
+            "source_target_interval_mapping": "same_frame_interval",
+        },
     )
 
 

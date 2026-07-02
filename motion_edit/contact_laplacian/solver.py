@@ -238,6 +238,7 @@ def solve_batch_contact_laplacian(
         "force_load_active": bool(force_load_count),
         "force_load_handle_count": int(force_load_count),
         "force_load_weight_mode": "contact_local_phase_profile" if force_load_count else "none",
+        "force_load_interval_mapping": "same_frame_interval" if force_load_count else "none",
         "interaction_mesh": mesh_meta,
         "spatial_laplacian_active": bool(body_spatial_active or mesh_spatial_active),
         "temporal_laplacian_active": bool(temporal_active),

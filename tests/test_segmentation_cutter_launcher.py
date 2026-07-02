@@ -73,6 +73,7 @@ class SegmentationCutterLauncherTests(unittest.TestCase):
                     timeline_port=8095,
                     fps=50,
                     with_terrain=False,
+                    workbench_root=root / "workbench",
                 )
                 with (
                     mock.patch("motion_edit.segmentation.cutter.launch_viewer", return_value=_FakeProcess()) as launch,
@@ -88,6 +89,8 @@ class SegmentationCutterLauncherTests(unittest.TestCase):
                 self.assertEqual(timeline_kwargs["timeline_port"], 8095)
                 self.assertEqual(timeline_kwargs["viser_port"], 8094)
                 self.assertEqual(timeline_kwargs["controller"].session.session_id, "seg_session")
+                draft_segment_path = Path(timeline_kwargs["controller"].session.draft_segment_path)
+                self.assertTrue(draft_segment_path.is_relative_to(root / "workbench"))
                 self.assertEqual(read_canonical_segments("motion_a_raw")[0].start_frame, 0)
 
 

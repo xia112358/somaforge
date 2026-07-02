@@ -13,8 +13,10 @@ from motion_edit.viewer.segmentation_timeline import SegmentationTimelineControl
 
 
 def _load_or_create_session(args: argparse.Namespace) -> SegmentationEditSession:
+    workbench_root = getattr(args, "workbench_root", None)
+    session_kwargs = {} if workbench_root is None else {"workbench_root": workbench_root}
     if args.session:
-        session = read_segmentation_edit_session(args.session)
+        session = read_segmentation_edit_session(args.session, **session_kwargs)
         if args.motion_version_id and session.motion_version_id != args.motion_version_id:
             raise ValueError(
                 f"session motion_version_id={session.motion_version_id} does not match "
@@ -29,6 +31,7 @@ def _load_or_create_session(args: argparse.Namespace) -> SegmentationEditSession
         args.motion_version_id,
         session_id=args.session_id,
         overwrite=args.overwrite,
+        **session_kwargs,
     )
 
 

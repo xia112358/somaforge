@@ -1,7 +1,12 @@
 from .anchors import anchors_from_contact_mask
 from .actions import filter_short_raw_missing_anchors, merge_nearby_contact_anchors, move_anchor_in_contact_layer, move_anchor_in_graph
 from .bindings import bind_segment_to_contact_graph, contact_metadata_for_bounds
-from .dynamics import ContactLoadProfile, build_load_profile_from_force_phase, load_profile_from_motion_force
+from .dynamics import (
+    ContactLoadProfile,
+    build_load_profile_from_contact_phase,
+    build_load_profile_from_force_phase,
+    load_profile_from_motion_force,
+)
 from .edits import make_anchor_move_edit, move_contact_anchor, move_contact_anchor_free, move_contact_anchor_on_surface
 from .events import bodies_from_mask, body_names_for_mask, detect_contact_events
 from .graph import ContactGraph, contact_graph_from_masks
@@ -17,6 +22,15 @@ from .io import (
 )
 from .layers import read_contact_graph, write_contact_layer
 from .patches import patches_from_anchors
+from .phases import (
+    ContactPhase,
+    contact_local_phase,
+    contiguous_true_ranges,
+    match_source_phase,
+    phases_from_mask,
+    phases_from_part_mask,
+    resample_phase_values,
+)
 from .plans import (
     ContactEditPlan,
     append_anchor_edit_to_plan,
@@ -57,6 +71,7 @@ __all__ = [
     "ContactSurfaceRecord",
     "ContactTransitionRecord",
     "ContactLoadProfile",
+    "ContactPhase",
     "anchors_from_contact_mask",
     "append_anchor_edit_to_plan",
     "bind_segment_to_contact_graph",
@@ -67,6 +82,9 @@ __all__ = [
     "body_names_for_mask",
     "contact_graph_from_masks",
     "contact_metadata_for_bounds",
+    "contact_local_phase",
+    "contiguous_true_ranges",
+    "build_load_profile_from_contact_phase",
     "build_load_profile_from_force_phase",
     "detect_contact_events",
     "mask_string",
@@ -78,8 +96,11 @@ __all__ = [
     "move_anchor_in_contact_layer",
     "move_anchor_in_graph",
     "merge_nearby_contact_anchors",
+    "match_source_phase",
     "filter_short_raw_missing_anchors",
     "patches_from_anchors",
+    "phases_from_mask",
+    "phases_from_part_mask",
     "RawContactMotion",
     "read_contact_anchors",
     "read_contact_edit_plan",
@@ -93,6 +114,7 @@ __all__ = [
     "refine_contact_graph_anchor_positions_from_raw_contacts",
     "split_foot_contact_anchors",
     "segment_from_contact_transition",
+    "resample_phase_values",
     "surface_compatible_with_body",
     "transitions_from_event_pairs",
     "transitions_from_proto_indices",
