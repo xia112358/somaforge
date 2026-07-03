@@ -120,6 +120,9 @@ class PPOConfig:
     num_mini_batches: int = 4
     """Number of mini-batches per epoch."""
 
+    export_onnx: bool = True
+    """Export an ONNX policy artifact whenever a checkpoint is saved."""
+
     clip_param: float = 0.2
     """PPO clipping parameter."""
 

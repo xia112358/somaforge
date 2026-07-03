@@ -384,12 +384,14 @@ class PPO(BaseAlgo):
 
             if it % self.config.save_interval == 0 and self.is_main_process:
                 self.save(os.path.join(self.log_dir, f"model_{it:05d}.pt"))
-                self.export(onnx_file_path=os.path.join(self.log_dir, f"model_{it:05d}.onnx"))
+                if self.config.export_onnx:
+                    self.export(onnx_file_path=os.path.join(self.log_dir, f"model_{it:05d}.onnx"))
                 last_saved_iteration = it
 
         if self.is_main_process and last_saved_iteration != self.current_learning_iteration:
             self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration:05d}.pt"))
-            self.export(onnx_file_path=os.path.join(self.log_dir, f"model_{self.current_learning_iteration:05d}.onnx"))
+            if self.config.export_onnx:
+                self.export(onnx_file_path=os.path.join(self.log_dir, f"model_{self.current_learning_iteration:05d}.onnx"))
 
     def _rollout_step(self, obs_dict):
         with torch.inference_mode():

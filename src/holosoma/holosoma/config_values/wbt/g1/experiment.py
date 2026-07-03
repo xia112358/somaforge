@@ -163,6 +163,45 @@ g1_29dof_wbt_contact_force = replace(
     ),
 )
 
+_contact_force_zero_start_motion_config = replace(
+    _contact_force_motion_config,
+    reset_sampler="uniform",
+    start_at_timestep_zero_prob=1.0,
+    freeze_at_timestep_zero_prob=0.0,
+    use_start_probe_envs=False,
+    probe_env_per_motion=0,
+)
+
+g1_29dof_wbt_contact_force_zero_start = replace(
+    g1_29dof_wbt_contact_force,
+    training=replace(
+        g1_29dof_wbt_contact_force.training,
+        name="g1_29dof_wbt_contact_force_6part_zero_start_multimotion",
+        export_onnx=False,
+    ),
+    algo=replace(
+        g1_29dof_wbt_contact_force.algo,
+        config=replace(
+            g1_29dof_wbt_contact_force.algo.config,
+            actor_learning_rate=1e-4,
+            critic_learning_rate=1e-4,
+            num_learning_iterations=2000,
+            load_optimizer=False,
+            init_at_random_ep_len=False,
+            export_onnx=False,
+        ),
+    ),
+    command=replace(
+        command.g1_29dof_wbt_command,
+        setup_terms={
+            "motion_command": CommandTermCfg(
+                func="holosoma.managers.command.terms.wbt:MotionCommand",
+                params={"motion_config": _contact_force_zero_start_motion_config},
+            ),
+        },
+    ),
+)
+
 _contact_force_touchdown_lift_motion_config = replace(
     _contact_force_motion_config,
     reset_sampler="hotspot_failure_window",
@@ -200,6 +239,7 @@ __all__ = [
     "g1_29dof_wbt_a2a",
     "g1_29dof_wbt_a2a_pure",
     "g1_29dof_wbt_contact_force",
+    "g1_29dof_wbt_contact_force_zero_start",
     "g1_29dof_wbt_contact_force_touchdown_lift",
     "g1_29dof_wbt_future_ref",
 ]

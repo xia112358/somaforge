@@ -7,6 +7,7 @@ from holosoma.config_values.wbt.g1.experiment import (
     g1_29dof_wbt_a2a,
     g1_29dof_wbt_a2a_pure,
     g1_29dof_wbt_contact_force,
+    g1_29dof_wbt_contact_force_zero_start,
     g1_29dof_wbt_contact_force_touchdown_lift,
     g1_29dof_wbt_future_ref,
 )
@@ -16,6 +17,7 @@ DEFAULTS = {
     "g1_29dof_wbt_a2a": g1_29dof_wbt_a2a,
     "g1_29dof_wbt_a2a_pure": g1_29dof_wbt_a2a_pure,
     "g1_29dof_wbt_contact_force": g1_29dof_wbt_contact_force,
+    "g1_29dof_wbt_contact_force_zero_start": g1_29dof_wbt_contact_force_zero_start,
     "g1_29dof_wbt_contact_force_touchdown_lift": g1_29dof_wbt_contact_force_touchdown_lift,
     "g1_29dof_wbt_future_ref": g1_29dof_wbt_future_ref,
 }
