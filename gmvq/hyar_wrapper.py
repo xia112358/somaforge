@@ -95,7 +95,7 @@ class FrozenGMVQCodec(nn.Module):
         sigma_k = sigma[k]
         theta_dec = q._theta_for_decode(theta)
         z_q = mu_k + sigma_k * theta_dec
-        if self.model.decoder_type == "latent":
+        if self.model.decoder_type in {"latent", "time"}:
             dec_in = z_q
         else:
             dec_in = torch.cat([mu_k, theta_dec], dim=-1)

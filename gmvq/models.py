@@ -44,6 +44,137 @@ class Conv1DEncoder(nn.Module):
         return self.net(x.transpose(1, 2))
 
 
+class MaskedConv1DEncoder(nn.Module):
+    def __init__(self, t: int = 120, d: int = 14, latent_dim: int = 32, hidden_dim: int = 128) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv1d(d, hidden_dim, kernel_size=5, padding=2),
+            nn.GELU(),
+            nn.Conv1d(hidden_dim, hidden_dim, kernel_size=5, padding=2),
+            nn.GELU(),
+            nn.Conv1d(hidden_dim, hidden_dim, kernel_size=5, padding=2),
+            nn.GELU(),
+        )
+        self.proj = nn.Linear(hidden_dim, latent_dim)
+
+    def forward(self, x: torch.Tensor, valid_mask: torch.Tensor | None = None) -> torch.Tensor:
+        # [B, T, D] -> [B, H, T]
+        h = self.net(x.transpose(1, 2))
+        if valid_mask is None:
+            pooled = h.mean(dim=-1)
+        else:
+            mask = valid_mask.to(device=x.device, dtype=h.dtype).unsqueeze(1)
+            pooled = (h * mask).sum(dim=-1) / mask.sum(dim=-1).clamp_min(1.0)
+        return self.proj(pooled)
+
+
+class _TCNBlock(nn.Module):
+    def __init__(self, hidden_dim: int, dilation: int) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=dilation, dilation=dilation),
+            nn.GELU(),
+            nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=dilation, dilation=dilation),
+        )
+        self.act = nn.GELU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.act(x + self.net(x))
+
+
+class MaskedTCNEncoder(nn.Module):
+    def __init__(self, t: int = 120, d: int = 14, latent_dim: int = 32, hidden_dim: int = 128) -> None:
+        super().__init__()
+        self.input = nn.Sequential(nn.Conv1d(d, hidden_dim, kernel_size=5, padding=2), nn.GELU())
+        self.blocks = nn.Sequential(*[_TCNBlock(hidden_dim, dilation) for dilation in (1, 2, 4, 8, 16)])
+        self.proj = nn.Sequential(
+            nn.Linear(2 * hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, latent_dim),
+        )
+
+    def forward(self, x: torch.Tensor, valid_mask: torch.Tensor | None = None) -> torch.Tensor:
+        h = self.blocks(self.input(x.transpose(1, 2))).transpose(1, 2)
+        if valid_mask is None:
+            pooled = torch.cat([h.mean(dim=1), h.amax(dim=1)], dim=-1)
+        else:
+            mask = valid_mask.to(device=x.device, dtype=h.dtype).unsqueeze(-1)
+            mean = (h * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
+            max_in = h.masked_fill(~valid_mask.to(device=x.device).unsqueeze(-1), -torch.inf)
+            max_pool = max_in.amax(dim=1)
+            max_pool = torch.where(torch.isfinite(max_pool), max_pool, torch.zeros_like(max_pool))
+            pooled = torch.cat([mean, max_pool], dim=-1)
+        return self.proj(pooled)
+
+
+class MaskedBiGRUEncoder(nn.Module):
+    def __init__(self, t: int = 120, d: int = 14, latent_dim: int = 32, hidden_dim: int = 128) -> None:
+        super().__init__()
+        self.gru = nn.GRU(
+            input_size=d,
+            hidden_size=hidden_dim,
+            batch_first=True,
+            bidirectional=True,
+        )
+        self.proj = nn.Sequential(
+            nn.Linear(2 * hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, latent_dim),
+        )
+
+    def forward(self, x: torch.Tensor, valid_mask: torch.Tensor | None = None) -> torch.Tensor:
+        if valid_mask is None:
+            lengths = torch.full((x.shape[0],), x.shape[1], dtype=torch.long, device=x.device)
+        else:
+            lengths = valid_mask.long().sum(dim=1).clamp_min(1)
+        packed = nn.utils.rnn.pack_padded_sequence(
+            x,
+            lengths.detach().cpu(),
+            batch_first=True,
+            enforce_sorted=False,
+        )
+        _, h_n = self.gru(packed)
+        h = torch.cat([h_n[-2], h_n[-1]], dim=-1)
+        return self.proj(h)
+
+
+class MaskedTransformerEncoder(nn.Module):
+    def __init__(self, t: int = 120, d: int = 14, latent_dim: int = 32, hidden_dim: int = 128) -> None:
+        super().__init__()
+        self.input = nn.Linear(d, hidden_dim)
+        self.pos = nn.Parameter(torch.zeros(1, t, hidden_dim))
+        layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim,
+            nhead=4,
+            dim_feedforward=4 * hidden_dim,
+            dropout=0.1,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(layer, num_layers=2)
+        self.proj = nn.Sequential(
+            nn.Linear(2 * hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, latent_dim),
+        )
+
+    def forward(self, x: torch.Tensor, valid_mask: torch.Tensor | None = None) -> torch.Tensor:
+        h = self.input(x) + self.pos[:, : x.shape[1]]
+        key_padding_mask = None if valid_mask is None else ~valid_mask.to(device=x.device)
+        h = self.encoder(h, src_key_padding_mask=key_padding_mask)
+        if valid_mask is None:
+            pooled = torch.cat([h.mean(dim=1), h.amax(dim=1)], dim=-1)
+        else:
+            mask = valid_mask.to(device=x.device, dtype=h.dtype).unsqueeze(-1)
+            mean = (h * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
+            max_in = h.masked_fill(~valid_mask.to(device=x.device).unsqueeze(-1), -torch.inf)
+            max_pool = max_in.amax(dim=1)
+            max_pool = torch.where(torch.isfinite(max_pool), max_pool, torch.zeros_like(max_pool))
+            pooled = torch.cat([mean, max_pool], dim=-1)
+        return self.proj(pooled)
+
+
 class SegmentDecoder(nn.Module):
     def __init__(self, in_dim: int, t: int = 120, d: int = 14, hidden_dim: int = 256) -> None:
         super().__init__()
@@ -59,6 +190,47 @@ class SegmentDecoder(nn.Module):
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         return self.net(z).view(z.shape[0], self.t, self.d)
+
+
+class TimeConditionedDecoder(nn.Module):
+    """Decode each frame from a global latent and normalized progress u in [0, 1]."""
+
+    def __init__(self, in_dim: int, t: int = 120, d: int = 14, hidden_dim: int = 256) -> None:
+        super().__init__()
+        self.t = t
+        self.d = d
+        time_dim = 5
+        self.net = nn.Sequential(
+            nn.Linear(in_dim + time_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, d),
+        )
+
+    def _time_features(self, z: torch.Tensor, lengths: torch.Tensor | None = None) -> torch.Tensor:
+        b = z.shape[0]
+        idx = torch.arange(self.t, device=z.device, dtype=z.dtype).view(1, self.t)
+        if lengths is None:
+            denom = torch.full((b, 1), max(self.t - 1, 1), device=z.device, dtype=z.dtype)
+        else:
+            denom = (lengths.to(device=z.device, dtype=z.dtype).view(b, 1) - 1.0).clamp_min(1.0)
+        u = (idx / denom).clamp(0.0, 1.0)
+        return torch.stack(
+            [
+                u,
+                torch.sin(torch.pi * u),
+                torch.cos(torch.pi * u),
+                torch.sin(2.0 * torch.pi * u),
+                torch.cos(2.0 * torch.pi * u),
+            ],
+            dim=-1,
+        )
+
+    def forward(self, z: torch.Tensor, lengths: torch.Tensor | None = None) -> torch.Tensor:
+        time = self._time_features(z, lengths=lengths)
+        z_rep = z[:, None, :].expand(-1, self.t, -1)
+        return self.net(torch.cat([z_rep, time], dim=-1))
 
 
 class Conv1DDecoder(nn.Module):
@@ -115,11 +287,22 @@ class GMVQAutoEncoder(nn.Module):
             self.encoder = MLPEncoder(t=t, d=d, latent_dim=latent_dim)
         elif encoder_type == "conv1d":
             self.encoder = Conv1DEncoder(t=t, d=d, latent_dim=latent_dim)
+        elif encoder_type == "conv1d_masked":
+            self.encoder = MaskedConv1DEncoder(t=t, d=d, latent_dim=latent_dim)
+        elif encoder_type == "tcn_masked":
+            self.encoder = MaskedTCNEncoder(t=t, d=d, latent_dim=latent_dim)
+        elif encoder_type == "bigru_masked":
+            self.encoder = MaskedBiGRUEncoder(t=t, d=d, latent_dim=latent_dim)
+        elif encoder_type == "transformer_masked":
+            self.encoder = MaskedTransformerEncoder(t=t, d=d, latent_dim=latent_dim)
         else:
-            raise ValueError("encoder_type must be 'mlp' or 'conv1d'")
+            raise ValueError(
+                "encoder_type must be 'mlp', 'conv1d', 'conv1d_masked', "
+                "'tcn_masked', 'bigru_masked', or 'transformer_masked'"
+            )
 
-        if decoder_type not in {"latent", "factorized"}:
-            raise ValueError("decoder_type must be 'latent' or 'factorized'")
+        if decoder_type not in {"latent", "factorized", "time"}:
+            raise ValueError("decoder_type must be 'latent', 'factorized', or 'time'")
 
         self.t = t
         self.d = d
@@ -139,17 +322,37 @@ class GMVQAutoEncoder(nn.Module):
             theta_clip=theta_clip,
             prior_mode=prior_mode,
         )
-        decoder_in_dim = latent_dim if decoder_type == "latent" else 2 * latent_dim
-        self.decoder = SegmentDecoder(in_dim=decoder_in_dim, t=t, d=d)
+        decoder_in_dim = latent_dim if decoder_type in {"latent", "time"} else 2 * latent_dim
+        if decoder_type == "time":
+            self.decoder = TimeConditionedDecoder(in_dim=decoder_in_dim, t=t, d=d)
+        else:
+            self.decoder = SegmentDecoder(in_dim=decoder_in_dim, t=t, d=d)
+        self.length_head = nn.Sequential(
+            nn.Linear(latent_dim, latent_dim),
+            nn.GELU(),
+            nn.Linear(latent_dim, 1),
+        )
 
-    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+    def forward(
+        self,
+        x: torch.Tensor,
+        valid_mask: torch.Tensor | None = None,
+        lengths: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
         # x: [B, T, D]
-        z_e = self.encoder(x)
+        if self.encoder_type in {"conv1d_masked", "tcn_masked", "bigru_masked", "transformer_masked"}:
+            z_e = self.encoder(x, valid_mask=valid_mask)
+        else:
+            z_e = self.encoder(x)
         q = self.quantizer(z_e)
-        dec_in = q.z_q if self.decoder_type == "latent" else torch.cat([q.mu_k, q.theta_dec], dim=-1)
-        x_recon = self.decoder(dec_in)
+        dec_in = q.z_q if self.decoder_type in {"latent", "time"} else torch.cat([q.mu_k, q.theta_dec], dim=-1)
+        if self.decoder_type == "time":
+            x_recon = self.decoder(dec_in, lengths=lengths)
+        else:
+            x_recon = self.decoder(dec_in)
         out: dict[str, torch.Tensor] = {
             "x_recon": x_recon,
+            "log_length_pred": self.length_head(q.z_q).squeeze(-1),
             "z_e": z_e,
             "z_q": q.z_q,
             "codes": q.codes,

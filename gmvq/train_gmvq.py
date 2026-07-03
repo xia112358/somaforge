@@ -20,8 +20,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--save_dir", type=str, default="runs/gmvq")
     p.add_argument("--num_codes", type=int, default=64)
     p.add_argument("--latent_dim", type=int, default=32)
-    p.add_argument("--encoder_type", choices=["mlp", "conv1d"], default="mlp")
-    p.add_argument("--decoder_type", choices=["latent", "factorized"], default="latent")
+    p.add_argument(
+        "--encoder_type",
+        choices=["mlp", "conv1d", "conv1d_masked", "tcn_masked", "bigru_masked", "transformer_masked"],
+        default="mlp",
+    )
+    p.add_argument("--decoder_type", choices=["latent", "factorized", "time"], default="latent")
     p.add_argument("--assignment", choices=["hard", "soft"], default="hard")
     p.add_argument("--batch_size", type=int, default=128)
     p.add_argument("--steps", type=int, default=2000)
@@ -50,6 +54,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--beta_balance", type=float, default=0.01)
     p.add_argument("--beta_sep", type=float, default=0.001)
     p.add_argument("--beta_theta_moments", type=float, default=0.01)
+    p.add_argument("--beta_length", type=float, default=0.05)
     p.add_argument("--sep_tau", type=float, default=1.0)
     return p.parse_args()
 
@@ -88,16 +93,27 @@ def main() -> None:
 
     cfg = SimpleNamespace(**vars(args))
     last_metrics: dict[str, torch.Tensor] = {}
+    uses_valid_mask = hasattr(dataset, "valid_mask")
     for step in range(1, args.steps + 1):
         try:
-            x = next(iterator)
+            batch = next(iterator)
         except StopIteration:
             iterator = iter(loader)
-            x = next(iterator)
+            batch = next(iterator)
+        if isinstance(batch, dict):
+            x = batch["x"]
+            valid_mask = batch.get("valid_mask")
+            lengths = batch.get("lengths")
+        else:
+            x = batch
+            valid_mask = None
+            lengths = None
         x = x.to(args.device)
+        valid_mask = None if valid_mask is None else valid_mask.to(args.device)
+        lengths = None if lengths is None else lengths.to(args.device)
 
-        output = model(x)
-        loss, metrics = compute_loss(x, output, model, cfg)
+        output = model(x, valid_mask=valid_mask, lengths=lengths)
+        loss, metrics = compute_loss(x, output, model, cfg, valid_mask=valid_mask, lengths=lengths)
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -116,6 +132,7 @@ def main() -> None:
         "model_state": model.state_dict(),
         "model_config": model.config(),
         "train_args": vars(args),
+        "uses_valid_mask": uses_valid_mask,
         "norm_stats": None if stats is None else {"mean": stats.mean.cpu(), "std": stats.std.cpu()},
         "last_metrics": {k: v.cpu() for k, v in last_metrics.items()},
     }

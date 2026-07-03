@@ -173,6 +173,70 @@ python -m gmvq.train_gmvq \
   --beta_theta_moments 0.01
 ```
 
+motion_edit full-body proto refs:
+
+```bash
+python -m gmvq.prepare_motion_edit_segments \
+  --cut-summary /home/xiaz/motion_edit/data/workbench/raw_contact_29_cut_summary.json \
+  --output data/motion_edit/raw_contact_29_cut_joint_pos_t192.npz \
+  --feature-key joint_pos \
+  --target-len 192 \
+  --min-len 16 \
+  --max-len 192
+
+python -m gmvq.train_gmvq \
+  --data data/motion_edit/raw_contact_29_cut_joint_pos_t192.npz \
+  --save_dir runs/gmvq_motion_edit_cut_joint_pos_t192 \
+  --num_codes 16 \
+  --latent_dim 16 \
+  --encoder_type bigru_masked \
+  --batch_size 64 \
+  --steps 2000
+```
+
+Standard motion_edit augmented-ref chain:
+
+```bash
+python -m gmvq.prepare_motion_edit_segments \
+  --motion-edit-manifest /home/xiaz/motion_edit/data/exports/manifests/probe_chain_current.json \
+  --motion-root /home/xiaz/motion_edit \
+  --output data/motion_edit/probe_chain_current_ref_t512.npz \
+  --feature-key joint_pos \
+  --feature-key joint_vel \
+  --feature-key body_pos_w \
+  --feature-key body_quat_w \
+  --feature-key body_lin_vel_w \
+  --target-len 512 \
+  --min-len 16 \
+  --max-len 512
+
+python -m gmvq.train_gmvq \
+  --data data/motion_edit/probe_chain_current_ref_t512.npz \
+  --save_dir runs/gmvq_motion_edit_probe_chain \
+  --num_codes 16 \
+  --latent_dim 32 \
+  --encoder_type bigru_masked \
+  --decoder_type time \
+  --batch_size 16 \
+  --steps 2000
+
+python -m gmvq.decode_motion_edit_ref \
+  --checkpoint runs/gmvq_motion_edit_probe_chain/checkpoint.pt \
+  --data data/motion_edit/probe_chain_current_ref_t512.npz \
+  --output /home/xiaz/holosoma_isaaclab3_newton/tmp/gmvq_play/probe_chain_current_gmvq_ref.npz \
+  --latents-output /home/xiaz/holosoma_isaaclab3_newton/tmp/gmvq_play/probe_chain_current_gmvq_latents.npz
+```
+
+The prepared `.npz` keeps the standard padded `segments [N, T, D]` key for
+batching and also writes `valid_mask`, `lengths`, segment IDs, motion IDs, frame
+ranges, source paths, and active body labels. Training and analysis use
+`valid_mask` when present, so padding does not contribute to reconstruction or
+velocity losses. To recover the original-length reconstruction from analysis:
+
+```python
+recon_i = recon_padded[i, : lengths[i]]
+```
+
 Quick test:
 
 ```bash
