@@ -1,17 +1,21 @@
-# Contact-aware augmentation force references
+# Contact-force policy references
 
-This document describes the current force-reference compatibility layer for
-contact-aware augmentation. The long-term direction is to make contact dynamics
-part of the augmentation representation itself:
+This document describes the standard generated trajectory contract for
+motion_edit. The center of the package is now the force-bearing policy reference
+trajectory; raw rollout files are kept as source/archive references and are not
+used as active force-checkpoint payloads.
+
+The long-term direction is to make contact dynamics part of the augmentation
+representation itself:
 
 ```text
 contact phase + surface binding + contact strength + force envelope
 ```
 
-The code in this document is still useful because force-aware tracking policies
-expect part-level reference force channels in the generated motion files. The
-prescribed MuJoCo backend is a diagnostic/compatibility backend, not the final
-force-retargeting model.
+Force-aware tracking policies expect part-level reference force channels in the
+generated motion files. `motion-edit generate-ref` is the formal writer for
+that contract. The prescribed MuJoCo backend is a diagnostic/compatibility
+backend, not the final force-retargeting model.
 
 ## Prescribed backend semantics
 
@@ -48,9 +52,9 @@ uv pip install --python .venv/bin/python -e ".[viewer,force]"
 ## Formal WBT ref command
 
 Use this after producing a `ContactEditPlan` from the contact editor. The plan's
-`source_motion_path` is the single source reference: it supplies the original
-trajectory, contact masks/positions, and contact-force channels. There is no
-separate public `--source-force-ref` input in the formal path.
+`source_motion_path` is the archived source reference: it supplies the original
+trajectory, contact masks/positions, and contact-force channels for retargeting.
+There is no separate public `--source-force-ref` input in the formal path.
 
 ```bash
 motion-edit generate-ref \
@@ -65,6 +69,16 @@ motion-edit generate-ref \
 This runs:
 
 ```text
+archived source force rollout
+  -> ContactEditPlan
+  -> generated kinematics
+  -> retargeted contact-force channels
+  -> WBT-ready *.policy_ref_v1.npz
+```
+
+Implementation stages:
+
+```text
 ContactEditPlan
   -> lte_fullbody / batch_contact_laplacian geometry generation
   -> fullbody IK output with joint_pos
@@ -73,7 +87,7 @@ ContactEditPlan
   -> output npz with WBT force reference channels
 ```
 
-This mode keeps the augmented kinematic trajectory unchanged after IK. It splits
+This mode keeps the generated kinematic trajectory unchanged after IK. It splits
 source and target contact masks into local contact phases, resamples source
 force envelopes over each target phase, writes bounded six-part force channels,
 and records `force_source = retargeted_contact_force`.
@@ -141,6 +155,10 @@ contact_force_part_w     = field consumed by holosoma MotionLoader
 `contact_force_part_force_w` is kept as an explicit motion_edit alias with the
 same values. Internal diagnostics can still disable WBT compatibility, but the
 formal `generate-ref` command always writes the WBT six-part contract.
+
+Files that do not contain `contact_force_part_w`, `contact_force_part_mask`,
+and `contact_force_part_order` are geometry diagnostics or stale artifacts. Do
+not use them as generated trajectories for the force checkpoint.
 
 If the motion has `contact_force_part_mask`, prescribed solve uses it to gate
 solved forces so that inactive intended contacts stay zero. Retargeted force

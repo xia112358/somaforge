@@ -1655,7 +1655,7 @@ def _add_loaded_editor_sidebar(
     with server.gui.add_folder("Advanced / Generate"):
         output_motion = server.gui.add_text("output_motion", initial_value=defaults["output_motion"])
         overwrite = server.gui.add_checkbox("overwrite output", initial_value=False)
-        generate_btn = server.gui.add_button("Generate fullbody LTE")
+        generate_btn = server.gui.add_button("Generate diagnostic geometry")
         generation_info = server.gui.add_text("generation_status", initial_value="idle", multiline=True)
         generation_info.disabled = True
     status_refs["generation_info"] = generation_info
@@ -1708,7 +1708,7 @@ def _add_loaded_editor_sidebar(
             upsert_recent_motion(generated_entry)
             if callable(controller.reload_motion_callback):
                 controller.reload_motion_callback(generated_entry)
-        action = "dry-run fullbody LTE" if dry_run else "generated fullbody LTE"
+        action = "dry-run diagnostic geometry" if dry_run else "generated diagnostic geometry"
         warning_suffix = f" warnings={len(result.warnings or [])}" if result.warnings else ""
         _set_status(f"{action}: {result.output_motion_path}{warning_suffix}")
         generation_state.last_output_motion = str(result.output_motion_path)
@@ -1733,7 +1733,7 @@ def _add_loaded_editor_sidebar(
                 inputs = resolved_inputs
                 output_motion.value = inputs["generated_motion"]
                 _set_status(f"output existed; using next available motion: {inputs['generated_motion']}")
-        action = "dry-run fullbody LTE" if dry_run else "generate fullbody LTE"
+        action = "dry-run diagnostic geometry" if dry_run else "generate diagnostic geometry"
         generation_state.running = True
         generation_state.last_error = None
         generation_state.last_output_motion = inputs["generated_motion"]

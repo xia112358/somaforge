@@ -1,21 +1,26 @@
 # Contact force dynamics next steps
 
-This note is the handoff point for continuing the contact-force augmentation
-work. It separates the useful compatibility work already in the branch from the
-next formal change: making force dynamics part of the contact representation.
+This note is the handoff point for continuing contact-force-centered generation.
+The standard generated trajectory is the WBT-ready force policy reference
+written by `motion-edit generate-ref`. Old/raw trajectories are archived source
+references only; they supply source kinematics, masks, and force channels for
+retargeting but are not active generated outputs.
 
-## Current branch
+## Current mainline state
 
 ```text
-feature/transfer-local-contact-laplacian
+motion-edit contact-editor
+-> ContactEditPlan
+-> motion-edit generate-ref
+-> *.policy_ref_v1.npz with WBT six-part force channels
 ```
 
-The branch is not `main`. Runtime data under `data/` and generated Holosoma
-artifacts are local only and should not be committed.
+Runtime data under `data/` and generated Holosoma artifacts are local only and
+should not be committed.
 
-## Kept changes
+## Mainline components
 
-These changes are still useful and should stay in the branch:
+These components implement the force-reference path:
 
 ```text
 motion_edit/contact_force/schema.py
@@ -291,20 +296,20 @@ motion-edit generate-ref \
   --overwrite
 ```
 
-## First smoke target
+## Smoke target
 
-Use one local fullbody generated motion first:
+Use one small `generate-ref` output first:
 
 ```text
-data/motions/generated/raw29_radius005_n8_full/climb_00_z_scale_1.0_surface_jitter_0000.npz
+data/motions/generated/<motion_id>.policy_ref_v1.npz
 ```
 
 Expected output properties:
 
 ```text
-joint/body trajectory remains from the augmented motion
+joint/body trajectory comes from the generated kinematics
 force is retargeted, not copied and not policy-rollout-derived
-contact_force_part_w shape is [1005, 6, 3]
+contact_force_part_w shape is [T, 6, 3]
 force max is finite and bounded
 WBT validator passes
 metadata identifies retargeted_contact_force

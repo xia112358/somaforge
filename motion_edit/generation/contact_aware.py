@@ -11,7 +11,7 @@ from motion_edit.generation.lte_fullbody import LteGenerationResult, apply_conta
 
 @dataclass(frozen=True)
 class ContactAwareGenerationResult:
-    """Combined result for geometry augmentation followed by force baking."""
+    """Combined result for generated kinematics followed by force-ref writing."""
 
     generation: LteGenerationResult
     force_bake: ContactForceBakeResult | None = None
@@ -49,13 +49,13 @@ def apply_contact_aware_edit_plan_to_motion(
     _force_bake_fn: Callable[..., ContactForceBakeResult] | None = None,
     **generation_kwargs: Any,
 ) -> ContactAwareGenerationResult:
-    """Run contact-aware augmentation: geometry first, force reference second.
+    """Run contact-aware force-ref generation: kinematics first, force reference second.
 
-    This is the first integrated path for the current design: geometry retargeting
-    remains delegated to the existing LTE/fullbody generation path. The force
-    stage can be a prescribed-contact diagnostic solve or contact-phase force
-    retargeting; neither mode runs a rollout or feeds forces back into the body
-    state.
+    Geometry retargeting remains delegated to the existing fullbody generation
+    path. The force stage can be a prescribed-contact diagnostic solve or
+    contact-phase force retargeting; neither mode runs a rollout or feeds forces
+    back into the body state. The formal CLI uses retarget mode through
+    ``motion-edit generate-ref``.
     """
 
     generator = _generation_fn or apply_contact_edit_plan_to_motion

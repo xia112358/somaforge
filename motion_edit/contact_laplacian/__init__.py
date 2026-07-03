@@ -1,10 +1,11 @@
-"""Batch contact-Laplian trajectory solver.
+"""Batch contact-Laplacian trajectory solver.
 
 This package contains the full-trajectory least-squares solver used by the
-default ``generate-lte-augmentation --mode lte_fullbody`` path. The current
-production bridge optimizes semantic ``body_pos_w`` task-space points and writes
-an internal generated motion; the legacy external LTE/IK subprocess path is only
-used when explicitly selected.
+standard ``generate-ref`` path before force retargeting. The current production
+bridge optimizes semantic ``body_pos_w`` task-space points, feeds IK, and then
+the force writer emits a WBT-ready policy reference. The geometry-only
+``generate-lte-augmentation`` path is diagnostic/hidden and should not be used
+as the force-checkpoint payload.
 """
 
 from .kinematics import BodyPositionTrajectoryKinematicsProvider, KinematicsProvider, LinearPointKinematicsProvider

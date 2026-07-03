@@ -1,7 +1,8 @@
 # Contact Laplacian Editing Algorithms
 
 This document describes the two Laplacian-style residual families that should
-coexist in `motion_edit` contact-anchor augmentation:
+coexist in the geometry stage of motion_edit's force-centered `generate-ref`
+pipeline:
 
 1. task-space contact-handle LTE over semantic keypoints;
 2. fullbody interaction-mesh / q-space Laplacian refinement.
@@ -199,10 +200,11 @@ to produce a generated motion npz.
 
 ### Current Production Path
 
-`generate-lte-augmentation --mode lte_fullbody` currently uses this
-ContactEditPlan-driven path with both edited and fixed contact handles, then
-passes the dense task-space target to the configured fullbody IK subprocess.
-The generation metadata should record:
+`motion-edit generate-ref` uses this ContactEditPlan-driven path with both
+edited and fixed contact handles, then passes the dense task-space target to
+fullbody IK and the contact-force retarget writer. The hidden
+`generate-lte-augmentation --mode lte_fullbody` command can still run the same
+geometry stage for diagnostics. The generation metadata should record:
 
 - number of moving contact handles;
 - number of fixed contact handles;
@@ -210,7 +212,7 @@ The generation metadata should record:
 - zero-delta edits ignored or treated as fixed contacts;
 - the selected fullbody solver backend.
 
-This path is the practical backend for current real rollout motions.
+This path is the practical geometry backend for current real source motions.
 
 ## Residual Family B: Fullbody Interaction Mesh / q-Space Laplacian
 
@@ -456,11 +458,12 @@ Backends can include:
 Contact anchor dragging remains a planning operation. It creates or updates a
 `ContactEditPlan`; it does not generate motion automatically.
 
-Motion generation remains explicit:
+Force-reference generation remains explicit:
 
 ```text
-motion-edit generate-lte-augmentation --plan ...
+motion-edit generate-ref --plan ...
 ```
 
-The generated motion must be a new motion version. The source motion, source
-contact layer, and canonical segmentation must not be mutated by default.
+The generated force reference must be a new motion version. The archived source
+motion, source contact layer, and canonical segmentation must not be mutated by
+default.

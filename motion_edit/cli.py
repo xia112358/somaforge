@@ -509,7 +509,7 @@ def _launch_surface_editor_for_args(args: argparse.Namespace, *, contact_layer: 
         print(f"[debug] sync pending viewer requests: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'}")
         print(f"[debug] save after sync: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'} --save")
     else:
-        print("direct edit mode: edit contacts in the Contact Editor page, then validate or generate fullbody LTE")
+        print("direct edit mode: edit contacts in the Contact Editor page, then validate the plan and run motion-edit generate-ref")
     process = launch_viewer(
         args.motion,
         repo_root=args.repo_root,
@@ -807,7 +807,7 @@ def _cmd_generate_lte_augmentation(args: argparse.Namespace) -> None:
         ik_max_nfev=args.ik_max_nfev,
         intermediate_dir=args.intermediate_dir,
     )
-    action = "dry-run LTE augmentation" if args.dry_run else "generated LTE augmentation"
+    action = "dry-run diagnostic geometry" if args.dry_run else "generated diagnostic geometry"
     print(f"{action} {result.output_motion_path}")
     if result.output_contact_layer:
         print(f"output contact layer: {result.output_contact_layer}")
@@ -2190,7 +2190,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=_cmd_summarize)
     public_help = {
         "init": "initialize local motion_edit data directories",
-        "register-motion": "register a rollout motion bundle",
+        "register-motion": "register an archived source rollout bundle",
         "register-motion-asset": "register a motion asset path",
         "list-motions": "list registered motions",
         "show-motion": "show one registered motion",
@@ -2201,9 +2201,9 @@ def build_parser() -> argparse.ArgumentParser:
         "export-surface-binding-overlay": "write a viewer overlay for surface bindings",
         "contact-editor": "launch the main Contact Editor UI",
         "validate-contact-edit-plan": "validate staged contact-anchor edits",
-        "generate-ref": "generate a WBT-ready augmented reference with retargeted contact force",
+        "generate-ref": "generate a WBT-ready force trajectory with retargeted contact force",
         "generate-contact-jitter-plans": "generate surface-constrained contact jitter plans",
-        "register-motion-version": "register a raw or generated motion version",
+        "register-motion-version": "register an archived source or generated force-ref motion version",
         "build-canonical-segmentation": "initialize the canonical segmentation for a motion version",
         "build-token-catalog": "build tokens from canonical segments",
         "export-manifest": "export a manifest from legacy layers or a motion version",

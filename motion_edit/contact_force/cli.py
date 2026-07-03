@@ -13,7 +13,7 @@ from motion_edit.generation.contact_force_bake import (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="motion-edit-bake-force",
-        description="Bake or retarget contact forces into a generated motion npz without running a rollout.",
+        description="Bake or retarget contact forces into a generated policy-ref npz without running a rollout.",
     )
     parser.add_argument("--motion", required=True, help="Input fullbody motion npz containing joint_pos")
     parser.add_argument("--output-motion", default=None, help="Output npz. Omit only with --in-place")

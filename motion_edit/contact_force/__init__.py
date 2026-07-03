@@ -1,4 +1,4 @@
-"""Contact force references for contact-aware motion augmentation."""
+"""Contact-force references for WBT policy-ref trajectories."""
 
 from .prescribed import (
     MuJoCoPrescribedContactBackend,

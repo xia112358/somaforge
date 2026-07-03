@@ -489,7 +489,7 @@ function updateChrome() {
   $('viewport-selected').textContent = shortContactPoint(selectedContactPoint());
   $('generate-top').disabled = !ready;
   $('generate-top').textContent = gen.running ? 'Generating...' : 'Generate';
-  $('generate-top').title = ready ? 'Generate fullbody LTE from the current edit plan' : (gen.running ? 'Generation is running' : 'No editable contact plan is loaded');
+  $('generate-top').title = ready ? 'Generate diagnostic geometry from the current edit plan; use generate-ref for force refs' : (gen.running ? 'Generation is running' : 'No editable contact plan is loaded');
 }
 function renderLeftPanel() {
   const counts = state.binding_counts || {};
@@ -849,7 +849,7 @@ def start_contact_timeline_wrapper(
         gen.last_error = None
         gen.last_output_motion = inputs["generated_motion"]
         gen.last_started_at = time.time()
-        set_status(f"generate fullbody LTE started: {inputs['generated_motion']}")
+        set_status(f"diagnostic geometry generation started: {inputs['generated_motion']}")
 
         def worker() -> None:
             try:
@@ -878,10 +878,10 @@ def start_contact_timeline_wrapper(
                 warning_suffix = f" warnings={len(result.warnings or [])}" if result.warnings else ""
                 gen.last_output_motion = str(result.output_motion_path)
                 gen.last_error = None
-                set_status(f"generated fullbody LTE: {result.output_motion_path}{warning_suffix}")
+                set_status(f"generated diagnostic geometry: {result.output_motion_path}{warning_suffix}")
             except Exception as exc:
                 gen.last_error = str(exc)
-                set_status(f"generate fullbody LTE failed: {exc}", error=True)
+                set_status(f"diagnostic geometry generation failed: {exc}", error=True)
             finally:
                 gen.running = False
                 gen.last_finished_at = time.time()

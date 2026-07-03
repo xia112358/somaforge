@@ -11,7 +11,7 @@ from motion_edit.generation.contact_aware import apply_contact_aware_edit_plan_t
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="motion-edit-contact-aware-augment",
-        description="Generate contact-aware motion augmentation and optionally bake prescribed contact forces.",
+        description="Legacy diagnostic wrapper for contact-aware geometry/force baking. Use motion-edit generate-ref for WBT force trajectories.",
     )
     parser.add_argument("--plan", required=True)
     parser.add_argument("--output-motion", required=True)
@@ -112,7 +112,7 @@ def main(argv: list[str] | None = None) -> None:
         ik_max_nfev=args.ik_max_nfev,
         intermediate_dir=args.intermediate_dir,
     )
-    action = "dry-run contact-aware augmentation" if args.dry_run else "generated contact-aware augmentation"
+    action = "dry-run legacy contact-aware diagnostic" if args.dry_run else "generated legacy contact-aware diagnostic"
     print(f"{action} {result.output_motion_path}")
     if result.force_bake is not None:
         meta = result.force_bake.metadata

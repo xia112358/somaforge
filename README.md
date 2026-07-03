@@ -1,8 +1,8 @@
 # motion_edit
 
-Contact-centric motion editing workbench for rollout motions, surface-bound contact-anchor editing, explicit ContactEditPlan generation, and downstream exports.
+Contact-force-centered motion editing workbench for surface-bound contact-anchor editing, explicit ContactEditPlan generation, and WBT-ready policy-reference trajectories.
 
-The package stores local runtime metadata and segment layers under `data/` and keeps large motion files as path references by default. `data/` is intentionally ignored by Git; do not force-add local rollout, contact, or generated motion artifacts.
+The canonical generated trajectory is a force-bearing policy reference: it must include `contact_force_part_w`, `contact_force_part_mask`, and `contact_force_part_order`. Old/raw rollout trajectories are retained as immutable source archives for contact extraction and force retargeting; they are not the active training/export payload. The package stores local runtime metadata and segment layers under `data/` and keeps large motion files as path references by default. `data/` is intentionally ignored by Git; do not force-add local rollout, contact, or generated motion artifacts.
 
 ## Layout
 
@@ -10,8 +10,8 @@ The package stores local runtime metadata and segment layers under `data/` and k
 data/
   catalogs/
   motions/
-    raw/
-    generated/
+    raw/          # archived source refs only
+    generated/    # active outputs are *.policy_ref_v1.npz force refs
   motion_assets/
   motion_versions/
   segments/
@@ -44,12 +44,13 @@ uv pip install --python .venv/bin/python -e ".[viewer]"
 The main user-facing path is:
 
 ```text
-MotionAsset / MotionVersion
+archived source rollout with contact-force channels
+  -> MotionAsset / MotionVersion source reference
   -> ContactGraph / surface binding
   -> contact-editor
   -> ContactEditPlan
-  -> generate-lte-augmentation --mode lte_fullbody
-  -> generated MotionVersion
+  -> generate-ref
+  -> WBT-ready force trajectory / generated MotionVersion
 ```
 
 ```bash
@@ -81,14 +82,13 @@ MotionAsset / MotionVersion
 ./motion-edit validate-contact-edit-plan \
   --plan data/workbench/climb00_surface_edits.json
 
-./motion-edit generate-lte-augmentation \
+./motion-edit generate-ref \
   --plan data/workbench/climb00_surface_edits.json \
-  --output-motion data/motions/generated/climb00_farther.npz \
+  --output-motion data/motions/generated/climb00_farther.policy_ref_v1.npz \
   --output-contact-layer contact/climb00_farther \
   --output-segment-layer candidates/climb00_farther \
   --output-motion-version-id climb00_farther \
-  --register-motion-version \
-  --mode lte_fullbody
+  --register-motion-version
 
 ./motion-edit export-manifest \
   --motion-version-id climb00_farther \
@@ -98,14 +98,33 @@ MotionAsset / MotionVersion
   --motion-version-id climb00_farther
 ```
 
-`contact-editor` is the only recommended interactive UI. It opens the local Viser Contact Editor wrapper page, loads registered rollout motions, displays the motion/timeline/contact anchors, edits surface-bound anchors, saves a `ContactEditPlan`, and can trigger explicit fullbody LTE generation. Anchor dragging is same-surface constrained: normal displacement is discarded, `surface_id`/`object_id` are preserved, and surface bounds use reject/clamp semantics.
+`contact-editor` is the only recommended interactive UI. It opens the local Viser Contact Editor wrapper page, loads registered source motions, displays the motion/timeline/contact anchors, edits surface-bound anchors, and saves a `ContactEditPlan`. Any in-editor geometry generation is diagnostic; the standard force trajectory is written by `generate-ref`. Anchor dragging is same-surface constrained: normal displacement is discarded, `surface_id`/`object_id` are preserved, and surface bounds use reject/clamp semantics.
 
-`generate-lte-augmentation` exposes one public generation mode:
+`generate-ref` is the formal policy-reference path and the only standard output
+path for generated trajectories. It runs contact-aware geometry generation with
+the batch contact-Laplacian backend, retargets source contact-force phases onto
+the generated contact phases, validates the WBT six-part force-reference
+contract, and writes the final `*.policy_ref_v1.npz`.
+
+```bash
+~/motion_edit/motion-edit generate-ref \
+  --plan data/workbench/climb00_surface_edits.json \
+  --output-motion data/motions/generated/climb00_farther.policy_ref_v1.npz \
+  --output-contact-layer contact/climb00_farther \
+  --output-segment-layer candidates/climb00_farther \
+  --output-motion-version-id climb00_farther \
+  --register-motion-version \
+  --overwrite
+```
+
+`generate-lte-augmentation` remains available only as a hidden/internal
+geometry diagnostic. Its output is not a standard generated trajectory because
+it does not write the WBT contact-force contract:
 
 ```bash
 ~/motion_edit/motion-edit generate-lte-augmentation \
   --plan data/workbench/climb00_surface_edits.json \
-  --output-motion data/motions/generated/climb00_farther.npz \
+  --output-motion /tmp/climb00_farther.geometry_debug.npz \
   --output-contact-layer contact/climb00_farther \
   --output-segment-layer candidates/climb00_farther \
   --output-motion-version-id climb00_farther \
@@ -113,7 +132,74 @@ MotionAsset / MotionVersion
   --mode lte_fullbody
 ```
 
-Legacy/debug commands such as `surface-editor`, `surface-editor-sync`, `cutter`, `view`, `accept`, `reject`, `import-lte-catalog`, `move-contact-anchor`, and raw segment workbench actions remain available for tests, migration, or diagnostics, but they are hidden from the main `motion-edit --help` flow. New work should enter through `contact-editor` and `generate-lte-augmentation --mode lte_fullbody`.
+Legacy/debug commands such as `surface-editor`, `surface-editor-sync`, `cutter`, `view`, `accept`, `reject`, `import-lte-catalog`, `move-contact-anchor`, and raw segment workbench actions remain available for tests, migration, or diagnostics, but they are hidden from the main `motion-edit --help` flow. New work should enter through `contact-editor` and `generate-ref`.
+
+## Component Boundaries
+
+Keep these boundaries clear when debugging or adding features:
+
+| Component | Owns | Does not own |
+| --- | --- | --- |
+| `motion_edit/contact/` | Contact records, ContactGraph, ContactEditPlan, ContactPhase, surface binding, layer I/O | Running fullbody generation or policy rollout |
+| `motion_edit/viewer/contact_timeline.py` | Main `motion-edit contact-editor` UI and anchor-edit workflow | Segmentation cutter as a primary workflow |
+| `motion_edit/generation/` | ContactEditPlan -> WBT force-ref orchestration; hidden geometry diagnostics | Low-level contact graph storage |
+| `motion_edit/contact_laplacian/` | Batch contact-Laplacian solver, ContactHandleSpec, residual weights, solver metadata | Policy-force writing or simulator rollout |
+| `motion_edit/contact_force/` | Canonical contact-force fields, phase retargeting, prescribed-force diagnostics | Geometry optimization |
+| `motion_edit/segmentation/` | Draft segmentation sessions and legacy cutter workflow | Main contact-anchor editing |
+| `motion_edit/storage/` | MotionAsset, MotionVersion, canonical segments, token catalogs | Runtime `.npz` payload ownership |
+| `data/` | Local runtime data and generated artifacts | Git-tracked package source |
+
+The formal force-aware reference path has two separate stages:
+
+```text
+optimization:
+  source force -> ContactLoadProfile over contact-local phase
+  -> ContactHandleSpec.load_profile
+  -> solver contact residual weights
+
+reference output:
+  source contact-force phases
+  -> target/generated contact phases
+  -> retargeted contact_force_part_w [T, 6, 3]
+```
+
+Current force-load profiles are explicitly recorded as
+`source_target_interval_mapping = same_frame_interval`. This is intentional:
+the optimizer hook redistributes contact residual strength inside each known
+contact interval, while the force writer retargets force vectors by local
+contact phase for the final policy reference.
+
+## Avoiding Common Errors
+
+- Use `motion-edit contact-editor` for interactive contact-anchor editing.
+  `motion-edit-seg cutter` and `surface-editor` are legacy/debug tools.
+- Use `motion-edit generate-ref` for every standard generated trajectory.
+- Treat files without `contact_force_part_w`, `contact_force_part_mask`, and
+  `contact_force_part_order` as diagnostics or stale data, not force-ckpt
+  training/export refs.
+- Use `generate-lte-augmentation --mode lte_fullbody` only for hidden geometry
+  diagnostics.
+- Pass a logical contact layer such as `contact/raw29_00_editor_ready`; it
+  resolves under `data/layers/contact/...`.
+- Non-dry-run `generate-ref` requires `--output-contact-layer` or
+  `output_contact_layer` in the plan.
+- Confirm `ContactEditPlan.source_motion_path` exists before generation. It may
+  be an absolute path outside this repository.
+- CUDA/JAX/Isaac initialization warnings inside Codex or a machine without GPU
+  access are not by themselves a failure. Treat the process exit code, generated
+  output, and validator result as authoritative.
+- For WBT policy refs, validate that the output includes `joint_pos`,
+  `joint_vel`, `body_pos_w`, `body_quat_w`, `body_lin_vel_w`,
+  `body_ang_vel_w`, `contact_force_part_w [T, 6, 3]`,
+  `contact_force_part_mask [T, 6]`, and `contact_force_part_order`.
+- Keep old/raw rollout `.npz` files as archived source references only. Do not
+  use them as active generated trajectories for the force checkpoint.
+- Inspect `motion_edit_generation_metadata`, `solver_metadata`, and
+  `motion_edit_force_metadata` for trajectory quality. A file existing is not a
+  quality check.
+- Do not run broad cleanup such as `git clean -fd` in this checkout without
+  inspecting the dry-run output; local `.agents/` and `.codex/` directories are
+  workspace configuration.
 
 ## Current Branch / PR Organization
 
@@ -157,11 +243,11 @@ The primary UI path remains `motion_edit/viewer/contact_timeline.py` through `mo
 
 - `MotionRef`: a path reference to qpos / Holosoma fullbody / OmniRetarget motion data.
 - `MotionAssetRecord`: an immutable full-motion source reference.
-- `MotionVersionRecord`: one raw or generated full-trajectory version. This is the durable motion unit.
+- `MotionVersionRecord`: one archived source or generated force-reference trajectory version. Standard generated versions point at WBT-ready `*.policy_ref_v1.npz` files.
 - `ContactEventRecord`: a contact state change such as touchdown, liftoff, support switch, or active body change.
 - `ContactAnchorRecord`: a persistent body-part contact interval. This is the primary handle for later visual editing.
 - `ContactPatchRecord`: a concrete contact patch attached to an anchor, currently derived from anchor intervals.
-- `ContactEditPlan`: a staged set of contact-anchor edits. It is a plan for later augmentation, not an augmented motion.
+- `ContactEditPlan`: a staged set of contact-anchor edits. It is a plan for later force-reference generation, not a generated trajectory.
 - `ContactTransitionRecord`: a transfer segment between contact states or anchors.
 - `ContactGraph`: the per-motion aggregate of events, anchors, patches, and transitions.
 - `SegmentRecord`: one motion interval with `source`, `status`, backward-compatible mask strings, structured contact metadata, and cutter export fields.
@@ -188,37 +274,38 @@ Legacy `data/layers/{candidates,manual,accepted,rejected}` paths remain for comp
 
 Split `.npz` files are export caches only. `export-split-npz` reads canonical segments and materializes clips for downstream training/export; those clips are safe to delete and regenerate.
 
-## LTE Fullbody Generation
+## Force Reference Generation
 
-The main generation entry is:
+The standard generation entry is `generate-ref`. It writes the force-bearing
+trajectory consumed by the force checkpoint:
 
 ```bash
-~/motion_edit/motion-edit generate-lte-augmentation \
-  --mode lte_fullbody \
+~/motion_edit/motion-edit generate-ref \
   --plan data/workbench/climb00_edits.json \
-  --output-motion data/motions/generated/climb00_augmented.npz
+  --output-motion data/motions/generated/climb00.policy_ref_v1.npz \
+  --output-contact-layer contact/climb00_policy_ref \
+  --output-segment-layer candidates/climb00_policy_ref \
+  --output-motion-version-id climb00_policy_ref \
+  --register-motion-version
 ```
 
 The default solver is `batch_contact_laplacian`. This is the same backend used
-by Contact Editor generation: `ContactEditPlan -> body-space batch
-contact-Laplacian proxy -> internal taskspace generated motion`.
+inside `generate-ref`: `ContactEditPlan -> body-space batch contact-Laplacian
+proxy -> IK trajectory -> retargeted contact-force reference`.
 
-The legacy direct LTE keypoint path is still available explicitly:
+The geometry-only command is hidden and should be treated as a diagnostic
+intermediate producer:
 
 ```bash
 ~/motion_edit/motion-edit generate-lte-augmentation \
   --mode lte_fullbody \
-  --fullbody-solver ik_subprocess \
   --plan data/workbench/climb00_edits.json \
-  --output-motion data/motions/generated/climb00_legacy_ik_augmented.npz
+  --output-motion /tmp/climb00.geometry_debug.npz
 ```
 
-The default path uses semantic `body_pos_w` points as the optimization
-variables, so it is not true q-space contact-Laplacian yet. The proxy solve
-improves contact/task-space propagation before IK, and the final output combines
-refined `body_pos_w` with IK `joint_pos`. For diagnostics only, pass
-`--contact-laplacian-proxy-only` to write the body-space proxy without running
-IK; that output is not guaranteed to be joint consistent.
+Do not put geometry-only outputs under `data/motions/generated` as canonical
+training data. They are useful for debugging contact propagation before the
+force writer, but they are not WBT policy references.
 
 ## Legacy Layer Policy
 
@@ -226,14 +313,15 @@ IK; that output is not guaranteed to be joint consistent.
 - `manual/current_cutter`: current cutter state.
 - `candidates/force_contact`: automatically extracted force-contact proto candidates.
 - `contact/force_contact`: contact graph sidecar generated from the same masks as `candidates/force_contact`.
-- `accepted`: curated segments that downstream training/export should consume.
+- `accepted`: legacy curated segments. New force-ckpt exports should consume
+  WBT-ready generated force-ref motion versions, not raw accepted clips.
 - `rejected`: candidates kept for provenance but excluded from export.
 
 Accept/reject writes use upsert-by-segment-id semantics for legacy compatibility. For canonical storage, use `mark-segment-status` so accepted/rejected remains a status inside `data/segments/<motion_version_id>.jsonl`.
 
 ## Contact-Centric Pipeline
 
-Contact points are the shared editing handle for anchor segmentation, cutter correction, and later LTE deformation.
+Contact points are the shared editing handle for anchor segmentation, cutter correction, and force-reference generation.
 
 ```text
 masked motion npz
@@ -262,7 +350,7 @@ Contact anchors are editable first-class objects. When `body_pos_w` is available
 
 `ContactAnchor.world_position` is not enough for safe dragging. Before Viser dragging can move an anchor, the anchor should be bound to its original terrain/object surface. A bound anchor stores `object_id`, `surface_id`, normal/tangent basis, surface bounds, and `surface_coordinates`. The editor moves anchors in surface coordinates; normal motion is removed and bounds prevent dragging off the original platform/face.
 
-Surface binding is explicit and does not generate augmented motion. It writes a new ContactLayer by default.
+Surface binding is explicit and does not generate a trajectory. It writes a new ContactLayer by default.
 
 ```bash
 ~/motion_edit/motion-edit create-urdf-surface-catalog \
@@ -295,7 +383,7 @@ Surface catalogs are JSONL records with fields such as `surface_id`, `object_id`
 
 ## Surface Binding Inspection
 
-Surface binding should be inspected before using bound anchors for ContactEditPlan work or future LTE/contact augmentation. The inspection exports are diagnostic artifacts only: they do not modify motion data, do not update canonical segmentation, and do not generate augmented `.npz` files.
+Surface binding should be inspected before using bound anchors for ContactEditPlan work or future force-reference generation. The inspection exports are diagnostic artifacts only: they do not modify motion data, do not update canonical segmentation, and do not generate `.npz` trajectory files.
 
 The report export summarizes known surfaces, bound anchors, failed/unbound anchors, clamped bindings, and suspicious bindings. It also records that the binding granularity is `anchor_point`, not a full foot sole contact model.
 
@@ -346,9 +434,9 @@ The local adapter reads the existing overlay JSON and renders the motion root tr
 
 - `Motion`: current motion/session, overlay reload, and status.
 - `Contact Anchor`: selected-anchor metadata only.
-- `Augmentation`: write/validate the ContactEditPlan, dry-run fullbody LTE, generate the augmented motion, reset the session, and optionally export a debug ContactLayer.
+- `Diagnostic Geometry`: write/validate the ContactEditPlan, dry-run the geometry stage, generate diagnostic geometry output, reset the session, and optionally export a debug ContactLayer. Use `generate-ref` for the standard force trajectory.
 
-The bottom timeline top bar owns motion switching. It includes a recent-motion dropdown plus `Open`, `Open latest`, and `Reload`. All entries are treated as regular motions with the same bundle-style fields; raw rollout and LTE-augmented outputs are not special UI modes. Generated motions are added to `data/workbench/recent_motions.json` after successful generation, so the next step is usually `Open latest`.
+The bottom timeline top bar owns motion switching. It includes a recent-motion dropdown plus `Open`, `Open latest`, and `Reload`. All entries are treated as regular motions with the same bundle-style fields. Raw rollout motions are source/archive refs; diagnostic geometry outputs are not force-ckpt payloads. Standard generated trajectories are `generate-ref` outputs with the WBT force contract.
 
 The bottom timeline separates contact-point intervals from edit cut frames:
 
@@ -363,8 +451,9 @@ Avoid reviving old UI/test vocabulary such as `segmentBlock` or `protoBoundary` 
 The local Viser direct editor renders the overlay, highlights the selected
 anchor, moves anchors with same-surface constrained 3D handles, refreshes the
 overlay, supports full-session reset, validates the edit plan, and can launch
-fullbody LTE generation from the Viser GUI. A request-file bridge remains for
-debug fallback but is not part of the normal workflow.
+diagnostic geometry generation from the Viser GUI. The final force-bearing
+trajectory is still produced by `generate-ref`. A request-file bridge remains
+for debug fallback but is not part of the normal workflow.
 
 The older external Holosoma viewer can still be used with `--external-viewer`, but it is no longer required for the surface overlay bridge. The local editor owns the surface overlay and same-surface anchor handle interactions.
 
@@ -438,7 +527,7 @@ PY
 
 The expected `missing_mesh_refs` value is `0`.
 
-In the Viser GUI, select an anchor from the bottom timeline or 3D view, drag its same-surface contact handle, then click `Validate plan`, `Dry run fullbody LTE`, or `Generate fullbody LTE`. No terminal sync is needed in default direct mode.
+In the Viser GUI, select an anchor from the bottom timeline or 3D view, drag its same-surface contact handle, then validate the plan. The in-viewer generate button is a diagnostic geometry path; use `motion-edit generate-ref` for the final force trajectory.
 
 Practical in-viewer workflow:
 
@@ -446,21 +535,37 @@ Practical in-viewer workflow:
 2. Inspect the selected anchor metadata and surface binding.
 3. Move by 3D same-surface drag, `du`/`dv`, step buttons, or target `u/v`.
 4. Use `Reset session` or `Discard unsaved edits` if needed.
-5. Click `Validate plan`, then `Dry run fullbody LTE` or `Generate fullbody LTE`.
-6. Click `Open latest` in the bottom timeline bar to switch to the newly generated motion.
+5. Click `Validate plan`.
+6. Run `motion-edit generate-ref` to write the WBT-ready force trajectory.
 
-Validation writes pending `ContactAnchorEditRecord` entries into the ContactEditPlan and marks a valid draft plan as `validated`; it does not export a ContactLayer. `Generate fullbody LTE` then creates a new motion from that plan and records it in the recent-motion cache. `Export debug ContactLayer` is available for inspection, but it is not the main workflow. None of these actions modify the currently loaded motion `.npz` or mutate canonical segmentation by default.
+Validation writes pending `ContactAnchorEditRecord` entries into the ContactEditPlan and marks a valid draft plan as `validated`; it does not export a ContactLayer. Diagnostic geometry generation can create a non-force intermediate for inspection, but it is not the main workflow. `Export debug ContactLayer` is available for inspection. None of these actions modify the archived source motion `.npz` or mutate canonical segmentation by default.
 
-## LTE-Style Motion Augmentation
+## Force-Centered Motion Generation
 
-Contact-anchor editing is intentionally two-stage. The editor only stages edits
-in a `ContactEditPlan`; motion generation is explicit:
+Contact-anchor editing is intentionally staged. The editor only stages edits in
+a `ContactEditPlan`; force-reference generation is explicit. Use `generate-ref`
+for the formal WBT policy-reference path:
+
+```bash
+~/motion_edit/motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
+~/motion_edit/motion-edit generate-ref \
+  --plan data/workbench/climb00_farther.json \
+  --output-motion data/motions/generated/climb00_farther.policy_ref_v1.npz \
+  --output-contact-layer contact/climb00_farther \
+  --output-segment-layer candidates/climb00_farther \
+  --output-motion-version-id climb00_farther \
+  --register-motion-version \
+  --overwrite
+```
+
+Use `generate-lte-augmentation` only when debugging the geometry stage without
+writing the WBT contact-force reference:
 
 ```bash
 ~/motion_edit/motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
 ~/motion_edit/motion-edit generate-lte-augmentation \
   --plan data/workbench/climb00_farther.json \
-  --output-motion data/motions/generated/climb00_farther.npz \
+  --output-motion /tmp/climb00_farther.geometry_debug.npz \
   --output-contact-layer contact/climb00_farther \
   --output-segment-layer candidates/climb00_farther \
   --output-motion-version-id climb00_farther \
@@ -468,9 +573,9 @@ in a `ContactEditPlan`; motion generation is explicit:
   --mode lte_fullbody
 ```
 
-Generation requires a `validated` or `locked` plan by default. The primary backend, `lte_fullbody`, is driven from motion_edit data: it extracts semantic `body_pos_w` keypoints from the source motion, applies ContactEditPlan handles through the batch contact-Laplacian proxy solve, writes taskspace intermediates, and writes one final augmented motion `.npz`. This path is explicit; the editor only runs it when the user clicks `Dry run fullbody LTE` or `Generate fullbody LTE`. Legacy external LTE/IK options such as `--lte-repo-root`, `--ik-script`, and `--ik-conda-env` only matter when explicitly selecting `--fullbody-solver ik_subprocess`.
+Generation requires a `validated` or `locked` plan by default. In the standard path, `generate-ref` extracts semantic `body_pos_w` keypoints from the archived source motion, applies ContactEditPlan handles through the batch contact-Laplacian proxy solve, runs IK, retargets source force phases onto the generated contact phases, and writes one final WBT-ready `*.policy_ref_v1.npz`. Legacy external LTE/IK options such as `--lte-repo-root`, `--ik-script`, and `--ik-conda-env` only matter when explicitly selecting hidden diagnostic paths.
 
-The source `.npz`, source ContactLayer, and source canonical segmentation are not modified. `--output-contact-layer` writes a graph derived from the source ContactGraph with edited anchor positions. `--output-segment-layer` writes candidate segments for the generated motion. `--register-motion-version` registers the generated full trajectory as an augmented MotionVersion. Canonical segmentation for that new version is only built when `--build-canonical` is passed explicitly.
+The archived source `.npz`, source ContactLayer, and source canonical segmentation are not modified. `--output-contact-layer` writes a graph derived from the source ContactGraph with edited anchor positions. `--output-segment-layer` writes candidate segments for the generated force ref. `--register-motion-version` registers the generated force trajectory as the active MotionVersion. Canonical segmentation for that new version is only built when `--build-canonical` is passed explicitly.
 
 ## Legacy And Developer Notes
 
@@ -482,5 +587,5 @@ you are migrating old data or debugging one subsystem.
 
 See also:
 
-- `docs/contact_laplacian_algorithms.md` for the current production fullbody
-  LTE path and the experimental batch contact-Laplacian direction.
+- `docs/contact_laplacian_algorithms.md` for the contact-Laplacian geometry
+  backend used inside `generate-ref`.

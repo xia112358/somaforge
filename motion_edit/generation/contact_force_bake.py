@@ -246,7 +246,7 @@ def bake_retargeted_contact_forces_for_motion(
     policy_ref_compat: str = "wbt_contact_force_6part",
     overwrite: bool = False,
 ) -> ContactForceBakeResult:
-    """Retarget source contact-force phases onto an augmented motion.
+    """Retarget source contact-force phases onto a generated kinematic reference.
 
     This path does not run a simulator. It keeps the generated kinematic
     reference unchanged and rewrites only the canonical part-level force fields.
