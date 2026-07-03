@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import dataclasses
+import json
 import os
 import re
 from pathlib import Path
@@ -1238,6 +1239,7 @@ class MotionCommand(CommandTermBase):
 
         # Maybe append interpolated transition back to default pose
         self._maybe_add_default_pose_transition(prepend=False)
+        self._event_token_plan = self._load_event_token_plan()
 
         # 2. get the indexes of the root link and the tracked links
         self.ref_body_index = robot_body_names.index(self.motion_cfg.body_name_ref[0])  # int
@@ -1526,6 +1528,8 @@ class MotionCommand(CommandTermBase):
             self._env.simulator.set_actor_states([self.object_name], env_ids, object_states)
 
         self._reset_local_segment_anchors(env_ids)
+        self._sync_event_token_indices(env_ids)
+        self._refresh_event_token_prev_contact(env_ids)
 
     def step(self) -> None:
         """called in _update_tasks_callback of the environment. (after compute_reward, before compute_observations)"""
@@ -1542,6 +1546,7 @@ class MotionCommand(CommandTermBase):
                 advance_mask = advance_mask & ~freeze_mask
 
         self.time_steps += advance_mask.long()
+        self._handle_event_token_switches()
         self._update_chain_touchdown_latches()
 
         # BeyondMimic-style behavior: when the clip ends, either resample a new
@@ -1730,6 +1735,138 @@ class MotionCommand(CommandTermBase):
         self._chain_contact_stable_steps[env_ids] = 0
         self._chain_touchdown_latched[env_ids] = False
 
+    def _load_event_token_plan(self) -> dict[str, Any] | None:
+        plan_ref = str(getattr(self.motion_cfg, "event_token_plan", "") or "")
+        if not plan_ref:
+            return None
+        plan_path = Path(plan_ref).expanduser()
+        if not plan_path.is_absolute():
+            plan_path = Path.cwd() / plan_path
+        with plan_path.open("r", encoding="utf-8") as f:
+            plan = json.load(f)
+        if not isinstance(plan, dict) or plan.get("kind") != "gmvq_event_token_plan":
+            raise ValueError(f"Unsupported event token plan: {plan_path}")
+        tokens = plan.get("tokens")
+        if not isinstance(tokens, list) or not tokens:
+            raise ValueError(f"Event token plan has no tokens: {plan_path}")
+        logger.info(f"Loaded event token plan {plan_path} with {len(tokens)} tokens")
+        return plan
+
+    def _init_event_token_buffers(self) -> None:
+        self._event_token_enabled = self._event_token_plan is not None
+        self._event_token_index = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._event_token_prev_contact = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._event_token_switch_count = torch.zeros((), dtype=torch.float32, device=self.device)
+        self._event_token_timeout_count = torch.zeros((), dtype=torch.float32, device=self.device)
+        self._event_token_contact_switch_count = torch.zeros((), dtype=torch.float32, device=self.device)
+        self._event_token_last_switch_frame = torch.full((), -1.0, dtype=torch.float32, device=self.device)
+        self._event_token_last_from = torch.full((), -1.0, dtype=torch.float32, device=self.device)
+        self._event_token_last_to = torch.full((), -1.0, dtype=torch.float32, device=self.device)
+        self._event_token_last_reason = torch.full((), -1.0, dtype=torch.float32, device=self.device)
+        if not self._event_token_enabled:
+            self._event_token_start = torch.zeros(1, dtype=torch.long, device=self.device)
+            self._event_token_end = torch.zeros(1, dtype=torch.long, device=self.device)
+            self._event_token_timeout = torch.zeros(1, dtype=torch.long, device=self.device)
+            self._event_token_target_mask = torch.zeros(
+                1, len(CHAIN_BOUNDARY_PART_ORDER), dtype=torch.bool, device=self.device
+            )
+            return
+
+        tokens = sorted(self._event_token_plan["tokens"], key=lambda item: int(item["start_frame"]))  # type: ignore[index]
+        part_index = {part: i for i, part in enumerate(CHAIN_BOUNDARY_PART_ORDER)}
+        starts: list[int] = []
+        ends: list[int] = []
+        timeouts: list[int] = []
+        masks: list[torch.Tensor] = []
+        for token in tokens:
+            starts.append(int(token["start_frame"]))
+            ends.append(int(token["end_frame"]))
+            timeout = int(token.get("timeout_frame", token["end_frame"])) + int(
+                self.motion_cfg.event_token_timeout_margin_frames
+            )
+            timeouts.append(timeout)
+            mask = torch.zeros(len(CHAIN_BOUNDARY_PART_ORDER), dtype=torch.bool, device=self.device)
+            part = str(token.get("target_part", "")).upper()
+            if part in part_index:
+                mask[part_index[part]] = True
+            masks.append(mask)
+        self._event_token_start = torch.tensor(starts, dtype=torch.long, device=self.device)
+        self._event_token_end = torch.tensor(ends, dtype=torch.long, device=self.device)
+        self._event_token_timeout = torch.tensor(timeouts, dtype=torch.long, device=self.device)
+        self._event_token_target_mask = torch.stack(masks, dim=0)
+
+    def _sync_event_token_indices(self, env_ids: torch.Tensor) -> None:
+        if not getattr(self, "_event_token_enabled", False) or env_ids.numel() == 0:
+            return
+        token_idx = torch.searchsorted(self._event_token_end, self.time_steps[env_ids], right=True)
+        self._event_token_index[env_ids] = token_idx.clamp(max=self._event_token_start.numel() - 1)
+
+    def _event_token_target_contact(self, env_ids: torch.Tensor) -> torch.Tensor:
+        if env_ids.numel() == 0 or not hasattr(self._env.simulator, "contact_forces_history"):
+            return torch.zeros(env_ids.numel(), dtype=torch.bool, device=self.device)
+        part_contact = self._chain_boundary_part_contact(env_ids, float(self.motion_cfg.event_token_contact_threshold))
+        token_idx = self._event_token_index[env_ids].clamp(max=self._event_token_target_mask.shape[0] - 1)
+        target = self._event_token_target_mask[token_idx, : part_contact.shape[1]]
+        return (part_contact & target).any(dim=1)
+
+    def _refresh_event_token_prev_contact(self, env_ids: torch.Tensor) -> None:
+        if not getattr(self, "_event_token_enabled", False) or env_ids.numel() == 0:
+            return
+        self._event_token_prev_contact[env_ids] = self._event_token_target_contact(env_ids)
+
+    def _handle_event_token_switches(self) -> None:
+        if not getattr(self, "_event_token_enabled", False):
+            return
+        env_ids = torch.arange(self.num_envs, dtype=torch.long, device=self.device)
+        token_idx = self._event_token_index
+        has_next = token_idx < (self._event_token_start.numel() - 1)
+        if not torch.any(has_next):
+            self._refresh_event_token_prev_contact(env_ids)
+            return
+
+        now_contact = self._event_token_target_contact(env_ids)
+        rising_edge = now_contact & ~self._event_token_prev_contact
+        timeout = self.time_steps >= self._event_token_timeout[token_idx]
+        switch = has_next & (rising_edge | timeout)
+        if torch.any(switch):
+            switch_env_ids = env_ids[switch]
+            prev_token = token_idx[switch_env_ids]
+            next_token = token_idx[switch_env_ids] + 1
+            switch_frames = self.time_steps[switch_env_ids].clone()
+            timeout_switch = timeout[switch_env_ids]
+            contact_switch = rising_edge[switch_env_ids] & ~timeout_switch
+            from_motion_ids = self.motion_ids[switch_env_ids]
+            self._event_token_index[switch_env_ids] = next_token
+            self.time_steps[switch_env_ids] = self._event_token_start[next_token]
+            self._reset_local_segment_anchors(switch_env_ids)
+            self._clear_chain_completion_state(switch_env_ids)
+            self._start_pending_chain_checks(switch_env_ids, from_motion_ids, self.motion_ids[switch_env_ids])
+            self._event_token_switch_count += switch.to(torch.float32).sum()
+            self._event_token_timeout_count += timeout_switch.to(torch.float32).sum()
+            self._event_token_contact_switch_count += contact_switch.to(torch.float32).sum()
+
+            first = 0
+            self._event_token_last_switch_frame = switch_frames[first].to(torch.float32)
+            self._event_token_last_from = prev_token[first].to(torch.float32)
+            self._event_token_last_to = next_token[first].to(torch.float32)
+            self._event_token_last_reason = torch.where(
+                timeout_switch[first],
+                torch.tensor(1.0, dtype=torch.float32, device=self.device),
+                torch.tensor(0.0, dtype=torch.float32, device=self.device),
+            )
+            logger.info(
+                "event_token_switch envs={} frame={} token {}->{} reason={} total_switches={} timeouts={}",
+                switch_env_ids.detach().cpu().tolist(),
+                int(switch_frames[first].item()),
+                int(prev_token[first].item()),
+                int(next_token[first].item()),
+                "timeout" if bool(timeout_switch[first].item()) else "contact",
+                float(self._event_token_switch_count.item()),
+                float(self._event_token_timeout_count.item()),
+            )
+
+        self._refresh_event_token_prev_contact(env_ids)
+
     def _update_chain_touchdown_latches(self) -> None:
         if not bool(self.motion_cfg.chain_require_touchdown_completion):
             return
@@ -1848,7 +1985,7 @@ class MotionCommand(CommandTermBase):
         self._pending_chain_to_motion_ids[env_ids] = to_motion_ids
         self._pending_chain_success_steps[env_ids] = 0
         self._pending_chain_deadline_steps[env_ids] = (
-            self.motion.motion_start_idx[to_motion_ids] + int(self.motion_cfg.chain_transition_grace_steps)
+            self.time_steps[env_ids] + int(self.motion_cfg.chain_transition_grace_steps)
         )
 
     def _update_pending_chain_checks(self) -> None:
@@ -2149,9 +2286,10 @@ class MotionCommand(CommandTermBase):
         ).to(device=self.device, dtype=torch.float32)
         self._normal_motion_sampling_weights = base_motion_weights / base_motion_weights.sum().clamp(min=1e-8)
 
+        probe_requested = bool(self.motion_cfg.use_start_probe_envs and num_motions > 1)
         configured_probe_per_motion = max(int(self.motion_cfg.probe_env_per_motion), 0)
-        probe_per_motion = configured_probe_per_motion
-        if num_motions * probe_per_motion > self.num_envs:
+        probe_per_motion = configured_probe_per_motion if probe_requested else 0
+        if probe_requested and num_motions * probe_per_motion > self.num_envs:
             probe_per_motion = self.num_envs // num_motions
             logger.warning(
                 "Requested start probe envs exceed num_envs; clamping probe_env_per_motion "
@@ -2159,9 +2297,7 @@ class MotionCommand(CommandTermBase):
             )
         self._probe_env_per_motion = probe_per_motion
         self._num_probe_envs = num_motions * probe_per_motion
-        self._use_start_probe_envs = bool(
-            self.motion_cfg.use_start_probe_envs and num_motions > 1 and self._num_probe_envs > 0
-        )
+        self._use_start_probe_envs = bool(probe_requested and self._num_probe_envs > 0)
         self._probe_env_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._probe_motion_ids = torch.full((self.num_envs,), -1, dtype=torch.long, device=self.device)
         if self._use_start_probe_envs:
@@ -2231,6 +2367,7 @@ class MotionCommand(CommandTermBase):
         self._chain_touchdown_latched = torch.zeros(
             self.num_envs, num_chain_parts, dtype=torch.bool, device=self.device
         )
+        self._init_event_token_buffers()
         self._local_segment_anchor_motion_ids = torch.full(
             (self.num_envs,), -1, dtype=torch.long, device=self.device
         )
@@ -2442,6 +2579,19 @@ class MotionCommand(CommandTermBase):
                 coverage_frames / motion_lengths.clamp(min=1.0)
             ).mean()
         self.metrics["motion/num_motions"] = torch.tensor(float(self.motion.num_motions), device=self.device)
+        if getattr(self, "_event_token_enabled", False):
+            self.metrics["motion/event_token_enabled"] = torch.tensor(1.0, device=self.device)
+            self.metrics["motion/event_token_index_mean"] = self._event_token_index.to(torch.float32).mean()
+            self.metrics["motion/event_token_index_max"] = self._event_token_index.to(torch.float32).max()
+            self.metrics["motion/event_token_switch_count"] = self._event_token_switch_count
+            self.metrics["motion/event_token_contact_switch_count"] = self._event_token_contact_switch_count
+            self.metrics["motion/event_token_timeout_count"] = self._event_token_timeout_count
+            self.metrics["motion/event_token_last_switch_frame"] = self._event_token_last_switch_frame
+            self.metrics["motion/event_token_last_from"] = self._event_token_last_from
+            self.metrics["motion/event_token_last_to"] = self._event_token_last_to
+            self.metrics["motion/event_token_last_reason"] = self._event_token_last_reason
+        else:
+            self.metrics["motion/event_token_enabled"] = torch.tensor(0.0, device=self.device)
         if self._uses_failure_window_sampler:
             count = self._failure_window_reset_count.clamp(min=1.0)
             total_count = self._failure_window_total_reset_count.clamp(min=1.0)

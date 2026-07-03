@@ -17,6 +17,7 @@ from tqdm import tqdm
 # This file contains all settings for training and evaluation of models
 from holosoma.config_types.experiment import ExperimentConfig
 from holosoma.config_types.algo import DistillPPOConfig
+from holosoma.config_types.command import MotionConfig
 from holosoma.utils.config_utils import CONFIG_NAME
 from holosoma.utils.file_cache import get_cached_file_path
 from holosoma.utils.logging import LoguruLoggingBridge
@@ -116,6 +117,24 @@ def _experiment_config_from_serialized(config_data: dict) -> ExperimentConfig:
             algo_data["config"] = DistillPPOConfig(**algo_config)
             config_data = dict(config_data)
             config_data["algo"] = algo_data
+    command_data = config_data.get("command")
+    if isinstance(command_data, dict):
+        setup_terms = command_data.get("setup_terms")
+        if isinstance(setup_terms, dict):
+            motion_term = setup_terms.get("motion_command")
+            if isinstance(motion_term, dict):
+                params = motion_term.get("params")
+                if isinstance(params, dict) and isinstance(params.get("motion_config"), dict):
+                    params = dict(params)
+                    params["motion_config"] = MotionConfig(**params["motion_config"])
+                    motion_term = dict(motion_term)
+                    motion_term["params"] = params
+                    setup_terms = dict(setup_terms)
+                    setup_terms["motion_command"] = motion_term
+                    command_data = dict(command_data)
+                    command_data["setup_terms"] = setup_terms
+                    config_data = dict(config_data)
+                    config_data["command"] = command_data
     return ExperimentConfig(**config_data)
 
 

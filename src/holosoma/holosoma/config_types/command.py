@@ -201,6 +201,15 @@ class MotionConfig:
     chain_touchdown_stable_steps: int = 2
     """A part must be in contact for this many consecutive frames to count as touchdown."""
 
+    event_token_plan: str = ""
+    """Optional GMVQ/motion_edit event-token plan used for event-triggered primitive switching."""
+
+    event_token_contact_threshold: float = 10.0
+    """Minimum contact force for a token target limb rising edge to trigger the next token."""
+
+    event_token_timeout_margin_frames: int = 10
+    """Additional frames after the observed token end before timeout fallback switches tokens."""
+
     probe_env_per_motion: int = 10
     """Number of fixed from-zero probe environments assigned to each motion when use_start_probe_envs is True."""
 
