@@ -94,6 +94,7 @@ def _build_shard_command(
         iterations=iterations,
         learning_rate=args.learning_rate,
         save_interval=args.save_interval,
+        canonicalize_motion_order_on_load=args.canonicalize_motion_order_on_load,
         name=name,
         gui=args.gui,
     )
@@ -109,6 +110,12 @@ def main() -> None:
     parser.add_argument("--iterations-per-shard", type=int)
     parser.add_argument("--learning-rate", type=float, default=1.0e-4)
     parser.add_argument("--save-interval", type=int, default=100)
+    parser.add_argument(
+        "--canonicalize-motion-order-on-load",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Preorder loaded motion tensors for this force-ref finetune experiment.",
+    )
     parser.add_argument("--name", default=DEFAULT_RUN_NAME)
     parser.add_argument("--start-shard", type=int, default=0)
     parser.add_argument("--num-shards", type=int)

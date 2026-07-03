@@ -186,3 +186,18 @@ python scripts/train_motion_edit_force_sharded.py \
   --save-interval 10 \
   --name motion_edit_raw29_force_ref_shard_benchmark
 ```
+
+The zero-start force-ref wrappers enable load-time motion-order canonicalization
+by default. This keeps the change scoped to the motion-edit force-ref finetune
+experiment and avoids per-step full-bank body/joint reindexing. To benchmark the
+full manifest with this experiment path:
+
+```bash
+python scripts/train_motion_edit_force_zero_start.py \
+  --checkpoint logs/WholeBodyTracking/20260608_150410-g1_29dof_wbt_contact_force_6part_hotspot_multimotion_probe20_fixed_probe-locomotion/model_19999.pt \
+  --motion-manifest configs/motion_matched/motion_edit_raw29_large_mixed_n64_force_ref_manifest.json \
+  --num-envs 4096 \
+  --iterations 10 \
+  --save-interval 10 \
+  --name motion_edit_raw29_force_ref_full_canonicalize_benchmark
+```

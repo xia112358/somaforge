@@ -91,6 +91,7 @@ class MotionLoader:
         robot_body_names: list[str],
         robot_joint_names: list[str],
         device: str = "cpu",
+        canonicalize_motion_order_on_load: bool = False,
     ):
         # Resolve the motion file path using importlib.resources
         motion_file = resolve_data_file_path(motion_file)
@@ -101,8 +102,13 @@ class MotionLoader:
         body_indexes = self._get_index_of_a_in_b(robot_body_names, body_names_in_motion_data, device)
         joint_indexes = self._get_index_of_a_in_b(robot_joint_names, joint_names_in_motion_data, device)
 
-        self._joint_indexes = joint_indexes
-        self._body_indexes = body_indexes
+        self._motion_order_canonicalized = bool(canonicalize_motion_order_on_load)
+        if self._motion_order_canonicalized:
+            self._canonicalize_motion_order(body_indexes, joint_indexes)
+            logger.info(f"MotionLoader: canonicalized motion tensors to robot order: {motion_file}")
+        else:
+            self._joint_indexes = joint_indexes
+            self._body_indexes = body_indexes
         self.time_step_total = self._joint_pos.shape[0]
 
     def _get_index_of_a_in_b(self, a_names: List[str], b_names: List[str], device: str = "cpu") -> torch.Tensor:
@@ -111,6 +117,17 @@ class MotionLoader:
             assert name in b_names, f"The specified name ({name}) doesn't exist: {b_names}"
             indexes.append(b_names.index(name))
         return torch.tensor(indexes, dtype=torch.long, device=device)
+
+    def _canonicalize_motion_order(self, body_indexes: torch.Tensor, joint_indexes: torch.Tensor) -> None:
+        """Store motion tensors in simulator body/joint order once at load time."""
+        self._joint_pos = self._joint_pos[:, joint_indexes].contiguous()
+        self._joint_vel = self._joint_vel[:, joint_indexes].contiguous()
+        self._body_pos_w = self._body_pos_w[:, body_indexes].contiguous()
+        self._body_quat_w = self._body_quat_w[:, body_indexes].contiguous()
+        self._body_lin_vel_w = self._body_lin_vel_w[:, body_indexes].contiguous()
+        self._body_ang_vel_w = self._body_ang_vel_w[:, body_indexes].contiguous()
+        self._joint_indexes = torch.arange(self._joint_pos.shape[1], dtype=torch.long, device=self._joint_pos.device)
+        self._body_indexes = torch.arange(self._body_pos_w.shape[1], dtype=torch.long, device=self._body_pos_w.device)
 
     # Expected holosoma NPZ keys
     _REQUIRED_KEYS = {
@@ -387,26 +404,38 @@ class MotionLoader:
 
     @property
     def joint_pos(self) -> torch.Tensor:
+        if self._motion_order_canonicalized:
+            return self._joint_pos
         return self._joint_pos[:, self._joint_indexes]
 
     @property
     def joint_vel(self) -> torch.Tensor:
+        if self._motion_order_canonicalized:
+            return self._joint_vel
         return self._joint_vel[:, self._joint_indexes]
 
     @property
     def body_pos_w(self) -> torch.Tensor:
+        if self._motion_order_canonicalized:
+            return self._body_pos_w
         return self._body_pos_w[:, self._body_indexes]
 
     @property
     def body_quat_w(self) -> torch.Tensor:
+        if self._motion_order_canonicalized:
+            return self._body_quat_w
         return self._body_quat_w[:, self._body_indexes]
 
     @property
     def body_lin_vel_w(self) -> torch.Tensor:
+        if self._motion_order_canonicalized:
+            return self._body_lin_vel_w
         return self._body_lin_vel_w[:, self._body_indexes]
 
     @property
     def body_ang_vel_w(self) -> torch.Tensor:
+        if self._motion_order_canonicalized:
+            return self._body_ang_vel_w
         return self._body_ang_vel_w[:, self._body_indexes]
 
     @property
@@ -542,6 +571,7 @@ class MultiMotionLoader:
         robot_joint_names: list[str],
         device: str = "cpu",
         motion_manifest: str = "",
+        canonicalize_motion_order_on_load: bool = False,
     ):
         terrain_ids: list[int] = []
         weights: list[float] = []
@@ -583,7 +613,13 @@ class MultiMotionLoader:
         skipped = 0
         for mf, terrain_id, weight, touchdown_mask in zip(motion_files, terrain_ids, weights, touchdown_masks):
             try:
-                loader = MotionLoader(mf, robot_body_names, robot_joint_names, device=device)
+                loader = MotionLoader(
+                    mf,
+                    robot_body_names,
+                    robot_joint_names,
+                    device=device,
+                    canonicalize_motion_order_on_load=canonicalize_motion_order_on_load,
+                )
                 loaders.append(loader)
                 kept_terrain_ids.append(terrain_id)
                 kept_weights.append(weight)
@@ -643,6 +679,7 @@ class MultiMotionLoader:
         # Use indexes from first loader (all loaders share the same robot)
         self._joint_indexes = loaders[0]._joint_indexes
         self._body_indexes = loaders[0]._body_indexes
+        self._motion_order_canonicalized = all(ld._motion_order_canonicalized for ld in loaders)
         self.fps = loaders[0].fps
         self.time_step_total = self._joint_pos.shape[0]
 
@@ -733,26 +770,38 @@ class MultiMotionLoader:
 
     @property
     def joint_pos(self) -> torch.Tensor:
+        if self._motion_order_canonicalized:
+            return self._joint_pos
         return self._joint_pos[:, self._joint_indexes]
 
     @property
     def joint_vel(self) -> torch.Tensor:
+        if self._motion_order_canonicalized:
+            return self._joint_vel
         return self._joint_vel[:, self._joint_indexes]
 
     @property
     def body_pos_w(self) -> torch.Tensor:
+        if self._motion_order_canonicalized:
+            return self._body_pos_w
         return self._body_pos_w[:, self._body_indexes]
 
     @property
     def body_quat_w(self) -> torch.Tensor:
+        if self._motion_order_canonicalized:
+            return self._body_quat_w
         return self._body_quat_w[:, self._body_indexes]
 
     @property
     def body_lin_vel_w(self) -> torch.Tensor:
+        if self._motion_order_canonicalized:
+            return self._body_lin_vel_w
         return self._body_lin_vel_w[:, self._body_indexes]
 
     @property
     def body_ang_vel_w(self) -> torch.Tensor:
+        if self._motion_order_canonicalized:
+            return self._body_ang_vel_w
         return self._body_ang_vel_w[:, self._body_indexes]
 
     @property
@@ -1214,6 +1263,7 @@ class MotionCommand(CommandTermBase):
                 robot_joint_names,
                 device=self.device,
                 motion_manifest=self.motion_cfg.motion_manifest,
+                canonicalize_motion_order_on_load=bool(self.motion_cfg.canonicalize_motion_order_on_load),
             )
         elif self.motion_cfg.motion_dir:
             self.motion = MultiMotionLoader(
@@ -1221,6 +1271,7 @@ class MotionCommand(CommandTermBase):
                 robot_body_names_alias,
                 robot_joint_names,
                 device=self.device,
+                canonicalize_motion_order_on_load=bool(self.motion_cfg.canonicalize_motion_order_on_load),
             )
         else:
             self.motion = MotionLoader(
@@ -1228,6 +1279,7 @@ class MotionCommand(CommandTermBase):
                 robot_body_names_alias,
                 robot_joint_names,
                 device=self.device,
+                canonicalize_motion_order_on_load=bool(self.motion_cfg.canonicalize_motion_order_on_load),
             )
 
         # Store body and joint indexes for interpolation

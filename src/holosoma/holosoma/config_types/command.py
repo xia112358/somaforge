@@ -112,7 +112,10 @@ class MotionConfig:
         "adaptive_failure_window",
         "hotspot_failure_window",
     ] = "uniform"
-    """Reset timestep sampler: uniform RSI, adaptive fixed-bin, adaptive proto-bin, failure-window variants."""
+    """Reset timestep sampler: uniform RSI, adaptive/proto bins, or failure-window variants."""
+
+    canonicalize_motion_order_on_load: bool = False
+    """Reorder motion tensors to simulator body/joint order during load instead of at each property access."""
 
     touchdown_lift_min_window_frames: int = 2
     """Minimum proto bin length, in motion frames, to use for reset sampling."""

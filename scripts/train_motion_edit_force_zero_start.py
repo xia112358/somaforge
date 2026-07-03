@@ -52,8 +52,8 @@ def _build_command(args: argparse.Namespace, extra_args: list[str]) -> list[str]
         "False",
         "--command.setup-terms.motion-command.params.motion-config.motion-manifest",
         str(args.motion_manifest.expanduser()),
-        "--command.setup-terms.motion-command.params.motion-config.reset-sampler",
-        "uniform",
+        "--command.setup-terms.motion-command.params.motion-config.canonicalize-motion-order-on-load",
+        str(args.canonicalize_motion_order_on_load),
         "--command.setup-terms.motion-command.params.motion-config.start-at-timestep-zero-prob",
         "1.0",
         "--command.setup-terms.motion-command.params.motion-config.freeze-at-timestep-zero-prob",
@@ -83,6 +83,12 @@ def main() -> None:
     parser.add_argument("--iterations", type=int, default=2000)
     parser.add_argument("--learning-rate", type=float, default=1.0e-4)
     parser.add_argument("--save-interval", type=int, default=100)
+    parser.add_argument(
+        "--canonicalize-motion-order-on-load",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Preorder loaded motion tensors for this force-ref finetune experiment.",
+    )
     parser.add_argument("--name", default=DEFAULT_RUN_NAME)
     parser.add_argument("--gui", action="store_true", help="Run with Isaac Sim GUI enabled.")
     parser.add_argument("--dry-run", action="store_true", help="Print the resolved command without executing it.")
