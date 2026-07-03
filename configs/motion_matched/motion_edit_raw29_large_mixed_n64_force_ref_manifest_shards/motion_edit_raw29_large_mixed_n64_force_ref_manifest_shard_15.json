@@ -1,0 +1,733 @@
+{
+  "schema_version": 1,
+  "description": "Shard 15 from motion_edit_raw29_large_mixed_n64_force_ref_manifest.json; group keys 0060..0063.",
+  "terrains": [
+    {
+      "terrain_id": 0,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_00/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_00/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 1,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_01/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_01/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 2,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_02/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_02/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 3,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_03/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_03/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 4,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_04/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_04/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 5,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_05/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_05/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 6,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_06/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_06/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 7,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_07/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_07/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 8,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_08/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_08/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 9,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_09/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_09/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 10,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_10/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_10/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 11,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_11/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_11/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 12,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_12/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_12/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 13,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_13/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_13/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 14,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_14/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_14/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 15,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_15/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_15/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 16,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_16/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_16/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 17,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_17/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_17/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 18,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_18/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_18/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 19,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_19/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_19/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 20,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_20/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_20/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 21,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_21/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_21/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 22,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_22/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_22/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 23,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_23/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_23/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 24,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_24/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_24/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 25,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_25/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_25/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 26,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_26/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_26/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 27,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_27/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_27/multi_boxes_z_scale_1.0.urdf"
+    },
+    {
+      "terrain_id": 28,
+      "terrain_file": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/terrain_obj_cache/climb_28/multi_boxes_z_scale_1.0.obj",
+      "source_urdf": "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain/climb_28/multi_boxes_z_scale_1.0.urdf"
+    }
+  ],
+  "motion_files": [
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_00_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 0,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_01_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 1,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_02_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 2,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_03_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 3,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_04_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 4,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_05_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 5,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_06_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 6,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_07_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 7,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_08_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 8,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_09_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 9,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_10_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 10,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_11_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 11,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_12_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 12,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_13_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 13,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_14_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 14,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_15_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 15,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_16_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 16,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_17_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 17,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_18_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 18,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_19_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 19,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_20_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 20,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_21_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 21,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_22_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 22,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_23_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 23,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_24_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 24,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_25_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 25,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_26_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 26,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_27_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 27,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_28_z_scale_1.0_surface_jitter_0060.policy_ref_v1.npz",
+      "terrain_id": 28,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_00_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 0,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_01_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 1,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_02_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 2,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_03_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 3,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_04_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 4,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_05_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 5,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_06_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 6,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_07_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 7,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_08_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 8,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_09_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 9,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_10_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 10,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_11_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 11,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_12_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 12,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_13_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 13,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_14_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 14,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_15_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 15,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_16_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 16,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_17_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 17,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_18_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 18,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_19_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 19,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_20_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 20,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_21_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 21,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_22_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 22,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_23_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 23,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_24_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 24,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_25_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 25,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_26_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 26,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_27_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 27,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_28_z_scale_1.0_surface_jitter_0061.policy_ref_v1.npz",
+      "terrain_id": 28,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_00_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 0,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_01_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 1,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_02_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 2,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_03_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 3,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_04_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 4,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_05_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 5,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_06_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 6,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_07_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 7,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_08_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 8,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_09_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 9,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_10_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 10,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_11_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 11,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_12_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 12,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_13_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 13,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_14_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 14,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_15_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 15,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_16_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 16,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_17_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 17,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_18_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 18,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_19_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 19,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_20_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 20,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_21_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 21,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_22_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 22,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_23_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 23,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_24_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 24,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_25_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 25,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_26_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 26,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_27_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 27,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_28_z_scale_1.0_surface_jitter_0062.policy_ref_v1.npz",
+      "terrain_id": 28,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_00_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 0,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_01_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 1,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_02_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 2,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_03_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 3,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_04_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 4,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_05_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 5,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_06_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 6,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_07_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 7,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_08_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 8,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_09_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 9,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_10_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 10,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_11_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 11,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_12_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 12,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_13_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 13,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_14_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 14,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_15_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 15,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_16_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 16,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_17_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 17,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_18_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 18,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_19_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 19,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_20_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 20,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_21_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 21,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_22_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 22,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_23_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 23,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_24_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 24,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_25_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 25,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_26_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 26,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_27_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 27,
+      "weight": 1.0
+    },
+    {
+      "motion_file": "/home/xiaz/motion_edit/data/motions/generated/raw29_large_mixed_n64_force_ref/climb_28_z_scale_1.0_surface_jitter_0063.policy_ref_v1.npz",
+      "terrain_id": 28,
+      "weight": 1.0
+    }
+  ]
+}

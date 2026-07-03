@@ -1,0 +1,205 @@
+{
+  "kind": "motion_edit_force_ref_shard_index",
+  "schema_version": 1,
+  "source_manifest": "/home/xiaz/holosoma_isaaclab3_newton/configs/motion_matched/motion_edit_raw29_large_mixed_n64_force_ref_manifest.json",
+  "group_pattern": "surface_jitter_(\\d+)",
+  "groups_per_shard": 4,
+  "num_groups": 64,
+  "num_shards": 16,
+  "total_motion_count": 1856,
+  "total_terrain_count": 29,
+  "shards": [
+    {
+      "shard_id": 0,
+      "manifest_path": "motion_edit_raw29_large_mixed_n64_force_ref_manifest_shard_00.json",
+      "group_keys": [
+        "0000",
+        "0001",
+        "0002",
+        "0003"
+      ],
+      "motion_count": 116,
+      "terrain_count": 29
+    },
+    {
+      "shard_id": 1,
+      "manifest_path": "motion_edit_raw29_large_mixed_n64_force_ref_manifest_shard_01.json",
+      "group_keys": [
+        "0004",
+        "0005",
+        "0006",
+        "0007"
+      ],
+      "motion_count": 116,
+      "terrain_count": 29
+    },
+    {
+      "shard_id": 2,
+      "manifest_path": "motion_edit_raw29_large_mixed_n64_force_ref_manifest_shard_02.json",
+      "group_keys": [
+        "0008",
+        "0009",
+        "0010",
+        "0011"
+      ],
+      "motion_count": 116,
+      "terrain_count": 29
+    },
+    {
+      "shard_id": 3,
+      "manifest_path": "motion_edit_raw29_large_mixed_n64_force_ref_manifest_shard_03.json",
+      "group_keys": [
+        "0012",
+        "0013",
+        "0014",
+        "0015"
+      ],
+      "motion_count": 116,
+      "terrain_count": 29
+    },
+    {
+      "shard_id": 4,
+      "manifest_path": "motion_edit_raw29_large_mixed_n64_force_ref_manifest_shard_04.json",
+      "group_keys": [
+        "0016",
+        "0017",
+        "0018",
+        "0019"
+      ],
+      "motion_count": 116,
+      "terrain_count": 29
+    },
+    {
+      "shard_id": 5,
+      "manifest_path": "motion_edit_raw29_large_mixed_n64_force_ref_manifest_shard_05.json",
+      "group_keys": [
+        "0020",
+        "0021",
+        "0022",
+        "0023"
+      ],
+      "motion_count": 116,
+      "terrain_count": 29
+    },
+    {
+      "shard_id": 6,
+      "manifest_path": "motion_edit_raw29_large_mixed_n64_force_ref_manifest_shard_06.json",
+      "group_keys": [
+        "0024",
+        "0025",
+        "0026",
+        "0027"
+      ],
+      "motion_count": 116,
+      "terrain_count": 29
+    },
+    {
+      "shard_id": 7,
+      "manifest_path": "motion_edit_raw29_large_mixed_n64_force_ref_manifest_shard_07.json",
+      "group_keys": [
+        "0028",
+        "0029",
+        "0030",
+        "0031"
+      ],
+      "motion_count": 116,
+      "terrain_count": 29
+    },
+    {
+      "shard_id": 8,
+      "manifest_path": "motion_edit_raw29_large_mixed_n64_force_ref_manifest_shard_08.json",
+      "group_keys": [
+        "0032",
+        "0033",
+        "0034",
+        "0035"
+      ],
+      "motion_count": 116,
+      "terrain_count": 29
+    },
+    {
+      "shard_id": 9,
+      "manifest_path": "motion_edit_raw29_large_mixed_n64_force_ref_manifest_shard_09.json",
+      "group_keys": [
+        "0036",
+        "0037",
+        "0038",
+        "0039"
+      ],
+      "motion_count": 116,
+      "terrain_count": 29
+    },
+    {
+      "shard_id": 10,
+      "manifest_path": "motion_edit_raw29_large_mixed_n64_force_ref_manifest_shard_10.json",
+      "group_keys": [
+        "0040",
+        "0041",
+        "0042",
+        "0043"
+      ],
+      "motion_count": 116,
+      "terrain_count": 29
+    },
+    {
+      "shard_id": 11,
+      "manifest_path": "motion_edit_raw29_large_mixed_n64_force_ref_manifest_shard_11.json",
+      "group_keys": [
+        "0044",
+        "0045",
+        "0046",
+        "0047"
+      ],
+      "motion_count": 116,
+      "terrain_count": 29
+    },
+    {
+      "shard_id": 12,
+      "manifest_path": "motion_edit_raw29_large_mixed_n64_force_ref_manifest_shard_12.json",
+      "group_keys": [
+        "0048",
+        "0049",
+        "0050",
+        "0051"
+      ],
+      "motion_count": 116,
+      "terrain_count": 29
+    },
+    {
+      "shard_id": 13,
+      "manifest_path": "motion_edit_raw29_large_mixed_n64_force_ref_manifest_shard_13.json",
+      "group_keys": [
+        "0052",
+        "0053",
+        "0054",
+        "0055"
+      ],
+      "motion_count": 116,
+      "terrain_count": 29
+    },
+    {
+      "shard_id": 14,
+      "manifest_path": "motion_edit_raw29_large_mixed_n64_force_ref_manifest_shard_14.json",
+      "group_keys": [
+        "0056",
+        "0057",
+        "0058",
+        "0059"
+      ],
+      "motion_count": 116,
+      "terrain_count": 29
+    },
+    {
+      "shard_id": 15,
+      "manifest_path": "motion_edit_raw29_large_mixed_n64_force_ref_manifest_shard_15.json",
+      "group_keys": [
+        "0060",
+        "0061",
+        "0062",
+        "0063"
+      ],
+      "motion_count": 116,
+      "terrain_count": 29
+    }
+  ]
+}

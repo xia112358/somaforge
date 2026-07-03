@@ -145,3 +145,44 @@ conda run -n env_isaaclab python scripts/gmvq_ref/decode_selector_ref.py
 
 This writes a `policy_ref_v1` npz plus a single-motion manifest under
 `tmp/gmvq_play/selector_decoded_refs/`.
+
+## Motion-edit force-ref finetune
+
+Do not finetune directly on the full `raw29_large_mixed_n64_force_ref`
+manifest. That manifest contains 1856 full trajectories and creates a multi-GB
+GPU motion bank, which makes reference gathers dominate rollout collection.
+
+Build shard manifests once:
+
+```bash
+python scripts/gmvq_ref/build_motion_manifest_shards.py \
+  --manifest configs/motion_matched/motion_edit_raw29_large_mixed_n64_force_ref_manifest.json \
+  --groups-per-shard 4 \
+  --overwrite
+```
+
+The standard force-ref finetune entry is the sharded zero-start wrapper:
+
+```bash
+python scripts/train_motion_edit_force_sharded.py \
+  --checkpoint logs/WholeBodyTracking/20260608_150410-g1_29dof_wbt_contact_force_6part_hotspot_multimotion_probe20_fixed_probe-locomotion/model_19999.pt \
+  --shard-index configs/motion_matched/motion_edit_raw29_large_mixed_n64_force_ref_manifest_shards/shard_index.json \
+  --num-envs 4096 \
+  --total-iterations 2000 \
+  --learning-rate 1e-4 \
+  --save-interval 100 \
+  --name motion_edit_raw29_force_ref_sharded_env4096_ft2000_from19999
+```
+
+For a speed probe, run one shard for a few iterations:
+
+```bash
+python scripts/train_motion_edit_force_sharded.py \
+  --checkpoint logs/WholeBodyTracking/20260608_150410-g1_29dof_wbt_contact_force_6part_hotspot_multimotion_probe20_fixed_probe-locomotion/model_19999.pt \
+  --shard-index configs/motion_matched/motion_edit_raw29_large_mixed_n64_force_ref_manifest_shards/shard_index.json \
+  --num-envs 4096 \
+  --iterations-per-shard 10 \
+  --num-shards 1 \
+  --save-interval 10 \
+  --name motion_edit_raw29_force_ref_shard_benchmark
+```
