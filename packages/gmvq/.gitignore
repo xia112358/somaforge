@@ -1,0 +1,28 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Training outputs and local datasets
+runs/
+data/
+
+# Model checkpoints and array dumps
+*.pt
+*.pth
+*.npy
+*.npz
+*.pkl
+
+# Generated plots and logs
+*.png
+*.log
+
+# Local tooling state
+.codex/
+.agents/
