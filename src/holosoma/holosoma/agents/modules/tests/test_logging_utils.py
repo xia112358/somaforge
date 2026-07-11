@@ -2,9 +2,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
-from torch.utils.tensorboard import SummaryWriter
-
 from holosoma.agents.modules.logging_utils import LoggingHelper
+from torch.utils.tensorboard import SummaryWriter
 
 
 @pytest.fixture
@@ -154,7 +153,7 @@ def test_raw_episode_metrics_are_tensorboard_only(logging_helper):
     assert scalars["RawEpisode/raw"] == 2.0
 
 
-def test_component_losses_are_tensorboard_only(logging_helper):
+def test_component_losses_are_not_printed_to_console(logging_helper):
     console = logging_helper._create_console_output(
         it=0,
         loss_dict={"Value": 1.0, "Surrogate": 2.0, "Entropy": 3.0, "KL": 4.0},
@@ -171,6 +170,23 @@ def test_component_losses_are_tensorboard_only(logging_helper):
     assert "Surrogate:" not in console
     assert "Entropy:" in console
     assert "KL:" in console
+
+
+def test_component_losses_are_not_written_to_tensorboard(logging_helper, mock_writer, mock_wandb):
+    logging_helper._logging_to_writer(
+        it=0,
+        loss_dict={"Value": 1.0, "Surrogate": 2.0, "Entropy": 3.0, "KL": 4.0},
+        env_log_dict={},
+        extra_log_dicts={},
+        fps=1,
+        ep_scalars_to_log={},
+    )
+
+    keys = {call.args[0] for call in mock_writer.add_scalar.call_args_list}
+    assert "Loss/Value" not in keys
+    assert "Loss/Surrogate" not in keys
+    assert "Loss/Entropy" in keys
+    assert "Loss/KL" in keys
 
 
 def test_wandb_logging(prefixed_logging_helper, mock_wandb):

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 import numpy as np
 from somaforge_core.contact_schema import CONTACT_FORCE_PART_ORDER
-
 
 DEFAULT_CONTACT_FORCE_PART_ORDER = (
     "left_heel",
@@ -38,39 +37,6 @@ WBT_8PART_CANONICAL_TO_SHORT = {
     "LK": "LK",
     "RK": "RK",
 }
-
-@dataclass(frozen=True)
-class ContactForceSample:
-    """One contact-force sample returned by a prescribed-state backend.
-
-    ``force_w`` is the translational contact force in world coordinates. The
-    sample is already detached from simulation integration: it is a force query
-    for the prescribed frame, not a force that will advance the next state.
-    """
-
-    frame_index: int
-    position_w: np.ndarray
-    force_w: np.ndarray
-    part_hint: str | None = None
-    geom1_name: str | None = None
-    geom2_name: str | None = None
-    body1_name: str | None = None
-    body2_name: str | None = None
-    distance: float | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-    def validate(self) -> None:
-        pos = np.asarray(self.position_w, dtype=np.float64)
-        force = np.asarray(self.force_w, dtype=np.float64)
-        if pos.shape != (3,):
-            raise ValueError(f"contact sample position_w must have shape (3,), got {pos.shape}")
-        if force.shape != (3,):
-            raise ValueError(f"contact sample force_w must have shape (3,), got {force.shape}")
-        if not np.all(np.isfinite(pos)):
-            raise ValueError("contact sample position_w contains NaN or Inf")
-        if not np.all(np.isfinite(force)):
-            raise ValueError("contact sample force_w contains NaN or Inf")
-
 
 @dataclass(frozen=True)
 class CanonicalContactForceField:
@@ -133,29 +99,3 @@ class CanonicalContactForceField:
             "contact_force_part_position_w": position,
             "contact_force_part_mask": mask,
         }
-
-
-@dataclass(frozen=True)
-class PrescribedContactSolveConfig:
-    """Configuration for kinematic contact-force baking.
-
-    The intended state policy is prescribed playback: each frame overwrites the
-    simulator state with qpos/qvel/qacc from the reference, solves contacts, and
-    records forces without integrating or applying them back to the body state.
-    """
-
-    part_order: tuple[str, ...] = DEFAULT_CONTACT_FORCE_PART_ORDER
-    solve_mode: Literal["forward", "inverse"] = "forward"
-    assignment_max_distance: float = 0.35
-    force_norm_eps: float = 1.0e-8
-    zero_inactive_contacts: bool = True
-    force_unit_scale: float = 1.0
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if self.solve_mode not in {"forward", "inverse"}:
-            raise ValueError("solve_mode must be 'forward' or 'inverse'")
-        for name in ("assignment_max_distance", "force_norm_eps", "force_unit_scale"):
-            value = float(getattr(self, name))
-            if not np.isfinite(value) or value < 0.0:
-                raise ValueError(f"{name} must be finite and nonnegative")

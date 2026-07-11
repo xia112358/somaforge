@@ -14,7 +14,7 @@ class ViserConfig:
     Uses a flat structure with default values.
     """
 
-    qpos_npz: str = "OmniRetarget_Dataset/data/holosoma_motions_50hz/climb_00_z_scale_1.0.npz"
+    qpos_npz: str = "runtime/current/motions/climb_00_z_scale_1.0.npz"
     """Path to .npz file with qpos data."""
 
     robot_urdf: str = str(canonical_g1_urdf_path())

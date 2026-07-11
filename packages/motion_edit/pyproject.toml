@@ -14,9 +14,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-force = [
-  "mujoco",
-]
 viewer = [
   "viser",
   "yourdfpy",

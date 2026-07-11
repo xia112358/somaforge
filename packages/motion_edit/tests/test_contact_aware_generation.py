@@ -37,11 +37,9 @@ class ContactAwareGenerationTests(unittest.TestCase):
             result = apply_contact_aware_edit_plan_to_motion(
                 plan,
                 output_motion_path=generated,
+                bake_force=True,
                 force_output_motion_path=force_out,
-                force_mujoco_model_path="robot.xml",
-                force_geom_part_map={"toe_geom": "left_foot"},
-                force_body_part_map={"hand_body": "right_hand"},
-                force_solve_mode="inverse",
+                force_source_ref_path="source.force.npz",
                 force_policy_ref_compat="none",
                 overwrite=True,
                 source_plan_path="plan.json",
@@ -54,10 +52,8 @@ class ContactAwareGenerationTests(unittest.TestCase):
         self.assertEqual(calls["generation"]["fullbody_solver"], "batch_contact_laplacian")
         self.assertEqual(calls["generation"]["mode"], "lte_fullbody")
         self.assertEqual(calls["force"]["args"][0], generated)
-        self.assertEqual(calls["force"]["kwargs"]["mujoco_model_path"], "robot.xml")
-        self.assertEqual(calls["force"]["kwargs"]["geom_part_map"], {"toe_geom": "left_foot"})
-        self.assertEqual(calls["force"]["kwargs"]["body_part_map"], {"hand_body": "right_hand"})
-        self.assertEqual(calls["force"]["kwargs"]["solve_mode"], "inverse")
+        self.assertEqual(calls["force"]["kwargs"]["source_force_ref_path"], "source.force.npz")
+        self.assertEqual(calls["force"]["kwargs"]["max_force_norm"], 5000.0)
         self.assertEqual(calls["force"]["kwargs"]["policy_ref_compat"], "none")
         self.assertTrue(calls["force"]["kwargs"]["overwrite"])
 
@@ -107,14 +103,13 @@ class ContactAwareGenerationTests(unittest.TestCase):
         apply_contact_aware_edit_plan_to_motion(
             plan,
             output_motion_path="generated.npz",
-            force_solve_mode="retarget",
+            bake_force=True,
             force_target_contact_layer_path="data/layers/contact/target",
             force_target_motion_id="motion_a",
             _generation_fn=fake_generation,
             _force_bake_fn=fake_force_bake,
         )
 
-        self.assertEqual(calls["force"]["solve_mode"], "retarget")
         self.assertEqual(calls["force"]["source_force_ref_path"], "source.npz")
         self.assertEqual(calls["force"]["target_contact_layer_path"], "data/layers/contact/target")
         self.assertEqual(calls["force"]["target_motion_id"], "motion_a")

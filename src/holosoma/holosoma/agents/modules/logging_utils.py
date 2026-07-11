@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import pathlib
 import statistics
@@ -10,13 +11,12 @@ from typing import Any, Generator, TypedDict
 
 import torch
 import wandb
+from holosoma.utils.average_meters import TensorAverageMeterDict
 from loguru import logger
 from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
 from torch.utils.tensorboard import SummaryWriter
-
-from holosoma.utils.average_meters import TensorAverageMeterDict
 
 console = Console()
 
@@ -115,7 +115,7 @@ class LoggingHelper:
             scalar = float(value)
         except (TypeError, ValueError):
             return fill
-        if scalar != scalar or scalar == float("inf") or scalar == float("-inf"):
+        if not math.isfinite(scalar):
             return fill
         return scalar
 
@@ -336,6 +336,8 @@ class LoggingHelper:
         # Log loss metrics
         scalars_to_log: dict[str, float] = {}
         for loss_key, loss_value in loss_dict.items():
+            if loss_key in {"Value", "Surrogate"}:
+                continue
             scalars_to_log[f"Loss/{loss_key}"] = loss_value
 
         scalars_to_log.update(env_log_dict)
@@ -422,7 +424,8 @@ class LoggingHelper:
         if len(self.rewbuffer) > 0:
             log_string += f"""{"Mean reward:":>{pad}} {self._finite_float(statistics.mean(self.rewbuffer)):.2f}\n"""
         if len(self.lenbuffer) > 0:
-            log_string += f"""{"Mean episode length:":>{pad}} {self._finite_float(statistics.mean(self.lenbuffer)):.2f}\n"""
+            mean_episode_length = self._finite_float(statistics.mean(self.lenbuffer))
+            log_string += f"""{"Mean episode length:":>{pad}} {mean_episode_length:.2f}\n"""
 
         # Add loss metrics
         for key, value in loss_dict.items():

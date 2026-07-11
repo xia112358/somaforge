@@ -11,10 +11,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from train_motion_edit_force_zero_start import DEFAULT_PROJECT, REPO_ROOT, _build_command
+from train_motion_edit_force import DEFAULT_PROJECT, REPO_ROOT, _build_command
 
-
-DEFAULT_RUN_NAME = "motion_edit_force_ref_zero_start_sharded"
+DEFAULT_RUN_NAME = "motion_edit_force_ref_sharded"
 INDEX_KIND = "motion_edit_force_ref_shard_index"
 
 
@@ -87,7 +86,7 @@ def _build_shard_command(
     iterations: int,
     extra_args: list[str],
 ) -> list[str]:
-    zero_start_args = SimpleNamespace(
+    train_args = SimpleNamespace(
         checkpoint=checkpoint,
         motion_manifest=motion_manifest,
         num_envs=args.num_envs,
@@ -109,13 +108,18 @@ def _build_shard_command(
         name=name,
         gui=args.gui,
     )
-    return _build_command(zero_start_args, extra_args)
+    return _build_command(train_args, extra_args)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", required=True, type=Path, help="Base policy checkpoint for the first shard.")
-    parser.add_argument("--shard-index", required=True, type=Path, help="shard_index.json from build_motion_manifest_shards.py.")
+    parser.add_argument(
+        "--shard-index",
+        required=True,
+        type=Path,
+        help="shard_index.json from build_motion_manifest_shards.py.",
+    )
     parser.add_argument("--num-envs", type=int, default=4096)
     parser.add_argument("--total-iterations", type=int, default=2000)
     parser.add_argument("--iterations-per-shard", type=int)

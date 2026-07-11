@@ -13,9 +13,9 @@ source scripts/source_isaaclab3_newton_setup.sh
 Useful local checks:
 
 ```bash
-python scripts/gmvq_ref/check_workspace.py
-python scripts/gmvq_ref/check_data_layout.py
-python -m holosoma.train_agent exp:g1-29dof-wbt simulator:isaaclab3-newton logger:disabled
+python scripts/gmvq_ref/check_data_layout.py \
+  --manifest runtime/current/manifests/omniretarget_baseline_29.json
+python -m holosoma.train_agent exp:g1-29dof-wbt-baseline-29 simulator:isaaclab3-newton logger:disabled
 ```
 
 Only IsaacLab3/Newton is supported by the SomaForge runtime. Legacy simulator

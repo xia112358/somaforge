@@ -1555,9 +1555,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-force = [
-    { name = "mujoco" },
-]
 viewer = [
     { name = "trimesh" },
     { name = "viser" },
@@ -1566,14 +1563,13 @@ viewer = [
 
 [package.metadata]
 requires-dist = [
-    { name = "mujoco", marker = "extra == 'force'" },
     { name = "numpy" },
     { name = "somaforge-core", editable = "packages/somaforge_core" },
     { name = "trimesh", marker = "extra == 'viewer'" },
     { name = "viser", marker = "extra == 'viewer'" },
     { name = "yourdfpy", marker = "extra == 'viewer'" },
 ]
-provides-extras = ["force", "viewer"]
+provides-extras = ["viewer"]
 
 [[package]]
 name = "mpmath"

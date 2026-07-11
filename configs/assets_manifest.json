@@ -8,16 +8,15 @@
       "status": "verified",
       "files": {
         "urdf": "src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf",
-        "xml": "src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.xml",
         "usd": "src/holosoma/holosoma/data/robots/converted_rank0/g1_29dof_spherehand/g1_29dof_spherehand.usda"
       },
       "sha256": {
-        "urdf": "6d79140d335157ad026d24b79be6fbb161c997c01c3ffc37bcca282dc2240696",
-        "xml": "17549f99cc230aa8e8d29a5bcc30cc3075ad34cbc1f9860dacbbe840ac092313",
+        "urdf": "f869ea6547fd18f40558d91dfc5ad76347f73ba88351c5e7c81e98868ab60937",
         "usd": "c976fc12cde03efcdbc1d838f455e63478e4e11c04f2e3f96141ff7f35072e57"
       },
       "metadata": {
-        "asset_bundle_sha256": "d798925cd916e994a47c70ee30ea5f537f000a825c1c66aa914bbe434f60c199",
+        "asset_bundle_sha256": "30cb9ed0b83795ed8861a92e2b800357fdd1067b0986aa997e078de720233f20",
+        "usd_bundle_sha256": "2df7b7c6ea4a906c81f5bbee91ea49f7df77622089b676516856fb0cea2c010a",
         "generator": "scripts/convert_g1_spherehand_usd.py"
       }
     },

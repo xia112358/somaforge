@@ -12,7 +12,11 @@ SOMAFORGE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SOMAFORGE_ROOT / "packages" / "somaforge_core"))
 
 from isaaclab.app import AppLauncher  # noqa: E402
-from somaforge_core import canonical_g1_asset_metadata, canonical_g1_urdf_path  # noqa: E402
+from somaforge_core import (  # noqa: E402
+    build_g1_asset_metadata,
+    canonical_g1_source_metadata,
+    canonical_g1_urdf_path,
+)
 
 parser = argparse.ArgumentParser(description=__doc__)
 AppLauncher.add_app_launcher_args(parser)
@@ -23,14 +27,12 @@ simulation_app = app_launcher.app
 
 import omni.kit.app  # noqa: E402
 
-omni.kit.app.get_app().get_extension_manager().set_extension_enabled_immediate(
-    "isaacsim.asset.importer.urdf", True
-)
+omni.kit.app.get_app().get_extension_manager().set_extension_enabled_immediate("isaacsim.asset.importer.urdf", True)
 from isaacsim.asset.importer.urdf import URDFImporter, URDFImporterConfig  # noqa: E402
 
 
 def main() -> None:
-    metadata = canonical_g1_asset_metadata()
+    canonical_g1_source_metadata()
     urdf_path = canonical_g1_urdf_path()
     robot_root = urdf_path.parents[1]
     output_root = robot_root / "converted_rank0"
@@ -57,6 +59,7 @@ def main() -> None:
         usd_path = expected.resolve()
     if not usd_path.is_file():
         raise FileNotFoundError(f"URDF conversion did not produce the expected USD: {usd_path}")
+    metadata = build_g1_asset_metadata(usd_path)
     sidecar = usd_path.parent / "somaforge_robot_asset.json"
     sidecar.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"Generated canonical G1 sphere-hand USD: {usd_path}")

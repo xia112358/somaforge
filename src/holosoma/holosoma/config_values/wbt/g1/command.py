@@ -1,12 +1,12 @@
-"""Whole Body Tracking command presets for the G1 robot."""
+"""Whole-body tracking command presets for the canonical G1 pipeline."""
 
-import dataclasses
+from dataclasses import replace
 
 from holosoma.config_types.command import CommandManagerCfg, CommandTermCfg, MotionConfig, NoiseToInitialPoseConfig
 
-DEFAULT_MOTION_MATCHED_MANIFEST = "runtime/current/manifests/motion_edit_ref_v1.json"
-CLIMB00_ORIGINAL_MANIFEST = "runtime/current/manifests/climb00_motion_edit_ref.json"
-CLIMB00_PROTO_SPLIT_MANIFEST = "runtime/current/manifests/climb00_proto_split_ref.json"
+BASELINE_SINGLE_MANIFEST = "runtime/current/manifests/omniretarget_baseline.json"
+BASELINE_29_MANIFEST = "runtime/current/manifests/omniretarget_baseline_29.json"
+CONTACT_FORCE_MANIFEST = "runtime/current/manifests/newton_contact_force_8part.json"
 
 init_pose_config = NoiseToInitialPoseConfig(
     overall_noise_scale=1.0,
@@ -20,7 +20,7 @@ init_pose_config = NoiseToInitialPoseConfig(
 
 motion_config = MotionConfig(
     motion_file="",
-    motion_manifest=DEFAULT_MOTION_MATCHED_MANIFEST,
+    motion_manifest=BASELINE_29_MANIFEST,
     body_names_to_track=[
         "pelvis",
         "left_hip_roll_link",
@@ -38,103 +38,55 @@ motion_config = MotionConfig(
         "right_wrist_yaw_link",
     ],
     body_name_ref=["torso_link"],
-    reset_sampler="adaptive",
+    reset_sampler="hotspot_failure_window",
     noise_to_initial_pose=init_pose_config,
 )
 
-g1_29dof_wbt_command = CommandManagerCfg(
-    params={},
-    setup_terms={
-        "motion_command": CommandTermCfg(
-            func="holosoma.managers.command.terms.wbt:MotionCommand",
-            params={
-                "motion_config": motion_config,
-            },
-        ),
-    },
-    reset_terms={
-        "motion_command": CommandTermCfg(
-            func="holosoma.managers.command.terms.wbt:MotionCommand",
-        )
-    },
-    step_terms={
-        "motion_command": CommandTermCfg(
-            func="holosoma.managers.command.terms.wbt:MotionCommand",
-        )
-    },
-)
 
-climb00_proto_motion_config = dataclasses.replace(
-    motion_config,
-    motion_manifest=CLIMB00_PROTO_SPLIT_MANIFEST,
-    reset_sampler="proto_adaptive",
-    use_start_probe_envs=False,
-    chain_motion_segments=True,
-    require_chain_boundary_success=True,
-    chain_gate_before_transition=True,
-    chain_boundary_tracking_threshold=0.0,
-    chain_boundary_contact_threshold=10.0,
-)
+def make_wbt_command(
+    manifest: str,
+    *,
+    reset_sampler: str = "hotspot_failure_window",
+    use_start_probe_envs: bool = True,
+    start_at_timestep_zero_prob: float = 0.0,
+) -> CommandManagerCfg:
+    config = replace(
+        motion_config,
+        motion_manifest=manifest,
+        reset_sampler=reset_sampler,
+        use_start_probe_envs=use_start_probe_envs,
+        start_at_timestep_zero_prob=start_at_timestep_zero_prob,
+        freeze_at_timestep_zero_prob=0.0,
+    )
+    return CommandManagerCfg(
+        params={},
+        setup_terms={
+            "motion_command": CommandTermCfg(
+                func="holosoma.managers.command.terms.wbt:MotionCommand",
+                params={"motion_config": config},
+            )
+        },
+        reset_terms={
+            "motion_command": CommandTermCfg(func="holosoma.managers.command.terms.wbt:MotionCommand")
+        },
+        step_terms={
+            "motion_command": CommandTermCfg(func="holosoma.managers.command.terms.wbt:MotionCommand")
+        },
+    )
 
-climb00_original_motion_config = dataclasses.replace(
-    motion_config,
-    motion_manifest=CLIMB00_ORIGINAL_MANIFEST,
-    reset_sampler="uniform",
-    use_start_probe_envs=False,
-    chain_motion_segments=False,
-    require_chain_boundary_success=False,
-    chain_gate_before_transition=False,
-)
 
-g1_29dof_wbt_climb00_proto_command = CommandManagerCfg(
-    params={},
-    setup_terms={
-        "motion_command": CommandTermCfg(
-            func="holosoma.managers.command.terms.wbt:MotionCommand",
-            params={
-                "motion_config": climb00_proto_motion_config,
-            },
-        ),
-    },
-    reset_terms={
-        "motion_command": CommandTermCfg(
-            func="holosoma.managers.command.terms.wbt:MotionCommand",
-        )
-    },
-    step_terms={
-        "motion_command": CommandTermCfg(
-            func="holosoma.managers.command.terms.wbt:MotionCommand",
-        )
-    },
+g1_29dof_wbt_baseline_single_command = make_wbt_command(
+    BASELINE_SINGLE_MANIFEST,
+    use_start_probe_envs=True,
 )
-
-g1_29dof_wbt_climb00_original_command = CommandManagerCfg(
-    params={},
-    setup_terms={
-        "motion_command": CommandTermCfg(
-            func="holosoma.managers.command.terms.wbt:MotionCommand",
-            params={
-                "motion_config": climb00_original_motion_config,
-            },
-        ),
-    },
-    reset_terms={
-        "motion_command": CommandTermCfg(
-            func="holosoma.managers.command.terms.wbt:MotionCommand",
-        )
-    },
-    step_terms={
-        "motion_command": CommandTermCfg(
-            func="holosoma.managers.command.terms.wbt:MotionCommand",
-        )
-    },
-)
-
+g1_29dof_wbt_baseline_29_command = make_wbt_command(BASELINE_29_MANIFEST)
+g1_29dof_wbt_contact_force_command = make_wbt_command(CONTACT_FORCE_MANIFEST)
 __all__ = [
-    "CLIMB00_ORIGINAL_MANIFEST",
-    "CLIMB00_PROTO_SPLIT_MANIFEST",
-    "DEFAULT_MOTION_MATCHED_MANIFEST",
-    "g1_29dof_wbt_climb00_original_command",
-    "g1_29dof_wbt_climb00_proto_command",
-    "g1_29dof_wbt_command",
+    "BASELINE_29_MANIFEST",
+    "BASELINE_SINGLE_MANIFEST",
+    "CONTACT_FORCE_MANIFEST",
+    "g1_29dof_wbt_baseline_29_command",
+    "g1_29dof_wbt_baseline_single_command",
+    "g1_29dof_wbt_contact_force_command",
+    "make_wbt_command",
 ]

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 from pathlib import Path
 from typing import Any
+
+from somaforge_core.robot_assets import canonical_g1_asset_metadata
 
 from holosoma.utils.path import resolve_data_file_path
 
@@ -86,6 +88,17 @@ def _validate_canonical_manifest(
 ) -> None:
     if data.get("robot_asset_id") != "robot.g1.spherehand":
         raise ValueError(f"Canonical manifest must use robot.g1.spherehand: {path}")
+    robot_asset = canonical_g1_asset_metadata()
+    expected_fingerprints = {
+        "robot_asset_sha256": robot_asset["urdf_sha256"],
+        "robot_asset_bundle_sha256": robot_asset["asset_bundle_sha256"],
+        "robot_asset_usd_bundle_sha256": robot_asset["usd_bundle_sha256"],
+    }
+    for key, expected in expected_fingerprints.items():
+        if data.get(key) != expected:
+            raise ValueError(
+                f"Canonical manifest {key} mismatch: expected {expected}, got {data.get(key)!r}: {path}"
+            )
     if data.get("kinematics_backend") != "isaaclab3_newton_fk":
         raise ValueError(f"Canonical manifest must use isaaclab3_newton_fk: {path}")
     for entry in motion_files:

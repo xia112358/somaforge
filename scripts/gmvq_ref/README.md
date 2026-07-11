@@ -6,16 +6,15 @@ Motion Edit references and GMVQ.
 Generic model code lives in `packages/gmvq`; editor tooling lives in
 `packages/motion_edit`. External repository layouts are unsupported.
 
-Use `check_workspace.py` before running training/eval commands to catch the most
-common data mixup: using rollout state as the VAE ref source.
+Validate the canonical source manifest before preparing GMVQ inputs:
 
-The default paths and known data hazards are recorded in:
-
-```text
-scripts/gmvq_ref/climb00_data_index.json
+```bash
+python scripts/gmvq_ref/check_data_layout.py \
+  --manifest runtime/current/manifests/omniretarget_baseline_29.json
 ```
 
-Environment variables still override the index defaults for local machines.
+The manifest is the only path registry. Do not use rollout state as the VAE
+kinematic reference source.
 
 Standard augmented-ref and selector chain:
 
@@ -153,7 +152,7 @@ python scripts/gmvq_ref/build_motion_manifest_shards.py \
   --overwrite
 ```
 
-The standard force-ref finetune entry is the sharded zero-start wrapper:
+The standard force-ref finetune entry is the sharded contact-force wrapper:
 
 ```bash
 python scripts/train_motion_edit_force_sharded.py \
@@ -186,13 +185,13 @@ python scripts/train_motion_edit_force_sharded.py \
   --name motion_edit_raw29_force_ref_shard_benchmark
 ```
 
-The zero-start force-ref wrappers enable load-time motion-order canonicalization
+The contact-force wrappers enable load-time motion-order canonicalization
 by default. This keeps the change scoped to the motion-edit force-ref finetune
 experiment and avoids per-step full-bank body/joint reindexing. To benchmark the
 full manifest with this experiment path:
 
 ```bash
-python scripts/train_motion_edit_force_zero_start.py \
+python scripts/train_motion_edit_force.py \
   --checkpoint runtime/current/checkpoints/wbt_baseline_29/model.pt \
   --motion-manifest runtime/current/manifests/motion_edit_ref_v1.json \
   --num-envs 4096 \

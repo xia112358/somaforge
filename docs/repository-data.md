@@ -8,14 +8,14 @@ state, not a full local workstation dump.
 
 These are small enough and useful enough to keep in the repository:
 
-- `configs/climbing_scenes.json`: scene-level climbing configuration.
-- `configs/motion_matched/*.json`: motion/terrain/contact-force manifests used
-  by WBT training and eval commands.
+- `configs/assets_manifest.json`: canonical robot and terrain asset registry.
+- `configs/training_pipeline_manifest.json`: stage-level training data contract.
+- `configs/motion_matched/README.md`: local runtime manifest layout.
 - `configs/motion_matched/terrain_obj_cache/*/*.obj`: small terrain meshes
   referenced by the committed manifests.
-- `scripts/*motion_matched*.py`, `scripts/*contact_force*.py`,
-  `scripts/*climbing*.py`: reproducible manifest and contact-force helpers.
-- `scripts/gmvq_ref/`: GMVQ/ref integration notes and workspace checks.
+- `scripts/*motion_matched*.py`, `scripts/*contact_force*.py`: reproducible
+  manifest and contact-force helpers.
+- `scripts/gmvq_ref/`: manifest-based GMVQ/ref integration tools.
 - `docs/data-policy.md`, `docs/gmvq-ref-pipeline.md`,
   `docs/cleanup-scope.md`: current project scope and data rules.
 
@@ -33,24 +33,23 @@ These must remain local, ignored, or stored externally:
 - `*.npz`, `*.pt`, `*.pth`, `*.ckpt`, `*.onnx`, `*.pdf`: generated arrays,
   checkpoints, model exports, and large copied documents.
 
-## GMVQ climb00 index
+## GMVQ input manifests
 
-The committed machine-readable index is:
+The canonical 29-motion source manifest is generated locally at:
 
 ```text
-scripts/gmvq_ref/climb00_data_index.json
+runtime/current/manifests/omniretarget_baseline_29.json
 ```
 
-It records the expected local paths and known data hazards for the first GMVQ
-ref pipeline:
+Each motion entry binds the source trajectory, Newton-canonicalized trajectory,
+terrain ID, source hash, motion hash, and kinematics provenance. GMVQ and Motion
+Edit derive their own manifests from this source rather than maintaining a
+second machine-specific data index.
 
-- clean ref source: `OmniRetarget_Dataset/data/holosoma_motions_50hz/...`
-- cut source: `motion_edit/data/workbench/raw_contact_29_cut_summary.json`
-- rollout contact metadata: `tmp/rollout_ref_contact_points_29/...`
-- terrain object: `configs/motion_matched/terrain_obj_cache/climb_00/...`
-
-The index is for validation and documentation. It does not make those external
-datasets part of the GitHub repository.
+- raw retarget source: `runtime/current/omniretarget/robot-terrain/`
+- canonical no-force motion: `runtime/current/motions/`
+- derived Motion Edit and GMVQ data: paths declared by their stage manifests
+- terrain assets: entries resolved through `configs/assets_manifest.json`
 
 ## Known climb00 issue
 

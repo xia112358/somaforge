@@ -3,11 +3,10 @@ from __future__ import annotations
 from copy import deepcopy
 
 import pytest
-
 from somaforge_core.robot_assets import (
     G1_SPHEREHAND_BUNDLE_SHA256,
     G1_SPHEREHAND_SHA256,
-    G1_SPHEREHAND_XML_SHA256,
+    G1_SPHEREHAND_USD_BUNDLE_SHA256,
     canonical_g1_asset_metadata,
     validate_g1_asset_metadata,
 )
@@ -16,8 +15,8 @@ from somaforge_core.robot_assets import (
 def test_canonical_g1_asset_bundle() -> None:
     metadata = canonical_g1_asset_metadata()
     assert metadata["urdf_sha256"] == G1_SPHEREHAND_SHA256
-    assert metadata["xml_sha256"] == G1_SPHEREHAND_XML_SHA256
     assert metadata["asset_bundle_sha256"] == G1_SPHEREHAND_BUNDLE_SHA256
+    assert metadata["usd_bundle_sha256"] == G1_SPHEREHAND_USD_BUNDLE_SHA256
 
 
 def test_legacy_metadata_is_rejected() -> None:

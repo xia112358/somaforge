@@ -4,6 +4,7 @@ import json
 import pytest
 
 from holosoma.utils.motion_terrain_manifest import load_motion_terrain_manifest
+from somaforge_core.robot_assets import canonical_g1_asset_metadata
 
 
 def _sha256(data: bytes) -> str:
@@ -17,9 +18,13 @@ def _manifest(tmp_path):
     motion.write_bytes(b"motion")
     source.write_bytes(b"source")
     terrain.write_bytes(b"terrain")
+    robot_asset = canonical_g1_asset_metadata()
     payload = {
         "schema": "somaforge_motion_terrain_manifest_v1",
         "robot_asset_id": "robot.g1.spherehand",
+        "robot_asset_sha256": robot_asset["urdf_sha256"],
+        "robot_asset_bundle_sha256": robot_asset["asset_bundle_sha256"],
+        "robot_asset_usd_bundle_sha256": robot_asset["usd_bundle_sha256"],
         "kinematics_backend": "isaaclab3_newton_fk",
         "motion_files": [
             {
@@ -58,4 +63,14 @@ def test_canonical_manifest_rejects_changed_motion(tmp_path) -> None:
     (tmp_path / "motion.npz").write_bytes(b"changed")
 
     with pytest.raises(ValueError, match="SHA256 mismatch"):
+        load_motion_terrain_manifest(str(path))
+
+
+def test_canonical_manifest_rejects_changed_robot_asset(tmp_path) -> None:
+    path = _manifest(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["robot_asset_usd_bundle_sha256"] = "0" * 64
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="robot_asset_usd_bundle_sha256 mismatch"):
         load_motion_terrain_manifest(str(path))

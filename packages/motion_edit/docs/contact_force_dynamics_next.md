@@ -34,5 +34,6 @@ Masks are independent. A frame may contain heel-only, toe-only, simultaneous
 heel-and-toe contact, or no foot contact. Only robot-to-world Newton contacts
 contribute to the production reference.
 
-MuJoCo prescribed qpos/qvel/qacc playback remains available only for numerical
-diagnostics. Its output is never accepted as a WBT training force target.
+Motion Edit does not solve contact dynamics. It may retarget an existing Newton
+force reference, but a production force target must be recollected by an Isaac
+Lab/Newton rollout of the edited kinematic reference.

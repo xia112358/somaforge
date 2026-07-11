@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Launch motion-edit force-ref finetuning with zero-start episodes.
-
-This wrapper keeps the motion-edit finetune path separate from the standard
-contact-force hotspot/probe training presets. It only requires a base checkpoint
-and a motion-matched manifest; all zero-start overrides are applied here.
-"""
+"""Launch contact-force finetuning for a Motion Edit reference manifest."""
 
 from __future__ import annotations
 
@@ -14,22 +9,20 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
-EXP_NAME = "exp:g1-29dof-wbt-contact-force-zero-start"
-DEFAULT_RUN_NAME = "motion_edit_force_ref_zero_start_from_base"
+EXP_NAME = "exp:g1-29dof-wbt-contact-force"
+DEFAULT_RUN_NAME = "motion_edit_force_ref_finetune"
 DEFAULT_PROJECT = "MotionEditFinetune"
-DEFAULT_NEWTON_NJMAX_PER_ENV = 384
 MOTION_EDIT_ROBOT_CONFIG = "robot:g1-29dof"
-
-
-def _has_extra_arg(extra_args: list[str], option: str) -> bool:
-    return any(arg == option or arg.startswith(f"{option}=") for arg in extra_args)
 
 
 def _build_command(args: argparse.Namespace, extra_args: list[str]) -> list[str]:
     train_script = REPO_ROOT / "src/holosoma/holosoma/train_agent.py"
     headless = not args.gui
+    completion_learning_sampler = bool(getattr(args, "completion_learning_sampler", False))
+    completion_success_streak_threshold = int(getattr(args, "completion_success_streak_threshold", 3))
+    completion_learned_replay_weight = float(getattr(args, "completion_learned_replay_weight", 0.1))
+    completion_weight_beta = float(getattr(args, "completion_weight_beta", 0.05))
 
     cmd = [
         sys.executable,
@@ -84,38 +77,33 @@ def _build_command(args: argparse.Namespace, extra_args: list[str]) -> list[str]
         "--command.setup-terms.motion-command.params.motion-config.group-variant-sample-count",
         str(args.group_variant_sample_count),
         "--command.setup-terms.motion-command.params.motion-config.use-completion-learning-sampler",
-        str(args.completion_learning_sampler),
+        str(completion_learning_sampler),
         "--command.setup-terms.motion-command.params.motion-config.completion-success-streak-threshold",
-        str(args.completion_success_streak_threshold),
+        str(completion_success_streak_threshold),
         "--command.setup-terms.motion-command.params.motion-config.completion-learned-replay-weight",
-        str(args.completion_learned_replay_weight),
+        str(completion_learned_replay_weight),
         "--command.setup-terms.motion-command.params.motion-config.completion-weight-beta",
-        str(args.completion_weight_beta),
+        str(completion_weight_beta),
         "--terrain.terrain-term.motion-matched-manifest",
         str(args.motion_manifest.expanduser()),
         "--logger.video.enabled",
         "False",
     ]
-    if args.anchor_kl_checkpoint is not None and args.anchor_kl_coef > 0.0:
+    anchor_kl_checkpoint = getattr(args, "anchor_kl_checkpoint", None)
+    anchor_kl_coef = float(getattr(args, "anchor_kl_coef", 0.0))
+    if anchor_kl_checkpoint is not None and anchor_kl_coef > 0.0:
         cmd.extend(
             [
                 "--algo.config.anchor-kl-checkpoint",
-                str(args.anchor_kl_checkpoint.expanduser()),
+                str(anchor_kl_checkpoint.expanduser()),
                 "--algo.config.anchor-kl-coef",
-                str(args.anchor_kl_coef),
+                str(anchor_kl_coef),
             ]
         )
     if args.save_interval is not None:
         cmd.extend(["--algo.config.save-interval", str(args.save_interval)])
     if extra_args and extra_args[0] == "--":
         extra_args = extra_args[1:]
-    if not _has_extra_arg(extra_args, "--simulator.config.mujoco-warp.njmax-per-env"):
-        cmd.extend(
-            [
-                "--simulator.config.mujoco-warp.njmax-per-env",
-                str(DEFAULT_NEWTON_NJMAX_PER_ENV),
-            ]
-        )
     cmd.extend(extra_args)
     return cmd
 
@@ -128,9 +116,9 @@ def main() -> None:
     parser.add_argument("--iterations", type=int, default=2000)
     parser.add_argument("--learning-rate", type=float, default=1.0e-4)
     parser.add_argument("--save-interval", type=int, default=100)
-    parser.add_argument("--reset-sampler", default="uniform")
-    parser.add_argument("--start-at-timestep-zero-prob", type=float, default=1.0)
-    parser.add_argument("--load-optimizer", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--reset-sampler", default="hotspot_failure_window")
+    parser.add_argument("--start-at-timestep-zero-prob", type=float, default=0.2)
+    parser.add_argument("--load-optimizer", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
         "--anchor-kl-checkpoint",
         type=Path,
@@ -138,13 +126,13 @@ def main() -> None:
         help="Frozen reference checkpoint for KL(current || reference) actor regularization.",
     )
     parser.add_argument("--anchor-kl-coef", type=float, default=0.0)
-    parser.add_argument("--init-at-random-ep-len", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--init-at-random-ep-len", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--use-start-probe-envs", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--probe-env-per-motion", type=int, default=0)
     parser.add_argument(
         "--group-probe",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=True,
         help="Enable group-balanced probe envs for motion-edit generated variants.",
     )
     parser.add_argument("--group-probe-by", choices=("terrain_id", "climb_id"), default="terrain_id")

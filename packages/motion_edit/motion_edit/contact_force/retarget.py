@@ -14,8 +14,7 @@ from motion_edit.contact.phases import (
     resample_phase_values,
 )
 
-from .schema import CanonicalContactForceField, DEFAULT_CONTACT_FORCE_PART_ORDER
-
+from .schema import DEFAULT_CONTACT_FORCE_PART_ORDER, CanonicalContactForceField
 
 _PART_ALIASES = {
     "lhee": "left_heel",

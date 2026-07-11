@@ -107,12 +107,10 @@ class MotionConfig:
     reset_sampler: Literal[
         "uniform",
         "adaptive",
-        "proto_adaptive",
         "failure_window",
-        "adaptive_failure_window",
         "hotspot_failure_window",
     ] = "uniform"
-    """Reset timestep sampler: uniform RSI, adaptive/proto bins, or failure-window variants."""
+    """Reset timestep sampler: uniform RSI, adaptive bins, or failure-window variants."""
 
     canonicalize_motion_order_on_load: bool = False
     """Reorder motion tensors to simulator body/joint order during load instead of at each property access."""

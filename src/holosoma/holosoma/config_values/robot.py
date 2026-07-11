@@ -539,7 +539,7 @@ g1_29dof = RobotConfig(
         linear_damping=0.0,
         urdf_file="g1/g1_29dof_spherehand.urdf",
         usd_file=None,
-        xml_file="g1/g1_29dof_spherehand.xml",
+        xml_file="",
         robot_type="g1_29dof_spherehand",
         enable_self_collisions=False,
         default_dof_drive_mode=3,
@@ -556,7 +556,7 @@ g1_29dof_w_object = replace(
     asset=replace(
         g1_29dof.asset,
         urdf_file="g1/g1_29dof_spherehand.urdf",
-        xml_file="g1/g1_29dof_spherehand.xml",
+        xml_file="",
         robot_type="g1_29dof_spherehand",
     ),
     control=replace(

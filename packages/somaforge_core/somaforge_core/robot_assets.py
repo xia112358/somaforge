@@ -9,14 +9,12 @@ from pathlib import Path
 from typing import Any
 
 G1_SPHEREHAND_ASSET_ID = "g1_29dof_spherehand_v1"
-G1_SPHEREHAND_SHA256 = "6d79140d335157ad026d24b79be6fbb161c997c01c3ffc37bcca282dc2240696"
-G1_SPHEREHAND_XML_SHA256 = "17549f99cc230aa8e8d29a5bcc30cc3075ad34cbc1f9860dacbbe840ac092313"
-G1_SPHEREHAND_BUNDLE_SHA256 = "d798925cd916e994a47c70ee30ea5f537f000a825c1c66aa914bbe434f60c199"
-G1_SPHEREHAND_URDF_RELATIVE = Path(
-    "src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf"
-)
-G1_SPHEREHAND_XML_RELATIVE = Path(
-    "src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.xml"
+G1_SPHEREHAND_SHA256 = "f869ea6547fd18f40558d91dfc5ad76347f73ba88351c5e7c81e98868ab60937"
+G1_SPHEREHAND_BUNDLE_SHA256 = "30cb9ed0b83795ed8861a92e2b800357fdd1067b0986aa997e078de720233f20"
+G1_SPHEREHAND_USD_BUNDLE_SHA256 = "2df7b7c6ea4a906c81f5bbee91ea49f7df77622089b676516856fb0cea2c010a"
+G1_SPHEREHAND_URDF_RELATIVE = Path("src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf")
+G1_SPHEREHAND_USD_RELATIVE = Path(
+    "src/holosoma/holosoma/data/robots/converted_rank0/g1_29dof_spherehand/g1_29dof_spherehand.usda"
 )
 
 
@@ -38,28 +36,19 @@ def canonical_g1_urdf_path() -> Path:
     return somaforge_root() / G1_SPHEREHAND_URDF_RELATIVE
 
 
-def canonical_g1_xml_path() -> Path:
-    return somaforge_root() / G1_SPHEREHAND_XML_RELATIVE
+def canonical_g1_usd_path() -> Path:
+    return somaforge_root() / G1_SPHEREHAND_USD_RELATIVE
 
 
-def canonical_g1_asset_metadata() -> dict[str, str]:
+def canonical_g1_source_metadata() -> dict[str, str]:
     urdf = canonical_g1_urdf_path()
-    xml = canonical_g1_xml_path()
     if not urdf.is_file():
         raise FileNotFoundError(f"canonical G1 sphere-hand URDF is missing: {urdf}")
-    if not xml.is_file():
-        raise FileNotFoundError(f"canonical G1 sphere-hand XML is missing: {xml}")
     actual_sha256 = _sha256(urdf)
     if actual_sha256 != G1_SPHEREHAND_SHA256:
         raise ValueError(
             "canonical G1 sphere-hand URDF fingerprint mismatch: "
             f"expected {G1_SPHEREHAND_SHA256}, got {actual_sha256} at {urdf}"
-        )
-    actual_xml_sha256 = _sha256(xml)
-    if actual_xml_sha256 != G1_SPHEREHAND_XML_SHA256:
-        raise ValueError(
-            "canonical G1 sphere-hand XML fingerprint mismatch: "
-            f"expected {G1_SPHEREHAND_XML_SHA256}, got {actual_xml_sha256} at {xml}"
         )
     actual_bundle_sha256 = _urdf_bundle_sha256(urdf)
     if G1_SPHEREHAND_BUNDLE_SHA256 and actual_bundle_sha256 != G1_SPHEREHAND_BUNDLE_SHA256:
@@ -67,14 +56,35 @@ def canonical_g1_asset_metadata() -> dict[str, str]:
             "canonical G1 sphere-hand asset bundle fingerprint mismatch: "
             f"expected {G1_SPHEREHAND_BUNDLE_SHA256}, got {actual_bundle_sha256}"
         )
+    _validate_foot_collision_topology(urdf)
     return {
         "asset_id": G1_SPHEREHAND_ASSET_ID,
         "urdf_path": str(urdf),
         "urdf_sha256": actual_sha256,
-        "xml_path": str(xml),
-        "xml_sha256": actual_xml_sha256,
         "asset_bundle_sha256": actual_bundle_sha256,
     }
+
+
+def build_g1_asset_metadata(usd_path: str | Path) -> dict[str, str]:
+    usd = Path(usd_path).expanduser().resolve()
+    if not usd.is_file():
+        raise FileNotFoundError(f"canonical G1 sphere-hand USD is missing: {usd}")
+    return {
+        **canonical_g1_source_metadata(),
+        "usd_path": str(usd),
+        "usd_bundle_sha256": _usd_bundle_sha256(usd),
+    }
+
+
+def canonical_g1_asset_metadata() -> dict[str, str]:
+    metadata = build_g1_asset_metadata(canonical_g1_usd_path())
+    actual = metadata["usd_bundle_sha256"]
+    if G1_SPHEREHAND_USD_BUNDLE_SHA256 and actual != G1_SPHEREHAND_USD_BUNDLE_SHA256:
+        raise ValueError(
+            "canonical G1 sphere-hand USD bundle fingerprint mismatch: "
+            f"expected {G1_SPHEREHAND_USD_BUNDLE_SHA256}, got {actual}"
+        )
+    return metadata
 
 
 def validate_g1_asset_metadata(metadata: Mapping[str, Any] | None, *, context: str) -> None:
@@ -85,20 +95,20 @@ def validate_g1_asset_metadata(metadata: Mapping[str, Any] | None, *, context: s
         )
     actual_id = str(metadata.get("asset_id") or "")
     actual_sha256 = str(metadata.get("urdf_sha256") or "")
-    actual_xml_sha256 = str(metadata.get("xml_sha256") or "")
     actual_bundle_sha256 = str(metadata.get("asset_bundle_sha256") or "")
+    actual_usd_bundle_sha256 = str(metadata.get("usd_bundle_sha256") or "")
     if (
         actual_id != expected["asset_id"]
         or actual_sha256 != expected["urdf_sha256"]
-        or actual_xml_sha256 != expected["xml_sha256"]
         or actual_bundle_sha256 != expected["asset_bundle_sha256"]
+        or actual_usd_bundle_sha256 != expected["usd_bundle_sha256"]
     ):
         raise ValueError(
             f"{context} uses an incompatible robot asset "
             f"(asset_id={actual_id!r}, urdf_sha256={actual_sha256!r}, "
-            f"xml_sha256={actual_xml_sha256!r}); expected {expected['asset_id']} / "
-            f"{expected['urdf_sha256']} / {expected['xml_sha256']} / "
-            f"{expected['asset_bundle_sha256']}"
+            f"usd_bundle_sha256={actual_usd_bundle_sha256!r}); expected {expected['asset_id']} / "
+            f"{expected['urdf_sha256']} / {expected['asset_bundle_sha256']} / "
+            f"{expected['usd_bundle_sha256']}"
         )
 
 
@@ -122,19 +132,6 @@ def decode_robot_asset_json(value: Any, *, context: str) -> dict[str, Any]:
     return metadata
 
 
-def validate_canonical_g1_xml(path: str | Path) -> dict[str, str]:
-    candidate = Path(path).expanduser().resolve()
-    if not candidate.is_file():
-        raise FileNotFoundError(f"MuJoCo model is missing: {candidate}")
-    actual = _sha256(candidate)
-    if actual != G1_SPHEREHAND_XML_SHA256:
-        raise ValueError(
-            "MuJoCo model uses the wrong G1 asset: expected XML SHA256 "
-            f"{G1_SPHEREHAND_XML_SHA256}, got {actual} at {candidate}"
-        )
-    return canonical_g1_asset_metadata()
-
-
 def validate_canonical_g1_urdf(path: str | Path) -> dict[str, str]:
     candidate = Path(path).expanduser().resolve()
     if not candidate.is_file():
@@ -142,8 +139,7 @@ def validate_canonical_g1_urdf(path: str | Path) -> dict[str, str]:
     actual = _sha256(candidate)
     if actual != G1_SPHEREHAND_SHA256:
         raise ValueError(
-            f"G1 tool uses the wrong URDF: expected SHA256 {G1_SPHEREHAND_SHA256}, "
-            f"got {actual} at {candidate}"
+            f"G1 tool uses the wrong URDF: expected SHA256 {G1_SPHEREHAND_SHA256}, got {actual} at {candidate}"
         )
     bundle = _urdf_bundle_sha256(candidate)
     if bundle != G1_SPHEREHAND_BUNDLE_SHA256:
@@ -151,7 +147,8 @@ def validate_canonical_g1_urdf(path: str | Path) -> dict[str, str]:
             f"G1 tool uses an incompatible mesh bundle: expected {G1_SPHEREHAND_BUNDLE_SHA256}, "
             f"got {bundle} at {candidate.parent}"
         )
-    return canonical_g1_asset_metadata()
+    _validate_foot_collision_topology(candidate)
+    return canonical_g1_source_metadata()
 
 
 def validate_g1_robot_config(robot_config: Any) -> dict[str, str] | None:
@@ -161,12 +158,8 @@ def validate_g1_robot_config(robot_config: Any) -> dict[str, str] | None:
     if not (robot_type.startswith("g1_") or urdf_file.startswith("g1/")):
         return None
     expected_urdf = "g1/g1_29dof_spherehand.urdf"
-    expected_xml = "g1/g1_29dof_spherehand.xml"
-    if urdf_file != expected_urdf or str(asset.xml_file) != expected_xml:
-        raise ValueError(
-            "G1 runs must use the canonical sphere-hand asset pair; "
-            f"got urdf={urdf_file!r}, xml={asset.xml_file!r}"
-        )
+    if urdf_file != expected_urdf:
+        raise ValueError(f"G1 runs must use the canonical sphere-hand URDF; got urdf={urdf_file!r}")
     return canonical_g1_asset_metadata()
 
 
@@ -189,7 +182,7 @@ def _sha256(path: Path) -> str:
 def _urdf_bundle_sha256(urdf: Path) -> str:
     asset_root = urdf.parent.resolve()
     mesh_paths: set[Path] = set()
-    for mesh in ET.parse(urdf).getroot().iter("mesh"):
+    for mesh in ET.parse(urdf).getroot().iter("mesh"):  # noqa: S314 - trusted canonical local asset
         filename = mesh.get("filename")
         if not filename:
             continue
@@ -208,3 +201,51 @@ def _urdf_bundle_sha256(urdf: Path) -> str:
         digest.update(path.read_bytes())
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def _usd_bundle_sha256(usd: Path) -> str:
+    root = usd.parent.resolve()
+    files = sorted(
+        path.resolve()
+        for path in root.rglob("*")
+        if path.is_file() and path.suffix.lower() in {".usd", ".usda", ".usdc"}
+    )
+    if usd.resolve() not in files:
+        raise FileNotFoundError(f"USD entry point is not part of its bundle: {usd}")
+    digest = hashlib.sha256()
+    for path in files:
+        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _validate_foot_collision_topology(urdf: Path) -> None:
+    root = ET.parse(urdf).getroot()  # noqa: S314 - trusted canonical local asset
+    links = {link.get("name", ""): link for link in root.findall("link")}
+    collision_owners: dict[str, list[str]] = {}
+    for link_name, link in links.items():
+        for collision in link.findall("collision"):
+            name = collision.get("name", "")
+            if name:
+                collision_owners.setdefault(name, []).append(link_name)
+    duplicates = {name: owners for name, owners in collision_owners.items() if len(owners) > 1}
+    if duplicates:
+        raise ValueError(f"canonical G1 URDF has duplicate collision names: {duplicates}")
+
+    for side in ("left", "right"):
+        ankle = links[f"{side}_ankle_roll_link"]
+        direct_spheres = [
+            collision.get("name", "")
+            for collision in ankle.findall("collision")
+            if collision.find("geometry/sphere") is not None
+        ]
+        if direct_spheres:
+            raise ValueError(f"{side} ankle has duplicate direct sphere collisions: {direct_spheres}")
+        for index in range(1, 6):
+            name = f"{side}_ankle_roll_sphere_{index}"
+            sphere_link = links.get(f"{name}_link")
+            collisions = [] if sphere_link is None else sphere_link.findall("collision")
+            if len(collisions) != 1 or collisions[0].find("geometry/sphere") is None:
+                raise ValueError(f"canonical G1 URDF requires exactly one collision sphere for {name}")

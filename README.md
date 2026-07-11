@@ -47,6 +47,19 @@ terrain_dir = assets.resolve("terrain.climb.cache", "root")
 robot_urdf = assets.resolve("robot.g1.spherehand", "urdf")
 ```
 
+## Training presets
+
+The CLI exposes only the three stages used by the canonical pipeline:
+
+| Preset | Purpose | Default manifest | Reset sampler | Horizon |
+| --- | --- | --- | --- | --- |
+| `exp:g1-29dof-wbt-baseline-single` | Single-motion diagnosis | `omniretarget_baseline.json` | `hotspot_failure_window` | 22 s |
+| `exp:g1-29dof-wbt-baseline-29` | Initial 29-motion policy | `omniretarget_baseline_29.json` | `hotspot_failure_window` | 10 s |
+| `exp:g1-29dof-wbt-contact-force` | Newton 8-part force tracking | `newton_contact_force_8part.json` | `hotspot_failure_window` | 20 s |
+
+All three presets use the spherehand robot and Isaac Lab 3/Newton. Baseline
+presets train from scratch; old checkpoints and manifests are incompatible.
+
 Before the first Isaac Lab/Newton run, generate the USD cache from the canonical URDF:
 
 ```bash
@@ -74,7 +87,6 @@ OmniRetarget/PyRoki qpos
 ### 1. Bootstrap and validate assets
 
 ```bash
-cd /home/xiaz/somaforge
 source scripts/source_somaforge.sh
 python3 scripts/check_asset_manifest.py
 python3 scripts/check_training_manifest.py
@@ -85,7 +97,7 @@ python scripts/canonicalize_omniretarget_newton.py \
   runtime/current/omniretarget/robot-terrain/climb_*.npz \
   --output-dir runtime/current/motions \
   --output-fps 50 \
-  --batch-size 4 \
+  --batch-size 1 \
   --headless
 python scripts/build_newton_motion_manifest.py \
   --manifest runtime/current/manifests/omniretarget_baseline_29.json \
@@ -100,15 +112,16 @@ does not depend on Motion Edit, GM-VQ, or HyAR. Save the baseline checkpoint
 and rollout/contact manifest under `runtime/current/`.
 
 ```bash
-cd /home/xiaz/somaforge
 source scripts/source_isaaclab3_newton_setup.sh
 python src/holosoma/holosoma/train_agent.py \
-  exp:g1-29dof-wbt \
+  exp:g1-29dof-wbt-baseline-29 \
   simulator:isaaclab3-newton \
-  --command.setup_terms.motion_command.params.motion_config.motion_manifest=runtime/current/manifests/omniretarget_baseline_29.json \
-  --terrain.terrain_term.motion_matched_manifest=runtime/current/manifests/omniretarget_baseline_29.json \
-  --training.num_envs=4096 \
-  --training.headless=True
+  --headless \
+  --command.setup-terms.motion-command.params.motion-config.motion-manifest \
+    runtime/current/manifests/omniretarget_baseline_29.json \
+  --terrain.terrain-term.motion-matched-manifest \
+    runtime/current/manifests/omniretarget_baseline_29.json \
+  --training.num-envs 4096
 ```
 
 ### 3. Create the Motion Edit reference
@@ -119,11 +132,10 @@ Use the Newton rollout contact manifest as the Motion Edit source. Open a
 
 ```bash
 source scripts/source_somaforge.sh
-cd packages/motion_edit
-./motion-edit contact-editor /path/to/source_motion.npz
-./motion-edit validate-contact-edit-plan --plan /path/to/plan.json
-./motion-edit generate-ref --plan /path/to/plan.json \
-  --output-motion /home/xiaz/somaforge/runtime/current/motions/example.policy_ref_v1.npz \
+packages/motion_edit/motion-edit contact-editor /path/to/source_motion.npz
+packages/motion_edit/motion-edit validate-contact-edit-plan --plan /path/to/plan.json
+packages/motion_edit/motion-edit generate-ref --plan /path/to/plan.json \
+  --output-motion runtime/current/motions/example.policy_ref_v1.npz \
   --output-contact-layer /path/to/contact_layer.json \
   --output-motion-version-id example_v1
 ```
@@ -146,7 +158,6 @@ Prepare segments from the Newton rollout force manifest, then train from the
 resulting pack. Keep the pack and checkpoints under `runtime/current/`:
 
 ```bash
-cd /home/xiaz/somaforge
 source scripts/source_somaforge.sh
 conda run -n gmvq_vae python -m gmvq.prepare_motion_edit_segments \
   --motion-edit-manifest runtime/current/manifests/newton_contact_force_8part.json \
@@ -166,15 +177,16 @@ from Motion Edit or a GM-VQ/HyAR-decoded reference. Do not resume the baseline
 checkpoint:
 
 ```bash
-cd /home/xiaz/somaforge
 source scripts/source_isaaclab3_newton_setup.sh
 python src/holosoma/holosoma/train_agent.py \
   exp:g1-29dof-wbt-contact-force \
   simulator:isaaclab3-newton \
-  --command.setup_terms.motion_command.params.motion_config.motion_manifest=runtime/current/manifests/newton_contact_force_8part.json \
-  --terrain.terrain_term.motion_matched_manifest=runtime/current/manifests/newton_contact_force_8part.json \
-  --training.num_envs=4096 \
-  --training.headless=True
+  --headless \
+  --command.setup-terms.motion-command.params.motion-config.motion-manifest \
+    runtime/current/manifests/newton_contact_force_8part.json \
+  --terrain.terrain-term.motion-matched-manifest \
+    runtime/current/manifests/newton_contact_force_8part.json \
+  --training.num-envs 4096
 ```
 
 Before a long run, use the corresponding scene wrapper with `--dry-run` and

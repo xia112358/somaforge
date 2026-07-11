@@ -4,6 +4,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from somaforge_core.kinematics import POSE_FINITE_DIFFERENCE
 
 CANONICAL_MOTION_SCHEMA = "somaforge_canonical_motion_v1"
 NEWTON_KINEMATICS_BACKEND = "isaaclab3_newton_fk"
@@ -53,6 +54,7 @@ def newton_kinematics_provenance(
         "root_quaternion_order": "wxyz",
         "body_quaternion_order": "wxyz",
         "velocity_frame": "world",
+        "velocity_derivation": POSE_FINITE_DIFFERENCE,
         "joint_order": list(G1_29DOF_JOINT_ORDER),
         "body_names": list(body_names),
     }
@@ -80,4 +82,19 @@ def decode_kinematics_provenance(value: Any, *, context: str, require_newton: bo
         raise ValueError(f"{context} was not canonicalized with Newton FK")
     if tuple(metadata.get("joint_order", ())) != G1_29DOF_JOINT_ORDER:
         raise ValueError(f"{context} uses an incompatible G1 joint order")
+    expected_fields = {
+        "root_quaternion_order": "wxyz",
+        "body_quaternion_order": "wxyz",
+        "velocity_frame": "world",
+        "velocity_derivation": POSE_FINITE_DIFFERENCE,
+    }
+    for key, expected in expected_fields.items():
+        if metadata.get(key) != expected:
+            raise ValueError(f"{context} has incompatible {key}: {metadata.get(key)!r}")
+    body_names = metadata.get("body_names")
+    if not isinstance(body_names, list) or not body_names or any(not isinstance(name, str) for name in body_names):
+        raise ValueError(f"{context} has invalid body_names provenance")
+    output_fps = metadata.get("output_fps")
+    if not isinstance(output_fps, (int, float)) or output_fps <= 0:
+        raise ValueError(f"{context} has invalid output_fps provenance")
     return metadata

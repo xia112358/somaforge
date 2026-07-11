@@ -4,8 +4,9 @@ Contact-centered motion editing workbench for surface-bound contact-anchor editi
 
 `generate-ref` writes an edited kinematic reference. Production force fields are
 added only by a successful Isaac Lab 3/Newton policy rollout and must carry
-`contact_force_provenance_json`. MuJoCo prescribed-force output is diagnostic
-and is rejected by WBT training. The package stores local runtime metadata and
+`contact_force_provenance_json`. Existing Newton force references may be
+retargeted onto edited kinematics; no alternative dynamics backend is supported.
+The package stores local runtime metadata and
 segment layers under `data/`; large runtime artifacts remain untracked.
 
 ## Layout

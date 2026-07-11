@@ -6,9 +6,7 @@ This cleanup narrows `holosoma_newton` from a broad upstream Holosoma fork into 
 
 ```text
 apps/holosoma.isaaclab3_newton*.kit
-configs/climbing_scenes.json
 configs/motion_matched/
-scripts/*climbing*
 scripts/*motion_matched*
 scripts/*contact_force*
 scripts/setup_isaaclab3_newton.sh

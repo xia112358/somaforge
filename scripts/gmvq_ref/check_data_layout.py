@@ -10,11 +10,12 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-OLD_DATA_ROOT = "/home/xiaz/holosoma/OmniRetarget_Dataset"
+OLD_DATA_ROOTS = (
+    "/home/xiaz/holosoma/OmniRetarget_Dataset",
+    "OmniRetarget_Dataset/data/holosoma_motions_50hz",
+)
 DEFAULT_MANIFESTS = [
-    "runtime/current/manifests/motion_edit_ref_v1.json",
-    "runtime/current/manifests/climb00_motion_edit_ref.json",
-    "tmp/gmvq_play/climb00_gmvq_fixed_code_theta_manifest.json",
+    "runtime/current/manifests/omniretarget_baseline_29.json",
 ]
 
 
@@ -61,7 +62,7 @@ def check_manifest(manifest_path: Path, *, require_files: bool) -> list[str]:
         return errors
 
     for key, value in entries:
-        if OLD_DATA_ROOT in value:
+        if any(root in value for root in OLD_DATA_ROOTS):
             errors.append(f"{manifest_path}: {key} still uses old absolute root: {value}")
         resolved = _resolve(value, base_dir)
         if require_files and not resolved.exists():

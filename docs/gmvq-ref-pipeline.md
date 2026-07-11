@@ -50,16 +50,16 @@ motion-matched manifests referenced below were retired with the wrong-URDF
 data. New runs must start from `configs/training_pipeline_manifest.json` and
 write derived manifests under `runtime/current/manifests/`.
 
-The clean ref sources come from the official motion-matched manifest:
+The clean ref sources come from the canonical Newton motion manifest:
 
 ```text
-runtime/current/manifests/<motion_edit_ref_manifest>.json
+runtime/current/manifests/omniretarget_baseline_29.json
 ```
 
 For `climb_00`, that clean source is:
 
 ```text
-/home/xiaz/somaforge/OmniRetarget_Dataset/data/holosoma_motions_50hz/climb_00_z_scale_1.0.npz
+runtime/current/motions/climb_00_z_scale_1.0.npz
 ```
 
 The rollout contact-force file is not a clean ref source:
@@ -290,22 +290,14 @@ python3 scripts/gmvq_ref/check_data_layout.py \
   --manifest tmp/gmvq_play/selector_decoded_refs/climb00_surface_jitter_0000_selector_manifest.json
 ```
 
-## Local Setup
+## Local Validation
 
-The machine-readable data index for the current `climb_00` GMVQ experiment is:
-
-```text
-scripts/gmvq_ref/climb00_data_index.json
-```
-
-Copy `scripts/gmvq_ref/climb00_orig_z1.env.example` to a local ignored env file
-if needed, or export the variables in your shell. Environment variables override
-the index defaults.
-
-Then run:
+Validate the source manifest before building any derived GMVQ pack:
 
 ```bash
-python3 scripts/gmvq_ref/check_workspace.py
+python scripts/gmvq_ref/check_data_layout.py \
+  --manifest runtime/current/manifests/omniretarget_baseline_29.json
 ```
 
-This only checks paths and data consistency; it does not train or launch Isaac.
+This checks manifest paths only; the motion schema and asset fingerprints are
+validated again by the stage loaders.

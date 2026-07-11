@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import get_args, get_type_hints
 
 import pytest
 
@@ -65,6 +66,16 @@ def _normalized_motion_config(config: DummyExperimentConfig) -> MotionConfig:
     motion_config = term.params["motion_config"]
     assert isinstance(motion_config, MotionConfig)
     return motion_config
+
+
+def test_motion_reset_sampler_modes_are_current() -> None:
+    sampler_type = get_type_hints(MotionConfig)["reset_sampler"]
+    assert set(get_args(sampler_type)) == {
+        "uniform",
+        "adaptive",
+        "failure_window",
+        "hotspot_failure_window",
+    }
 
 
 def test_command_manifest_drives_motion_and_terrain_from_one_manifest() -> None:

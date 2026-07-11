@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 from motion_edit.contact.plans import read_contact_edit_plan
@@ -42,20 +41,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ik-max-nfev", type=int, default=None)
     parser.add_argument("--intermediate-dir", default=None)
     parser.add_argument("--no-force-bake", action="store_true")
-    parser.add_argument("--force-mujoco-model", default=None)
     parser.add_argument(
         "--force-source-ref",
         default=None,
         help=argparse.SUPPRESS,
     )
-    parser.add_argument("--force-solve-mode", choices=("forward", "inverse", "retarget"), default="forward")
-    parser.add_argument("--force-assignment-max-distance", type=float, default=0.35)
     parser.add_argument("--force-unit-scale", type=float, default=1.0)
     parser.add_argument("--force-retarget-max-force-norm", type=float, default=5000.0)
     parser.add_argument("--force-retarget-smoothing-window", type=int, default=3)
     parser.add_argument("--force-policy-ref-compat", choices=("wbt_contact_force_8part", "none"), default="wbt_contact_force_8part")
-    parser.add_argument("--force-geom-part-map", default=None, help="JSON file mapping MuJoCo geom names to canonical contact parts")
-    parser.add_argument("--force-body-part-map", default=None, help="JSON file mapping MuJoCo body names to canonical contact parts")
     return parser
 
 
@@ -63,9 +57,8 @@ def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
     bake_force = not bool(args.no_force_bake)
-    if bake_force and not args.dry_run:
-        if args.force_solve_mode != "retarget" and args.force_mujoco_model is None:
-            raise ValueError("force baking requires --force-mujoco-model, or pass --no-force-bake")
+    if bake_force and not args.dry_run and args.force_source_ref is None:
+        raise ValueError("force retargeting requires --force-source-ref, or pass --no-force-bake")
     plan_path = Path(args.plan).expanduser()
     plan = read_contact_edit_plan(plan_path)
     result = apply_contact_aware_edit_plan_to_motion(
@@ -73,14 +66,9 @@ def main(argv: list[str] | None = None) -> None:
         output_motion_path=args.output_motion,
         bake_force=bake_force,
         force_output_motion_path=args.force_output_motion,
-        force_mujoco_model_path=args.force_mujoco_model,
         force_source_ref_path=args.force_source_ref,
         force_target_contact_layer_path=(Path("data/layers") / args.output_contact_layer) if args.output_contact_layer else None,
         force_target_motion_id=plan.source_motion_id if args.output_contact_layer else None,
-        force_geom_part_map=_load_name_part_map(args.force_geom_part_map, label="force-geom-part-map"),
-        force_body_part_map=_load_name_part_map(args.force_body_part_map, label="force-body-part-map"),
-        force_solve_mode=args.force_solve_mode,
-        force_assignment_max_distance=args.force_assignment_max_distance,
         force_unit_scale=args.force_unit_scale,
         force_retarget_max_force_norm=args.force_retarget_max_force_norm,
         force_retarget_smoothing_window=args.force_retarget_smoothing_window,
@@ -116,39 +104,14 @@ def main(argv: list[str] | None = None) -> None:
     print(f"{action} {result.output_motion_path}")
     if result.force_bake is not None:
         meta = result.force_bake.metadata
-        if args.force_solve_mode == "retarget":
-            print(
-                "force bake: "
-                f"source_phases={meta.get('source_phase_count', 0)} "
-                f"retarget_phases={meta.get('retarget_phase_count', 0)} "
-                f"unmatched={meta.get('unmatched_target_phase_count', 0)} "
-                f"force_norm_max={meta.get('force_norm_max', 0.0)}"
-            )
-        else:
-            print(
-                "force bake: "
-                f"used_samples={meta.get('used_sample_count', 0)} "
-                f"unknown_samples={meta.get('unknown_sample_count', 0)} "
-                f"missing_intended={meta.get('missing_intended_contact_frames', 0)} "
-                f"force_norm_max={meta.get('force_norm_max', 0.0)}"
-            )
+        print(
+            "force bake: "
+            f"source_phases={meta.get('source_phase_count', 0)} "
+            f"retarget_phases={meta.get('retarget_phase_count', 0)} "
+            f"unmatched={meta.get('unmatched_target_phase_count', 0)} "
+            f"force_norm_max={meta.get('force_norm_max', 0.0)}"
+        )
     for warning in result.warnings:
         print(f"warning: {warning}")
-
-
-def _load_name_part_map(path: str | None, *, label: str) -> dict[str, str]:
-    if path is None:
-        return {}
-    payload = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError(f"{label} must be a JSON object mapping names to contact parts")
-    out: dict[str, str] = {}
-    for key, value in payload.items():
-        if not isinstance(key, str) or not isinstance(value, str):
-            raise ValueError(f"{label} entries must be string-to-string mappings")
-        out[key] = value
-    return out
-
-
 if __name__ == "__main__":
     main()

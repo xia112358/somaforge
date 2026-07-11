@@ -11,13 +11,11 @@ import re
 import shlex
 import subprocess
 import sys
-from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
+
 from somaforge_core import stage_spec
-
-from train_motion_edit_force_zero_start import DEFAULT_PROJECT, REPO_ROOT, _build_command
-
+from train_motion_edit_force import DEFAULT_PROJECT, REPO_ROOT, _build_command
 
 DEFAULT_MANIFEST = REPO_ROOT / "runtime/current/manifests/motion_edit_ref_v1.json"
 DEFAULT_SHARD00 = (
@@ -106,7 +104,7 @@ def _build_train_command(
     args: argparse.Namespace,
     extra_args: list[str],
 ) -> list[str]:
-    zero_start_args = SimpleNamespace(
+    train_args = SimpleNamespace(
         checkpoint=checkpoint,
         motion_manifest=motion_manifest,
         num_envs=args.num_envs,
@@ -134,7 +132,7 @@ def _build_train_command(
         name=name,
         gui=args.gui,
     )
-    return _build_command(zero_start_args, _extra_algo_args(args, extra_args))
+    return _build_command(train_args, _extra_algo_args(args, extra_args))
 
 
 def _build_eval_command(
