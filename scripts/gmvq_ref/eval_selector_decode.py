@@ -11,18 +11,13 @@ from typing import Any
 
 import numpy as np
 import torch
+from somaforge_core.robot_assets import somaforge_root
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-try:
-    from gmvq.hyar_wrapper import FrozenGMVQCodec
-except ModuleNotFoundError:
-    gmvq_repo = Path("/home/xiaz/gmvq-vae")
-    if gmvq_repo.exists():
-        sys.path.insert(0, str(gmvq_repo))
-    from gmvq.hyar_wrapper import FrozenGMVQCodec
+from gmvq.hyar_wrapper import FrozenGMVQCodec
 
 from scripts.gmvq_ref.selector_runtime import GMVQSelectorRuntime
 from scripts.gmvq_ref.train_selector_code import _build_features as build_code_features
@@ -164,7 +159,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    base = Path("/home/xiaz/holosoma_isaaclab3_newton/tmp/gmvq_play")
+    base = somaforge_root() / "tmp/gmvq_play"
     selector_base = base / "selector_dataset_v1/raw29_large_mixed_n64_codes16_height"
     gmvq_base = base / "gmvq_aug_full_ref_t192_raw29_large_mixed_n64_codes16_12k"
     parser.add_argument(

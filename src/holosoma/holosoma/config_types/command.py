@@ -152,10 +152,37 @@ class MotionConfig:
     This makes the robot practice holding the initial pose. Only applies when episode starts at timestep 0.
     Sampled independently each policy step; expected wait is roughly 1 / (1 - p) steps before unfreezing."""
 
+    use_completion_learning_sampler: bool = False
+    """Adapt normal motion sampling using ordinary start-to-end training episodes instead of reserved probe envs."""
+
+    completion_success_streak_threshold: int = 3
+    """Number of consecutive start-to-end completions required before a motion is treated as learned."""
+
+    completion_learned_replay_weight: float = 0.1
+    """Relative sampling weight retained for learned motions so they are replayed enough to resist forgetting."""
+
+    completion_weight_beta: float = 0.05
+    """EMA update rate for normal-env motion weights derived from completion-learning learned masks."""
+
     use_start_probe_envs: bool = True
     """Reserve motion-balanced probe environments for multi-motion commands.
     Probe environments always reset from each motion's first frame and are used to estimate per-motion
     start-to-end success rates and adapt normal-env motion sampling. Single-motion commands ignore this default."""
+
+    use_group_probe_envs: bool = False
+    """Reserve group-balanced probe environments instead of per-motion start probes.
+    Group probes estimate difficulty for a terrain/source-motion group and sample a random motion inside the group on
+    each reset, which is cheaper for motion-edit jitter sets than assigning probes to every generated motion."""
+
+    group_probe_by: Literal["terrain_id", "climb_id"] = "terrain_id"
+    """Grouping key for group probes. terrain_id uses the motion manifest binding; climb_id parses climb_XX names."""
+
+    probe_env_per_group: int = 8
+    """Number of fixed from-zero probe environments assigned to each motion group when use_group_probe_envs is True."""
+
+    group_variant_sample_count: int = 0
+    """When positive, sample from at most this many random motions per group in each reset batch.
+    This keeps full motion-edit manifests loaded while limiting simultaneous variant diversity per terrain group."""
 
     chain_motion_segments: bool = False
     """When a sampled motion segment ends, continue into the next consecutive segment without resetting the robot.

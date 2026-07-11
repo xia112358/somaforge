@@ -1,11 +1,34 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any, Sequence
 
 import torch
 from loguru import logger
+from somaforge_core import validate_g1_asset_metadata
+
+
+_G1_SPHEREHAND_STEM = "g1_29dof_spherehand"
+_ROBOT_ASSET_SIDECAR = "somaforge_robot_asset.json"
+
+
+def _validate_preconverted_robot_usd(usd_path: Path, robot_stem: str) -> Path:
+    resolved = usd_path.resolve()
+    if robot_stem != _G1_SPHEREHAND_STEM:
+        return resolved
+
+    sidecar = resolved.parent / _ROBOT_ASSET_SIDECAR
+    if not sidecar.is_file():
+        raise ValueError(
+            f"Canonical G1 USD is missing its asset fingerprint: {sidecar}. "
+            "Regenerate it with scripts/convert_g1_spherehand_usd.py."
+        )
+    with sidecar.open(encoding="utf-8") as stream:
+        metadata = json.load(stream)
+    validate_g1_asset_metadata(metadata, context=str(resolved))
+    return resolved
 
 
 def resolve_bool_attr_or_method(obj: Any, name: str) -> bool:
@@ -21,10 +44,13 @@ def build_newton_physics_cfg(simulator_config: Any):
     mjwarp = simulator_config.mujoco_warp
     nconmax = mjwarp.nconmax_per_env
     njmax = mjwarp.njmax_per_env or max(nconmax * 16, 2048)
+    use_cuda_graph_env = os.environ.get("HOLOSOMA_NEWTON_USE_CUDA_GRAPH", "1").strip().lower()
+    use_cuda_graph = use_cuda_graph_env not in {"0", "false", "no", "off"}
 
     logger.info(
         "Using Isaac Lab 3.0 Newton MJWarp physics backend "
-        f"(nconmax={nconmax}, njmax={njmax}, substeps={simulator_config.sim.substeps})."
+        f"(nconmax={nconmax}, njmax={njmax}, substeps={simulator_config.sim.substeps}, "
+        f"use_cuda_graph={use_cuda_graph})."
     )
 
     return NewtonCfg(
@@ -39,6 +65,7 @@ def build_newton_physics_cfg(simulator_config: Any):
         collision_cfg=NewtonCollisionPipelineCfg(max_triangle_pairs=2_500_000),
         num_substeps=simulator_config.sim.substeps,
         debug_mode=False,
+        use_cuda_graph=use_cuda_graph,
         default_shape_cfg=NewtonShapeCfg(margin=0.01),
     )
 
@@ -47,7 +74,7 @@ def resolve_robot_usd(asset_root: str, robot_asset_cfg: Any) -> Path:
     if robot_asset_cfg.usd_file is not None:
         usd_path = Path(asset_root) / robot_asset_cfg.usd_file
         if usd_path.is_file():
-            return usd_path.resolve()
+            return _validate_preconverted_robot_usd(usd_path, Path(robot_asset_cfg.urdf_file).stem)
         raise FileNotFoundError(f"Configured robot USD does not exist: {usd_path}")
 
     robot_stem = Path(robot_asset_cfg.urdf_file).stem
@@ -61,7 +88,7 @@ def resolve_robot_usd(asset_root: str, robot_asset_cfg: Any) -> Path:
     ]
     for candidate in candidates:
         if candidate.is_file():
-            return candidate.resolve()
+            return _validate_preconverted_robot_usd(candidate, robot_stem)
 
     candidates_text = "\n".join(f"  - {candidate}" for candidate in candidates)
     raise FileNotFoundError(

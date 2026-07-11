@@ -10,6 +10,7 @@ import torch
 
 from .data import NormStats, denormalize_segments, load_segment_arrays, normalize_segments_masked
 from .models import GMVQAutoEncoder
+from somaforge_core.robot_assets import encode_robot_asset_json, validate_g1_asset_metadata
 
 
 def _load_npz(path: str | Path) -> dict[str, Any]:
@@ -60,6 +61,7 @@ def decode_segments(
     latents_output: str | Path | None = None,
 ) -> Path:
     ckpt = torch.load(Path(checkpoint).expanduser(), map_location="cpu")
+    validate_g1_asset_metadata(ckpt.get("robot_asset"), context=f"GMVQ checkpoint {checkpoint}")
     cfg = ckpt["model_config"]
     arrays = load_segment_arrays(data)
     segments = arrays["segments"]
@@ -142,6 +144,7 @@ def decode_segments(
             start_frames=start_frames,
             end_frames=end_frames,
             source_paths=source_paths,
+            robot_asset_json=np.asarray(encode_robot_asset_json(ckpt["robot_asset"])),
         )
     return output_path
 

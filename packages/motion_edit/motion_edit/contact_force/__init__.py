@@ -9,7 +9,7 @@ from .prescribed import (
 from .retarget import RetargetContactForceConfig, retarget_contact_forces
 from .schema import (
     DEFAULT_CONTACT_FORCE_PART_ORDER,
-    WBT_6PART_CONTACT_FORCE_PART_ORDER,
+    WBT_8PART_CONTACT_FORCE_PART_ORDER,
     CanonicalContactForceField,
     ContactForceSample,
     PrescribedContactSolveConfig,
@@ -17,7 +17,7 @@ from .schema import (
 
 __all__ = [
     "DEFAULT_CONTACT_FORCE_PART_ORDER",
-    "WBT_6PART_CONTACT_FORCE_PART_ORDER",
+    "WBT_8PART_CONTACT_FORCE_PART_ORDER",
     "CanonicalContactForceField",
     "ContactForceSample",
     "RetargetContactForceConfig",

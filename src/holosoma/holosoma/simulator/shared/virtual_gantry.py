@@ -124,16 +124,10 @@ class VirtualGantry:
         # the simulator interface. As a stop-gap, do so internally for the gantry
         # for a single environment and for robot only.
         simtype = get_simulator_type()
-        if simtype is SimulatorType.ISAACGYM:
-            self._apply_force_impl = self._apply_force_isaacgym
-            self._clear_forces_impl = None  # IsaacGym doesn't need explicit clearing
-        elif simtype in (SimulatorType.ISAACSIM, SimulatorType.ISAACLAB3_NEWTON):
+        if simtype in (SimulatorType.ISAACSIM, SimulatorType.ISAACLAB3_NEWTON):
             logger.warning("Virtual Gantry untested in IsaacLab/Newton")
             self._apply_force_impl = self._apply_force_isaacsim
             self._clear_forces_impl = self._clear_forces_isaacsim
-        elif simtype is SimulatorType.MUJOCO:
-            self._apply_force_impl = self._apply_force_mujoco
-            self._clear_forces_impl = self._clear_forces_mujoco
         else:
             raise ValueError(f"Unsupported simulator type: {simtype}")
 
@@ -316,7 +310,7 @@ class VirtualGantry:
         v = np.dot(vx, direction)
         return (self.stiffness * (distance - self.length) - self.damping * v) * direction
 
-    def _apply_force_mujoco(self, link_id: int, force: npt.NDArray[np.float64]) -> None:
+
         """Apply force to rigid body in MuJoCo simulator.
 
         Uses the unified applied_forces interface for backend compatibility.
@@ -339,7 +333,7 @@ class VirtualGantry:
             # ClassicBackend: CPU numpy array without env dimension [num_bodies, 6]
             self.sim.applied_forces[link_id, :3] = force
 
-    def _clear_forces_mujoco(self) -> None:
+
         """Clear forces in MuJoCo (WarpBackend only - ClassicBackend doesn't need it).
 
         WarpBackend requires explicit clearing of GPU tensors when disabling the gantry,
@@ -358,7 +352,7 @@ class VirtualGantry:
         # ClassicBackend (numpy array): Do nothing
         # MuJoCo automatically zeros xfrc_applied each step, so no explicit clearing needed
 
-    def _apply_force_isaacgym(self, link_id: int, force: npt.NDArray[np.float64]) -> None:
+
         """Apply force to rigid body in IsaacGym simulator.
 
         Applies force directly to the body's center of mass (similar to MuJoCo's approach).

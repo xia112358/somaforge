@@ -41,7 +41,6 @@ from .contact import (
 from .contact.graph import ContactGraph
 from .contact.jitter import DEFAULT_JITTER_BODIES, generate_contact_jitter_plans
 from .generation import apply_contact_aware_edit_plan_to_motion, apply_contact_edit_plan_to_motion
-from .generation.contact_force_bake import validate_wbt_contact_force_policy_ref
 from .contact.layers import read_contact_graph
 from .contact.patches import patches_from_anchors
 from .contact.surface_catalog import box_surfaces, parse_box_descriptor, surfaces_from_urdf_meshes
@@ -829,16 +828,7 @@ def _cmd_generate_ref(args: argparse.Namespace) -> None:
     result = apply_contact_aware_edit_plan_to_motion(
         plan,
         output_motion_path=args.output_motion,
-        bake_force=True,
-        force_output_motion_path=args.output_motion,
-        force_source_ref_path=None,
-        force_target_contact_layer_path=(LAYERS_ROOT / output_contact_layer) if output_contact_layer else None,
-        force_target_motion_id=plan.source_motion_id if output_contact_layer else None,
-        force_solve_mode="retarget",
-        force_unit_scale=args.force_unit_scale,
-        force_retarget_max_force_norm=args.force_retarget_max_force_norm,
-        force_retarget_smoothing_window=args.force_retarget_smoothing_window,
-        force_policy_ref_compat="wbt_contact_force_6part",
+        bake_force=False,
         overwrite=args.overwrite,
         source_plan_path=plan_path,
         source_contact_layer=args.source_contact_layer,
@@ -877,24 +867,8 @@ def _cmd_generate_ref(args: argparse.Namespace) -> None:
         print(f"output segment layer: {result.generation.output_segment_layer}")
     if result.generation.output_motion_version_id:
         print(f"output motion version: {result.generation.output_motion_version_id}")
-    if result.force_bake is not None:
-        meta = result.force_bake.metadata
-        print(
-            "force retarget: "
-            f"source={plan.source_motion_path} "
-            f"matched={meta.get('matched_phase_count', 0)} "
-            f"unmatched={meta.get('unmatched_target_phase_count', 0)} "
-            f"force_norm_max={meta.get('force_norm_max', 0.0)}"
-        )
-    if not args.dry_run and not args.no_check_policy_ref:
-        report = validate_wbt_contact_force_policy_ref(result.output_motion_path)
-        print(
-            "policy ref check: "
-            f"frames={report['frames']} "
-            f"joint_pos={report['joint_pos_shape']} "
-            f"joint_vel={report['joint_vel_shape']} "
-            f"force_norm_max={report['force_norm_max']}"
-        )
+    if not args.dry_run:
+        print("next stage: run the edited reference in Newton and collect the canonical 8-part contact rollout")
     for warning in result.warnings:
         print(f"warning: {warning}")
 
@@ -1797,15 +1771,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--q-prior-weight", type=float, default=1.0)
     p.add_argument("--q-smooth-weight", type=float, default=1.0)
     p.add_argument("--mesh-laplacian-weight", type=float, default=0.0)
-    p.add_argument("--force-unit-scale", type=float, default=1.0)
-    p.add_argument("--force-retarget-max-force-norm", type=float, default=5000.0)
-    p.add_argument("--force-retarget-smoothing-window", type=int, default=3)
     p.add_argument("--fps", type=float, default=50.0)
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--register-motion-version", action="store_true")
     p.add_argument("--build-canonical", action="store_true")
     p.add_argument("--dry-run", action="store_true")
-    p.add_argument("--no-check-policy-ref", action="store_true")
     p.add_argument("--lte-repo-root", default=None, help=argparse.SUPPRESS)
     p.add_argument("--ik-script", default=None, help=argparse.SUPPRESS)
     p.add_argument("--ik-conda-env", default="env_pyroki_climb_projection", help=argparse.SUPPRESS)

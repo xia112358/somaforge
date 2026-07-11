@@ -5,23 +5,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-import sys
 from typing import Any
 
 import numpy as np
 import torch
+from somaforge_core.robot_assets import validate_g1_asset_metadata
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-try:
-    from gmvq.hyar_wrapper import FrozenGMVQCodec
-except ModuleNotFoundError:
-    gmvq_repo = Path("/home/xiaz/gmvq-vae")
-    if gmvq_repo.exists():
-        sys.path.insert(0, str(gmvq_repo))
-    from gmvq.hyar_wrapper import FrozenGMVQCodec
+from gmvq.hyar_wrapper import FrozenGMVQCodec
 
 from scripts.gmvq_ref.train_selector_code import SelectorMLP
 from scripts.gmvq_ref.train_selector_theta import ThetaMLP
@@ -95,6 +85,7 @@ class GMVQSelectorRuntime(torch.nn.Module):
         self.device_ref = torch.device(device)
 
         code_ckpt = torch.load(Path(code_checkpoint).expanduser(), map_location="cpu", weights_only=False)
+        validate_g1_asset_metadata(code_ckpt.get("robot_asset"), context=f"code selector {code_checkpoint}")
         code_cfg = code_ckpt["model_config"]
         self.code_model = SelectorMLP(
             input_dim=code_cfg["input_dim"],
@@ -106,6 +97,7 @@ class GMVQSelectorRuntime(torch.nn.Module):
         self.code_model.load_state_dict(code_ckpt["model_state"])
 
         theta_ckpt = torch.load(Path(theta_checkpoint).expanduser(), map_location="cpu", weights_only=False)
+        validate_g1_asset_metadata(theta_ckpt.get("robot_asset"), context=f"theta selector {theta_checkpoint}")
         theta_cfg = theta_ckpt["model_config"]
         self.theta_model = ThetaMLP(
             input_dim=theta_cfg["input_dim"],

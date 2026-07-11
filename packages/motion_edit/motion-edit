@@ -1,8 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON="$ROOT/.venv/bin/python"
-if [[ ! -x "$PYTHON" ]]; then
-  PYTHON=python3
+SOMAFORGE_ROOT="$(cd "$ROOT/../.." && pwd)"
+CONDA_ENV="${MOTION_EDIT_CONDA_ENV:-env_holosoma_isaaclab3_newton}"
+
+if [[ -n "${CONDA_EXE:-}" && -x "$CONDA_EXE" ]]; then
+  CONDA="$CONDA_EXE"
+elif command -v conda >/dev/null 2>&1; then
+  CONDA="$(command -v conda)"
+elif [[ -x "$HOME/miniforge3/bin/conda" ]]; then
+  CONDA="$HOME/miniforge3/bin/conda"
+else
+  echo "conda executable not found" >&2
+  exit 1
 fi
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON" -c "from motion_edit.cli import main; main()" "$@"
+
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH="$ROOT:$SOMAFORGE_ROOT/packages/somaforge_core${PYTHONPATH:+:$PYTHONPATH}"
+exec "$CONDA" run --no-capture-output -n "$CONDA_ENV" \
+  python -c "from motion_edit.cli import main; main()" "$@"

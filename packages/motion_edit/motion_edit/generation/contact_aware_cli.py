@@ -53,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--force-unit-scale", type=float, default=1.0)
     parser.add_argument("--force-retarget-max-force-norm", type=float, default=5000.0)
     parser.add_argument("--force-retarget-smoothing-window", type=int, default=3)
-    parser.add_argument("--force-policy-ref-compat", choices=("wbt_contact_force_6part", "none"), default="wbt_contact_force_6part")
+    parser.add_argument("--force-policy-ref-compat", choices=("wbt_contact_force_8part", "none"), default="wbt_contact_force_8part")
     parser.add_argument("--force-geom-part-map", default=None, help="JSON file mapping MuJoCo geom names to canonical contact parts")
     parser.add_argument("--force-body-part-map", default=None, help="JSON file mapping MuJoCo body names to canonical contact parts")
     return parser

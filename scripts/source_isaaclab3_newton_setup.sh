@@ -6,6 +6,7 @@ elif [ -n "${ZSH_VERSION}" ]; then
 fi
 
 ROOT_DIR=$(dirname "$SCRIPT_DIR")
+source ${SCRIPT_DIR}/source_somaforge.sh
 
 # Use a project-scoped Isaac Lab 3 / Newton environment by default.  Do not
 # reuse the generic env_isaaclab env because it commonly has PhysX and older

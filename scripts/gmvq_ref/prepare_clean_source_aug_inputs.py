@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import sys
 from typing import Any
+from somaforge_core.robot_assets import somaforge_root
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -99,17 +100,17 @@ def rebase_cut_summary(*, cut_summary: Path, records: list[dict[str, Any]], outp
 
 
 def parse_args() -> argparse.Namespace:
-    base = Path("/home/xiaz/holosoma_isaaclab3_newton")
+    base = somaforge_root()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--motion-manifest",
         type=Path,
-        default=base / "configs/motion_matched/climb29_z1_unmasked_manifest.json",
+        default=base / "runtime/current/manifests/motion_edit_ref_v1.json",
     )
     parser.add_argument(
         "--cut-summary",
         type=Path,
-        default=Path("/home/xiaz/motion_edit/data/workbench/raw_contact_29_cut_summary.json"),
+        default=base / "packages/motion_edit/data/workbench/raw_contact_29_cut_summary.json",
     )
     parser.add_argument(
         "--body-template",

@@ -13,7 +13,7 @@ from motion_edit.generation.contact_force_bake import (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="motion-edit-bake-force",
-        description="Bake or retarget contact forces into a generated policy-ref npz without running a rollout.",
+        description="Diagnostic-only MuJoCo force bake; outputs are rejected by production WBT training.",
     )
     parser.add_argument("--motion", required=True, help="Input fullbody motion npz containing joint_pos")
     parser.add_argument("--output-motion", default=None, help="Output npz. Omit only with --in-place")
@@ -28,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--force-unit-scale", type=float, default=1.0)
     parser.add_argument("--retarget-max-force-norm", type=float, default=5000.0)
     parser.add_argument("--retarget-smoothing-window", type=int, default=3)
-    parser.add_argument("--policy-ref-compat", choices=("wbt_contact_force_6part", "none"), default="wbt_contact_force_6part")
+    parser.add_argument("--policy-ref-compat", choices=("wbt_contact_force_8part", "none"), default="wbt_contact_force_8part")
     parser.add_argument("--geom-part-map", default=None, help="JSON file mapping MuJoCo geom names to canonical contact parts")
     parser.add_argument("--body-part-map", default=None, help="JSON file mapping MuJoCo body names to canonical contact parts")
     parser.add_argument("--check-policy-ref", action="store_true", help="Validate the output against the WBT contact-force policy ref contract")
@@ -88,8 +88,10 @@ def main(argv: list[str] | None = None) -> None:
     for warning in result.warnings:
         print(f"warning: {warning}")
     if args.check_policy_ref:
-        report = validate_wbt_contact_force_policy_ref(result.output_motion_path)
-        print("policy-ref check: " + json.dumps(report, sort_keys=True))
+        report = validate_wbt_contact_force_policy_ref(
+            result.output_motion_path, require_newton_source=False
+        )
+        print("diagnostic shape check: " + json.dumps(report, sort_keys=True))
 
 
 def _load_name_part_map(path: str | None, *, label: str) -> dict[str, str]:

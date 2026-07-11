@@ -11,6 +11,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from somaforge_core.robot_assets import decode_robot_asset_json, somaforge_root
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -259,6 +260,7 @@ def decode_selector_ref(args: argparse.Namespace) -> dict[str, Any]:
 
     source_ref_path = Path(selected_source).expanduser()
     source_ref = _load_npz(source_ref_path, allow_pickle=False)
+    decode_robot_asset_json(source_ref.get("robot_asset_json"), context=f"selector source ref {source_ref_path}")
     codes, theta, decoded_segments = _decode_selected_rows(runtime, obs, batch_size=args.batch_size)
     decoded_ref, write_stats = _write_decoded_segments(
         source_ref=source_ref,
@@ -303,7 +305,7 @@ def decode_selector_ref(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def parse_args() -> argparse.Namespace:
-    base = Path("/home/xiaz/holosoma_isaaclab3_newton/tmp/gmvq_play")
+    base = somaforge_root() / "tmp/gmvq_play"
     selector_base = base / "selector_dataset_v1/raw29_large_mixed_n64_codes16_height"
     gmvq_base = base / "gmvq_aug_full_ref_t192_raw29_large_mixed_n64_codes16_12k"
     parser = argparse.ArgumentParser(description=__doc__)
@@ -320,7 +322,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-ref", type=Path, default=base / "selector_decoded_refs/climb00_surface_jitter_0000_selector.policy_ref_v1.npz")
     parser.add_argument("--output-manifest", type=Path, default=base / "selector_decoded_refs/climb00_surface_jitter_0000_selector_manifest.json")
-    parser.add_argument("--base-manifest", type=Path, default=REPO_ROOT / "configs/motion_matched/climb00_z1_unmasked_manifest.json")
+    parser.add_argument("--base-manifest", type=Path, default=REPO_ROOT / "runtime/current/manifests/climb00_motion_edit_ref.json")
     parser.add_argument("--terrain-id", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--no-blend-overlaps", action="store_true")

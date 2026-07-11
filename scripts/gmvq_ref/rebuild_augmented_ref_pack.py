@@ -10,6 +10,7 @@ import sys
 from typing import Any
 
 import numpy as np
+from somaforge_core.robot_assets import somaforge_root
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -175,7 +176,7 @@ def _build_pack_from_template(
 
 
 def parse_args() -> argparse.Namespace:
-    base = Path("/home/xiaz/holosoma_isaaclab3_newton/tmp/gmvq_play")
+    base = somaforge_root() / "tmp/gmvq_play"
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--raw-dir",

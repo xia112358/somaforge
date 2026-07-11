@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from somaforge_core.robot_assets import decode_robot_asset_json, encode_robot_asset_json
 
 
 FEATURE_KEYS = (
@@ -84,6 +85,7 @@ def _relative_feature(
 
 def build_pack(args: argparse.Namespace) -> dict[str, Any]:
     source_ref = _load_npz(args.ref_npz)
+    decode_robot_asset_json(source_ref.get("robot_asset_json"), context=f"policy ref {args.ref_npz}")
     template = _load_npz(args.template_pack, allow_pickle=True)
     schema_keys = _schema_keys_from_ref(source_ref)
 
@@ -155,6 +157,7 @@ def build_pack(args: argparse.Namespace) -> dict[str, Any]:
         joint_names=np.asarray(source_ref["joint_names"]),
         fps=np.asarray(source_ref["fps"]),
         stats_json=np.asarray(json.dumps(stats, sort_keys=True)),
+        robot_asset_json=np.asarray(encode_robot_asset_json()),
     )
     print(json.dumps(stats, indent=2, sort_keys=True))
     return stats

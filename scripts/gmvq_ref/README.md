@@ -1,18 +1,10 @@
 # GMVQ Ref Integration Scripts
 
-This directory is for glue scripts owned by `holosoma_newton`.
+This directory contains SomaForge integration scripts for Newton-validated
+Motion Edit references and GMVQ.
 
-Keep generic model code in `gmvq-vae` and editor/cut tooling in `motion_edit`.
-Scripts here may call those repos, but should not duplicate their source code.
-
-Expected local layout:
-
-```text
-/home/xiaz/
-  motion_edit/
-  gmvq-vae/
-  holosoma_isaaclab3_newton/
-```
+Generic model code lives in `packages/gmvq`; editor tooling lives in
+`packages/motion_edit`. External repository layouts are unsupported.
 
 Use `check_workspace.py` before running training/eval commands to catch the most
 common data mixup: using rollout state as the VAE ref source.
@@ -28,9 +20,9 @@ Environment variables still override the index defaults for local machines.
 Standard augmented-ref and selector chain:
 
 ```text
-motion_edit generated raw npz
--> canonicalize_policy_ref.py
--> policy_ref_v1 npz
+motion_edit generate-ref
+-> edited kinematic reference
+-> Newton validation rollout and canonical 8-part force reference
 -> gmvq-vae prepare_motion_edit_segments / local full-ref segment packer
 -> gmvq-vae train_gmvq
 -> extract_selector_height_dataset.py
@@ -45,9 +37,10 @@ motion_edit generated raw npz
 See `docs/gmvq-ref-pipeline.md` for the exact smoke commands and the policy-ref
 data contract.
 
-`canonicalize_policy_ref.py` is the boundary between motion generation and GMVQ.
-GMVQ inputs and decoded outputs should be `policy_ref_v1`, not solver-specific
-or contact-specific intermediate NPZ files.
+The successful Newton rollout is the production boundary between motion
+generation and GMVQ. `generate-ref` alone is not training eligible.
+`canonicalize_policy_ref.py` remains a diagnostic converter, but it cannot make
+legacy data trustworthy without the canonical robot asset fingerprint.
 
 For G1 WBT, the canonical policy ref shape is:
 
@@ -59,13 +52,13 @@ joint_vel: [T, 35] = root lin vel + root ang vel + 29 dof vel
 Do not train on either old augmented source:
 
 - `joint_vel: [T, 36]` packs have the wrong policy loader schema.
-- rollout-ref contact-force sources contain policy tracking error and are not
-  clean reference motions.
+- only successful Newton rollout force references with canonical provenance are
+  valid force-training inputs.
 
 Build augmentation inputs from the official motion manifest first:
 
 ```bash
-conda run -n env_isaaclab python scripts/gmvq_ref/prepare_clean_source_aug_inputs.py
+conda run -n env_holosoma_isaaclab3_newton python scripts/gmvq_ref/prepare_clean_source_aug_inputs.py
 ```
 
 This writes clean `policy_ref_v1` source refs and a cut summary whose
@@ -77,29 +70,28 @@ tmp/gmvq_play/clean_source_aug_full/raw_contact_29_cut_summary_clean32_source.js
 ```
 
 Then generate contact-surface jitter plans in `motion_edit` from the rebased cut
-summary, generate motions, canonicalize them back to `policy_ref_v1`, and rebuild
-the segment pack:
+summary. Validate each plan, use `generate-ref` to create edited kinematics,
+then run the result through Newton before rebuilding the segment pack.
 
 ```bash
-cd /home/xiaz/motion_edit
+cd /home/xiaz/somaforge/packages/motion_edit
 ./motion-edit generate-contact-jitter-plans \
-  --cut-summary /home/xiaz/holosoma_isaaclab3_newton/tmp/gmvq_play/clean_source_aug_full/raw_contact_29_cut_summary_clean32_source.json \
-  --output-dir /home/xiaz/holosoma_isaaclab3_newton/tmp/gmvq_play/clean_source_aug_full/contact_jitter_plans_raw29_large_mixed_n64_clean32 \
+  --cut-summary /home/xiaz/somaforge/tmp/gmvq_play/clean_source_aug_full/raw_contact_29_cut_summary_clean32_source.json \
+  --output-dir /home/xiaz/somaforge/tmp/gmvq_play/clean_source_aug_full/contact_jitter_plans_raw29_large_mixed_n64_clean32 \
   --samples-per-contact 64 \
   --radius 0.12 \
   --sampler mixed \
   --mode reject \
   --overwrite
 
-./motion-edit batch-generate-lte-augmentations-parallel \
-  --plan-manifest /home/xiaz/holosoma_isaaclab3_newton/tmp/gmvq_play/clean_source_aug_full/contact_jitter_plans_raw29_large_mixed_n64_clean32/manifest.json \
-  --output-motion-dir /home/xiaz/holosoma_isaaclab3_newton/tmp/gmvq_play/clean_source_aug_full/generated_raw29_large_mixed_n64_clean32 \
-  --fullbody-solver batch_contact_laplacian \
-  --workers 8 \
-  --overwrite \
-  --allow-draft \
-  --allow-free \
-  --continue-on-error
+./motion-edit generate-ref \
+  --plan /path/to/validated.plan.json \
+  --output-motion /home/xiaz/somaforge/packages/motion_edit/data/motions/generated/example.policy_ref_v1.npz \
+  --output-contact-layer contact/example \
+  --output-segment-layer candidates/example \
+  --output-motion-version-id example \
+  --register-motion-version \
+  --overwrite
 ```
 
 The old fixed35 pack below fixed dimensions only; it is not the final official
@@ -140,7 +132,7 @@ the segment pack.
 To produce a policy-loadable decoded ref from selector predictions:
 
 ```bash
-conda run -n env_isaaclab python scripts/gmvq_ref/decode_selector_ref.py
+conda run -n env_holosoma_isaaclab3_newton python scripts/gmvq_ref/decode_selector_ref.py
 ```
 
 This writes a `policy_ref_v1` npz plus a single-motion manifest under
@@ -156,7 +148,7 @@ Build shard manifests once:
 
 ```bash
 python scripts/gmvq_ref/build_motion_manifest_shards.py \
-  --manifest configs/motion_matched/motion_edit_raw29_large_mixed_n64_force_ref_manifest.json \
+  --manifest runtime/current/manifests/motion_edit_ref_v1.json \
   --groups-per-shard 4 \
   --overwrite
 ```
@@ -165,8 +157,8 @@ The standard force-ref finetune entry is the sharded zero-start wrapper:
 
 ```bash
 python scripts/train_motion_edit_force_sharded.py \
-  --checkpoint logs/WholeBodyTracking/20260608_150410-g1_29dof_wbt_contact_force_6part_hotspot_multimotion_probe20_fixed_probe-locomotion/model_19999.pt \
-  --shard-index configs/motion_matched/motion_edit_raw29_large_mixed_n64_force_ref_manifest_shards/shard_index.json \
+  --checkpoint runtime/current/checkpoints/wbt_baseline_29/model.pt \
+  --shard-index runtime/current/manifests/motion_edit_ref_v1_shards/shard_index.json \
   --num-envs 4096 \
   --total-iterations 2000 \
   --learning-rate 1e-4 \
@@ -174,12 +166,19 @@ python scripts/train_motion_edit_force_sharded.py \
   --name motion_edit_raw29_force_ref_sharded_env4096_ft2000_from19999
 ```
 
+The sharded wrapper now keeps the successful hotspot settings by default:
+`reset_sampler=hotspot_failure_window`, `start_at_timestep_zero_prob=0.2`,
+optimizer state loading, random episode length initialization, and group probes
+with 8 probe envs per terrain group. This replaces the expensive per-motion
+probe20 setup for motion-edit variants while keeping the change scoped to this
+force-ref finetune path.
+
 For a speed probe, run one shard for a few iterations:
 
 ```bash
 python scripts/train_motion_edit_force_sharded.py \
-  --checkpoint logs/WholeBodyTracking/20260608_150410-g1_29dof_wbt_contact_force_6part_hotspot_multimotion_probe20_fixed_probe-locomotion/model_19999.pt \
-  --shard-index configs/motion_matched/motion_edit_raw29_large_mixed_n64_force_ref_manifest_shards/shard_index.json \
+  --checkpoint runtime/current/checkpoints/wbt_baseline_29/model.pt \
+  --shard-index runtime/current/manifests/motion_edit_ref_v1_shards/shard_index.json \
   --num-envs 4096 \
   --iterations-per-shard 10 \
   --num-shards 1 \
@@ -194,8 +193,8 @@ full manifest with this experiment path:
 
 ```bash
 python scripts/train_motion_edit_force_zero_start.py \
-  --checkpoint logs/WholeBodyTracking/20260608_150410-g1_29dof_wbt_contact_force_6part_hotspot_multimotion_probe20_fixed_probe-locomotion/model_19999.pt \
-  --motion-manifest configs/motion_matched/motion_edit_raw29_large_mixed_n64_force_ref_manifest.json \
+  --checkpoint runtime/current/checkpoints/wbt_baseline_29/model.pt \
+  --motion-manifest runtime/current/manifests/motion_edit_ref_v1.json \
   --num-envs 4096 \
   --iterations 10 \
   --save-interval 10 \

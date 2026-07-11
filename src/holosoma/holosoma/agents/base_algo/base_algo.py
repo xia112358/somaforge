@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from holosoma.config_types.algo import AlgoInitConfig
 from holosoma.envs.base_task.base_task import BaseTask
 from holosoma.utils.safe_torch_import import torch
+from somaforge_core.robot_assets import canonical_g1_asset_metadata, validate_g1_asset_metadata
 
 if TYPE_CHECKING:
     from holosoma.config_types.experiment import ExperimentConfig
@@ -64,12 +65,41 @@ class BaseAlgo:
         if self._experiment_config is None:
             raise RuntimeError("Experiment config metadata missing. Call attach_checkpoint_metadata() before saving.")
 
-        metadata: dict[str, Any] = {"experiment_config": self._experiment_config.to_serializable_dict()}
+        metadata: dict[str, Any] = {
+            "experiment_config": self._experiment_config.to_serializable_dict(),
+            "robot_asset": self._current_robot_asset_metadata(),
+        }
         if self._wandb_run_path:
             metadata["wandb_run_path"] = self._wandb_run_path
         if iteration is not None:
             metadata["iteration"] = int(iteration)
         return metadata
+
+    def _load_checked_checkpoint(self, path: str, *, weights_only: bool | None = None) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {"map_location": self.device}
+        if weights_only is not None:
+            kwargs["weights_only"] = weights_only
+        checkpoint = torch.load(path, **kwargs)
+        if self._uses_g1_asset():
+            validate_g1_asset_metadata(checkpoint.get("robot_asset"), context=f"checkpoint {path}")
+        return checkpoint
+
+    def _current_robot_asset_metadata(self) -> dict[str, str]:
+        if not self._uses_g1_asset():
+            return {
+                "asset_id": str(self.env.robot_config.asset.robot_type),
+                "urdf_path": str(self.env.robot_config.asset.urdf_file),
+            }
+        if self.env.robot_config.asset.urdf_file != "g1/g1_29dof_spherehand.urdf":
+            raise ValueError(
+                "G1 training must use the canonical sphere-hand URDF; "
+                f"got {self.env.robot_config.asset.urdf_file}"
+            )
+        return canonical_g1_asset_metadata()
+
+    def _uses_g1_asset(self) -> bool:
+        asset = self.env.robot_config.asset
+        return str(asset.robot_type).startswith("g1_") or str(asset.urdf_file).startswith("g1/")
 
     def has_curricula_enabled(self) -> bool:
         """Check if any curricula are enabled in the environment.

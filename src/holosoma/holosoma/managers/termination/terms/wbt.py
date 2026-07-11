@@ -412,14 +412,19 @@ class BadTracking(TerminationTermBase):
         )
         bad_tracking = bad_ref_pos | bad_ref_ori | bad_motion_body_pos
 
+        self._last_ref_pos_error = ref_pos_error.detach().clone()
+        self._last_ref_ori_error = ref_ori_error.detach().clone()
+        self._last_motion_body_pos_error = max_motion_body_pos_error.detach().clone()
+        if self.check_motion_body_pos:
+            self._last_motion_body_pos_body_index = motion_body_pos_error.argmax(dim=-1).detach().clone()
+        else:
+            self._last_motion_body_pos_body_index = torch.zeros_like(ref_pos_error, dtype=torch.long)
+
         self.metrics["bad_ref_pos_rate"] = bad_ref_pos.to(torch.float32).mean()
         self.metrics["bad_ref_ori_rate"] = bad_ref_ori.to(torch.float32).mean()
         self.metrics["bad_motion_body_pos_rate"] = bad_motion_body_pos.to(torch.float32).mean()
-        self.metrics["bad_ref_pos_error_mean"] = ref_pos_error.mean()
         self.metrics["bad_ref_pos_error_max"] = ref_pos_error.max()
-        self.metrics["bad_ref_ori_error_mean"] = ref_ori_error.mean()
         self.metrics["bad_ref_ori_error_max"] = ref_ori_error.max()
-        self.metrics["bad_motion_body_pos_error_mean"] = max_motion_body_pos_error.mean()
         self.metrics["bad_motion_body_pos_error_max"] = max_motion_body_pos_error.max()
 
         if motion_command.motion.has_object:

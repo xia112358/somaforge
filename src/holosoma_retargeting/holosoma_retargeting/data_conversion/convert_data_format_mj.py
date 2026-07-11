@@ -1,3 +1,9 @@
+"""Legacy MuJoCo converter retained only for numerical diagnostics.
+
+Production OmniRetarget conversion uses ``scripts/canonicalize_omniretarget_newton.py``
+so FK body ordering and poses come from the same Newton articulation as training.
+"""
+
 from __future__ import annotations
 
 import os
@@ -65,9 +71,9 @@ def create_task_constants(
         namespace.OBJECT_URDF_FILE = f"models/{namespace.OBJECT_NAME}/{namespace.OBJECT_NAME}.urdf"
         namespace.OBJECT_MESH_FILE = f"models/{namespace.OBJECT_NAME}/{namespace.OBJECT_NAME}.obj"
         namespace.OBJECT_URDF_TEMPLATE = f"models/templates/{namespace.OBJECT_NAME}.urdf.jinja"
-        namespace.SCENE_XML_FILE = (
-            f"models/{robot_config.robot_type}/"
-            f"{robot_config.robot_type}_{namespace.ROBOT_DOF}dof_w_{namespace.OBJECT_NAME}.xml"
+        robot_path = Path(namespace.ROBOT_URDF_FILE)
+        namespace.SCENE_XML_FILE = str(
+            robot_path.with_name(f"{robot_path.stem}_w_{namespace.OBJECT_NAME}.xml")
         )
     else:
         namespace.OBJECT_URDF_FILE = namespace.ROBOT_URDF_FILE
@@ -603,6 +609,16 @@ def run_simulator(args_cli: DataConversionConfig):
 
 def main(args_cli: DataConversionConfig):
     """Main function."""
+    if os.environ.get("SOMAFORGE_ALLOW_LEGACY_MUJOCO_CONVERSION", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+    }:
+        raise RuntimeError(
+            "MuJoCo motion conversion is diagnostic-only. Use "
+            "scripts/canonicalize_omniretarget_newton.py for production data, or set "
+            "SOMAFORGE_ALLOW_LEGACY_MUJOCO_CONVERSION=1 for an explicit parity diagnostic."
+        )
     # Run the simulator
     run_simulator(args_cli)
 

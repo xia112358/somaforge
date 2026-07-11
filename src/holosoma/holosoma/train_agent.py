@@ -163,6 +163,11 @@ def train(
     """
 
     tyro_config = normalize_motion_matched_config(tyro_config)
+    from somaforge_core import stage_spec
+    from somaforge_core.robot_assets import validate_g1_robot_config
+
+    stage_spec("holosoma_wbt")
+    validate_g1_robot_config(tyro_config.robot)
 
     if training_context is not None:
         # Use the context's pre-initialized sim app

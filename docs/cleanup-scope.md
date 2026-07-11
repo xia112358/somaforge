@@ -40,14 +40,8 @@ Remove old upstream surfaces that are not part of the current WBT climbing workf
 
 ```text
 demo_scripts/                         # OMOMO/LAFAN/ROS2 demos from the broad upstream workflow
-scripts/setup_isaacgym.sh              # legacy simulator setup
-scripts/source_isaacgym_setup.sh
 scripts/setup_isaacsim.sh              # legacy non-Newton IsaacSim setup
 scripts/source_isaacsim_setup.sh
-scripts/setup_mujoco.sh                # legacy MuJoCo setup
-scripts/setup_mujoco_via_uv.sh
-scripts/source_mujoco_setup.sh
-scripts/source_mujoco_uv_setup.sh
 scripts/setup_inference.sh             # legacy deployment/inference setup
 scripts/source_inference_setup.sh
 docker/isaacgym.Dockerfile

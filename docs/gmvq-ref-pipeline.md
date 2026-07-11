@@ -45,16 +45,21 @@ before GMVQ segment preparation.
 
 ## Clean Source Ref
 
+This document describes the data contract and historical examples. The old
+motion-matched manifests referenced below were retired with the wrong-URDF
+data. New runs must start from `configs/training_pipeline_manifest.json` and
+write derived manifests under `runtime/current/manifests/`.
+
 The clean ref sources come from the official motion-matched manifest:
 
 ```text
-configs/motion_matched/climb29_z1_unmasked_manifest.json
+runtime/current/manifests/<motion_edit_ref_manifest>.json
 ```
 
 For `climb_00`, that clean source is:
 
 ```text
-/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/data/holosoma_motions_50hz/climb_00_z_scale_1.0.npz
+/home/xiaz/somaforge/OmniRetarget_Dataset/data/holosoma_motions_50hz/climb_00_z_scale_1.0.npz
 ```
 
 The rollout contact-force file is not a clean ref source:
@@ -70,8 +75,8 @@ metadata, but must not overwrite the reference motion fields listed above.
 Prepare the clean 32-body policy-ref sources and a rebased cut summary with:
 
 ```bash
-cd /home/xiaz/holosoma_isaaclab3_newton
-conda run -n env_isaaclab python scripts/gmvq_ref/prepare_clean_source_aug_inputs.py
+cd /home/xiaz/somaforge
+conda run -n env_holosoma_isaaclab3_newton python scripts/gmvq_ref/prepare_clean_source_aug_inputs.py
 ```
 
 Outputs:
@@ -118,29 +123,29 @@ official motion-matched manifest
 -> clean32 policy_ref_v1 sources
 -> clean-source rebased motion_edit cut summary
 -> motion_edit ContactEditPlan / surface jitter
--> generate-lte-augmentation
--> canonicalize_policy_ref.py
--> policy_ref_v1 generated motions
+-> generate-ref
+-> edited kinematic references
+-> Newton validation rollout / canonical 8-part force references
 -> shared segment table / valid-mask segment packer
--> gmvq-vae train_gmvq
--> gmvq-vae decode_motion_edit_ref
+-> packages/gmvq train_gmvq
+-> packages/gmvq decode_motion_edit_ref
 -> policy_ref_v1 decoded motion
--> holosoma_newton motion-matched manifest
+-> SomaForge motion-matched manifest
 -> policy eval / offline reconstruction eval
 ```
 
 Smoke commands that exercise the full data interface:
 
 ```bash
-cd /home/xiaz/motion_edit
+cd /home/xiaz/somaforge/packages/motion_edit
 ./motion-edit export-manifest \
   --source candidates/probe_chain_current \
   --output data/exports/manifests/probe_chain_current.json
 
-cd /home/xiaz/gmvq-vae
+cd /home/xiaz/somaforge/packages/gmvq
 conda run -n gmvq_vae python -m gmvq.prepare_motion_edit_segments \
-  --motion-edit-manifest /home/xiaz/motion_edit/data/exports/manifests/probe_chain_current.json \
-  --motion-root /home/xiaz/motion_edit \
+  --motion-edit-manifest /home/xiaz/somaforge/packages/motion_edit/data/exports/manifests/probe_chain_current.json \
+  --motion-root /home/xiaz/somaforge/packages/motion_edit \
   --output data/motion_edit/probe_chain_current_ref_t512.npz \
   --feature-key joint_pos \
   --feature-key joint_vel \
@@ -165,13 +170,13 @@ conda run -n gmvq_vae python -m gmvq.train_gmvq \
 conda run -n gmvq_vae python -m gmvq.decode_motion_edit_ref \
   --checkpoint runs/gmvq_motion_edit_probe_chain_smoke/checkpoint.pt \
   --data data/motion_edit/probe_chain_current_ref_t512.npz \
-  --output /home/xiaz/holosoma_isaaclab3_newton/tmp/gmvq_play/probe_chain_current_gmvq_smoke_ref.npz \
-  --latents-output /home/xiaz/holosoma_isaaclab3_newton/tmp/gmvq_play/probe_chain_current_gmvq_smoke_latents.npz \
+  --output /home/xiaz/somaforge/tmp/gmvq_play/probe_chain_current_gmvq_smoke_ref.npz \
+  --latents-output /home/xiaz/somaforge/tmp/gmvq_play/probe_chain_current_gmvq_smoke_latents.npz \
   --device cpu
 
-cd /home/xiaz/holosoma_isaaclab3_newton
+cd /home/xiaz/somaforge
 python3 scripts/gmvq_ref/build_event_token_plan.py \
-  --motion-edit-manifest /home/xiaz/motion_edit/data/exports/manifests/probe_chain_current.json \
+  --motion-edit-manifest /home/xiaz/somaforge/packages/motion_edit/data/exports/manifests/probe_chain_current.json \
   --latents tmp/gmvq_play/probe_chain_current_gmvq_smoke_latents.npz \
   --output tmp/gmvq_play/probe_chain_current_event_token_plan.json
 
@@ -224,8 +229,8 @@ joint state at the switch frame. It does not include future ref frames. The
 current code selector and theta selector checkpoints are evaluated with:
 
 ```bash
-cd /home/xiaz/holosoma_isaaclab3_newton
-conda run -n env_isaaclab python scripts/gmvq_ref/eval_selector_decode.py
+cd /home/xiaz/somaforge
+conda run -n env_holosoma_isaaclab3_newton python scripts/gmvq_ref/eval_selector_decode.py
 ```
 
 The old fixed35 large augmented segment pack fixed the `joint_vel` dimension but
@@ -254,7 +259,7 @@ after those generated motions have been canonicalized to `policy_ref_v1`.
 Rebuild it with:
 
 ```bash
-conda run -n env_isaaclab python scripts/gmvq_ref/rebuild_augmented_ref_pack.py
+conda run -n env_holosoma_isaaclab3_newton python scripts/gmvq_ref/rebuild_augmented_ref_pack.py
 ```
 
 Historical result on the old `raw29_large_mixed_n64` augmented dataset used a
@@ -279,8 +284,8 @@ a segment-pack row id.
 To generate a policy-loadable selector-decoded ref:
 
 ```bash
-cd /home/xiaz/holosoma_isaaclab3_newton
-conda run -n env_isaaclab python scripts/gmvq_ref/decode_selector_ref.py
+cd /home/xiaz/somaforge
+conda run -n env_holosoma_isaaclab3_newton python scripts/gmvq_ref/decode_selector_ref.py
 python3 scripts/gmvq_ref/check_data_layout.py \
   --manifest tmp/gmvq_play/selector_decoded_refs/climb00_surface_jitter_0000_selector_manifest.json
 ```

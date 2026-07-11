@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -45,12 +46,62 @@ def load_motion_terrain_manifest(manifest_path: str) -> dict[str, Any]:
     if not motion_files:
         raise ValueError(f"Manifest contains no motion files: {path}")
 
-    return {
+    if data.get("schema") == "somaforge_motion_terrain_manifest_v1":
+        _validate_canonical_manifest(data, motion_files, terrains, path)
+
+    result = dict(data)
+    result.update({
         "path": str(path),
         "base_dir": str(base_dir),
         "terrains": terrains,
         "motion_files": motion_files,
-    }
+    })
+    return result
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_digest(path: str, expected: Any, *, context: str) -> None:
+    if not isinstance(expected, str) or len(expected) != 64:
+        raise ValueError(f"{context} requires a SHA256 digest")
+    resolved = Path(path)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"{context} file does not exist: {resolved}")
+    actual = _sha256(resolved)
+    if actual != expected:
+        raise ValueError(f"{context} SHA256 mismatch: expected {expected}, got {actual}")
+
+
+def _validate_canonical_manifest(
+    data: dict[str, Any],
+    motion_files: list[dict[str, Any]],
+    terrains: list[dict[str, Any]],
+    path: Path,
+) -> None:
+    if data.get("robot_asset_id") != "robot.g1.spherehand":
+        raise ValueError(f"Canonical manifest must use robot.g1.spherehand: {path}")
+    if data.get("kinematics_backend") != "isaaclab3_newton_fk":
+        raise ValueError(f"Canonical manifest must use isaaclab3_newton_fk: {path}")
+    for entry in motion_files:
+        _validate_digest(
+            entry["motion_file"], entry.get("motion_sha256"), context=f"motion_id={entry.get('motion_id')}"
+        )
+        source_file = entry.get("source_file")
+        if not source_file:
+            raise ValueError(f"motion_id={entry.get('motion_id')} requires source_file")
+        _validate_digest(
+            str(source_file), entry.get("source_sha256"), context=f"motion_id={entry.get('motion_id')} source"
+        )
+    for entry in terrains:
+        _validate_digest(
+            entry["terrain_file"], entry.get("terrain_sha256"), context=f"terrain_id={entry.get('terrain_id')}"
+        )
 
 
 def _resolve_manifest_path(value: str, base_dir: Path) -> str:
@@ -87,12 +138,14 @@ def _normalize_terrains(data: dict[str, Any], base_dir: Path) -> list[dict[str, 
         terrain_file = terrain.get("terrain_file")
         if not terrain_file:
             raise ValueError(f"Terrain entry is missing terrain_file: {terrain}")
-        normalized.append(
+        entry = dict(terrain)
+        entry.update(
             {
                 "terrain_id": int(terrain_id),
                 "terrain_file": _resolve_manifest_path(str(terrain_file), base_dir),
             }
         )
+        normalized.append(entry)
     return normalized
 
 
@@ -130,11 +183,15 @@ def _normalize_motion_files(
         terrain_id = int(motion["terrain_id"])
         if terrain_id not in terrain_ids:
             raise ValueError(f"Motion references unknown terrain_id={terrain_id}: {motion}")
-        normalized.append(
+        entry = dict(motion)
+        entry.update(
             {
                 "motion_file": _resolve_manifest_path(str(motion["motion_file"]), base_dir),
                 "terrain_id": terrain_id,
                 "weight": float(motion.get("weight", 1.0)),
             }
         )
+        if entry.get("source_file"):
+            entry["source_file"] = _resolve_manifest_path(str(entry["source_file"]), base_dir)
+        normalized.append(entry)
     return normalized

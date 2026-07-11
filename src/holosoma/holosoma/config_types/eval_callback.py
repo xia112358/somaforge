@@ -36,6 +36,43 @@ class RecordingCallbackConfig:
 
 
 @dataclass(frozen=True)
+class AcceptanceConfig:
+    """Settings for lightweight per-motion acceptance evaluation."""
+
+    enabled: bool = False
+    """Whether to enable acceptance evaluation."""
+
+    output_path: str = "acceptance.csv"
+    """Path to save per-motion acceptance CSV."""
+
+    summary_path: str = ""
+    """Path to save JSON summary. Defaults to output_path with _summary.json."""
+
+    fail_output_path: str = ""
+    """Path to save failed rows only. Defaults to output_path with _fail.csv."""
+
+    require_one_env_per_motion: bool = True
+    """Require num_envs to equal num_motions so full acceptance is one env per motion."""
+
+    stop_when_complete: bool = True
+    """Stop evaluation once every tracked environment has pass/fail status."""
+
+    repeats: int = 1
+    """Number of acceptance evaluation repeats to run in one simulator process."""
+
+
+@dataclass(frozen=True)
+class AcceptanceCallbackConfig:
+    """Instantiation config for EvalAcceptanceCallback."""
+
+    _target_: str = "holosoma.agents.callbacks.acceptance.EvalAcceptanceCallback"
+    """Class to instantiate."""
+
+    config: AcceptanceConfig = AcceptanceConfig()
+    """Acceptance evaluation settings."""
+
+
+@dataclass(frozen=True)
 class PushConfig:
     """Settings for push perturbation during evaluation."""
 
@@ -111,6 +148,9 @@ class EvalCallbacksConfig:
 
     recording: RecordingCallbackConfig = RecordingCallbackConfig()
     """Trajectory recording callback."""
+
+    acceptance: AcceptanceCallbackConfig = AcceptanceCallbackConfig()
+    """Lightweight per-motion acceptance callback."""
 
     push: PushCallbackConfig = PushCallbackConfig()
     """Push perturbation callback."""

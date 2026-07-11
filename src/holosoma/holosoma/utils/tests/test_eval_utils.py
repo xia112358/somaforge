@@ -16,6 +16,7 @@ from holosoma.utils.eval_utils import (
     load_checkpoint,
     load_saved_experiment_config,
 )
+from somaforge_core.robot_assets import canonical_g1_asset_metadata
 
 
 @pytest.fixture
@@ -207,6 +208,7 @@ def test_load_saved_experiment_config_from_checkpoint(tmp_path: Path) -> None:
         {
             "actor_model_state_dict": {},
             "experiment_config": cfg.to_serializable_dict(),
+            "robot_asset": canonical_g1_asset_metadata(),
             "wandb_run_path": "entity/project/run",
         },
         checkpoint_path,
@@ -217,6 +219,14 @@ def test_load_saved_experiment_config_from_checkpoint(tmp_path: Path) -> None:
     loaded_cfg, run_path = load_saved_experiment_config(checkpoint_cfg)
     assert loaded_cfg == cfg
     assert run_path == "entity/project/run"
+
+
+def test_load_saved_experiment_config_rejects_legacy_g1_checkpoint(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "legacy_model.pt"
+    torch.save({"experiment_config": ExperimentConfig().to_serializable_dict()}, checkpoint_path)
+
+    with pytest.raises(ValueError, match="legacy wrong-URDF"):
+        load_saved_experiment_config(CheckpointConfig(checkpoint=str(checkpoint_path)))
 
 
 def test_load_saved_experiment_config_no_inputs() -> None:

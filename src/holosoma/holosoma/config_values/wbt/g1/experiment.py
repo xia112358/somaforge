@@ -24,7 +24,7 @@ _motion_matched_terrain = replace(
     ),
 )
 
-_CONTACT_FORCE_ROLLOUT_MANIFEST = "configs/motion_matched/climb29_z1_rollout_ref_contact_force_manifest.json"
+_CONTACT_FORCE_ROLLOUT_MANIFEST = "runtime/current/manifests/newton_contact_force_8part.json"
 
 g1_29dof_wbt = ExperimentConfig(
     training=TrainingConfig(
@@ -139,7 +139,7 @@ g1_29dof_wbt_contact_force = replace(
     g1_29dof_wbt,
     training=replace(
         g1_29dof_wbt.training,
-        name="g1_29dof_wbt_contact_force_6part_hotspot_multimotion",
+        name="g1_29dof_wbt_contact_force_8part_hotspot_multimotion",
     ),
     terrain=_contact_force_terrain,
     observation=observation.g1_29dof_wbt_contact_force_observation,
@@ -176,7 +176,7 @@ g1_29dof_wbt_contact_force_zero_start = replace(
     g1_29dof_wbt_contact_force,
     training=replace(
         g1_29dof_wbt_contact_force.training,
-        name="g1_29dof_wbt_contact_force_6part_zero_start_multimotion",
+        name="g1_29dof_wbt_contact_force_8part_zero_start_multimotion",
         export_onnx=False,
     ),
     algo=replace(
@@ -211,7 +211,7 @@ g1_29dof_wbt_contact_force_touchdown_lift = replace(
     g1_29dof_wbt_contact_force,
     training=replace(
         g1_29dof_wbt_contact_force.training,
-        name="g1_29dof_wbt_contact_force_touchdown_lift_6part_hotspot_multimotion",
+        name="g1_29dof_wbt_contact_force_touchdown_lift_8part_hotspot_multimotion",
     ),
     command=replace(
         command.g1_29dof_wbt_command,

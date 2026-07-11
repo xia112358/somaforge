@@ -4,9 +4,9 @@ import dataclasses
 
 from holosoma.config_types.command import CommandManagerCfg, CommandTermCfg, MotionConfig, NoiseToInitialPoseConfig
 
-DEFAULT_MOTION_MATCHED_MANIFEST = "configs/motion_matched/climb29_z1_unmasked_manifest.json"
-CLIMB00_ORIGINAL_MANIFEST = "configs/motion_matched/climb00_z1_unmasked_manifest.json"
-CLIMB00_PROTO_SPLIT_MANIFEST = "configs/motion_matched/climb00_masked_proto17_split_long7_manifest.json"
+DEFAULT_MOTION_MATCHED_MANIFEST = "runtime/current/manifests/motion_edit_ref_v1.json"
+CLIMB00_ORIGINAL_MANIFEST = "runtime/current/manifests/climb00_motion_edit_ref.json"
+CLIMB00_PROTO_SPLIT_MANIFEST = "runtime/current/manifests/climb00_proto_split_ref.json"
 
 init_pose_config = NoiseToInitialPoseConfig(
     overall_noise_scale=1.0,

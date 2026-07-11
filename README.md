@@ -1,59 +1,186 @@
-# holosoma_newton
+# SomaForge
 
-Research workspace for IsaacLab3/Newton whole-body tracking on climbing motions. This repository is the training and simulator-integration side of the current project: motion/contact references are prepared externally, then consumed here for WBT training, contact-force-aware rewards, and GMVQ/tokenized-reference experiments.
+SomaForge is the unified workspace for G1 contact-aware motion editing,
+residual GM-VQ skill representation, and IsaacLab3/Newton whole-body tracking.
 
-This is no longer maintained as a full upstream Holosoma framework mirror. Legacy upstream components unrelated to the current WBT climbing workflow should be removed or kept only when they are still required by active code paths.
-
-## Active scope
-
-- IsaacLab3/Newton setup and Kit/headless experiences.
-- G1 whole-body tracking for climbing motions.
-- Motion-matched climbing manifests and scene configuration.
-- Contact-force demo extraction, smoothing, and manifest generation.
-- WBT command, observation, reward, termination, replay, eval, and train logic.
-- GMVQ/tokenized-reference integration points.
-- PPO experiments used by the WBT workflow.
-
-## Kept but not cleaned in this pass
-
-`src/holosoma_retargeting/` is intentionally left untouched for now. It may still contain useful upstream retargeting assets or scripts, but it is not the primary focus of the current cleanup.
-
-## Related repositories
-
-- `motion_edit`: contact-anchor motion editing, ContactEditPlan generation, and LTE-style motion augmentation.
-- `gmvq-vae`: GMVQ/VAE/token representation learning and export artifacts for this training stack.
-
-## Repository map
+## Layout
 
 ```text
-apps/                         IsaacLab3/Newton Kit experience files
-configs/climbing_scenes.json  Climbing scene definitions
-configs/motion_matched/       Motion/terrain/contact-force manifests
-docs/                         Project notes, data policy, and training recipes
-scripts/                      Setup, manifest, contact-force, and training helpers
-src/holosoma/                 Active WBT training code
-src/holosoma_retargeting/     Kept unchanged for now
+src/holosoma/               WBT training, evaluation, and simulator integration
+src/holosoma_retargeting/   Retargeting tools (separate environment)
+packages/motion_edit/       Contact Editor and force-reference generation
+packages/gmvq/              GMVQ and HyAR models
+packages/somaforge_core/    Shared robot asset identity contract
+OmniRetarget_Dataset/       Imported preprocessing tools
+runtime/current/            Outputs made with the canonical robot asset
+runtime/legacy_wrong_urdf/  Quarantined old data; never use for training
+configs/assets_manifest.json Manifest-first registry for every runtime asset
+configs/training_pipeline_manifest.json Shared three-stage training data contract
 ```
 
-## Setup
+## Canonical assets
+
+Every G1 path uses:
+
+```text
+src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf
+```
+
+All runtime inputs are selected through `configs/assets_manifest.json` and
+`configs/training_pipeline_manifest.json`. Training motions, GMVQ datasets,
+selectors, and checkpoints must carry the matching `robot_asset_json` identity.
+Missing or mismatched identity is rejected.
 
 ```bash
-bash scripts/setup_isaaclab3_newton.sh
-source scripts/source_isaaclab3_newton_setup.sh
-pip install -e src/holosoma
+source scripts/source_somaforge.sh
+python scripts/check_asset_manifest.py
+python scripts/check_training_manifest.py
 ```
 
-## Current workflow
+Programs can resolve an asset by manifest ID instead of joining paths:
+
+```python
+from somaforge_core import AssetManifest
+
+assets = AssetManifest.load()
+terrain_dir = assets.resolve("terrain.climb.cache", "root")
+robot_urdf = assets.resolve("robot.g1.spherehand", "urdf")
+```
+
+Before the first Isaac Lab/Newton run, generate the USD cache from the canonical URDF:
+
+```bash
+source scripts/source_isaaclab3_newton_setup.sh
+python scripts/convert_g1_spherehand_usd.py --headless
+python scripts/check_somaforge_assets.py
+```
+
+## End-to-end workflow
+
+Old checkpoints and motion manifests are intentionally incompatible. Start
+from a fresh canonical source motion and rebuild the pipeline in this order:
 
 ```text
-motion_edit / external preprocessing
-  -> climbing motion + contact/terrain manifests
-  -> holosoma_newton configs/motion_matched
-  -> WBT command/reward/observation/termination
-  -> train/eval/replay in IsaacLab3/Newton
-  -> optional GMVQ/tokenized reference experiments
+OmniRetarget/PyRoki qpos
+-> Newton canonical FK conversion
+-> initial WBT baseline policy
+-> Newton rollout/contact-force manifest
+-> Motion Edit ContactEditPlan and generate-ref
+-> Newton validation rollout and canonical 8-part force manifest
+-> GMVQ segment pack and checkpoint
+-> WBT training from scratch
 ```
 
-## Cleanup policy
+### 1. Bootstrap and validate assets
 
-See `docs/data-policy.md`, `docs/repository-data.md`, and `docs/cleanup-scope.md` before adding large data, upstream framework leftovers, or new simulator/deployment code. Generated training outputs should stay local and under ignored paths such as `tmp/`, `logs/`, `runs/`, `wandb/`, or external storage.
+```bash
+cd /home/xiaz/somaforge
+source scripts/source_somaforge.sh
+python3 scripts/check_asset_manifest.py
+python3 scripts/check_training_manifest.py
+source scripts/source_isaaclab3_newton_setup.sh
+python scripts/convert_g1_spherehand_usd.py --headless
+python scripts/check_somaforge_assets.py
+python scripts/canonicalize_omniretarget_newton.py \
+  runtime/current/omniretarget/robot-terrain/climb_*.npz \
+  --output-dir runtime/current/motions \
+  --output-fps 50 \
+  --batch-size 4 \
+  --headless
+python scripts/build_newton_motion_manifest.py \
+  --manifest runtime/current/manifests/omniretarget_baseline_29.json \
+  --raw-root runtime/current/omniretarget/robot-terrain
+python scripts/check_motion_manifest.py
+```
+
+### 2. Train the initial WBT baseline
+
+The first WBT run uses only the Newton-canonicalized source motion and terrain. It
+does not depend on Motion Edit, GM-VQ, or HyAR. Save the baseline checkpoint
+and rollout/contact manifest under `runtime/current/`.
+
+```bash
+cd /home/xiaz/somaforge
+source scripts/source_isaaclab3_newton_setup.sh
+python src/holosoma/holosoma/train_agent.py \
+  exp:g1-29dof-wbt \
+  simulator:isaaclab3-newton \
+  --command.setup_terms.motion_command.params.motion_config.motion_manifest=runtime/current/manifests/omniretarget_baseline_29.json \
+  --terrain.terrain_term.motion_matched_manifest=runtime/current/manifests/omniretarget_baseline_29.json \
+  --training.num_envs=4096 \
+  --training.headless=True
+```
+
+### 3. Create the Motion Edit reference
+
+Use the Newton rollout contact manifest as the Motion Edit source. Open a
+`ContactEditPlan`, validate it, then write an edited kinematic reference into
+`runtime/current/motions/`:
+
+```bash
+source scripts/source_somaforge.sh
+cd packages/motion_edit
+./motion-edit contact-editor /path/to/source_motion.npz
+./motion-edit validate-contact-edit-plan --plan /path/to/plan.json
+./motion-edit generate-ref --plan /path/to/plan.json \
+  --output-motion /home/xiaz/somaforge/runtime/current/motions/example.policy_ref_v1.npz \
+  --output-contact-layer /path/to/contact_layer.json \
+  --output-motion-version-id example_v1
+```
+
+`generate-ref` does not solve contact forces. Replay the edited reference with
+the baseline policy and extract canonical Newton forces:
+
+```bash
+python scripts/extract_all_rollout_ref_contact_force_demos.py \
+  --base-manifest runtime/current/manifests/example_motion_edit.json \
+  --checkpoint runtime/current/models/baseline/model.pt
+```
+
+The resulting force files carry `contact_force_provenance_json` with the
+Newton solver configuration. MuJoCo diagnostic forces are rejected by WBT.
+
+### 4. Prepare and train GM-VQ / HyAR
+
+Prepare segments from the Newton rollout force manifest, then train from the
+resulting pack. Keep the pack and checkpoints under `runtime/current/`:
+
+```bash
+cd /home/xiaz/somaforge
+source scripts/source_somaforge.sh
+conda run -n gmvq_vae python -m gmvq.prepare_motion_edit_segments \
+  --motion-edit-manifest runtime/current/manifests/newton_contact_force_8part.json \
+  --motion-root runtime/current/motions \
+  --output runtime/current/models/example_segment_pack.npz
+conda run -n gmvq_vae python -m gmvq.train_gmvq \
+  --data runtime/current/models/example_segment_pack.npz \
+  --save_dir runtime/current/models/example_gmvq
+```
+
+The packer and trainer reject missing or incompatible robot fingerprints.
+
+### 5. Train the refined Holosoma WBT policy
+
+Use the canonical Newton USD and the Newton-validated force manifest produced
+from Motion Edit or a GM-VQ/HyAR-decoded reference. Do not resume the baseline
+checkpoint:
+
+```bash
+cd /home/xiaz/somaforge
+source scripts/source_isaaclab3_newton_setup.sh
+python src/holosoma/holosoma/train_agent.py \
+  exp:g1-29dof-wbt-contact-force \
+  simulator:isaaclab3-newton \
+  --command.setup_terms.motion_command.params.motion_config.motion_manifest=runtime/current/manifests/newton_contact_force_8part.json \
+  --terrain.terrain_term.motion_matched_manifest=runtime/current/manifests/newton_contact_force_8part.json \
+  --training.num_envs=4096 \
+  --training.headless=True
+```
+
+Before a long run, use the corresponding scene wrapper with `--dry-run` and
+verify that its motion and terrain IDs resolve through the manifests.
+
+`src/holosoma_retargeting` remains in the same repository but uses a separate
+environment because its NumPy constraint conflicts with the main workspace.
+The supported Conda environments and their responsibilities are listed in
+[`docs/environments.md`](docs/environments.md).

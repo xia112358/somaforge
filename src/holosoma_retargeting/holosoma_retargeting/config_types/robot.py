@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Mapping, TypedDict
 
 import numpy as np
+from somaforge_core.robot_assets import canonical_g1_urdf_path
 
 
 # Default values per robot type
@@ -121,6 +122,8 @@ class RobotConfig:
         """Get robot URDF file path."""
         if self.robot_urdf_file is not None:
             return self.robot_urdf_file
+        if self.robot_type == "g1":
+            return str(canonical_g1_urdf_path())
         return f"models/{self.robot_type}/{self.robot_type}_{self.ROBOT_DOF}dof.urdf"
 
     ROBOT_URDF_FILE = property(_robot_urdf_file, doc="Get robot URDF file path.")

@@ -12,10 +12,11 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
-from holosoma.bridge import BasicSdk2Bridge, create_sdk2py_bridge
 from holosoma.config_types.simulator import BridgeConfig
 from holosoma.utils.clock import ClockPub
 from holosoma.utils.safe_torch_import import torch
+
+BasicSdk2Bridge = object
 
 if TYPE_CHECKING:
     from holosoma.simulator.base_simulator.base_simulator import BaseSimulator
@@ -70,21 +71,7 @@ class SimulatorBridge:
             logger.info("Robot bridge disabled")
 
     def _init_robot_bridge(self):
-        """Initialize the robot bridge using the copied factory function."""
-        try:
-            # Create robot bridge using the factory function from holosoma.bridge
-            self.robot_bridge = create_sdk2py_bridge(self.simulator, self.simulator.robot_config, self.bridge_config)
-            logger.info(
-                f"Robot bridge initialized successfully with SDK type: {self.simulator.robot_config.bridge.sdk_type}"
-            )
-
-            # Setup joystick if enabled
-            if self.bridge_config.use_joystick:
-                self._setup_joystick()
-
-        except Exception as e:
-            logger.error(f"Failed to initialize robot bridge: {e}")
-            raise
+        raise RuntimeError("SomaForge training does not include runtime SDK bridges.")
 
     def _setup_joystick(self):
         """Setup joystick/gamepad for robot control."""

@@ -23,6 +23,7 @@ from holosoma.utils.file_cache import get_cached_file_path
 from holosoma.utils.logging import LoguruLoggingBridge
 from holosoma.utils.safe_torch_import import torch
 from holosoma.utils.simulator_config import SimulatorType, get_simulator_type
+from somaforge_core.robot_assets import validate_g1_asset_metadata
 
 _WANDB_PREFIX = "wandb://"
 _WANDB_REFERENCE_FORMAT = f"{_WANDB_PREFIX}<entity>/<project>/<run_id>/[<artifact_name>]"
@@ -103,6 +104,13 @@ def _load_config_from_checkpoint(checkpoint_path: Path) -> tuple[ExperimentConfi
 
     checkpoint_contents = torch.load(checkpoint_path, map_location="cpu")
     config_data = checkpoint_contents["experiment_config"]
+    robot_data = config_data.get("robot") if isinstance(config_data, dict) else None
+    asset_data = robot_data.get("asset") if isinstance(robot_data, dict) else None
+    if isinstance(asset_data, dict) and (
+        str(asset_data.get("robot_type") or "").startswith("g1_")
+        or str(asset_data.get("urdf_file") or "").startswith("g1/")
+    ):
+        validate_g1_asset_metadata(checkpoint_contents.get("robot_asset"), context=f"checkpoint {checkpoint_path}")
     return _experiment_config_from_serialized(config_data), checkpoint_contents.get("wandb_run_path")
 
 

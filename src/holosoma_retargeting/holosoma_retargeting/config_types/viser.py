@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from somaforge_core.robot_assets import canonical_g1_urdf_path
 
 
 @dataclass(frozen=True)
@@ -16,7 +17,7 @@ class ViserConfig:
     qpos_npz: str = "OmniRetarget_Dataset/data/holosoma_motions_50hz/climb_00_z_scale_1.0.npz"
     """Path to .npz file with qpos data."""
 
-    robot_urdf: str = "OmniRetarget_Dataset/models/g1/g1_29dof.urdf"
+    robot_urdf: str = str(canonical_g1_urdf_path())
     """Path to robot URDF file."""
 
     object_urdf: str | None = None

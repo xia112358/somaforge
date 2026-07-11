@@ -26,8 +26,16 @@ tmp/
 .codex
 
 # Large local datasets and generated assets
-/OmniRetarget_Dataset/
 /data/
+/data
+/OmniRetarget_Dataset/
+/runtime/*
+!/runtime/README.md
+/tmp
+/packages/gmvq/data
+/packages/gmvq/runs
+/packages/motion_edit/data
+/packages/motion_edit/tmp
 *.npz
 *.pt
 *.pth

@@ -14,8 +14,10 @@ from .schema import (
 
 
 _PARENT_ALIASES: dict[str, tuple[str, ...]] = {
-    "left_foot": ("left_foot", "lf", "left_ankle", "left_toe", "left_heel", "left_sole"),
-    "right_foot": ("right_foot", "rf", "right_ankle", "right_toe", "right_heel", "right_sole"),
+    "left_heel": ("left_heel", "left_ankle_roll_sphere_1", "left_ankle_roll_sphere_2"),
+    "left_toe": ("left_toe", "left_ankle_roll_sphere_3", "left_ankle_roll_sphere_4", "left_ankle_roll_sphere_5"),
+    "right_heel": ("right_heel", "right_ankle_roll_sphere_1", "right_ankle_roll_sphere_2"),
+    "right_toe": ("right_toe", "right_ankle_roll_sphere_3", "right_ankle_roll_sphere_4", "right_ankle_roll_sphere_5"),
     "left_hand": ("left_hand", "lh", "left_wrist", "left_palm", "left_thumb", "left_pinky"),
     "right_hand": ("right_hand", "rh", "right_wrist", "right_palm", "right_thumb", "right_pinky"),
     "left_knee": ("left_knee", "lk"),
@@ -75,6 +77,7 @@ def solve_prescribed_contact_forces(
     backend_sample_count = 0
     used_sample_count = 0
     unknown_samples = 0
+    invalid_samples = 0
     skipped_by_intended_mask = 0
 
     for frame in range(n_frames):
@@ -87,7 +90,11 @@ def solve_prescribed_contact_forces(
         )
         backend_sample_count += len(samples)
         for sample in samples:
-            sample.validate()
+            try:
+                sample.validate()
+            except ValueError:
+                invalid_samples += 1
+                continue
             part_index = _assign_sample_to_part(
                 sample,
                 frame=frame,
@@ -131,6 +138,7 @@ def solve_prescribed_contact_forces(
         "backend_sample_count": int(backend_sample_count),
         "used_sample_count": int(used_sample_count),
         "unknown_sample_count": int(unknown_samples),
+        "invalid_sample_count": int(invalid_samples),
         "skipped_by_intended_mask_count": int(skipped_by_intended_mask),
         "missing_intended_contact_frames": int(missing_intended),
         "force_norm_max": float(np.max(force_norm)) if force_norm.size else 0.0,
@@ -204,6 +212,10 @@ class MuJoCoPrescribedContactBackend:
         samples: list[ContactForceSample] = []
         for contact_index in range(int(self.data.ncon)):
             contact = self.data.contact[contact_index]
+            body1_id = int(self.model.geom_bodyid[int(contact.geom1)])
+            body2_id = int(self.model.geom_bodyid[int(contact.geom2)])
+            if body1_id != 0 and body2_id != 0:
+                continue
             force_contact = np.zeros(6, dtype=np.float64)
             mujoco.mj_contactForce(self.model, self.data, contact_index, force_contact)
             frame = np.asarray(contact.frame, dtype=np.float64).reshape(3, 3)

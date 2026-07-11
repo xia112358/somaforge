@@ -9,7 +9,7 @@ Do not use `exp:g1-29dof-wbt-w-object` for this workflow. The climbing obstacle 
 From the Holosoma repo root:
 
 ```bash
-cd /home/xiaz/holosoma_isaaclab3_newton
+cd /home/xiaz/somaforge
 source scripts/source_isaaclab3_newton_setup.sh
 ```
 

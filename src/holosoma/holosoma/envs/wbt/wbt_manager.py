@@ -70,10 +70,6 @@ class WholeBodyTrackingManager(BaseTask):
 
     def _update_log_dict(self):
         # _update_log_dict happens before reset_envs_idx
-        # -------------------------------- terms same with locomotion_manager.py [start]--------------------------------
-        avg = self._get_average_episode_tracker().get_average()
-        self.log_dict["average_episode_length"] = avg.detach().cpu()
-        # -------------------------------- terms same with locomotion_manager.py [end]--------------------------------
         # Add tracking metrics to log_dict
         motion_command = self.command_manager.get_state("motion_command")
         motion_command.update_metrics()
@@ -209,8 +205,6 @@ class WholeBodyTrackingManager(BaseTask):
     def _draw_debug_vis(self):
         if self.simulator.get_simulator_type() == SimulatorType.ISAACLAB3_NEWTON:
             self._draw_debug_vis_isaacsim()
-        elif self.simulator.get_simulator_type() == SimulatorType.ISAACGYM:
-            self._draw_debug_vis_isaacgym()
 
     def step_visualize_motion(self, actions):
         motion_command = self.command_manager.get_state("motion_command")

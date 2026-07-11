@@ -1084,7 +1084,7 @@ class BaseSimulator:
         --------
         See simulator-specific implementations for correct tensor format examples:
         - IsaacSim: `holosoma.simulator.isaacsim.IsaacSim.set_dof_state_tensor_robots`
-        - IsaacGym: `holosoma.simulator.isaacgym.IsaacGym.set_dof_state_tensor_robots`
+        - IsaacLab/Newton: simulator-native state updates
 
         Notes
         -----

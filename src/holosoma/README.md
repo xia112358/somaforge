@@ -18,6 +18,5 @@ python scripts/gmvq_ref/check_data_layout.py
 python -m holosoma.train_agent exp:g1-29dof-wbt simulator:isaaclab3-newton logger:disabled
 ```
 
-Legacy IsaacGym, MuJoCo, and real-robot inference examples from the upstream
-framework are intentionally not documented here because their setup entrypoints
-are not active in this cleanup branch.
+Only IsaacLab3/Newton is supported by the SomaForge runtime. Legacy simulator
+and real-robot bridge code has been removed.

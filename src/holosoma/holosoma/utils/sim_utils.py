@@ -116,15 +116,6 @@ def setup_simulator_imports(config: ExperimentConfig | RunSimConfig) -> None:
     set_simulator_type(config.simulator)
     simulator_type = get_simulator_type()
 
-    if simulator_type == SimulatorType.MUJOCO:
-        import mujoco
-
-        assert mujoco is not None
-    elif simulator_type == SimulatorType.ISAACGYM:
-        import isaacgym
-
-        assert isaacgym is not None
-
     # IsaacSim imports handled in setup_isaaclab_launcher
 
 
@@ -577,10 +568,7 @@ class DirectSimulation:
         # MuJoCo: no pre-step refresh needed because we are NOT running an envs/tasks requiring
         #         those tensors e.g, _rigid_body_rot, _rigid_body_vel, etc.
         simulator_type = get_simulator_type()
-        if simulator_type in [SimulatorType.ISAACGYM, SimulatorType.ISAACSIM, SimulatorType.ISAACLAB3_NEWTON]:
-            pre_step_refresh = self.simulator.refresh_sim_tensors
-        else:
-            pre_step_refresh = lambda: None  # noqa: E731  (No-op for MuJoCo)
+        pre_step_refresh = self.simulator.refresh_sim_tensors
 
         # Direct simulation loop (like holosoma_inference's simulation_thread)
         step_count = 0

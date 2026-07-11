@@ -73,7 +73,7 @@ class DistillPPO(PPO):
             self.teacher_actor_obs_normalizer = EmpiricalNormalization(shape=teacher_obs_dim, device=self.device)
 
         checkpoint_path = os.path.expanduser(distill_cfg.teacher_checkpoint_path)
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        checkpoint = self._load_checked_checkpoint(checkpoint_path)
         self.teacher_actor.load_state_dict(checkpoint["actor_model_state_dict"])
         normalizer_state = checkpoint.get("actor_obs_normalizer_state_dict")
         if self.empirical_normalization and normalizer_state is not None:

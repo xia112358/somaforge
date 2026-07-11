@@ -10,10 +10,8 @@ import holosoma.config_types.simulator
 class SimulatorType(Enum):
     """Enum for supported simulator types."""
 
-    ISAACGYM = "isaacgym"
     ISAACSIM = "isaacsim"
     ISAACLAB3_NEWTON = "isaaclab3_newton"
-    MUJOCO = "mujoco"
 
     def __str__(self) -> str:
         """Return the string value of the enum."""

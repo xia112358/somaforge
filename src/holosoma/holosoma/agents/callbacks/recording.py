@@ -12,6 +12,8 @@ from typing import Any
 
 import numpy as np
 from loguru import logger
+from somaforge_core import canonical_g1_asset_metadata
+from somaforge_core.contact_schema import NEWTON_COLLISION_PIPELINE, NEWTON_CONTACT_BACKEND
 
 from holosoma.agents.callbacks.base_callback import RLEvalCallback
 from holosoma.config_types.eval_callback import RecordingConfig
@@ -79,6 +81,23 @@ class EvalRecordingCallback(RLEvalCallback):
         self._metadata["control_decimation"] = env.simulator.simulator_config.sim.control_decimation
         self._metadata["env_id"] = self.env_id
         self._metadata["num_envs"] = int(env.num_envs)
+        simulator_cfg = env.simulator.simulator_config
+        mjwarp_cfg = simulator_cfg.mujoco_warp
+        self._metadata["robot_asset"] = canonical_g1_asset_metadata()
+        self._metadata["contact_source_backend"] = NEWTON_CONTACT_BACKEND
+        self._metadata["contact_collision_pipeline"] = NEWTON_COLLISION_PIPELINE
+        self._metadata["contact_use_mujoco_contacts"] = False
+        self._metadata["contact_force_semantics"] = "environment_on_robot_world_n"
+        self._metadata["newton_solver_config"] = {
+            "solver": "mjwarp",
+            "collision_pipeline": NEWTON_COLLISION_PIPELINE,
+            "use_mujoco_contacts": False,
+            "nconmax_per_env": int(mjwarp_cfg.nconmax_per_env),
+            "njmax_per_env": int(mjwarp_cfg.njmax_per_env or max(mjwarp_cfg.nconmax_per_env * 16, 2048)),
+            "substeps": int(simulator_cfg.sim.substeps),
+            "sim_dt": float(env.sim_dt),
+            "control_decimation": int(simulator_cfg.sim.control_decimation),
+        }
         if self.env_id < 0:
             self._metadata["env_done_steps"] = [None for _ in range(env.num_envs)]
             self._metadata["env_done_is_timeout"] = [False for _ in range(env.num_envs)]

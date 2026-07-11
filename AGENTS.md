@@ -4,6 +4,11 @@
 
 Isaac Sim / CUDA 初始化失败通常是 sandbox 限制，到本机环境可以跑。
 
+SomaForge 的 G1 机器人唯一权威资产是
+`src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf`。
+禁止绕过 `somaforge_core.robot_assets` 使用其他 G1 URDF/XML；缺少
+`robot_asset_json` 的 motion、GMVQ 数据和 checkpoint 均视为旧错误资产产物。
+
 读文件、查看配置、搜索文本、查看数据/日志/CSV/YAML/JSON、复述文件内容、汇总简单指标等基本任务，如果不需要明显推理，优先调用使用 spark 模型的 subagent 来完成。
 
 像更新 AGENTS.md、补一条简单说明、调整少量文案这类低风险、低推理的简单修改任务，也优先调用使用 spark 模型的 subagent 来完成；仍需遵守“改代码/文件前先计划并问我”的规则。

@@ -10,26 +10,25 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from somaforge_core.contact_schema import (
+    CONTACT_FORCE_PART_BODY_NAMES,
+    CONTACT_FORCE_PART_ORDER,
+    NEWTON_COLLISION_PIPELINE,
+    NEWTON_CONTACT_BACKEND,
+    encode_contact_force_provenance,
+    newton_contact_provenance,
+)
+from somaforge_core.robot_assets import decode_robot_asset_json, encode_robot_asset_json
 
 
 PART_BODY_NAMES: dict[str, list[str]] = {
-    "LF": ["left_ankle_roll_link"],
-    "RF": ["right_ankle_roll_link"],
-    "LH": ["left_wrist_yaw_link"],
-    "RH": ["right_wrist_yaw_link"],
-    "LK": ["left_knee_link"],
-    "RK": ["right_knee_link"],
+    part: list(CONTACT_FORCE_PART_BODY_NAMES[part]) for part in CONTACT_FORCE_PART_ORDER
 }
-PART_ORDER = ("LF", "RF", "LH", "RH", "LK", "RK")
+PART_ORDER = CONTACT_FORCE_PART_ORDER
 ENV_RE = re.compile(r"/envs/env_(\d+)/")
 
 PART_LABEL_PATTERNS: dict[str, tuple[str, ...]] = {
-    "LF": ("left_ankle_roll_link", "LL_FOOT", "left_foot_contact_point"),
-    "RF": ("right_ankle_roll_link", "LR_FOOT", "right_foot_contact_point"),
-    "LH": ("left_wrist_yaw_link", "left_rubber_hand", "left_hand"),
-    "RH": ("right_wrist_yaw_link", "right_rubber_hand", "right_hand"),
-    "LK": ("left_knee_link",),
-    "RK": ("right_knee_link",),
+    part: tuple(names) for part, names in CONTACT_FORCE_PART_BODY_NAMES.items()
 }
 
 
@@ -42,6 +41,19 @@ def _metadata(recording: dict[str, Any]) -> dict[str, Any]:
     if "_metadata_json" not in recording:
         raise ValueError("Recording is missing _metadata_json.")
     return json.loads(str(recording["_metadata_json"].item()))
+
+
+def _validate_newton_recording_metadata(metadata: dict[str, Any], recording_path: Path) -> dict[str, Any]:
+    if str(metadata.get("contact_source_backend", "")) != NEWTON_CONTACT_BACKEND:
+        raise ValueError(f"{recording_path} is not an Isaac Lab 3/Newton recording")
+    if str(metadata.get("contact_collision_pipeline", "")) != NEWTON_COLLISION_PIPELINE:
+        raise ValueError(f"{recording_path} does not use the Newton collision pipeline")
+    if bool(metadata.get("contact_use_mujoco_contacts", True)):
+        raise ValueError(f"{recording_path} enables MuJoCo contacts and is not training eligible")
+    solver_config = metadata.get("newton_solver_config")
+    if not isinstance(solver_config, dict) or not solver_config:
+        raise ValueError(f"{recording_path} is missing newton_solver_config metadata")
+    return solver_config
 
 
 def _with_metadata(recording: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
@@ -400,19 +412,21 @@ def main() -> None:
     parser.add_argument("--recording", required=True, type=Path, help="Complete eval recording npz.")
     parser.add_argument("--output", required=True, type=Path, help="Output rollout-ref motion npz.")
     parser.add_argument("--threshold", type=float, default=10.0, help="Contact force mask threshold in Newtons.")
-    parser.add_argument("--force-reduce", choices=("max", "sum", "mean"), default="max")
+    parser.add_argument("--force-reduce", choices=("sum", "max", "mean"), default="sum")
     parser.add_argument("--part-body-names-json", default=None, help="Optional JSON map for contact-force part body names.")
     parser.add_argument("--allow-timeout", action="store_true", help="Allow timeout flags in the recording.")
     args = parser.parse_args()
 
     motion = _load_npz(args.motion)
     recording = _load_npz(args.recording)
+    robot_asset = decode_robot_asset_json(motion.get("robot_asset_json"), context=f"motion {args.motion}")
 
     if "joint_pos" not in motion:
         raise ValueError(f"{args.motion} is missing joint_pos.")
     num_frames = int(np.asarray(motion["joint_pos"]).shape[0])
     recording, selected_env_id = _select_recording_env(recording, num_frames, args.allow_timeout)
     meta = _metadata(recording)
+    solver_config = _validate_newton_recording_metadata(meta, args.recording)
     order = _validate_complete_rollout(recording, num_frames, args.allow_timeout)
 
     dof_names = [str(name) for name in meta.get("dof_names", [])]
@@ -461,6 +475,17 @@ def main() -> None:
         "rollout_ref_source_env_id": np.asarray(-1 if selected_env_id is None else selected_env_id),
         "rollout_ref_source_motion": np.asarray(str(args.motion)),
         "contact_force_demo_threshold": np.asarray(np.float32(args.threshold)),
+        "robot_asset_json": np.asarray(encode_robot_asset_json(robot_asset)),
+        "contact_force_provenance_json": np.asarray(
+            encode_contact_force_provenance(
+                newton_contact_provenance(
+                    solver_config=solver_config,
+                    source_recording=str(args.recording),
+                    force_reduce=args.force_reduce,
+                    threshold_n=args.threshold,
+                )
+            )
+        ),
     }
     if part_positions is not None:
         contact_position_w, contact_position_valid = part_positions

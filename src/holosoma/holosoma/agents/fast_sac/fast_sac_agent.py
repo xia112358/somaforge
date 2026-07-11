@@ -627,7 +627,7 @@ class FastSACAgent(BaseAlgo):
         if not ckpt_path:
             return
         # Load checkpoint if specified
-        torch_checkpoint = torch.load(ckpt_path, map_location=self.device, weights_only=False)
+        torch_checkpoint = self._load_checked_checkpoint(ckpt_path, weights_only=False)
 
         # Handle DDP-wrapped models
         actor_state_dict = torch_checkpoint["actor_state_dict"]
@@ -1028,6 +1028,8 @@ class FastSACAgent(BaseAlgo):
             obs, _, _, _ = self.env.step(actor_state["actions"])
             actor_state["obs"] = obs
             actor_state = self._post_eval_env_step(actor_state)
+            if actor_state.get("stop"):
+                break
 
         self._post_evaluate_policy()
 

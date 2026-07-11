@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
+from somaforge_core.robot_assets import decode_robot_asset_json
 
 
 FEATURE_GROUPS = {
@@ -129,6 +130,8 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     with np.load(args.dataset.expanduser(), allow_pickle=False) as data:
+        value = data["robot_asset_json"] if "robot_asset_json" in data.files else None
+        robot_asset = decode_robot_asset_json(value, context=f"selector dataset {args.dataset}")
         codes = np.asarray(data["codes"], dtype=np.int64)
         num_codes = int(args.num_codes or (int(codes.max()) + 1))
         x_raw, feature_keys = _build_features(data, args.feature_group, num_codes)
@@ -228,6 +231,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             "code_theta_mean": code_mean,
             "dataset": str(args.dataset),
             "split_group": args.split_group,
+            "robot_asset": robot_asset,
         },
         out_dir / "checkpoint.pt",
     )

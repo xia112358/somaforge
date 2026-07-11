@@ -180,6 +180,12 @@ class PPOConfig:
     load_optimizer: bool = True
     """Whether to load optimizer state."""
 
+    anchor_kl_checkpoint: str | None = None
+    """Optional checkpoint for a frozen reference actor used as an anchor KL prior."""
+
+    anchor_kl_coef: float = 0.0
+    """Coefficient for KL(current policy || frozen reference policy) during actor updates."""
+
     init_noise_std: float = 0.8
     """Initial noise standard deviation."""
 

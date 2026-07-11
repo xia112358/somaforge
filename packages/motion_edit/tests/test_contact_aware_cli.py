@@ -24,7 +24,7 @@ class ContactAwareCliTests(unittest.TestCase):
         self.assertEqual(args.output_motion, "out.npz")
         self.assertEqual(args.force_mujoco_model, "robot.xml")
         self.assertEqual(args.force_solve_mode, "inverse")
-        self.assertEqual(args.force_policy_ref_compat, "wbt_contact_force_6part")
+        self.assertEqual(args.force_policy_ref_compat, "wbt_contact_force_8part")
 
     def test_parser_accepts_retarget_force_without_source_ref(self) -> None:
         args = build_parser().parse_args(

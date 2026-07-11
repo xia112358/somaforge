@@ -8,6 +8,7 @@ import json
 from unittest import mock
 
 import numpy as np
+from somaforge_core.robot_assets import encode_robot_asset_json
 
 from motion_edit import cli
 from motion_edit.contact import (
@@ -23,6 +24,14 @@ from motion_edit.contact.generation import apply_contact_edit_plan_to_motion, re
 from motion_edit.contact.graph import ContactGraph
 from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord
 from motion_edit.layers import read_layer
+
+
+_NP_SAVEZ = np.savez
+
+
+def _savez(path: str | Path, *args: object, **kwargs: object) -> None:
+    kwargs.setdefault("robot_asset_json", np.asarray(encode_robot_asset_json()))
+    _NP_SAVEZ(path, *args, **kwargs)
 
 
 def _surface_edit() -> ContactAnchorEditRecord:
@@ -54,7 +63,7 @@ def _write_synthetic_motion_and_contact(root: Path, *, plan_status: str = "valid
     body_quat[..., 0] = 1.0
     joint_pos = np.arange(8 * 3, dtype=np.float32).reshape(8, 3)
     joint_vel = np.ones((8, 3), dtype=np.float32)
-    np.savez(
+    _savez(
         motion,
         body_pos_w=body_pos,
         body_lin_vel_w=body_lin_vel,
@@ -146,7 +155,7 @@ def _write_fullbody_lte_source(root: Path) -> tuple[Path, ContactEditPlan]:
         body_pos[:, index, 0] = float(index)
     joint_pos = np.zeros((8, 10), dtype=np.float32)
     joint_pos[:, 3] = 1.0
-    np.savez(
+    _savez(
         motion,
         body_pos_w=body_pos,
         body_quat_w=np.tile(np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32), (8, len(body_names), 1)),
@@ -512,7 +521,7 @@ class ContactEditPlanTests(unittest.TestCase):
                 dtype=object,
             )
             semantic_motion = root / "semantic_motion.npz"
-            np.savez(semantic_motion, **payload)
+            _savez(semantic_motion, **payload)
             semantic_plan = ContactEditPlan(
                 plan_id=plan.plan_id,
                 source_motion_path=str(semantic_motion),
@@ -555,7 +564,7 @@ class ContactEditPlanTests(unittest.TestCase):
 
             def fake_run(cmd, cwd=None, check=False):
                 ik_out = Path(cmd[cmd.index("--out") + 1])
-                np.savez(
+                _savez(
                     ik_out,
                     joint_pos=np.full((8, 10), 9.0, dtype=np.float32),
                     joint_vel=np.full((8, 10), 2.0, dtype=np.float32),
@@ -662,7 +671,7 @@ class ContactEditPlanTests(unittest.TestCase):
 
             def fake_run(cmd, cwd=None, check=False):
                 ik_out = Path(cmd[cmd.index("--out") + 1])
-                np.savez(ik_out, joint_pos=np.zeros((8, 10), dtype=np.float32), joint_vel=np.zeros((8, 10), dtype=np.float32))
+                _savez(ik_out, joint_pos=np.zeros((8, 10), dtype=np.float32), joint_vel=np.zeros((8, 10), dtype=np.float32))
                 return mock.Mock(returncode=0)
 
             with mock.patch("motion_edit.generation.lte_fullbody._import_legacy_lte_module", return_value=FakeLegacyLte):
@@ -733,7 +742,7 @@ class ContactEditPlanTests(unittest.TestCase):
 
             def fake_run(cmd, cwd=None, check=False):
                 ik_out = Path(cmd[cmd.index("--out") + 1])
-                np.savez(
+                _savez(
                     ik_out,
                     joint_pos=np.full((8, 10), 7.0, dtype=np.float32),
                     joint_vel=np.full((8, 10), 3.0, dtype=np.float32),
@@ -791,7 +800,7 @@ class ContactEditPlanTests(unittest.TestCase):
 
             def fake_run(cmd, cwd=None, check=False):
                 ik_out = Path(cmd[cmd.index("--out") + 1])
-                np.savez(
+                _savez(
                     ik_out,
                     joint_pos=np.zeros((8, 10), dtype=np.float32),
                     joint_vel=np.zeros((8, 10), dtype=np.float32),
@@ -840,7 +849,7 @@ class ContactEditPlanTests(unittest.TestCase):
             root = Path(tmp)
             _source_motion, _plan_path, plan = _write_synthetic_motion_and_contact(root)
             missing_body_pos = root / "missing_body_pos.npz"
-            np.savez(missing_body_pos, joint_pos=np.zeros((4, 3), dtype=np.float32))
+            _savez(missing_body_pos, joint_pos=np.zeros((4, 3), dtype=np.float32))
             plan_missing = ContactEditPlan(
                 plan_id=plan.plan_id,
                 source_motion_path=str(missing_body_pos),
@@ -853,7 +862,7 @@ class ContactEditPlanTests(unittest.TestCase):
                 apply_contact_edit_plan_to_motion(plan_missing, output_motion_path=root / "out.npz", mode="lte_windowed", layers_root=root / "layers")
 
             no_names = root / "no_names.npz"
-            np.savez(no_names, body_pos_w=np.zeros((8, 2, 3), dtype=np.float32))
+            _savez(no_names, body_pos_w=np.zeros((8, 2, 3), dtype=np.float32))
             plan_no_names = ContactEditPlan(
                 plan_id=plan.plan_id,
                 source_motion_path=str(no_names),

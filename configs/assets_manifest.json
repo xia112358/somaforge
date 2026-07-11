@@ -1,0 +1,74 @@
+{
+  "schema": "somaforge_asset_manifest_v1",
+  "root": "..",
+  "assets": [
+    {
+      "id": "robot.g1.spherehand",
+      "kind": "robot",
+      "status": "verified",
+      "files": {
+        "urdf": "src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf",
+        "xml": "src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.xml",
+        "usd": "src/holosoma/holosoma/data/robots/converted_rank0/g1_29dof_spherehand/g1_29dof_spherehand.usda"
+      },
+      "sha256": {
+        "urdf": "6d79140d335157ad026d24b79be6fbb161c997c01c3ffc37bcca282dc2240696",
+        "xml": "17549f99cc230aa8e8d29a5bcc30cc3075ad34cbc1f9860dacbbe840ac092313",
+        "usd": "c976fc12cde03efcdbc1d838f455e63478e4e11c04f2e3f96141ff7f35072e57"
+      },
+      "metadata": {
+        "asset_bundle_sha256": "d798925cd916e994a47c70ee30ea5f537f000a825c1c66aa914bbe434f60c199",
+        "generator": "scripts/convert_g1_spherehand_usd.py"
+      }
+    },
+    {
+      "id": "terrain.climb.cache",
+      "kind": "terrain",
+      "status": "verified",
+      "files": {
+        "root": "configs/motion_matched/terrain_obj_cache"
+      },
+      "metadata": {
+        "format": "obj",
+        "variants": "climb_*/multi_boxes_z_scale_1.0.obj"
+      }
+    },
+    {
+      "id": "terrain.climb.scenes",
+      "kind": "terrain_scene",
+      "status": "verified",
+      "files": {
+        "root": "src/holosoma_retargeting/holosoma_retargeting/demo_data/climb"
+      },
+      "metadata": {
+        "formats": ["urdf", "xml", "obj"]
+      }
+    },
+    {
+      "id": "motion.current",
+      "kind": "motion",
+      "status": "verified",
+      "files": {
+        "root": "runtime/current/motions"
+      },
+      "metadata": {
+        "manifest_required": true,
+        "robot_asset_required": "robot.g1.spherehand",
+        "allow_missing": true
+      }
+    },
+    {
+      "id": "models.current",
+      "kind": "model",
+      "status": "verified",
+      "files": {
+        "root": "runtime/current/models"
+      },
+      "metadata": {
+        "manifest_required": true,
+        "robot_asset_required": "robot.g1.spherehand",
+        "allow_missing": true
+      }
+    }
+  ]
+}

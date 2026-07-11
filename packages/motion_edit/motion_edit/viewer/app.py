@@ -9,10 +9,11 @@ from motion_edit.adapters.omniretarget import detect_omniretarget_paths
 from motion_edit.export import export_cutter_segments
 from motion_edit.layers import read_layer
 from motion_edit.paths import EXPORTS_ROOT, LAYERS_ROOT
+from somaforge_core.robot_assets import canonical_g1_urdf_path, somaforge_root
 
 
 def _default_repo_root() -> Path | None:
-    candidates = [Path.cwd(), Path("/home/xiaz/holosoma_isaaclab3_newton")]
+    candidates = [Path.cwd(), somaforge_root()]
     for path in candidates:
         if (path / "src/holosoma_retargeting/holosoma_retargeting/viser_player.py").exists():
             return path
@@ -70,7 +71,7 @@ def launch_viewer(
         object_urdf: Path | None = None
         if repo is not None and not setup_mode:
             paths = detect_omniretarget_paths(motion, repo_root=repo)
-            robot_urdf = repo / "OmniRetarget_Dataset/models/g1/g1_29dof_spherehand.urdf"
+            robot_urdf = canonical_g1_urdf_path()
             if with_terrain and paths.terrain_urdf is not None:
                 object_urdf = paths.terrain_urdf
         cmd = [
@@ -127,7 +128,7 @@ def launch_viewer(
         raise FileNotFoundError("could not find holosoma repo with viser_player.py; pass --repo-root")
     paths = detect_omniretarget_paths(motion, repo_root=repo)
     viewer = repo / "src/holosoma_retargeting/holosoma_retargeting/viser_player.py"
-    robot_urdf = repo / "OmniRetarget_Dataset/models/g1/g1_29dof_spherehand.urdf"
+    robot_urdf = canonical_g1_urdf_path()
     resolved_segment_path = Path(segment_path).expanduser().resolve() if segment_path is not None else None
     layer_root = _resolve_layer(layer)
     if resolved_segment_path is None and layer_root is not None:

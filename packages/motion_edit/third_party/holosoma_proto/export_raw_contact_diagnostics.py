@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from somaforge_core.robot_assets import canonical_g1_urdf_path, validate_canonical_g1_urdf
 
 DATASET_ROOT = Path(__file__).resolve().parents[1]
 if str(DATASET_ROOT) not in sys.path:
@@ -964,8 +965,9 @@ def main() -> None:
     robot_urdf = (
         args.robot_urdf.expanduser().resolve()
         if args.robot_urdf
-        else dataset_root / "models/g1/g1_29dof_spherehand.urdf"
+        else canonical_g1_urdf_path()
     )
+    validate_canonical_g1_urdf(robot_urdf)
     enabled_parts = set(args.contact_parts)
 
     part_fieldnames = [

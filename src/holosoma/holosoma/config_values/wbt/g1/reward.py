@@ -52,7 +52,7 @@ g1_29dof_wbt_reward = RewardManagerCfg(
             params={
                 "threshold": 1.0,
                 "undesired_contacts_body_names": (
-                    "^(?!left_foot_contact_point$)(?!right_foot_contact_point$)"
+                    "^(?!left_ankle_roll_sphere_[1-5]_link$)(?!right_ankle_roll_sphere_[1-5]_link$)"
                     "(?!left_wrist_yaw_link$)(?!right_wrist_yaw_link$)"
                     "(?!left_ankle_roll_link$)(?!right_ankle_roll_link$).+$"
                 ),
@@ -72,7 +72,9 @@ g1_29dof_wbt_contact_force_reward = RewardManagerCfg(
                 "undesired_contacts_body_names": (
                     "^(?!left_wrist_yaw_link$)(?!right_wrist_yaw_link$)"
                     "(?!left_knee_link$)(?!right_knee_link$)"
-                    "(?!left_ankle_roll_link$)(?!right_ankle_roll_link$).+$"
+                    "(?!left_ankle_roll_link$)(?!right_ankle_roll_link$)"
+                    "(?!left_ankle_roll_sphere_[1-5]_link$)"
+                    "(?!right_ankle_roll_sphere_[1-5]_link$).+$"
                 ),
             },
             weight=-0.5,
@@ -83,13 +85,13 @@ g1_29dof_wbt_contact_force_reward = RewardManagerCfg(
                 "sigma": 0.5,
                 "force_floor": 50.0,
                 "contact_threshold": 10.0,
-                "part_indices": (0, 1, 2, 3, 4, 5),
+                "part_indices": (0, 1, 2, 3, 4, 5, 6, 7),
             },
             weight=1.0,
         ),
         "motion_contact_force_unexpected_contact": RewardTermCfg(
             func="holosoma.managers.reward.terms.wbt:motion_contact_force_unexpected_contact",
-            params={"contact_threshold": 10.0, "part_indices": (0, 1, 2, 3, 4, 5)},
+            params={"contact_threshold": 10.0, "part_indices": (0, 1, 2, 3, 4, 5, 6, 7)},
             weight=-0.5,
         ),
     }
@@ -224,7 +226,8 @@ g1_29dof_wbt_proto_reward = RewardManagerCfg(
                     "^(?!left_wrist_yaw_link$)(?!right_wrist_yaw_link$)"
                     "(?!left_knee_link$)(?!right_knee_link$)"
                     "(?!left_ankle_roll_link$)(?!right_ankle_roll_link$)"
-                    "(?!left_foot_contact_point$)(?!right_foot_contact_point$).+$"
+                    "(?!left_ankle_roll_sphere_[1-5]_link$)"
+                    "(?!right_ankle_roll_sphere_[1-5]_link$).+$"
                 ),
             },
             weight=-0.5,

@@ -5,6 +5,7 @@ import copy
 import dataclasses
 import inspect
 import os
+import time
 import xml.etree.ElementTree as ET
 from typing import Any
 
@@ -348,7 +349,7 @@ class IsaacSim(BaseSimulator):
             update_period=0.005,
             track_air_time=True,
             force_threshold=10.0,
-            debug_vis=True,
+            debug_vis=False,
         )
 
         terrain_prim_path = "/World/ground"
@@ -963,6 +964,16 @@ class IsaacSim(BaseSimulator):
             self.virtual_gantry.draw_debug()
 
     def simulate_at_each_physics_step(self):
+        profile_remaining = int(os.environ.get("HOLOSOMA_PROFILE_SIM_STEPS", "0") or 0)
+        profile_this_step = profile_remaining > 0
+        profile_sync = os.environ.get("HOLOSOMA_PROFILE_SIM_SYNC", "1") != "0"
+
+        def _profile_mark():
+            if profile_this_step and profile_sync and torch.cuda.is_available():
+                torch.cuda.synchronize()
+            return time.perf_counter()
+
+        t0 = _profile_mark()
         self._sim_step_counter += 1
         # Only render if actively recording (not just if video recorder exists)
         has_video_recording = self.video_recorder is not None and self.video_recorder.is_recording
@@ -971,27 +982,48 @@ class IsaacSim(BaseSimulator):
         # Apply virtual gantry forces before physics step
         if self.virtual_gantry:
             self.virtual_gantry.step()
+        t_gantry = _profile_mark()
 
         # Step bridge for updated torques before physics step using base class helper
         self._step_bridge()
+        t_bridge = _profile_mark()
 
         self.scene.write_data_to_sim()
+        t_write = _profile_mark()
 
         # simulate
         self.sim.step(render=False)
+        t_step = _profile_mark()
 
         # Render between steps only IF the GUI or sensor need it
         # note: we assume the render interval to be the shortest accepted rendering interval.
         #    If a camera needs rendering at a faster frequency, this will lead to unexpected behavior.
         if self._sim_step_counter % self.simulator_config.sim.render_interval == 0 and is_rendering:
             self.render()
+        t_render = _profile_mark()
 
         # update buffers at sim
         self.scene.update(dt=1.0 / self.simulator_config.sim.fps)
+        t_update = _profile_mark()
 
         # Need to update these tensors after each step, since they are used in `_apply_force_in_physics_step`
         self.dof_pos = self._robot.data.joint_pos[:, self.dof_ids]  # (num_envs, num_dof)
         self.dof_vel = self._robot.data.joint_vel[:, self.dof_ids]
+        t_tensors = _profile_mark()
+        if profile_this_step:
+            logger.info(
+                "Sim step profile: gantry={:.4f}s bridge={:.4f}s write={:.4f}s sim_step={:.4f}s "
+                "render={:.4f}s scene_update={:.4f}s tensors={:.4f}s total={:.4f}s",
+                t_gantry - t0,
+                t_bridge - t_gantry,
+                t_write - t_bridge,
+                t_step - t_write,
+                t_render - t_step,
+                t_update - t_render,
+                t_tensors - t_update,
+                t_tensors - t0,
+            )
+            os.environ["HOLOSOMA_PROFILE_SIM_STEPS"] = str(profile_remaining - 1)
 
         # Update accelerations ONLY if bridge is enabled
         if self.simulator_config.bridge.enabled:

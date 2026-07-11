@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
+import time
+
 import numpy as np
+from loguru import logger
 
 from holosoma.config_types.env import EnvConfig
 from holosoma.config_types.full_sim import FullSimConfig
@@ -421,10 +425,32 @@ class BaseTask:
 
     def step(self, actor_state):
         """Apply actions, advance the simulation, and return rollout buffers."""
+        profile_remaining = int(os.environ.get("HOLOSOMA_PROFILE_ENV_STEPS", "0") or 0)
+        profile_this_step = profile_remaining > 0
+        profile_sync = os.environ.get("HOLOSOMA_PROFILE_ENV_SYNC", "1") != "0"
+
+        def _profile_mark():
+            if profile_this_step and profile_sync and torch.cuda.is_available():
+                torch.cuda.synchronize()
+            return time.perf_counter()
+
+        t0 = _profile_mark()
         actions = actor_state["actions"]
         self._pre_physics_step(actions)
+        t_pre = _profile_mark()
         self._physics_step()
+        t_physics = _profile_mark()
         self._post_physics_step()
+        t_post = _profile_mark()
+        if profile_this_step:
+            logger.info(
+                "Env step profile: pre={:.4f}s physics={:.4f}s post={:.4f}s total={:.4f}s",
+                t_pre - t0,
+                t_physics - t_pre,
+                t_post - t_physics,
+                t_post - t0,
+            )
+            os.environ["HOLOSOMA_PROFILE_ENV_STEPS"] = str(profile_remaining - 1)
         return self.obs_buf_dict, self.rew_buf, self.reset_buf, self.extras
 
     def _pre_physics_step(self, actions):

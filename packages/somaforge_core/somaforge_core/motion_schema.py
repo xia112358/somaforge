@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+import json
+from collections.abc import Mapping
+from typing import Any
+
+
+CANONICAL_MOTION_SCHEMA = "somaforge_canonical_motion_v1"
+NEWTON_KINEMATICS_BACKEND = "isaaclab3_newton_fk"
+
+G1_29DOF_JOINT_ORDER = (
+    "left_hip_pitch_joint",
+    "left_hip_roll_joint",
+    "left_hip_yaw_joint",
+    "left_knee_joint",
+    "left_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+    "right_hip_pitch_joint",
+    "right_hip_roll_joint",
+    "right_hip_yaw_joint",
+    "right_knee_joint",
+    "right_ankle_pitch_joint",
+    "right_ankle_roll_joint",
+    "waist_yaw_joint",
+    "waist_roll_joint",
+    "waist_pitch_joint",
+    "left_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "left_elbow_joint",
+    "left_wrist_roll_joint",
+    "left_wrist_pitch_joint",
+    "left_wrist_yaw_joint",
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_joint",
+    "right_wrist_roll_joint",
+    "right_wrist_pitch_joint",
+    "right_wrist_yaw_joint",
+)
+
+
+def newton_kinematics_provenance(
+    *, source_path: str, source_sha256: str, output_fps: float, body_names: list[str]
+) -> dict[str, Any]:
+    return {
+        "schema": CANONICAL_MOTION_SCHEMA,
+        "kinematics_backend": NEWTON_KINEMATICS_BACKEND,
+        "source_path": str(source_path),
+        "source_sha256": str(source_sha256),
+        "output_fps": float(output_fps),
+        "root_quaternion_order": "wxyz",
+        "body_quaternion_order": "wxyz",
+        "velocity_frame": "world",
+        "joint_order": list(G1_29DOF_JOINT_ORDER),
+        "body_names": list(body_names),
+    }
+
+
+def encode_kinematics_provenance(metadata: Mapping[str, Any]) -> str:
+    return json.dumps(dict(metadata), sort_keys=True)
+
+
+def decode_kinematics_provenance(value: Any, *, context: str, require_newton: bool = True) -> dict[str, Any]:
+    if value is None:
+        raise ValueError(f"{context} has no kinematics_provenance_json")
+    raw = value.item() if hasattr(value, "item") else value
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    try:
+        metadata = json.loads(str(raw))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{context} has invalid kinematics provenance") from exc
+    if not isinstance(metadata, dict):
+        raise ValueError(f"{context} kinematics provenance must decode to an object")
+    if str(metadata.get("schema", "")) != CANONICAL_MOTION_SCHEMA:
+        raise ValueError(f"{context} uses an unsupported canonical motion schema")
+    if require_newton and str(metadata.get("kinematics_backend", "")) != NEWTON_KINEMATICS_BACKEND:
+        raise ValueError(f"{context} was not canonicalized with Newton FK")
+    if tuple(metadata.get("joint_order", ())) != G1_29DOF_JOINT_ORDER:
+        raise ValueError(f"{context} uses an incompatible G1 joint order")
+    return metadata

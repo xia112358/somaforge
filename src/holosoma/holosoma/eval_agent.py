@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
+from pathlib import Path
 
 import tyro
 from loguru import logger
@@ -29,6 +31,53 @@ from holosoma.utils.tyro_utils import TYRO_CONIFG
 from holosoma.utils.viewport_camera import prime_overview_viewport
 
 
+def _acceptance_repeat_count(eval_cbs_cfg: EvalCallbacksConfig | None) -> int:
+    if eval_cbs_cfg is None:
+        return 1
+    acceptance_cfg = eval_cbs_cfg.acceptance.config
+    return max(1, int(getattr(acceptance_cfg, "repeats", 1)))
+
+
+def _with_repeat_suffix(path_str: str, rep_index: int) -> str:
+    if not path_str:
+        return path_str
+    path = Path(path_str)
+    stem = path.stem
+    suffix = path.suffix
+    replacements = (
+        ("_acceptance_summary", f"_rep{rep_index}_acceptance_summary"),
+        ("_acceptance", f"_rep{rep_index}_acceptance"),
+        ("_fail", f"_rep{rep_index}_fail"),
+    )
+    for old, new in replacements:
+        if stem.endswith(old):
+            return str(path.with_name(f"{stem[: -len(old)]}{new}{suffix}"))
+    return str(path.with_name(f"{stem}_rep{rep_index}{suffix}"))
+
+
+def _eval_callbacks_for_repeat(
+    eval_cbs_cfg: EvalCallbacksConfig | None,
+    rep_index: int,
+    repeat_count: int,
+) -> dict:
+    if eval_cbs_cfg is None:
+        return {}
+    if repeat_count <= 1:
+        return eval_cbs_cfg.collect_active_callbacks()
+
+    acceptance_cb_cfg = eval_cbs_cfg.acceptance
+    acceptance_cfg = acceptance_cb_cfg.config
+    rep_acceptance_cfg = dataclasses.replace(
+        acceptance_cfg,
+        output_path=_with_repeat_suffix(acceptance_cfg.output_path, rep_index),
+        summary_path=_with_repeat_suffix(acceptance_cfg.summary_path, rep_index),
+        fail_output_path=_with_repeat_suffix(acceptance_cfg.fail_output_path, rep_index),
+    )
+    rep_acceptance_cb_cfg = dataclasses.replace(acceptance_cb_cfg, config=rep_acceptance_cfg)
+    rep_eval_cbs_cfg = dataclasses.replace(eval_cbs_cfg, acceptance=rep_acceptance_cb_cfg)
+    return rep_eval_cbs_cfg.collect_active_callbacks()
+
+
 def run_eval_with_tyro(
     tyro_config: ExperimentConfig,
     checkpoint_cfg: CheckpointConfig,
@@ -48,12 +97,6 @@ def run_eval_with_tyro(
 
     logger.info(f"Saving eval logs to {eval_log_dir}")
     tyro_config.save_config(str(eval_log_dir / CONFIG_NAME))
-
-    # Inject eval callbacks into algo config
-    if eval_cbs_cfg is not None:
-        cb_configs = eval_cbs_cfg.collect_active_callbacks()
-        if cb_configs:
-            object.__setattr__(tyro_config.algo.config, "eval_callbacks", cb_configs)
 
     assert checkpoint_cfg.checkpoint is not None
     checkpoint = load_checkpoint(checkpoint_cfg.checkpoint, str(eval_log_dir))
@@ -88,10 +131,17 @@ def run_eval_with_tyro(
         algo.export(onnx_file_path=exported_onnx_path)  # type: ignore[attr-defined]
         logger.info(f"Exported policy as onnx to: {exported_onnx_path}")
 
-    prime_overview_viewport(env, label="Eval")
-    algo.evaluate_policy(
-        max_eval_steps=tyro_config.training.max_eval_steps,
-    )
+    repeat_count = _acceptance_repeat_count(eval_cbs_cfg)
+    for rep_index in range(1, repeat_count + 1):
+        cb_configs = _eval_callbacks_for_repeat(eval_cbs_cfg, rep_index, repeat_count)
+        object.__setattr__(algo.config, "eval_callbacks", cb_configs or None)
+        if hasattr(algo, "eval_callbacks"):
+            algo.eval_callbacks.clear()
+        logger.info(f"Starting eval repeat {rep_index}/{repeat_count}")
+        prime_overview_viewport(env, label="Eval")
+        algo.evaluate_policy(
+            max_eval_steps=tyro_config.training.max_eval_steps,
+        )
 
     # Cleanup simulation app
     if simulation_app:
@@ -115,6 +165,9 @@ def main() -> None:
         config=TYRO_CONIFG,
     )
     overwritten_tyro_config = sync_launcher_headless_config(overwritten_tyro_config, launcher_args)
+    from somaforge_core.robot_assets import validate_g1_robot_config
+
+    validate_g1_robot_config(overwritten_tyro_config.robot)
 
     run_eval_with_tyro(
         overwritten_tyro_config,

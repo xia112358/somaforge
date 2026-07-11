@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from somaforge_core.robot_assets import decode_robot_asset_json, encode_robot_asset_json
 
 
 @dataclass(frozen=True)
@@ -211,6 +212,8 @@ def _read_ref_frames(
         rows = np.flatnonzero(np.asarray(source_paths).astype(str) == source_path)
         frames = start_frames[rows]
         with np.load(source_path, allow_pickle=False) as ref:
+            value = ref["robot_asset_json"] if "robot_asset_json" in ref.files else None
+            decode_robot_asset_json(value, context=f"selector source ref {source_path}")
             frame_count = int(ref["joint_pos"].shape[0])
             if frames.size and int(frames.max()) >= frame_count:
                 raise ValueError(f"start frame {int(frames.max())} exceeds {source_path} frame count {frame_count}")
@@ -342,6 +345,7 @@ def extract(args: argparse.Namespace) -> dict[str, Any]:
             "joint_names": ref_frames["joint_names"],
             "body_names": body_names,
             "surface_ids": np.asarray(surface_ids, dtype=np.str_),
+            "robot_asset_json": np.asarray(encode_robot_asset_json()),
         }
 
         for key in (

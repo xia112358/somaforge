@@ -12,8 +12,8 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OLD_DATA_ROOT = "/home/xiaz/holosoma/OmniRetarget_Dataset"
 DEFAULT_MANIFESTS = [
-    "configs/motion_matched/climb29_z1_unmasked_manifest.json",
-    "configs/motion_matched/climb00_z1_unmasked_manifest.json",
+    "runtime/current/manifests/motion_edit_ref_v1.json",
+    "runtime/current/manifests/climb00_motion_edit_ref.json",
     "tmp/gmvq_play/climb00_gmvq_fixed_code_theta_manifest.json",
 ]
 

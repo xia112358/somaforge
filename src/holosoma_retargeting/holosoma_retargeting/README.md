@@ -14,7 +14,7 @@ python examples/robot_retarget.py --data_path demo_data/OMOMO_new --task-type ro
 python examples/robot_retarget.py --data_path demo_data/OMOMO_new --task-type object_interaction --task-name sub3_largebox_003 --data_format smplh --retargeter.debug --retargeter.visualize
 
 # Climbing
-python examples/robot_retarget.py --data_path demo_data/climb --task-type climbing --task-name mocap_climb_seq_0 --data_format mocap --robot-config.robot-urdf-file models/g1/g1_29dof_spherehand.urdf --retargeter.debug --retargeter.visualize
+python examples/robot_retarget.py --data_path demo_data/climb --task-type climbing --task-name mocap_climb_seq_0 --data_format mocap --robot-config.robot-urdf-file /home/xiaz/somaforge/src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf --retargeter.debug --retargeter.visualize
 ```
 
 **Note**: Add `--augmentation` to run sequences with augmentation. You must first run the original sequence before adding augmentation.
@@ -29,7 +29,7 @@ python examples/parallel_robot_retarget.py --data-dir demo_data/OMOMO_new --task
 python examples/parallel_robot_retarget.py --data-dir demo_data/OMOMO_new --task-type object_interaction --data_format smplh --save_dir demo_results_parallel/g1/object_interaction/omomo --task-config.object-name largebox
 
 # Climbing
-python examples/parallel_robot_retarget.py --data-dir demo_data/climb --task-type climbing --data_format mocap --robot-config.robot-urdf-file models/g1/g1_29dof_spherehand.urdf --task-config.object-name multi_boxes --save_dir demo_results_parallel/g1/climbing/mocap_climb
+python examples/parallel_robot_retarget.py --data-dir demo_data/climb --task-type climbing --data_format mocap --robot-config.robot-urdf-file /home/xiaz/somaforge/src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf --task-config.object-name multi_boxes --save_dir demo_results_parallel/g1/climbing/mocap_climb
 ```
 
 **Note**: Add `--augmentation` to run original sequences and sequences with augmentation (for object interaction and climbing tasks).
@@ -135,33 +135,33 @@ python examples/parallel_robot_retarget.py --data-dir demo_data/amass_smplx_proc
 
 ```bash
 # Visualize object-interaction results
-python viser_player.py --robot_urdf models/g1/g1_29dof.urdf \
+python viser_player.py --robot_urdf /home/xiaz/somaforge/src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf \
     --object_urdf models/largebox/largebox.urdf \
     --qpos_npz demo_results_parallel/g1/object_interaction/omomo/sub3_largebox_003_original.npz
 
 # Visualize climbing results
-python viser_player.py --robot_urdf models/g1/g1_29dof_spherehand.urdf \
+python viser_player.py --robot_urdf /home/xiaz/somaforge/src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf \
     --object_urdf demo_data/climb/mocap_climb_seq_0/multi_boxes.urdf \
     --qpos_npz demo_results_parallel/g1/climbing/mocap_climb/mocap_climb_seq_0_original.npz
 
-python viser_player.py --robot_urdf models/g1/g1_29dof_spherehand.urdf \
+python viser_player.py --robot_urdf /home/xiaz/somaforge/src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf \
     --object_urdf demo_data/climb/mocap_climb_seq_0/multi_boxes_scaled_0.74_0.74_0.89.urdf \
     --qpos_npz demo_results_parallel/g1/climbing/mocap_climb/mocap_climb_seq_0_z_scale_1.2.npz
 
 # Visualize robot only results
-python viser_player.py --robot_urdf models/g1/g1_29dof.urdf \
+python viser_player.py --robot_urdf /home/xiaz/somaforge/src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf \
     --qpos_npz demo_results_parallel/g1/robot_only/omomo/sub3_largebox_003_original.npz
 
 # Visualize LAFAN robot only results
-python viser_player.py --robot_urdf models/g1/g1_29dof.urdf \
+python viser_player.py --robot_urdf /home/xiaz/somaforge/src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf \
     --qpos_npz demo_results/g1/robot_only/lafan/dance2_subject1.npz
 
 # Visualize AMASS results
-python viser_player.py --robot_urdf models/g1/g1_29dof.urdf \
+python viser_player.py --robot_urdf /home/xiaz/somaforge/src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf \
     --qpos_npz demo_results/g1/robot_only/amass_smplx/HumanEva_S3_Jog_1_stageii.npz
 
 # Visualize AMASS results
-python viser_player.py --robot_urdf models/g1/g1_29dof.urdf \
+python viser_player.py --robot_urdf /home/xiaz/somaforge/src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf \
     --qpos_npz demo_results_parallel/g1/robot_only/amass_smplx/HumanEva_S1_Box_1_stageii_original.npz
 ```
 
@@ -172,7 +172,7 @@ python viser_player.py --robot_urdf models/g1/g1_29dof.urdf \
 python evaluation/eval_retargeting.py --res_dir demo_results_parallel/g1/object_interaction/omomo --data_dir demo_data/OMOMO_new --data_type "robot_object"
 
 # Evaluate climbing sequence
-python evaluation/eval_retargeting.py --res_dir demo_results_parallel/g1/climbing/mocap_climb --data_dir demo_data/climb --data_type "robot_terrain" --robot-config.robot-urdf-file models/g1/g1_29dof_spherehand.urdf
+python evaluation/eval_retargeting.py --res_dir demo_results_parallel/g1/climbing/mocap_climb --data_dir demo_data/climb --data_type "robot_terrain" --robot-config.robot-urdf-file /home/xiaz/somaforge/src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf
 
 # Evaluate robot only (OMOMO)
 python evaluation/eval_retargeting.py --res_dir demo_results_parallel/g1/robot_only/omomo --data_dir demo_data/OMOMO_new --data_type "robot_only"

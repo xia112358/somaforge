@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+"""Convert raw OmniRetarget qpos motions with the training Newton articulation FK."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+import numpy as np
+
+SOMAFORGE_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SOMAFORGE_ROOT / "packages" / "somaforge_core"))
+sys.path.insert(0, str(SOMAFORGE_ROOT / "src" / "holosoma"))
+
+from isaaclab.app import AppLauncher  # noqa: E402
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("inputs", nargs="*", type=Path, help="Raw OmniRetarget NPZ files containing qpos[T,36].")
+parser.add_argument("--output-dir", type=Path)
+parser.add_argument("--output-fps", type=float, default=50.0)
+parser.add_argument("--batch-size", type=int, default=4)
+parser.add_argument("--overwrite", action="store_true")
+AppLauncher.add_app_launcher_args(parser)
+args_cli = parser.parse_args()
+args_cli.headless = True
+args_cli.inputs = [path.expanduser().resolve() for path in args_cli.inputs]
+if args_cli.output_dir is not None:
+    args_cli.output_dir = args_cli.output_dir.expanduser().resolve()
+
+app_launcher = AppLauncher(args_cli)
+simulation_app = app_launcher.app
+
+import torch  # noqa: E402
+import isaaclab.sim as sim_utils  # noqa: E402
+from isaaclab.actuators import IdealPDActuatorCfg  # noqa: E402
+from isaaclab.assets import ArticulationCfg  # noqa: E402
+from isaaclab.sim import SimulationCfg, build_simulation_context  # noqa: E402
+from isaaclab_newton.assets import Articulation  # noqa: E402
+from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg  # noqa: E402
+from somaforge_core import (  # noqa: E402
+    G1_29DOF_JOINT_ORDER,
+    canonical_g1_asset_metadata,
+    encode_kinematics_provenance,
+    encode_robot_asset_json,
+    newton_kinematics_provenance,
+    sha256_file,
+)
+from holosoma.simulator.isaaclab3_newton.backend import resolve_robot_usd  # noqa: E402
+from holosoma.simulator.isaaclab3_newton.isaaclab3_newton import (  # noqa: E402
+    spawn_newton_usd_with_floating_root,
+)
+from holosoma.config_values.robot import g1_29dof  # noqa: E402
+
+
+def _quat_mul_wxyz(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    aw, ax, ay, az = np.moveaxis(a, -1, 0)
+    bw, bx, by, bz = np.moveaxis(b, -1, 0)
+    return np.stack(
+        (
+            aw * bw - ax * bx - ay * by - az * bz,
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+        ),
+        axis=-1,
+    )
+
+
+def _slerp_wxyz(q0: np.ndarray, q1: np.ndarray, blend: np.ndarray) -> np.ndarray:
+    q0 = q0 / np.maximum(np.linalg.norm(q0, axis=-1, keepdims=True), 1.0e-12)
+    q1 = q1 / np.maximum(np.linalg.norm(q1, axis=-1, keepdims=True), 1.0e-12)
+    dot = np.sum(q0 * q1, axis=-1, keepdims=True)
+    q1 = np.where(dot < 0.0, -q1, q1)
+    dot = np.clip(np.abs(dot), 0.0, 1.0)
+    theta = np.arccos(dot)
+    sin_theta = np.sin(theta)
+    t = blend[:, None]
+    close = sin_theta < 1.0e-8
+    out = np.sin((1.0 - t) * theta) / np.maximum(sin_theta, 1.0e-12) * q0
+    out += np.sin(t * theta) / np.maximum(sin_theta, 1.0e-12) * q1
+    out = np.where(close, (1.0 - t) * q0 + t * q1, out)
+    return out / np.maximum(np.linalg.norm(out, axis=-1, keepdims=True), 1.0e-12)
+
+
+def _resample_qpos(qpos: np.ndarray, input_fps: float, output_fps: float) -> np.ndarray:
+    duration = (qpos.shape[0] - 1) / input_fps
+    times = np.arange(0.0, duration, 1.0 / output_fps, dtype=np.float64)
+    phase = times * input_fps
+    i0 = np.floor(phase).astype(np.int64)
+    i1 = np.minimum(i0 + 1, qpos.shape[0] - 1)
+    blend = phase - i0
+    out = qpos[i0] * (1.0 - blend[:, None]) + qpos[i1] * blend[:, None]
+    out[:, :4] = _slerp_wxyz(qpos[i0, :4], qpos[i1, :4], blend)
+    return out.astype(np.float32)
+
+
+def _angular_velocity_wxyz(quat: np.ndarray, dt: float) -> np.ndarray:
+    previous = np.concatenate((quat[:1], quat[:-1]), axis=0)
+    following = np.concatenate((quat[1:], quat[-1:]), axis=0)
+    conjugate = previous.copy()
+    conjugate[:, 1:] *= -1.0
+    relative = _quat_mul_wxyz(following, conjugate)
+    relative = np.where(relative[:, :1] < 0.0, -relative, relative)
+    relative /= np.maximum(np.linalg.norm(relative, axis=-1, keepdims=True), 1.0e-12)
+    angle = 2.0 * np.arccos(np.clip(relative[:, 0], -1.0, 1.0))
+    sin_half = np.sqrt(np.maximum(1.0 - relative[:, 0] ** 2, 0.0))
+    axis = np.divide(relative[:, 1:], sin_half[:, None], out=np.zeros_like(relative[:, 1:]), where=sin_half[:, None] > 1.0e-8)
+    scale = np.full(quat.shape[0], 2.0 * dt, dtype=np.float64)
+    scale[0] = dt
+    scale[-1] = dt
+    return (axis * (angle / scale)[:, None]).astype(np.float32)
+
+
+def _load_input(path: Path, output_fps: float) -> tuple[np.ndarray, np.ndarray]:
+    with np.load(path, allow_pickle=False) as data:
+        if "qpos" not in data:
+            raise KeyError(f"{path} is missing qpos")
+        qpos = np.asarray(data["qpos"], dtype=np.float32)
+        fps = float(np.asarray(data.get("fps", 30.0)).reshape(-1)[0])
+    if qpos.ndim != 2 or qpos.shape[1] != 36:
+        raise ValueError(f"{path} qpos must have shape [T,36], got {qpos.shape}")
+    qpos = _resample_qpos(qpos, fps, output_fps)
+    dt = 1.0 / output_fps
+    root_linear = np.gradient(qpos[:, 4:7], dt, axis=0).astype(np.float32)
+    root_angular = _angular_velocity_wxyz(qpos[:, :4], dt)
+    joint_velocity = np.gradient(qpos[:, 7:], dt, axis=0).astype(np.float32)
+    qvel = np.concatenate((root_linear, root_angular, joint_velocity), axis=1)
+    return qpos, qvel
+
+
+def _build_robot(batch_size: int, device: str) -> Articulation:
+    usd_path = resolve_robot_usd(
+        str(SOMAFORGE_ROOT / "src" / "holosoma" / "holosoma" / "data" / "robots"),
+        g1_29dof.asset,
+    )
+    for index in range(batch_size):
+        sim_utils.create_prim(f"/World/envs/env_{index}", "Xform")
+    cfg = ArticulationCfg(
+        prim_path="/World/envs/env_.*/Robot",
+        spawn=sim_utils.UsdFileCfg(
+            func=spawn_newton_usd_with_floating_root,
+            usd_path=str(usd_path),
+            activate_contact_sensors=False,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=True),
+            articulation_props=sim_utils.ArticulationRootPropertiesCfg(fix_root_link=False),
+        ),
+        actuators={
+            "all": IdealPDActuatorCfg(
+                joint_names_expr=[".*"],
+                stiffness=0.0,
+                damping=0.0,
+                armature=0.0,
+                friction=0.0,
+                dynamic_friction=0.0,
+                viscous_friction=0.0,
+                effort_limit=1.0e6,
+                velocity_limit=1.0e6,
+                effort_limit_sim=1.0e9,
+                velocity_limit_sim=1.0e6,
+            )
+        },
+    )
+    return Articulation(cfg)
+
+
+def _canonicalize(path: Path, output: Path, robot: Articulation, batch_size: int, device: str) -> None:
+    qpos, qvel = _load_input(path, args_cli.output_fps)
+    robot_joint_names = list(robot.joint_names)
+    missing = [name for name in G1_29DOF_JOINT_ORDER if name not in robot_joint_names]
+    if missing:
+        raise ValueError(f"Newton articulation is missing canonical joints: {missing}")
+    source_to_robot = [G1_29DOF_JOINT_ORDER.index(name) for name in robot_joint_names]
+    body_names = list(robot.body_names)
+    body_pos = np.empty((qpos.shape[0], len(body_names), 3), dtype=np.float32)
+    body_quat = np.empty((qpos.shape[0], len(body_names), 4), dtype=np.float32)
+    body_lin_vel = np.empty_like(body_pos)
+    body_ang_vel = np.empty_like(body_pos)
+
+    for start in range(0, qpos.shape[0], batch_size):
+        stop = min(start + batch_size, qpos.shape[0])
+        count = stop - start
+        env_ids = torch.arange(count, dtype=torch.int32, device=device)
+        root_pose = np.concatenate((qpos[start:stop, 4:7], qpos[start:stop, [1, 2, 3, 0]]), axis=1)
+        robot.write_root_pose_to_sim_index(root_pose=torch.as_tensor(root_pose, device=device), env_ids=env_ids)
+        robot.write_root_velocity_to_sim_index(
+            root_velocity=torch.as_tensor(qvel[start:stop, :6], device=device), env_ids=env_ids
+        )
+        robot.write_joint_position_to_sim_index(
+            position=torch.as_tensor(qpos[start:stop, 7:][:, source_to_robot], device=device), env_ids=env_ids
+        )
+        robot.write_joint_velocity_to_sim_index(
+            velocity=torch.as_tensor(qvel[start:stop, 6:][:, source_to_robot], device=device), env_ids=env_ids
+        )
+        poses = robot.data.body_link_pose_w.torch[:count].detach().cpu().numpy()
+        velocities = robot.data.body_link_vel_w.torch[:count].detach().cpu().numpy()
+        body_pos[start:stop] = poses[..., :3]
+        body_quat[start:stop] = poses[..., [6, 3, 4, 5]]
+        body_lin_vel[start:stop] = velocities[..., :3]
+        body_ang_vel[start:stop] = velocities[..., 3:6]
+
+    provenance = newton_kinematics_provenance(
+        source_path=str(path.resolve()),
+        source_sha256=sha256_file(path),
+        output_fps=args_cli.output_fps,
+        body_names=body_names,
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        output,
+        fps=np.asarray([args_cli.output_fps], dtype=np.float32),
+        joint_pos=qpos,
+        joint_vel=qvel,
+        body_pos_w=body_pos,
+        body_quat_w=body_quat,
+        body_lin_vel_w=body_lin_vel,
+        body_ang_vel_w=body_ang_vel,
+        joint_names=np.asarray(G1_29DOF_JOINT_ORDER),
+        body_names=np.asarray(body_names),
+        robot_asset_json=np.asarray(encode_robot_asset_json(canonical_g1_asset_metadata())),
+        kinematics_provenance_json=np.asarray(encode_kinematics_provenance(provenance)),
+    )
+    print(f"Wrote {output} frames={qpos.shape[0]} bodies={len(body_names)} backend=NewtonFK")
+
+
+def main() -> None:
+    if not args_cli.inputs:
+        raise ValueError("at least one input motion is required")
+    if args_cli.output_dir is None:
+        raise ValueError("--output-dir is required")
+    if args_cli.batch_size <= 0:
+        raise ValueError("--batch-size must be positive")
+    outputs = [args_cli.output_dir.expanduser() / path.name for path in args_cli.inputs]
+    for output in outputs:
+        if output.exists() and not args_cli.overwrite:
+            raise FileExistsError(f"{output} exists; pass --overwrite to replace it")
+    device = str(args_cli.device)
+    sim_cfg = SimulationCfg(
+        dt=1.0 / float(args_cli.output_fps),
+        device=device,
+        physics=NewtonCfg(
+            solver_cfg=MJWarpSolverCfg(
+                njmax=64,
+                nconmax=1,
+                disable_contacts=True,
+                use_mujoco_contacts=False,
+                integrator="implicitfast",
+            ),
+            num_substeps=1,
+            use_cuda_graph=False,
+        ),
+    )
+    completed_outputs: list[Path] = []
+    with build_simulation_context(sim_cfg=sim_cfg, device=device) as sim:
+        robot = _build_robot(args_cli.batch_size, device)
+        sim.reset()
+        for source, output in zip(args_cli.inputs, outputs, strict=True):
+            _canonicalize(source.expanduser(), output, robot, args_cli.batch_size, device)
+            completed_outputs.append(output)
+    if completed_outputs != outputs:
+        raise RuntimeError("Newton canonicalization did not complete; inspect the simulation error above")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    finally:
+        simulation_app.close()

@@ -64,7 +64,10 @@ if [[ ! -f $SENTINEL_FILE ]]; then
   pip install -e $ISAACLAB_PATH/source/isaaclab_tasks
   pip install -e $ISAACLAB_PATH/source/isaaclab_tasks_experimental
   pip install -e $ISAACLAB_PATH/source/isaaclab_visualizers
-  pip install -e $ROOT_DIR/src/holosoma[unitree,booster]
+  pip install -e $ROOT_DIR/packages/somaforge_core
+  pip install -e $ROOT_DIR/packages/motion_edit --no-deps
+  pip install -e $ROOT_DIR/packages/gmvq --no-deps
+  pip install -e $ROOT_DIR/src/holosoma
   pip install -e $ROOT_DIR/src/holosoma_retargeting
   pip install --upgrade 'wandb>=0.21.1'
 

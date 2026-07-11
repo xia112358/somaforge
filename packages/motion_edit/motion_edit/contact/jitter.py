@@ -15,6 +15,8 @@ from motion_edit.paths import LAYERS_ROOT
 
 
 DEFAULT_JITTER_BODIES = ("left_foot", "right_foot", "left_hand", "right_hand", "left_knee", "right_knee")
+FOOT_JITTER_BODIES = {"left_foot", "right_foot"}
+FOOT_GROUP_MAX_GAP_FRAMES = 3
 JitterSampler = str
 
 
@@ -172,6 +174,138 @@ def _iter_selected_anchors(
     return selected
 
 
+def _group_selected_anchors(
+    selected: list[ContactAnchorRecord],
+    *,
+    max_gap_frames: int = FOOT_GROUP_MAX_GAP_FRAMES,
+) -> list[list[ContactAnchorRecord]]:
+    selected_order = {anchor.anchor_id: index for index, anchor in enumerate(selected)}
+    groups: list[list[ContactAnchorRecord]] = [[anchor] for anchor in selected if anchor.body not in FOOT_JITTER_BODIES]
+
+    for body in sorted(FOOT_JITTER_BODIES):
+        body_anchors = [anchor for anchor in selected if anchor.body == body]
+        body_anchors.sort(key=lambda anchor: (anchor.start_frame, anchor.end_frame, anchor.anchor_id))
+        current: list[ContactAnchorRecord] = []
+        current_end = -1
+        for anchor in body_anchors:
+            if not current or anchor.start_frame > current_end + max_gap_frames:
+                if current:
+                    groups.append(current)
+                current = [anchor]
+                current_end = anchor.end_frame
+                continue
+            current.append(anchor)
+            current_end = max(current_end, anchor.end_frame)
+        if current:
+            groups.append(current)
+
+    groups.sort(key=lambda group: min(selected_order[anchor.anchor_id] for anchor in group))
+    return groups
+
+
+def _add_jitter_metadata(
+    edit: dict,
+    *,
+    anchor: ContactAnchorRecord,
+    group: list[ContactAnchorRecord],
+    augmentation_index: int,
+    seed: int,
+    offset_radius: float,
+    effective_radius: float,
+    sampler: JitterSampler,
+    sampled_mode: str,
+    min_radius_fraction: float,
+    knee_radius_scale: float,
+    shared_world_delta: Iterable[float] | None,
+) -> dict:
+    edit.setdefault("metadata", {})
+    metadata = edit["metadata"]
+    metadata.update(
+        {
+            "augmentation_index": augmentation_index,
+            "augmentation_seed": seed,
+            "offset_radius": offset_radius,
+            "effective_offset_radius": effective_radius,
+            "jitter_sampler": sampler,
+            "sampled_jitter_mode": sampled_mode,
+            "min_radius_fraction": min_radius_fraction,
+            "knee_radius_scale": knee_radius_scale,
+        }
+    )
+    if anchor.body in FOOT_JITTER_BODIES and len(group) > 1:
+        metadata.update(
+            {
+                "foot_group_jitter": True,
+                "foot_group_body": anchor.body,
+                "foot_group_anchor_ids": [item.anchor_id for item in group],
+                "foot_group_start_frame": min(item.start_frame for item in group),
+                "foot_group_end_frame": max(item.end_frame for item in group),
+                "foot_group_shared_delta_world": [float(item) for item in (shared_world_delta or [])],
+            }
+        )
+    return edit
+
+
+def _sample_group_edits(
+    group: list[ContactAnchorRecord],
+    *,
+    augmentation_index: int,
+    rng: random.Random,
+    seed: int,
+    offset_radius: float,
+    mode: str,
+    sampler: JitterSampler,
+    min_radius_fraction: float,
+    knee_radius_scale: float,
+) -> list[dict]:
+    representative = group[0]
+    effective_radius = _radius_for_anchor(representative, offset_radius, knee_radius_scale)
+    tangent_delta, surface_target, sampled_mode = _sample_move(
+        representative,
+        rng=rng,
+        radius=effective_radius,
+        sampler=sampler,
+        min_radius_fraction=min_radius_fraction,
+    )
+    _moved, edit_record = move_contact_anchor_on_surface(
+        representative,
+        tangent_delta=tangent_delta,
+        new_surface_coordinates=surface_target,
+        mode=mode,
+        source="random_surface_jitter",
+        edit_id=f"{representative.anchor_id}_jitter_{augmentation_index:04d}",
+    )
+    shared_world_delta = edit_record.delta_world
+
+    edits: list[dict] = []
+    for anchor in group:
+        _moved, anchor_edit_record = move_contact_anchor_on_surface(
+            anchor,
+            requested_world_delta=shared_world_delta,
+            mode=mode,
+            source="random_surface_jitter",
+            edit_id=f"{anchor.anchor_id}_jitter_{augmentation_index:04d}",
+        )
+        edit = anchor_edit_record.to_dict()
+        edits.append(
+            _add_jitter_metadata(
+                edit,
+                anchor=anchor,
+                group=group,
+                augmentation_index=augmentation_index,
+                seed=seed,
+                offset_radius=offset_radius,
+                effective_radius=effective_radius,
+                sampler=sampler,
+                sampled_mode=sampled_mode,
+                min_radius_fraction=min_radius_fraction,
+                knee_radius_scale=knee_radius_scale,
+                shared_world_delta=shared_world_delta,
+            )
+        )
+    return edits
+
+
 def _make_jitter_plan_for_motion(
     item: dict,
     *,
@@ -206,46 +340,27 @@ def _make_jitter_plan_for_motion(
 
     edits: list[dict] = []
     attempted = 0
-    for anchor in selected:
-        attempted += 1
-        edit = None
+    for group in _group_selected_anchors(selected):
+        attempted += len(group)
+        group_edits = None
         for _ in range(max_attempts):
-            effective_radius = _radius_for_anchor(anchor, offset_radius, knee_radius_scale)
             try:
-                tangent_delta, surface_target, sampled_mode = _sample_move(
-                    anchor,
+                group_edits = _sample_group_edits(
+                    group,
+                    augmentation_index=augmentation_index,
                     rng=rng,
-                    radius=effective_radius,
+                    seed=seed,
+                    offset_radius=offset_radius,
+                    mode=mode,
                     sampler=sampler,
                     min_radius_fraction=min_radius_fraction,
-                )
-                _moved, edit_record = move_contact_anchor_on_surface(
-                    anchor,
-                    tangent_delta=tangent_delta,
-                    new_surface_coordinates=surface_target,
-                    mode=mode,
-                    source="random_surface_jitter",
-                    edit_id=f"{anchor.anchor_id}_jitter_{augmentation_index:04d}",
+                    knee_radius_scale=knee_radius_scale,
                 )
             except ValueError:
                 continue
-            edit = edit_record.to_dict()
-            edit.setdefault("metadata", {})
-            edit["metadata"].update(
-                {
-                    "augmentation_index": augmentation_index,
-                    "augmentation_seed": seed,
-                    "offset_radius": offset_radius,
-                    "effective_offset_radius": effective_radius,
-                    "jitter_sampler": sampler,
-                    "sampled_jitter_mode": sampled_mode,
-                    "min_radius_fraction": min_radius_fraction,
-                    "knee_radius_scale": knee_radius_scale,
-                }
-            )
             break
-        if edit is not None:
-            edits.append(edit)
+        if group_edits is not None:
+            edits.extend(group_edits)
 
     if not edits:
         return None

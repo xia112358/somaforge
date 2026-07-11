@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
+from somaforge_core.contact_schema import decode_contact_force_provenance
+from somaforge_core.robot_assets import decode_robot_asset_json
 import torch
 from torch.utils.data import Dataset
 
@@ -148,6 +150,8 @@ def load_segment_arrays(path: str | Path) -> dict[str, Any]:
         return out
 
     obj = np.load(path, allow_pickle=True)
+    value = obj["robot_asset_json"] if "robot_asset_json" in obj.files else None
+    out["robot_asset"] = decode_robot_asset_json(value, context=f"segment dataset {path}")
     if "valid_mask" in obj.files:
         out["valid_mask"] = torch.from_numpy(np.asarray(obj["valid_mask"], dtype=np.bool_))
     if "lengths" in obj.files:
@@ -171,6 +175,36 @@ def load_segment_arrays(path: str | Path) -> dict[str, Any]:
     if metadata:
         out["metadata"] = metadata
     return out
+
+
+def load_robot_asset_metadata(path: str | Path) -> dict[str, Any]:
+    dataset_path = Path(path)
+    if dataset_path.suffix != ".npz":
+        raise ValueError("SomaForge GMVQ training data must be a fingerprinted .npz segment pack")
+    with np.load(dataset_path, allow_pickle=False) as data:
+        value = data["robot_asset_json"] if "robot_asset_json" in data.files else None
+    return decode_robot_asset_json(value, context=f"segment dataset {dataset_path}")
+
+
+def load_contact_force_provenance(path: str | Path) -> dict[str, Any]:
+    dataset_path = Path(path)
+    if dataset_path.suffix != ".npz":
+        raise ValueError("SomaForge GMVQ training data must be a fingerprinted .npz segment pack")
+    with np.load(dataset_path, allow_pickle=False) as data:
+        if "contact_force_provenance_json" not in data.files:
+            raise ValueError(f"segment dataset {dataset_path} has no contact_force_provenance_json")
+        values = np.asarray(data["contact_force_provenance_json"]).reshape(-1)
+    decoded = [
+        decode_contact_force_provenance(value, context=f"segment dataset {dataset_path} row {index}")
+        for index, value in enumerate(values)
+    ]
+    solver_hashes = sorted({str(item["solver_config_sha256"]) for item in decoded})
+    return {
+        "schema": decoded[0]["schema"],
+        "source_backend": decoded[0]["source_backend"],
+        "solver_config_sha256": solver_hashes,
+        "segment_count": len(decoded),
+    }
 
 
 def normalize_segments(

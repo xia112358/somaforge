@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from .data import make_synthetic_segments
+from .data import load_contact_force_provenance, make_synthetic_segments
 from .hyar_wrapper import (
     FrozenGMVQCodec,
     HyARActionVAE,
@@ -18,6 +18,7 @@ from .hyar_wrapper import (
     HyARNestedAutoEncoder,
     compute_hyar_loss,
 )
+from somaforge_core.robot_assets import decode_robot_asset_json
 
 
 @dataclass
@@ -75,6 +76,8 @@ def load_hyar_arrays(
     path = Path(path)
     if path.suffix == ".npz":
         obj = np.load(path)
+        value = obj["robot_asset_json"] if "robot_asset_json" in obj.files else None
+        decode_robot_asset_json(value, context=f"HyAR dataset {path}")
         seg_key = "segments" if "segments" in obj.files else obj.files[0]
         segments = torch.from_numpy(obj[seg_key]).float()
         states = torch.from_numpy(obj[state_key]).float() if state_key in obj.files else None
@@ -140,6 +143,9 @@ def main() -> None:
     codec = FrozenGMVQCodec(args.gmvq_checkpoint, device=args.device, trainable=False)
 
     if args.data:
+        dataset_contact_provenance = load_contact_force_provenance(args.data)
+        if dataset_contact_provenance["solver_config_sha256"] != codec.contact_force_provenance["solver_config_sha256"]:
+            raise ValueError("HyAR dataset and GMVQ checkpoint use different Newton solver fingerprints")
         segments, states, next_states = load_hyar_arrays(args.data, args.state_key, args.next_state_key)
     elif args.synthetic:
         segments, _ = make_synthetic_segments(n=args.synthetic_n, t=codec.t, d=codec.d)
@@ -211,6 +217,8 @@ def main() -> None:
         "gmvq_checkpoint": str(Path(args.gmvq_checkpoint)),
         "train_args": vars(args),
         "last_metrics": {k: v.cpu() for k, v in last_metrics.items()},
+        "robot_asset": codec.robot_asset,
+        "contact_force_provenance": codec.contact_force_provenance,
     }
     torch.save(ckpt, save_dir / "checkpoint.pt")
     with (save_dir / "config.json").open("w", encoding="utf-8") as f:

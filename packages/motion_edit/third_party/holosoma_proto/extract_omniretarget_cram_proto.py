@@ -20,6 +20,11 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from somaforge_core.robot_assets import (
+    canonical_g1_urdf_path,
+    encode_robot_asset_json,
+    validate_canonical_g1_urdf,
+)
 
 try:
     import pinocchio as pin
@@ -1187,6 +1192,7 @@ def _write_holosoma_motion_with_masks(
     arrays["free_part_mask"] = free.astype(np.bool_)
     arrays["proto_start_idx"] = np.asarray([int(rec["start"]) for rec in records], dtype=np.int64)
     arrays["proto_end_idx"] = np.asarray([int(rec["end"]) for rec in records], dtype=np.int64)
+    arrays["robot_asset_json"] = np.asarray(encode_robot_asset_json())
     np.savez(output, **arrays)
     return output
 
@@ -1260,7 +1266,12 @@ def main() -> None:
         args.holosoma_motion_dir = dataset_root / "data" / "holosoma_motions_50hz"
     if args.holosoma_output_dir is None:
         args.holosoma_output_dir = dataset_root / "data" / "holosoma_motions_masked_50hz"
-    robot_urdf = args.robot_urdf.expanduser().resolve() if args.robot_urdf else dataset_root / "models/g1/g1_29dof_spherehand.urdf"
+    robot_urdf = (
+        args.robot_urdf.expanduser().resolve()
+        if args.robot_urdf
+        else canonical_g1_urdf_path()
+    )
+    validate_canonical_g1_urdf(robot_urdf)
     paths = _motion_paths(data_dir, args.motions)
     enabled_parts = set(args.contact_parts)
     enabled_indices = [PART_ORDER.index(part) for part in args.contact_parts]

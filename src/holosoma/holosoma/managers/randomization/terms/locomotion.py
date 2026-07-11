@@ -8,12 +8,9 @@ import numpy as np
 import torch
 from loguru import logger
 
-from holosoma.config_types.simulator import MujocoBackend
 from holosoma.managers.action.terms.joint_control import JointPositionActionTerm
 from holosoma.managers.randomization.base import RandomizationTermBase
 from holosoma.managers.randomization.exceptions import RandomizerNotSupportedError
-from holosoma.simulator import mujoco_required_field
-from holosoma.simulator.shared.field_decorators import MUJOCO_FIELD_ATTR
 from holosoma.utils.simulator_config import SimulatorType
 from holosoma.utils.torch_utils import torch_rand_float
 
@@ -585,7 +582,6 @@ def randomize_dof_state(
     )
 
 
-@mujoco_required_field("body_ipos")
 def randomize_base_com_startup(
     env,
     env_ids: Sequence[int] | torch.Tensor | None = None,
@@ -683,32 +679,12 @@ def randomize_base_com_startup(
             distribution="uniform",
             num_envs=simulator.training_config.num_envs,
         )
-    elif simulator.simulator_config.mujoco_backend == MujocoBackend.WARP:
-        from holosoma.simulator.mujoco.backends.warp_randomization import randomize_field
-
-        # convert xyz to 012
-        base_com_range_remapped = {}
-        for key, value in base_com_range.items():
-            assert len(value) == 2, f"Range for '{key}' must have exactly 2 elements, got {len(value)}"
-            base_com_range_remapped["xyz".index(key)] = (value[0], value[1])
-        randomize_field(
-            simulator,
-            field=getattr(randomize_base_com_startup, MUJOCO_FIELD_ATTR),
-            ranges=base_com_range_remapped,
-            env_ids=idx,
-            entity_names=[env.robot_config.torso_name],
-            entity_type="body",
-            operation="add",
-            distribution="uniform",
-        )
-
     else:  # pragma: no cover - defensive
         raise RandomizerNotSupportedError(
             f"Unsupported simulator type '{type(simulator).__name__}' for base COM randomization."
         )
 
 
-@mujoco_required_field("body_mass")
 def randomize_mass_startup(
     env,
     env_ids: Sequence[int] | torch.Tensor | None = None,
@@ -812,48 +788,12 @@ def randomize_mass_startup(
                 (added_mass_range[0], added_mass_range[1]),
                 operation="add",
             )
-    elif simulator.simulator_config.mujoco_backend == MujocoBackend.WARP:
-        from holosoma.simulator.mujoco.backends.warp_randomization import randomize_field
-
-        # randomize over the range (scale and/or shift)
-        if idx.numel() == 0:
-            return
-
-        if enable_link_mass:
-            assert len(link_mass_range) == 2, (
-                f"link_mass_range must have exactly 2 elements, got {len(link_mass_range)}"
-            )
-            randomize_field(
-                simulator,
-                field=getattr(randomize_mass_startup, MUJOCO_FIELD_ATTR),
-                ranges=(link_mass_range[0], link_mass_range[1]),
-                env_ids=idx,
-                entity_names=env.robot_config.randomize_link_body_names,
-                entity_type="body",
-                operation="scale",
-            )
-
-        if enable_base_mass:
-            assert len(added_mass_range) == 2, (
-                f"added_mass_range must have exactly 2 elements, got {len(added_mass_range)}"
-            )
-            randomize_field(
-                simulator,
-                field=getattr(randomize_mass_startup, MUJOCO_FIELD_ATTR),
-                ranges=(added_mass_range[0], added_mass_range[1]),
-                env_ids=idx,
-                entity_names=[env.robot_config.torso_name],
-                entity_type="body",
-                operation="add",
-            )
-
     else:  # pragma: no cover - defensive
         raise RandomizerNotSupportedError(
             f"Mass randomization not supported for simulator type '{type(simulator).__name__}'."
         )
 
 
-@mujoco_required_field("geom_friction")
 def randomize_friction_startup(
     env,
     env_ids: Sequence[int] | torch.Tensor | None = None,
@@ -921,18 +861,6 @@ def randomize_friction_startup(
             dynamic_friction_range=(friction_range[0], friction_range[1]),
             restitution_range=(0.0, 0.0),
             num_buckets=num_buckets,
-        )
-
-    elif simulator.simulator_config.mujoco_backend == MujocoBackend.WARP:
-        from holosoma.simulator.mujoco.backends.warp_randomization import randomize_field
-
-        assert len(friction_range) == 2, f"friction_range must have exactly 2 elements, got {len(friction_range)}"
-        randomize_field(
-            simulator,
-            field=getattr(randomize_friction_startup, MUJOCO_FIELD_ATTR),
-            ranges={0: (friction_range[0], friction_range[1])},
-            env_ids=idx,
-            operation="abs",
         )
 
     else:  # pragma: no cover - defensive

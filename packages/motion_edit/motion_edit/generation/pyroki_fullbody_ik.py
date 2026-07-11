@@ -10,11 +10,10 @@ from typing import Any
 import numpy as np
 from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
+from somaforge_core.robot_assets import canonical_g1_urdf_path
 
 
-DEFAULT_ROBOT_URDF = Path(
-    "/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/g1/g1_29dof_spherehand.urdf"
-)
+DEFAULT_ROBOT_URDF = canonical_g1_urdf_path()
 
 TARGET_LINK_ALIASES: dict[str, tuple[str, ...]] = {
     "pelvis": ("pelvis",),

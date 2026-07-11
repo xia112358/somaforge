@@ -44,14 +44,14 @@ class RunSimConfig:
     Minimal configuration for direct simulation via run_sim.py.
 
     Usage Examples:
-        python -m holosoma.run_sim simulator:mujoco robot:g1 terrain:terrain-motion-matched
+        python -m holosoma.run_sim simulator:isaaclab3-newton robot:g1 terrain:terrain-motion-matched
     """
 
     # Core components for simulation - using Annotated subcommands like ExperimentConfig
     simulator: Annotated[
         SimulatorConfig,
         tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(SIMULATOR_DEFAULTS)),
-    ] = holosoma.config_values.run_sim.mujoco
+    ] = holosoma.config_values.run_sim.isaaclab3_newton
 
     robot: Annotated[
         RobotConfig,

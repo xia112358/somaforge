@@ -68,12 +68,12 @@ def _normalized_motion_config(config: DummyExperimentConfig) -> MotionConfig:
 
 
 def test_command_manifest_drives_motion_and_terrain_from_one_manifest() -> None:
-    config = _config(command_manifest="configs/motion_matched/climb29_z1_unmasked_manifest.json")
+    config = _config(command_manifest="runtime/current/manifests/motion_edit_ref_v1.json")
 
     normalized = normalize_motion_matched_config(config)
 
     motion_config = _normalized_motion_config(normalized)
-    assert motion_config.motion_manifest == "configs/motion_matched/climb29_z1_unmasked_manifest.json"
+    assert motion_config.motion_manifest == "runtime/current/manifests/motion_edit_ref_v1.json"
     assert motion_config.motion_file == ""
     assert motion_config.motion_dir == ""
     assert normalized.terrain.terrain_term.motion_matched_manifest == motion_config.motion_manifest
@@ -81,12 +81,12 @@ def test_command_manifest_drives_motion_and_terrain_from_one_manifest() -> None:
 
 
 def test_terrain_manifest_drives_motion_and_terrain_from_one_manifest() -> None:
-    config = _config(terrain_manifest="configs/motion_matched/climb29_z1_unmasked_manifest.json")
+    config = _config(terrain_manifest="runtime/current/manifests/motion_edit_ref_v1.json")
 
     normalized = normalize_motion_matched_config(config)
 
     motion_config = _normalized_motion_config(normalized)
-    assert motion_config.motion_manifest == "configs/motion_matched/climb29_z1_unmasked_manifest.json"
+    assert motion_config.motion_manifest == "runtime/current/manifests/motion_edit_ref_v1.json"
     assert motion_config.motion_file == ""
     assert motion_config.motion_dir == ""
     assert normalized.terrain.terrain_term.motion_matched_manifest == motion_config.motion_manifest
@@ -94,7 +94,7 @@ def test_terrain_manifest_drives_motion_and_terrain_from_one_manifest() -> None:
 
 
 def test_matching_manifests_are_kept_as_one_source() -> None:
-    manifest = "configs/motion_matched/climb29_z1_unmasked_manifest.json"
+    manifest = "runtime/current/manifests/motion_edit_ref_v1.json"
     config = _config(command_manifest=manifest, terrain_manifest=manifest, mesh_type=MeshType.LOAD_OBJ)
 
     normalized = normalize_motion_matched_config(config)
@@ -107,8 +107,8 @@ def test_matching_manifests_are_kept_as_one_source() -> None:
 
 def test_conflicting_manifests_fail_before_training() -> None:
     config = _config(
-        command_manifest="configs/motion_matched/climb29_z1_unmasked_manifest.json",
-        terrain_manifest="configs/motion_matched/climb00_z1_unmasked_manifest.json",
+        command_manifest="runtime/current/manifests/motion_edit_ref_v1.json",
+        terrain_manifest="runtime/current/manifests/climb00_motion_edit_ref.json",
     )
 
     with pytest.raises(ValueError, match="must be identical"):

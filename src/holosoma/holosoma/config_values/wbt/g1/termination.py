@@ -87,7 +87,7 @@ g1_29dof_wbt_proto_termination = TerminationManagerCfg(
                     "^(?!left_wrist_yaw_link$)(?!right_wrist_yaw_link$)"
                     "(?!left_knee_link$)(?!right_knee_link$)"
                     "(?!left_ankle_roll_link$)(?!right_ankle_roll_link$)"
-                    "(?!left_foot_contact_point$)(?!right_foot_contact_point$).+$"
+                    "(?!left_ankle_roll_sphere_[1-5]_link$)(?!right_ankle_roll_sphere_[1-5]_link$).+$"
                 ),
             },
         ),

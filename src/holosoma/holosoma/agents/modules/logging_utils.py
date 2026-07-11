@@ -287,7 +287,8 @@ class LoggingHelper:
                 scalars_to_log[f"Episode/{key}"] = value
                 ep_string += f"""{f"Mean episode {key}:":>35} {value:.4f}\n"""
 
-        # Process raw episode info if it exists
+        # Keep raw rewards available for diagnostics without duplicating the
+        # weighted reward table in every console update.
         if self.raw_ep_infos:
             for key in self.raw_ep_infos[0]:
                 infotensor = torch.tensor([], device=self.device)
@@ -301,7 +302,6 @@ class LoggingHelper:
                     continue
                 value = self._finite_float(torch.mean(infotensor))
                 scalars_to_log[f"RawEpisode/{key}"] = value
-                ep_string += f"""{f"Mean raw episode {key}:":>35} {value:.4f}\n"""
 
         return ep_string, scalars_to_log
 
@@ -354,10 +354,8 @@ class LoggingHelper:
         # Log reward metrics if available
         if len(self.rewbuffer) > 0:
             scalars_to_log["Train/mean_reward"] = statistics.mean(self.rewbuffer)
-            scalars_to_log["Train/mean_reward/time"] = statistics.mean(self.rewbuffer)
         if len(self.lenbuffer) > 0:
             scalars_to_log["Train/mean_episode_length"] = statistics.mean(self.lenbuffer)
-            scalars_to_log["Train/mean_episode_length/time"] = statistics.mean(self.lenbuffer)
 
         scalars_to_log["Train/num_samples"] = self.tot_timesteps
 
@@ -428,6 +426,8 @@ class LoggingHelper:
 
         # Add loss metrics
         for key, value in loss_dict.items():
+            if key in {"Value", "Surrogate"}:
+                continue
             log_string += f"{f'{key}:':>{pad}} {self._finite_float(value):.4f}\n"
 
         # Add environment metrics

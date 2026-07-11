@@ -25,7 +25,7 @@ class ContactForceBakeCliTests(unittest.TestCase):
         self.assertEqual(args.output_motion, "motion.force.npz")
         self.assertEqual(args.mujoco_model, "robot.xml")
         self.assertEqual(args.solve_mode, "forward")
-        self.assertEqual(args.policy_ref_compat, "wbt_contact_force_6part")
+        self.assertEqual(args.policy_ref_compat, "wbt_contact_force_8part")
 
     def test_parser_accepts_retarget_force_args_without_mujoco(self) -> None:
         args = build_parser().parse_args(

@@ -6,6 +6,7 @@ from typing import Optional
 
 import numpy as np
 import torch
+from somaforge_core.robot_assets import validate_g1_asset_metadata
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
@@ -65,6 +66,7 @@ def main() -> None:
     args = parse_args()
     hyar_ckpt_path = Path(args.hyar_checkpoint)
     hyar_ckpt = torch.load(hyar_ckpt_path, map_location="cpu", weights_only=False)
+    validate_g1_asset_metadata(hyar_ckpt.get("robot_asset"), context=f"HyAR checkpoint {hyar_ckpt_path}")
     gmvq_checkpoint = args.gmvq_checkpoint or hyar_ckpt["gmvq_checkpoint"]
     out_dir = Path(args.out_dir) if args.out_dir else hyar_ckpt_path.parent / "analysis"
     out_dir.mkdir(parents=True, exist_ok=True)

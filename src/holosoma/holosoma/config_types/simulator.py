@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import field
-from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -11,19 +10,6 @@ from pydantic.dataclasses import dataclass
 from typing_extensions import Annotated
 
 from holosoma.config_types.viewer import ViewerConfig
-
-
-class MujocoBackend(str, Enum):
-    """MuJoCo physics backend selection.
-
-    Determines which MuJoCo backend to use for physics simulation.
-    """
-
-    CLASSIC = "classic"
-    """CPU-based single environment backend."""
-
-    WARP = "warp"
-    """GPU-accelerated multi-environment backend."""
 
 
 @dataclass(frozen=True)
@@ -89,29 +75,6 @@ class PhysxConfig:
 
     bounce_threshold_velocity: float = 0.5
     """Velocity threshold below which bounce responses are suppressed."""
-
-
-@dataclass(frozen=True)
-class MujocoXMLFilterCfg:
-    """Configuration for filtering MuJoCo MJCF/XML robot files.
-
-    This configuration controls how robot MJCF files are processed and filtered
-    when loaded into the MuJoCo simulator. It allows removal of specific elements
-    that may conflict with the simulation environment or cause issues.
-    """
-
-    enable: bool = False
-    """Whether to enable XML filtering."""
-
-    remove_lights: bool = True
-    """Whether to remove <light> elements from the MJCF file."""
-
-    remove_ground: bool = True
-    """Whether to remove ground/floor/plane geometries from the MJCF file.
-    Assumes these are top-level worldbody geoms."""
-
-    ground_names: list[str] = field(default_factory=lambda: ["floor", "ground", "plane"])
-    """List of geometry names to identify and remove as ground elements."""
 
 
 @dataclass(frozen=True)
@@ -511,33 +474,11 @@ class SimulatorInitConfig:
     contact_sensor_history_length: int = 3
     """Number of frames of contact data retained for sensors."""
 
-    robot_mjcf_filter: MujocoXMLFilterCfg = field(default_factory=MujocoXMLFilterCfg)
-    """MuJoCo-specific XML filtering configuration for robot MJCF files."""
-
-    mujoco_backend: MujocoBackend = MujocoBackend.CLASSIC
-    """MuJoCo physics backend selection.
-
-    Determines which MuJoCo backend to use for physics simulation:
-    - 'classic': CPU-based single environment (backward compatible, default)
-    - 'warp': GPU-accelerated multi-environment with mujoco_warp
-
-    This setting only applies when using the MuJoCo simulator (name='mujoco').
-    For other simulators (isaacgym, isaacsim), this field is ignored.
-
-    Command line usage:
-        --simulator.config.mujoco-backend=warp
-        --simulator.config.mujoco-backend=classic
-
-    Or use the syntactic sugar configs:
-        simulator:mujoco   (uses classic backend)
-        simulator:mjwarp   (uses warp backend)
-    """
-
     mujoco_warp: MujocoWarpConfig = field(default_factory=MujocoWarpConfig)
     """MuJoCo Warp backend memory allocation configuration.
 
     Controls GPU memory allocation for the Warp backend. Only used when
-    mujoco_backend='warp'. Allows tuning contact and constraint capacity
+
     for different scenarios.
 
     Command line usage:

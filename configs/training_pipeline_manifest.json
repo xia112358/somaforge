@@ -1,0 +1,42 @@
+{
+  "schema": "somaforge_training_pipeline_v1",
+  "asset_manifest": "configs/assets_manifest.json",
+  "robot_asset_id": "robot.g1.spherehand",
+  "stages": {
+    "wbt_baseline": {
+      "inputs": ["Newton-canonicalized retargeted motion manifest", "robot.g1.spherehand", "terrain.*"],
+      "outputs": ["baseline WBT checkpoint", "Newton rollout/contact-force manifest"],
+      "required_fields": ["motion_id", "robot_asset_id", "terrain_asset_id", "source_sha256", "kinematics_provenance_json"],
+      "storage": "runtime/current/models"
+    },
+    "motion_edit": {
+      "inputs": [
+        "baseline WBT Newton rollout/contact manifest",
+        "Newton-canonicalized retargeted motion manifest",
+        "robot.g1.spherehand",
+        "terrain.*",
+        "contact annotations"
+      ],
+      "outputs": ["edited kinematic reference manifest", "fingerprinted motion NPZ"],
+      "required_fields": ["motion_id", "robot_asset_id", "terrain_asset_id", "source_sha256", "kinematics_provenance_json"],
+      "storage": "runtime/current/motions"
+    },
+    "gmvq": {
+      "inputs": ["Newton-validated Motion Edit manifest", "Newton 8-part force NPZ", "robot.g1.spherehand"],
+      "outputs": ["gmvq_segment_pack_v1", "gmvq_checkpoint_v1", "hyar_checkpoint_v1"],
+      "required_fields": ["motion_id", "robot_asset_id", "segment_index", "normalization", "contact_force_provenance_json"],
+      "storage": "runtime/current/models"
+    },
+    "holosoma_wbt": {
+      "inputs": [
+        "GMVQ/HyAR-decoded reference validated by Newton",
+        "Newton 8-part force manifest",
+        "robot.g1.spherehand",
+        "terrain.*"
+      ],
+      "outputs": ["refined holosoma policy checkpoint", "evaluation manifest"],
+      "required_fields": ["robot_asset_id", "terrain_asset_id", "motion_id", "source_model_sha256", "contact_force_provenance_json"],
+      "storage": "runtime/current/models"
+    }
+  }
+}

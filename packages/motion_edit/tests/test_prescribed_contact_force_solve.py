@@ -154,6 +154,30 @@ class PrescribedContactForceSolveTests(unittest.TestCase):
         self.assertEqual(field.metadata["unknown_sample_count"], 1)
         self.assertEqual(field.metadata["used_sample_count"], 0)
 
+    def test_nonfinite_samples_are_skipped_and_reported(self) -> None:
+        backend = FakePrescribedBackend(
+            {
+                0: [
+                    ContactForceSample(
+                        frame_index=0,
+                        part_hint="left_heel",
+                        position_w=np.zeros(3),
+                        force_w=np.asarray([np.nan, 0.0, 1.0]),
+                    )
+                ]
+            }
+        )
+
+        field = solve_prescribed_contact_forces(
+            np.zeros((1, 1), dtype=np.float64),
+            backend,
+            PrescribedContactSolveConfig(part_order=("left_heel",)),
+        )
+
+        np.testing.assert_allclose(field.force_w, 0.0)
+        self.assertEqual(field.metadata["invalid_sample_count"], 1)
+        self.assertEqual(field.metadata["used_sample_count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -112,7 +112,7 @@ class ExperimentConfig:
     simulator: Annotated[
         SimulatorConfig,
         tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.simulator.DEFAULTS)),
-    ] = holosoma.config_values.simulator.isaacgym
+    ] = holosoma.config_values.simulator.isaaclab3_newton
     terrain: Annotated[
         TerrainManagerCfg,
         tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.terrain.DEFAULTS)),

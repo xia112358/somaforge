@@ -25,26 +25,7 @@ draw_foot_height_points = _not_initialized
 # Initialize based on current simulator type
 simulator_type = get_simulator_type()  # Will raise if not set
 
-if simulator_type == SimulatorType.ISAACGYM:
-    # Import IsaacGym drawing functions
-    from holosoma.utils.adapters.isaacgym_draw_adapter import (
-        clear_lines,
-        draw_foot_height_points,
-        draw_height_points,
-        draw_line,
-        draw_sphere,
-    )
-elif simulator_type == SimulatorType.MUJOCO:
-    # Import MuJoCo drawing functions (including logging stubs)
-    from holosoma.utils.adapters.mujoco_draw_adapter import (
-        clear_lines,
-        draw_foot_height_points,
-        draw_height_points,
-        draw_line,
-        draw_points,
-        draw_sphere,
-    )
-elif simulator_type in (SimulatorType.ISAACSIM, SimulatorType.ISAACLAB3_NEWTON):
+if simulator_type in (SimulatorType.ISAACSIM, SimulatorType.ISAACLAB3_NEWTON):
     # Import IsaacSim drawing functions
     from holosoma.utils.adapters.isaacsim_draw_adapter import (
         clear_lines,

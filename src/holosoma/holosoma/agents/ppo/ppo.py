@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import itertools
 import os
+import time
 from typing import TypedDict
 
 import torch
@@ -256,6 +257,26 @@ class PPO(BaseAlgo):
             device=self.device,
             history_length=self.algo_history_length_dict,
         )
+        self.anchor_actor: nn.Module | None = None
+        if self.config.anchor_kl_checkpoint and self.config.anchor_kl_coef > 0.0:
+            self.anchor_actor = setup_ppo_actor_module(
+                obs_dim_dict=self.algo_obs_dim_dict,
+                module_config=self.config.module_dict.actor,
+                num_actions=self.num_act,
+                init_noise_std=self.config.init_noise_std,
+                device=self.device,
+                history_length=self.algo_history_length_dict,
+            )
+            checkpoint_path = os.path.expanduser(self.config.anchor_kl_checkpoint)
+            checkpoint = self._load_checked_checkpoint(checkpoint_path)
+            self.anchor_actor.load_state_dict(checkpoint["actor_model_state_dict"])
+            self.anchor_actor.eval()
+            for param in self.anchor_actor.parameters():
+                param.requires_grad_(False)
+            logger.info(
+                f"Loaded frozen PPO anchor actor from {checkpoint_path} "
+                f"with anchor_kl_coef={self.config.anchor_kl_coef}"
+            )
 
         actor_obs_dim = self._get_obs_dim(self.actor_obs_keys)
         critic_obs_dim = self._get_obs_dim(self.critic_obs_keys)
@@ -396,22 +417,36 @@ class PPO(BaseAlgo):
     def _rollout_step(self, obs_dict):
         with torch.inference_mode():
             for _ in range(self.config.num_steps_per_env):
+                profile_remaining = int(os.environ.get("HOLOSOMA_PROFILE_ROLLOUT_STEPS", "0") or 0)
+                profile_this_step = profile_remaining > 0
+                profile_sync = os.environ.get("HOLOSOMA_PROFILE_ROLLOUT_SYNC", "1") != "0"
+
+                def _profile_mark():
+                    if profile_this_step and profile_sync and torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                    return time.perf_counter()
+
+                t0 = _profile_mark()
                 # Environment step
                 actor_obs_raw = torch.cat([obs_dict[k] for k in self.actor_obs_keys], dim=1)
                 critic_obs_raw = torch.cat([obs_dict[k] for k in self.critic_obs_keys], dim=1)
                 actor_obs = self._normalize_actor_obs(actor_obs_raw)
                 critic_obs = self._normalize_critic_obs(critic_obs_raw)
+                t_obs = _profile_mark()
 
                 actions = self.actor.act({"actor_obs": actor_obs})
                 actions = self._finite_tensor(actions, clamp=10.0)
                 values = self._finite_tensor(self.critic.evaluate({"critic_obs": critic_obs}).detach(), clamp=1.0e4)
+                t_policy = _profile_mark()
 
                 obs_dict, rewards, dones, infos = self.env.step({"actions": actions})
+                t_env = _profile_mark()
 
                 for obs_key in obs_dict:
                     obs_dict[obs_key] = self._finite_tensor(obs_dict[obs_key].to(self.device), clamp=1.0e6)
                 rewards, dones = rewards.to(self.device), dones.to(self.device)
                 rewards = self._finite_tensor(rewards, clamp=1.0e4)
+                t_post_env = _profile_mark()
 
                 # Compute bootstrap value for timeouts
                 final_rewards = torch.zeros_like(rewards)
@@ -434,6 +469,7 @@ class PPO(BaseAlgo):
                 actions_log_prob = self._finite_tensor(
                     self.actor.get_actions_log_prob(actions).detach().unsqueeze(1), clamp=1.0e4
                 )
+                t_logprob = _profile_mark()
 
                 # Add transition to storage
                 self.storage.add(
@@ -449,14 +485,33 @@ class PPO(BaseAlgo):
                     rewards=self._finite_tensor(rewards + final_rewards, clamp=1.0e4).view(-1, 1),
                     dones=dones.view(-1, 1),
                 )
+                t_store = _profile_mark()
 
                 # Reset actor and critic for completed envs
                 self.actor.reset(dones)
                 self.critic.reset(dones)
+                t_reset = _profile_mark()
 
                 if self.log_dir is not None:
                     # Update episode stats using logging helper
                     self.logging_helper.update_episode_stats(rewards, dones, infos)
+                t_log = _profile_mark()
+
+                if profile_this_step:
+                    logger.info(
+                        "Rollout profile step: obs={:.4f}s policy={:.4f}s env={:.4f}s post_env={:.4f}s "
+                        "logprob={:.4f}s store={:.4f}s reset={:.4f}s log={:.4f}s total={:.4f}s",
+                        t_obs - t0,
+                        t_policy - t_obs,
+                        t_env - t_policy,
+                        t_post_env - t_env,
+                        t_logprob - t_post_env,
+                        t_store - t_logprob,
+                        t_reset - t_store,
+                        t_log - t_reset,
+                        t_log - t0,
+                    )
+                    os.environ["HOLOSOMA_PROFILE_ROLLOUT_STEPS"] = str(profile_remaining - 1)
 
             # Return / Advantage computation
             last_critic_obs = torch.cat([obs_dict[k] for k in self.critic_obs_keys], dim=1)
@@ -691,6 +746,25 @@ class PPO(BaseAlgo):
             - self.config.entropy_coef * entropy_loss
             + self.config.symmetry_actor_coef * symmetry_actor_loss
         )
+        anchor_kl = torch.zeros((), dtype=torch.float32, device=self.device)
+        anchor_kl_loss = torch.zeros((), dtype=torch.float32, device=self.device)
+        if self.anchor_actor is not None and self.config.anchor_kl_coef > 0.0:
+            with torch.no_grad():
+                self.anchor_actor.act({"actor_obs": actor_obs[:original_batch_size]})
+                anchor_mu_batch = self.anchor_actor.action_mean.detach()
+                anchor_sigma_batch = self.anchor_actor.action_std.detach()
+
+            action_dim = min(mu_batch.shape[-1], anchor_mu_batch.shape[-1])
+            student_mu = self._finite_tensor(mu_batch[:, :action_dim], clamp=10.0)
+            student_sigma = self._finite_tensor(sigma_batch[:, :action_dim], fill=1.0, clamp=10.0).clamp_min(1.0e-6)
+            anchor_mu = self._finite_tensor(anchor_mu_batch[:, :action_dim], clamp=10.0)
+            anchor_sigma = self._finite_tensor(
+                anchor_sigma_batch[:, :action_dim], fill=1.0, clamp=10.0
+            ).clamp_min(1.0e-6)
+            anchor_kl = kl_divergence(Normal(student_mu, student_sigma), Normal(anchor_mu, anchor_sigma)).sum(-1).mean()
+            anchor_kl = self._finite_tensor(anchor_kl, clamp=1.0e4).clamp(min=0.0)
+            anchor_kl_loss = self.config.anchor_kl_coef * anchor_kl
+            actor_loss = actor_loss + anchor_kl_loss
 
         critic_loss = self.config.value_loss_coef * value_loss + self.config.symmetry_critic_coef * symmetry_critic_loss
         actor_loss = self._finite_tensor(actor_loss, clamp=1.0e6)
@@ -699,16 +773,21 @@ class PPO(BaseAlgo):
         surrogate_loss = self._finite_tensor(surrogate_loss, clamp=1.0e6)
         entropy_loss = self._finite_tensor(entropy_loss, clamp=1.0e6)
 
-        return {
+        losses = {
             "actor_loss": actor_loss,
             "critic_loss": critic_loss,
-            "symmetry_actor_loss": symmetry_actor_loss,
-            "symmetry_critic_loss": symmetry_critic_loss,
             "value_loss": value_loss,
             "surrogate_loss": surrogate_loss,
             "entropy_loss": entropy_loss,
             "kl_mean": kl_mean,
         }
+        if self.use_symmetry:
+            losses["symmetry_actor_loss"] = symmetry_actor_loss
+            losses["symmetry_critic_loss"] = symmetry_critic_loss
+        if self.anchor_actor is not None and self.config.anchor_kl_coef > 0.0:
+            losses["anchor_kl"] = anchor_kl.detach()
+            losses["anchor_kl_loss"] = anchor_kl_loss.detach()
+        return losses
 
     def _compute_kl_div(self, old_mu_batch, old_sigma_batch, mu_batch, sigma_batch) -> torch.Tensor:
         with torch.inference_mode():
@@ -740,7 +819,7 @@ class PPO(BaseAlgo):
     def load(self, ckpt_path: str | None) -> dict | None:
         if ckpt_path is not None:
             logger.info(f"Loading checkpoint from {ckpt_path}")
-            loaded_dict = torch.load(ckpt_path, map_location=self.device)
+            loaded_dict = self._load_checked_checkpoint(ckpt_path)
             self.actor.load_state_dict(loaded_dict["actor_model_state_dict"])
             self.critic.load_state_dict(loaded_dict["critic_model_state_dict"])
             if self.empirical_normalization and loaded_dict.get("actor_obs_normalizer_state_dict") is not None:
@@ -873,6 +952,14 @@ class PPO(BaseAlgo):
             write_probe_distribution = getattr(motion_command, "write_start_probe_distribution", None)
             if callable(write_probe_distribution):
                 write_probe_distribution(self.log_dir, it, interval=100)
+            write_group_probe_distribution = getattr(motion_command, "write_group_probe_distribution", None)
+            if callable(write_group_probe_distribution):
+                write_group_probe_distribution(self.log_dir, it, interval=100)
+            write_completion_learning_distribution = getattr(
+                motion_command, "write_completion_learning_distribution", None
+            )
+            if callable(write_completion_learning_distribution):
+                write_completion_learning_distribution(self.log_dir, it, interval=100)
             write_failure_window_distribution = getattr(
                 motion_command, "write_failure_window_distribution", None
             )
@@ -988,6 +1075,8 @@ class PPO(BaseAlgo):
             actor_state = self._pre_eval_env_step(actor_state)
             actor_state = self.env_step(actor_state)
             actor_state = self._post_eval_env_step(actor_state)
+            if actor_state.get("stop"):
+                break
 
         self._post_evaluate_policy()
 

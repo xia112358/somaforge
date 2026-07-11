@@ -142,6 +142,37 @@ def test_episode_stats_update(logging_helper):
     assert logging_helper.raw_ep_infos[0]["raw_test_metric"].item() == 2.0
 
 
+def test_raw_episode_metrics_are_tensorboard_only(logging_helper):
+    logging_helper.ep_infos = [{"weighted": torch.tensor([1.0])}]
+    logging_helper.raw_ep_infos = [{"raw": torch.tensor([2.0])}]
+
+    console, scalars = logging_helper._log_episode_info()
+
+    assert "Mean episode weighted" in console
+    assert "raw" not in console
+    assert scalars["Episode/weighted"] == 1.0
+    assert scalars["RawEpisode/raw"] == 2.0
+
+
+def test_component_losses_are_tensorboard_only(logging_helper):
+    console = logging_helper._create_console_output(
+        it=0,
+        loss_dict={"Value": 1.0, "Surrogate": 2.0, "Entropy": 3.0, "KL": 4.0},
+        env_log_dict={},
+        extra_log_dicts={},
+        ep_string="",
+        width=80,
+        pad=35,
+        iteration_time=0.0,
+        fps=1,
+    )
+
+    assert "Value:" not in console
+    assert "Surrogate:" not in console
+    assert "Entropy:" in console
+    assert "KL:" in console
+
+
 def test_wandb_logging(prefixed_logging_helper, mock_wandb):
     """Test that metrics are properly logged to wandb when available."""
     # Add some episode info to avoid empty list error

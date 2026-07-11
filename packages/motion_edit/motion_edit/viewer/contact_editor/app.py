@@ -38,6 +38,7 @@ from motion_edit.workbench import (
 from motion_edit.workbench.contact_editor_setup import ContactEditorConfig, infer_terrain_urdf, prepare_contact_editor_session as prepare_contact_editor_workbench_session
 from motion_edit.workbench.recent import RecentMotionEntry, recent_entry_labels, read_recent_motions, upsert_recent_motion
 from motion_edit.workbench.surface_editor_session import SurfaceEditorSession
+from somaforge_core.robot_assets import canonical_g1_urdf_path, somaforge_root
 
 
 STATUS_COLORS: dict[str, tuple[int, int, int]] = {
@@ -1103,7 +1104,7 @@ def _setup_load_suffixes(load_type: str) -> tuple[str, ...]:
 
 
 def _setup_load_roots(load_type: str) -> list[Path]:
-    repo = Path.cwd()
+    repo = somaforge_root()
     candidates: list[Path]
     if load_type == "Motion":
         candidates = [MOTIONS_ROOT]
@@ -1111,15 +1112,15 @@ def _setup_load_roots(load_type: str) -> list[Path]:
         candidates = [
             repo,
             repo / "data",
-            Path("/home/xiaz/holosoma_isaaclab3_newton/tmp"),
-            Path("/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/data"),
+            repo / "tmp",
+            repo / "OmniRetarget_Dataset/data",
         ]
     elif load_type == "Contact Layer":
         candidates = [LAYERS_ROOT / "contact"]
     elif load_type == "Terrain URDF":
         candidates = [
             repo,
-            Path("/home/xiaz/holosoma_isaaclab3_newton/OmniRetarget_Dataset/models/terrain"),
+            repo / "OmniRetarget_Dataset/models/terrain",
         ]
     elif load_type == "Surface Catalog":
         candidates = [repo / "data" / "surfaces"]
@@ -1482,8 +1483,11 @@ def _loaded_editor_command_from_config(
 ) -> tuple[list[str], Any]:
     prepared = prepare_contact_editor_workbench_session(config)
     terrain_urdf_for_viewer = infer_terrain_urdf(config)
-    repo_path = Path(config.repo_root).expanduser() if config.repo_root else Path("/home/xiaz/holosoma_isaaclab3_newton")
-    resolved_robot_urdf = Path(robot_urdf).expanduser() if robot_urdf else repo_path / "OmniRetarget_Dataset/models/g1/g1_29dof_spherehand.urdf"
+    resolved_robot_urdf = (
+        Path(robot_urdf).expanduser()
+        if robot_urdf
+        else canonical_g1_urdf_path()
+    )
     cmd = [
         sys.executable,
         "-m",
@@ -2545,8 +2549,7 @@ def run_contact_editor_setup_player(args: argparse.Namespace, viser: Any) -> Non
     def _load_config(config: ContactEditorConfig) -> None:
         _set_status("loading contact editor: preparing session and overlays...")
         next_state, prepared, terrain_urdf_for_viewer = _prepared_state_from_config(config)
-        repo_path = Path(config.repo_root).expanduser() if config.repo_root else Path("/home/xiaz/holosoma_isaaclab3_newton")
-        robot_urdf = repo_path / "OmniRetarget_Dataset/models/g1/g1_29dof_spherehand.urdf"
+        robot_urdf = canonical_g1_urdf_path()
         object_urdf = config.terrain_urdf or terrain_urdf_for_viewer
         _set_status("loading contact editor: rendering motion and contact anchors...")
         motion_fps = _replace_motion_visuals(

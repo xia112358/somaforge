@@ -27,6 +27,11 @@ from motion_edit.schema import SegmentRecord
 from motion_edit.storage.canonical import segments_from_contact_transitions, write_motion_version_with_canonical_segments
 from motion_edit.storage.io import write_motion_version
 from motion_edit.storage.schema import MotionVersionRecord
+from somaforge_core.robot_assets import (
+    canonical_g1_asset_metadata,
+    decode_robot_asset_json,
+    encode_robot_asset_json,
+)
 
 
 @dataclass(frozen=True)
@@ -235,6 +240,23 @@ def _recompute_linear_velocity(position: np.ndarray, fps: float, dtype: np.dtype
 def _load_motion_npz(path: str | Path) -> dict[str, Any]:
     with np.load(Path(path).expanduser(), allow_pickle=True) as data:
         return {key: data[key] for key in data.files}
+
+
+def _validate_source_robot_asset(path: Path) -> None:
+    with np.load(path, allow_pickle=False) as data:
+        value = data["robot_asset_json"] if "robot_asset_json" in data.files else None
+    decode_robot_asset_json(value, context=f"source motion {path}")
+
+
+def _stamp_robot_asset(payload: dict[str, Any]) -> dict[str, Any]:
+    output = dict(payload)
+    metadata = canonical_g1_asset_metadata()
+    output["robot_asset_json"] = np.asarray(encode_robot_asset_json(metadata))
+    if "motion_edit_generation_metadata" in output:
+        generation_metadata = json.loads(np.asarray(output["motion_edit_generation_metadata"]).item())
+        generation_metadata["robot_asset"] = metadata
+        output["motion_edit_generation_metadata"] = _json_npz_value(generation_metadata)
+    return output
 
 
 def _import_legacy_lte_module(lte_repo_root: str | Path | None) -> Any:
@@ -1078,6 +1100,7 @@ def apply_contact_edit_plan_to_motion(
     source_motion = Path(plan.source_motion_path).expanduser()
     if not source_motion.exists():
         raise FileNotFoundError(source_motion)
+    _validate_source_robot_asset(source_motion)
     graph = read_contact_graph(layers_root / (source_contact_layer or plan.source_contact_layer), plan.source_motion_id)
     edits = [ContactAnchorEditRecord(**raw) for raw in plan.edits]
     if mode == "lte_fullbody":
@@ -1162,7 +1185,7 @@ def apply_contact_edit_plan_to_motion(
                 generated["motion_edit_generation_metadata"] = _json_npz_value(final_metadata)
                 warnings = final_metadata.get("warnings", warnings)
             out.parent.mkdir(parents=True, exist_ok=True)
-            np.savez(out, **generated)
+            np.savez(out, **_stamp_robot_asset(generated))
             edited_graph = _apply_anchor_edits_to_graph(graph, edits)
             if output_contact_layer:
                 write_contact_layer(layers_root / output_contact_layer, edited_graph)
@@ -1272,7 +1295,7 @@ def apply_contact_edit_plan_to_motion(
         generated["source_motion_path"] = np.asarray(str(source_motion), dtype=object)
         generated["source_contact_edit_plan"] = np.asarray(plan.plan_id, dtype=object)
         out.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(out, **generated)
+        np.savez(out, **_stamp_robot_asset(generated))
         edited_graph = _apply_anchor_edits_to_graph(graph, edits)
         if output_contact_layer:
             write_contact_layer(layers_root / output_contact_layer, edited_graph)
@@ -1386,7 +1409,7 @@ def apply_contact_edit_plan_to_motion(
     generated["source_motion_path"] = np.asarray(str(source_motion), dtype=object)
     generated["source_contact_edit_plan"] = np.asarray(plan.plan_id, dtype=object)
     out.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(out, **generated)
+    np.savez(out, **_stamp_robot_asset(generated))
 
     edited_graph = _apply_anchor_edits_to_graph(graph, edits)
     if output_contact_layer:

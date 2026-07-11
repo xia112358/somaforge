@@ -10,6 +10,7 @@ import torch.nn.functional as F
 
 from .data import NormStats
 from .models import GMVQAutoEncoder
+from somaforge_core.robot_assets import validate_g1_asset_metadata
 
 
 def _mlp(in_dim: int, out_dim: int, hidden_dim: int) -> nn.Sequential:
@@ -37,6 +38,12 @@ class FrozenGMVQCodec(nn.Module):
     ) -> None:
         super().__init__()
         ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
+        validate_g1_asset_metadata(ckpt.get("robot_asset"), context=f"GMVQ checkpoint {checkpoint}")
+        contact_provenance = ckpt.get("contact_force_provenance")
+        if not isinstance(contact_provenance, dict) or contact_provenance.get("source_backend") != "isaaclab3_newton_mjwarp":
+            raise ValueError(f"GMVQ checkpoint {checkpoint} has no Newton contact-force provenance")
+        self.robot_asset = dict(ckpt["robot_asset"])
+        self.contact_force_provenance = dict(contact_provenance)
         cfg = ckpt["model_config"]
         self.model = GMVQAutoEncoder(**cfg)
         self.model.load_state_dict(ckpt["model_state"])

@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from train_motion_edit_force_zero_start import REPO_ROOT, _build_command
+from train_motion_edit_force_zero_start import DEFAULT_PROJECT, REPO_ROOT, _build_command
 
 
 DEFAULT_RUN_NAME = "motion_edit_force_ref_zero_start_sharded"
@@ -64,14 +64,14 @@ def _checkpoint_iteration(path: Path) -> int:
     return int(match.group(1))
 
 
-def _latest_checkpoint_for_run(run_name: str) -> Path:
-    log_root = REPO_ROOT / "logs" / "WholeBodyTracking"
+def _latest_checkpoint_for_run(run_name: str, project: str) -> Path:
+    log_root = REPO_ROOT / "logs" / project
     run_dirs = sorted(
         log_root.glob(f"*-{run_name}-locomotion"),
         key=lambda p: p.stat().st_mtime,
     )
     if not run_dirs:
-        raise FileNotFoundError(f"No log directory found for training name {run_name!r}")
+        raise FileNotFoundError(f"No log directory found for project {project!r}, training name {run_name!r}")
     checkpoints = sorted(run_dirs[-1].glob("model_*.pt"), key=_checkpoint_iteration)
     if not checkpoints:
         raise FileNotFoundError(f"No model_*.pt checkpoint found in {run_dirs[-1]}")
@@ -94,7 +94,18 @@ def _build_shard_command(
         iterations=iterations,
         learning_rate=args.learning_rate,
         save_interval=args.save_interval,
+        reset_sampler=args.reset_sampler,
+        start_at_timestep_zero_prob=args.start_at_timestep_zero_prob,
+        load_optimizer=args.load_optimizer,
+        init_at_random_ep_len=args.init_at_random_ep_len,
+        use_start_probe_envs=args.use_start_probe_envs,
+        probe_env_per_motion=args.probe_env_per_motion,
+        group_probe=args.group_probe,
+        group_probe_by=args.group_probe_by,
+        probe_env_per_group=args.probe_env_per_group,
+        group_variant_sample_count=args.group_variant_sample_count,
         canonicalize_motion_order_on_load=args.canonicalize_motion_order_on_load,
+        project=args.project,
         name=name,
         gui=args.gui,
     )
@@ -110,12 +121,33 @@ def main() -> None:
     parser.add_argument("--iterations-per-shard", type=int)
     parser.add_argument("--learning-rate", type=float, default=1.0e-4)
     parser.add_argument("--save-interval", type=int, default=100)
+    parser.add_argument("--reset-sampler", default="hotspot_failure_window")
+    parser.add_argument("--start-at-timestep-zero-prob", type=float, default=0.2)
+    parser.add_argument("--load-optimizer", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--init-at-random-ep-len", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--use-start-probe-envs", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--probe-env-per-motion", type=int, default=0)
+    parser.add_argument(
+        "--group-probe",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable group-balanced probe envs for motion-edit generated variants.",
+    )
+    parser.add_argument("--group-probe-by", choices=("terrain_id", "climb_id"), default="terrain_id")
+    parser.add_argument("--probe-env-per-group", type=int, default=8)
+    parser.add_argument(
+        "--group-variant-sample-count",
+        type=int,
+        default=0,
+        help="Limit each group to this many random motion variants per reset batch; 0 uses all variants.",
+    )
     parser.add_argument(
         "--canonicalize-motion-order-on-load",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Preorder loaded motion tensors for this force-ref finetune experiment.",
     )
+    parser.add_argument("--project", default=DEFAULT_PROJECT, help="Local log project under logs/.")
     parser.add_argument("--name", default=DEFAULT_RUN_NAME)
     parser.add_argument("--start-shard", type=int, default=0)
     parser.add_argument("--num-shards", type=int)
@@ -160,7 +192,7 @@ def main() -> None:
         if args.dry_run:
             continue
         subprocess.run(cmd, cwd=REPO_ROOT, check=True)
-        current_checkpoint = _latest_checkpoint_for_run(run_name)
+        current_checkpoint = _latest_checkpoint_for_run(run_name, args.project)
         print(f"Next checkpoint: {current_checkpoint}", flush=True)
 
     if not args.dry_run:

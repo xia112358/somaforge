@@ -9,6 +9,7 @@ import torch
 
 from holosoma.config_types.reward import RewardTermCfg
 from holosoma.managers.command.terms.wbt import CONTACT_FORCE_PART_ORDER, MotionCommand
+from somaforge_core.contact_schema import CONTACT_FORCE_PART_BODY_NAMES
 from holosoma.managers.reward.base import RewardTermBase
 from holosoma.utils.rotations import get_euler_xyz_in_tensor, quat_error_magnitude
 
@@ -132,8 +133,22 @@ DEFAULT_A2A_TRACKING_BODY_NAMES = (
 )
 
 DEFAULT_A2A_PART_BODY_NAMES = (
-    ("left_ankle_roll_link",),
-    ("right_ankle_roll_link",),
+    (
+        "left_ankle_roll_link",
+        "left_ankle_roll_sphere_1_link",
+        "left_ankle_roll_sphere_2_link",
+        "left_ankle_roll_sphere_3_link",
+        "left_ankle_roll_sphere_4_link",
+        "left_ankle_roll_sphere_5_link",
+    ),
+    (
+        "right_ankle_roll_link",
+        "right_ankle_roll_sphere_1_link",
+        "right_ankle_roll_sphere_2_link",
+        "right_ankle_roll_sphere_3_link",
+        "right_ankle_roll_sphere_4_link",
+        "right_ankle_roll_sphere_5_link",
+    ),
     ("left_wrist_yaw_link",),
     ("right_wrist_yaw_link",),
     ("left_knee_link",),
@@ -141,12 +156,20 @@ DEFAULT_A2A_PART_BODY_NAMES = (
 )
 CONTACT_FORCE_PART_INDICES = tuple(range(len(CONTACT_FORCE_PART_ORDER)))
 
+DEFAULT_CONTACT_FORCE_PART_BODY_NAMES = tuple(
+    CONTACT_FORCE_PART_BODY_NAMES[part] for part in CONTACT_FORCE_PART_ORDER
+)
+
 
 PROTO_PART_ALIASES = {
-    "left_foot": ("left_ankle_roll_link", "left_foot_contact_point"),
-    "right_foot": ("right_ankle_roll_link", "right_foot_contact_point"),
-    "left_hand": ("left_wrist_yaw_link",),
-    "right_hand": ("right_wrist_yaw_link",),
+    "left_heel": ("left_ankle_roll_sphere_1_link", "left_ankle_roll_sphere_2_link"),
+    "left_toe": ("left_ankle_roll_sphere_3_link", "left_ankle_roll_sphere_4_link", "left_ankle_roll_sphere_5_link"),
+    "right_heel": ("right_ankle_roll_sphere_1_link", "right_ankle_roll_sphere_2_link"),
+    "right_toe": ("right_ankle_roll_sphere_3_link", "right_ankle_roll_sphere_4_link", "right_ankle_roll_sphere_5_link"),
+    "left_foot": ("left_ankle_roll_link", "left_ankle_roll_sphere_1_link", "left_foot_contact_point"),
+    "right_foot": ("right_ankle_roll_link", "right_ankle_roll_sphere_1_link", "right_foot_contact_point"),
+    "left_hand": CONTACT_FORCE_PART_BODY_NAMES["LH"],
+    "right_hand": CONTACT_FORCE_PART_BODY_NAMES["RH"],
     "left_knee": ("left_knee_link",),
     "right_knee": ("right_knee_link",),
     "left_hip": ("left_hip_roll_link",),
@@ -626,9 +649,14 @@ def _a2a_part_body_values(values: torch.Tensor, groups: list[torch.Tensor], redu
 def _part_contact_force_magnitude(
     env: WholeBodyTrackingManager,
     part_body_names: Sequence[Sequence[str]] | None = None,
-    force_reduce: str = "max",
+    force_reduce: str = "sum",
 ) -> torch.Tensor:
-    groups = _a2a_body_groups(env, part_body_names)
+    if force_reduce in {"sum", "mean"}:
+        return torch.norm(
+            _part_contact_force_vector(env, part_body_names, force_reduce=force_reduce),
+            dim=-1,
+        )
+    groups = _a2a_body_groups(env, part_body_names or DEFAULT_CONTACT_FORCE_PART_BODY_NAMES)
     body_force = torch.norm(env.simulator.contact_forces_history, dim=-1).max(dim=1)[0]
     return _a2a_part_body_values(body_force, groups, reduce=force_reduce)
 
@@ -636,9 +664,9 @@ def _part_contact_force_magnitude(
 def _part_contact_force_vector(
     env: WholeBodyTrackingManager,
     part_body_names: Sequence[Sequence[str]] | None = None,
-    force_reduce: str = "max",
+    force_reduce: str = "sum",
 ) -> torch.Tensor:
-    groups = _a2a_body_groups(env, part_body_names)
+    groups = _a2a_body_groups(env, part_body_names or DEFAULT_CONTACT_FORCE_PART_BODY_NAMES)
     body_force_history = env.simulator.contact_forces_history
     body_force_magnitude_history = torch.norm(body_force_history, dim=-1)
     history_index = body_force_magnitude_history.argmax(dim=1)
@@ -971,7 +999,7 @@ def motion_contact_force_magnitude_error_exp(
     contact_threshold: float = 10.0,
     part_body_names: Sequence[Sequence[str]] | None = None,
     part_indices: Sequence[int] = CONTACT_FORCE_PART_INDICES,
-    force_reduce: str = "max",
+    force_reduce: str = "sum",
 ) -> torch.Tensor:
     """Track rollout-derived true contact-force magnitudes with an exponential kernel."""
     motion_command = _get_motion_command_and_assert_type(env)
@@ -991,7 +1019,7 @@ def motion_contact_force_relative_magnitude_error_exp(
     contact_threshold: float = 10.0,
     part_body_names: Sequence[Sequence[str]] | None = None,
     part_indices: Sequence[int] = CONTACT_FORCE_PART_INDICES,
-    force_reduce: str = "max",
+    force_reduce: str = "sum",
 ) -> torch.Tensor:
     """Track contact-force magnitudes by relative error with an exponential kernel."""
     motion_command = _get_motion_command_and_assert_type(env)
@@ -1013,7 +1041,7 @@ def motion_contact_force_relative_vector_error_exp(
     contact_threshold: float = 10.0,
     part_body_names: Sequence[Sequence[str]] | None = None,
     part_indices: Sequence[int] = CONTACT_FORCE_PART_INDICES,
-    force_reduce: str = "max",
+    force_reduce: str = "sum",
 ) -> torch.Tensor:
     """Track rollout-derived true contact-force vectors by relative 3D error."""
     motion_command = _get_motion_command_and_assert_type(env)
@@ -1035,7 +1063,7 @@ def motion_contact_force_unexpected_contact(
     contact_threshold: float = 10.0,
     part_body_names: Sequence[Sequence[str]] | None = None,
     part_indices: Sequence[int] = CONTACT_FORCE_PART_INDICES,
-    force_reduce: str = "max",
+    force_reduce: str = "sum",
 ) -> torch.Tensor:
     """Penalize true part contacts when the rollout demo has no contact for that part."""
     motion_command = _get_motion_command_and_assert_type(env)

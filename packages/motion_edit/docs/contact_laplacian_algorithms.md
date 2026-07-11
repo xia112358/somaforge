@@ -1,7 +1,7 @@
 # Contact Laplacian Editing Algorithms
 
 This document describes the two Laplacian-style residual families that should
-coexist in the geometry stage of motion_edit's force-centered `generate-ref`
+coexist in the geometry stage of Motion Edit's contact-centered `generate-ref`
 pipeline:
 
 1. task-space contact-handle LTE over semantic keypoints;
@@ -202,7 +202,8 @@ to produce a generated motion npz.
 
 `motion-edit generate-ref` uses this ContactEditPlan-driven path with both
 edited and fixed contact handles, then passes the dense task-space target to
-fullbody IK and the contact-force retarget writer. The hidden
+fullbody IK. Production contact forces are collected later by a Newton policy
+rollout; this geometry stage does not solve contact dynamics. The hidden
 `generate-lte-augmentation --mode lte_fullbody` command can still run the same
 geometry stage for diagnostics. The generation metadata should record:
 
@@ -225,7 +226,7 @@ is the direction for the experimental batch contact-Laplacian backend.
 Relevant implementation source:
 
 ```text
-/home/xiaz/holosoma_isaaclab3_newton/src/holosoma_retargeting/holosoma_retargeting/src/interaction_mesh_retargeter.py
+/home/xiaz/somaforge/src/holosoma_retargeting/holosoma_retargeting/src/interaction_mesh_retargeter.py
 ```
 
 That code is not a direct drop-in replacement for `motion_edit` generation. It

@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Iterable
 
 import numpy as np
+from somaforge_core.contact_schema import decode_contact_force_provenance, encode_contact_force_provenance
+from somaforge_core.robot_assets import decode_robot_asset_json, encode_robot_asset_json
 
 
 @dataclass(frozen=True)
@@ -20,6 +22,7 @@ class PreparedSegment:
     start_frame: int
     end_frame: int
     active_body: str
+    contact_force_provenance_json: str
 
 
 def _iter_jsonl_paths(path: Path) -> list[Path]:
@@ -216,6 +219,15 @@ def _prepare_record(
         raise FileNotFoundError(path)
 
     with np.load(path, allow_pickle=True) as data:
+        value = data["robot_asset_json"] if "robot_asset_json" in data.files else None
+        decode_robot_asset_json(value, context=f"motion {path}")
+        contact_provenance = decode_contact_force_provenance(
+            data["contact_force_provenance_json"]
+            if "contact_force_provenance_json" in data.files
+            else None,
+            context=f"motion {path}",
+            require_newton=True,
+        )
         feature = _feature_slice(data, feature_keys, start, end)
     if feature.shape[0] != length:
         raise ValueError(
@@ -240,6 +252,7 @@ def _prepare_record(
         start_frame=start,
         end_frame=end,
         active_body=str(metadata.get("active_body") or ""),
+        contact_force_provenance_json=encode_contact_force_provenance(contact_provenance),
     )
 
 
@@ -424,7 +437,11 @@ def write_npz(path: str | Path, prepared: list[PreparedSegment], *, feature_keys
         start_frames=np.asarray([item.start_frame for item in prepared], dtype=np.int64),
         end_frames=np.asarray([item.end_frame for item in prepared], dtype=np.int64),
         active_bodies=np.asarray([item.active_body for item in prepared]),
+        contact_force_provenance_json=np.asarray(
+            [item.contact_force_provenance_json for item in prepared]
+        ),
         stats_json=np.asarray(json.dumps(stats, sort_keys=True)),
+        robot_asset_json=np.asarray(encode_robot_asset_json()),
     )
     return out
 

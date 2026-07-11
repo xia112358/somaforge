@@ -43,7 +43,7 @@ def apply_contact_aware_edit_plan_to_motion(
     force_unit_scale: float = 1.0,
     force_retarget_max_force_norm: float | None = 5000.0,
     force_retarget_smoothing_window: int = 3,
-    force_policy_ref_compat: str = "wbt_contact_force_6part",
+    force_policy_ref_compat: str = "wbt_contact_force_8part",
     overwrite: bool = False,
     _generation_fn: Callable[..., LteGenerationResult] | None = None,
     _force_bake_fn: Callable[..., ContactForceBakeResult] | None = None,
@@ -52,10 +52,9 @@ def apply_contact_aware_edit_plan_to_motion(
     """Run contact-aware force-ref generation: kinematics first, force reference second.
 
     Geometry retargeting remains delegated to the existing fullbody generation
-    path. The force stage can be a prescribed-contact diagnostic solve or
-    contact-phase force retargeting; neither mode runs a rollout or feeds forces
-    back into the body state. The formal CLI uses retarget mode through
-    ``motion-edit generate-ref``.
+    path. The force stage uses a prescribed-state contact solve and does not run
+    a rollout or feed forces back into the body state. The formal CLI uses the
+    canonical spherehand MuJoCo model through ``motion-edit generate-ref``.
     """
 
     generator = _generation_fn or apply_contact_edit_plan_to_motion

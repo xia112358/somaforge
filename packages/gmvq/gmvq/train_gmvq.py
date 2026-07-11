@@ -7,8 +7,9 @@ from types import SimpleNamespace
 
 import torch
 from torch.utils.data import DataLoader
+from somaforge_core import stage_spec
 
-from .data import build_dataset
+from .data import build_dataset, load_contact_force_provenance, load_robot_asset_metadata
 from .losses import compute_loss
 from .models import GMVQAutoEncoder
 
@@ -61,6 +62,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    stage_spec("gmvq")
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -71,6 +73,8 @@ def main() -> None:
         t=args.t,
         d=args.d,
     )
+    robot_asset = None if args.synthetic else load_robot_asset_metadata(args.data)
+    contact_force_provenance = None if args.synthetic else load_contact_force_provenance(args.data)
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=False)
     iterator = iter(loader)
 
@@ -135,6 +139,8 @@ def main() -> None:
         "uses_valid_mask": uses_valid_mask,
         "norm_stats": None if stats is None else {"mean": stats.mean.cpu(), "std": stats.std.cpu()},
         "last_metrics": {k: v.cpu() for k, v in last_metrics.items()},
+        "robot_asset": robot_asset,
+        "contact_force_provenance": contact_force_provenance,
     }
     torch.save(ckpt, save_dir / "checkpoint.pt")
     with (save_dir / "config.json").open("w", encoding="utf-8") as f:

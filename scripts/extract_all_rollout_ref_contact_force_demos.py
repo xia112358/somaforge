@@ -14,42 +14,20 @@ from typing import Any
 
 import numpy as np
 
+from somaforge_core import decode_contact_force_provenance, sha256_file
+from holosoma.utils.motion_terrain_manifest import load_motion_terrain_manifest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLIMB_RE = re.compile(r"climb[_-](\d+)")
 
-DEFAULT_BASE_MANIFEST = REPO_ROOT / "configs/motion_matched/climb29_z1_unmasked_manifest.json"
-DEFAULT_WORK_DIR = REPO_ROOT / "logs/rollout_ref_contact_force_extract"
-DEFAULT_OUTPUT_DIR = REPO_ROOT / "data/rollout_ref_contact_force_demos"
-DEFAULT_MANIFEST_OUTPUT = REPO_ROOT / "configs/motion_matched/climb29_z1_rollout_ref_contact_force_manifest.json"
-DEFAULT_FAILURE_REPORT = REPO_ROOT / "logs/rollout_ref_contact_force_extract/failures.json"
+DEFAULT_BASE_MANIFEST = REPO_ROOT / "runtime/current/manifests/omniretarget_baseline_29.json"
+DEFAULT_WORK_DIR = REPO_ROOT / "runtime/current/rollout/newton_contact_force"
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "runtime/current/motions/newton_contact_force"
+DEFAULT_MANIFEST_OUTPUT = REPO_ROOT / "runtime/current/manifests/newton_contact_force_8part.json"
+DEFAULT_FAILURE_REPORT = REPO_ROOT / "runtime/current/rollout/newton_contact_force/failures.json"
 DEFAULT_CONDA_PYTHON = Path("/home/xiaz/miniforge3/envs/env_holosoma_isaaclab3_newton/bin/python")
 DEFAULT_PARALLEL_ENVS = 16
-
-DEFAULT_CHECKPOINT = (
-    REPO_ROOT
-    / "logs/WholeBodyTracking/20260601_124155-g1_29dof_wbt_manager-locomotion/model_16000.pt"
-)
-SPECIAL_CHECKPOINTS = {
-    0: REPO_ROOT
-    / "logs/WholeBodyTracking/20260531_102342-g1_29dof_wbt_manager-locomotion/model_09999.pt",
-    13: REPO_ROOT
-    / "logs/WholeBodyTracking/20260603_061801-g1_29dof_wbt_single_climb13_4096_10k_h20-locomotion/model_09999.pt",
-    21: REPO_ROOT
-    / "logs/WholeBodyTracking/20260604_061113-g1_29dof_wbt_single_climb21_actionscale025_4096_10k_h20-locomotion/model_09999.pt",
-    25: REPO_ROOT
-    / "logs/WholeBodyTracking/20260605_104652-g1_29dof_wbt_single_climb25_4096_10k_h20-locomotion/model_09999.pt",
-    26: REPO_ROOT
-    / "logs/WholeBodyTracking/20260605_181648-g1_29dof_wbt_single_climb26_4096_10k_h20-locomotion/model_09999.pt",
-    27: REPO_ROOT
-    / "logs/WholeBodyTracking/20260606_005611-g1_29dof_wbt_single_climb27_4096_10k_h20-locomotion/model_09999.pt",
-    28: REPO_ROOT
-    / "logs/WholeBodyTracking/20260606_090821-g1_29dof_wbt_single_climb28_4096_10k_h20-locomotion/model_09999.pt",
-}
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text())
 
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
@@ -70,10 +48,6 @@ def _climb_id(path_or_entry: str) -> int:
     return int(match.group(1))
 
 
-def _select_checkpoint(climb_id: int) -> Path:
-    return SPECIAL_CHECKPOINTS.get(climb_id, DEFAULT_CHECKPOINT)
-
-
 def _single_motion_manifest(
     base: dict[str, Any],
     base_manifest_path: Path,
@@ -88,11 +62,18 @@ def _single_motion_manifest(
     terrain_file = Path(str(terrain["terrain_file"]))
     if not terrain_file.is_absolute():
         terrain["terrain_file"] = str((base_manifest_path.parent / terrain_file).resolve())
+    motion = dict(motion_entry)
+    motion["motion_file"] = str(_resolve_manifest_path(Path(str(motion["motion_file"])), base_manifest_path))
+    if motion.get("source_file"):
+        motion["source_file"] = str(_resolve_manifest_path(Path(str(motion["source_file"])), base_manifest_path))
     return {
+        "schema": base.get("schema"),
         "schema_version": base.get("schema_version", 1),
         "description": f"Single-motion rollout-ref extraction manifest for climb {climb_id:02d}.",
+        "robot_asset_id": base.get("robot_asset_id"),
+        "kinematics_backend": base.get("kinematics_backend"),
         "terrains": [terrain],
-        "motion_files": [motion_entry],
+        "motion_files": [motion],
     }
 
 
@@ -118,6 +99,9 @@ def _subprocess_env() -> dict[str, str]:
     env.setdefault("MPLCONFIGDIR", str(REPO_ROOT / ".cache/matplotlib"))
     env.setdefault("WARP_CACHE_PATH", str(REPO_ROOT / ".cache/warp"))
     source_paths = [
+        str(REPO_ROOT / "packages/somaforge_core"),
+        str(REPO_ROOT / "packages/motion_edit"),
+        str(REPO_ROOT / "packages/gmvq"),
         str(REPO_ROOT / "src/holosoma"),
         str(REPO_ROOT / "src/holosoma_retargeting"),
         str(isaaclab_path / "source/isaaclab"),
@@ -202,7 +186,13 @@ def _extract_command(python_executable: str, motion_path: Path, recording_path: 
     ]
 
 
-def _build_output_manifest(base: dict[str, Any], output_dir: Path, output_manifest: Path, allow_missing: bool) -> None:
+def _build_output_manifest(
+    base: dict[str, Any],
+    base_manifest_path: Path,
+    output_dir: Path,
+    output_manifest: Path,
+    allow_missing: bool,
+) -> None:
     demo_by_id = {_climb_id(str(path)): path for path in sorted(output_dir.glob("climb_*_rollout_ref_contact_force.npz"))}
     motion_files = []
     missing = []
@@ -214,21 +204,51 @@ def _build_output_manifest(base: dict[str, Any], output_dir: Path, output_manife
             if allow_missing:
                 continue
             continue
+        with np.load(demo, allow_pickle=False) as data:
+            provenance = decode_contact_force_provenance(
+                data["contact_force_provenance_json"] if "contact_force_provenance_json" in data else None,
+                context=str(demo),
+            )
+        source_motion = _resolve_manifest_path(Path(str(entry["motion_file"])), base_manifest_path)
         motion_files.append(
             {
-                "motion_file": str(demo.resolve()),
+                "motion_id": entry.get("motion_id", cid),
+                "motion_file": os.path.relpath(demo.resolve(), output_manifest.parent.resolve()),
                 "terrain_id": entry["terrain_id"],
                 "weight": entry.get("weight", 1.0),
+                "source_file": os.path.relpath(source_motion, output_manifest.parent.resolve()),
+                "source_sha256": sha256_file(source_motion),
+                "motion_sha256": sha256_file(demo),
+                "kinematics_schema": entry.get("kinematics_schema"),
+                "kinematics_backend": entry.get("kinematics_backend", "isaaclab3_newton_fk"),
+                "contact_force_schema": provenance["schema"],
+                "contact_force_backend": provenance["source_backend"],
+                "contact_solver_sha256": provenance["solver_config_sha256"],
             }
         )
     if missing and not allow_missing:
         raise ValueError(f"Missing rollout-ref demos for climb ids: {sorted(missing)}")
+    terrains = []
+    for entry in base["terrains"]:
+        terrain = dict(entry)
+        terrain_path = _resolve_manifest_path(Path(str(terrain["terrain_file"])), base_manifest_path)
+        terrain["terrain_file"] = os.path.relpath(terrain_path, output_manifest.parent.resolve())
+        terrains.append(terrain)
     _write_json(
         output_manifest,
         {
+            "schema": "somaforge_motion_terrain_manifest_v1",
             "schema_version": base.get("schema_version", 1),
-            "description": "Rollout-ref contact-force manifest generated entirely from successful eval recordings.",
-            "terrains": base["terrains"],
+            "description": "Canonical 8-part contact-force manifest generated from successful Newton policy rollouts.",
+            "source_kind": "newton_policy_rollout_contact_force_8part",
+            "contact_force_schema": "somaforge_contact_force_8part_v1",
+            "contact_force_backend": "isaaclab3_newton_mjwarp",
+            "collision_pipeline": "newton",
+            "kinematics_backend": base.get("kinematics_backend", "isaaclab3_newton_fk"),
+            "robot_asset_id": base.get("robot_asset_id", "robot.g1.spherehand"),
+            "robot_asset": base.get("robot_asset", "g1_29dof_spherehand"),
+            "robot_asset_sha256": base.get("robot_asset_sha256"),
+            "terrains": terrains,
             "motion_files": motion_files,
         },
     )
@@ -238,6 +258,7 @@ def _build_output_manifest(base: dict[str, Any], output_dir: Path, output_manife
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-manifest", type=Path, default=DEFAULT_BASE_MANIFEST)
+    parser.add_argument("--checkpoint", type=Path, required=True, help="Current canonical baseline WBT checkpoint.")
     parser.add_argument("--work-dir", type=Path, default=DEFAULT_WORK_DIR)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--output-manifest", type=Path, default=DEFAULT_MANIFEST_OUTPUT)
@@ -265,8 +286,12 @@ def main() -> None:
         raise ValueError("--attempts must be at least 1.")
     if args.parallel_envs < 1:
         raise ValueError("--parallel-envs must be at least 1.")
+    checkpoint = args.checkpoint.expanduser().resolve()
+    if not args.dry_run and not checkpoint.is_file():
+        raise FileNotFoundError(f"Missing baseline checkpoint: {checkpoint}")
 
-    base = _read_json(args.base_manifest)
+    base_manifest_path = args.base_manifest.expanduser().resolve()
+    base = load_motion_terrain_manifest(str(base_manifest_path))
     selected = set(args.motion_id or [])
     manifest_dir = args.work_dir / "manifests"
     recording_dir = args.work_dir / "recordings"
@@ -280,23 +305,19 @@ def main() -> None:
         climb_id = _climb_id(str(motion_path))
         if selected and climb_id not in selected:
             continue
-        motion_npz_path = _resolve_manifest_path(motion_path, args.base_manifest)
+        motion_npz_path = _resolve_manifest_path(motion_path, base_manifest_path)
         with np.load(motion_npz_path) as motion_npz:
             motion_frame_count = int(motion_npz["joint_pos"].shape[0])
         eval_steps = int(args.max_eval_steps) if args.max_eval_steps is not None else max(motion_frame_count - 1, 1)
 
         single_manifest = manifest_dir / f"climb_{climb_id:02d}_manifest.json"
         output_path = args.output_dir / f"climb_{climb_id:02d}_rollout_ref_contact_force.npz"
-        _write_json(single_manifest, _single_motion_manifest(base, args.base_manifest, motion_entry, climb_id))
+        _write_json(single_manifest, _single_motion_manifest(base, base_manifest_path, motion_entry, climb_id))
 
         if args.skip_existing and output_path.exists():
             print(f"Skip existing {output_path}")
             successes.append({"climb_id": climb_id, "attempt": 0, "output": str(output_path)})
             continue
-
-        checkpoint = _select_checkpoint(climb_id)
-        if not checkpoint.exists():
-            raise FileNotFoundError(f"Missing checkpoint for climb {climb_id:02d}: {checkpoint}")
 
         if output_path.exists():
             output_path.unlink()
@@ -369,7 +390,13 @@ def main() -> None:
             print(f"FAILED climb_{climb_id:02d} after {args.attempts} attempts", flush=True)
 
     if not selected and not args.record_only:
-        _build_output_manifest(base, args.output_dir, args.output_manifest, allow_missing=True)
+        _build_output_manifest(
+            base,
+            base_manifest_path,
+            args.output_dir,
+            args.output_manifest,
+            allow_missing=args.allow_missing,
+        )
         _write_json(
             args.failure_report,
             {

@@ -49,7 +49,7 @@ MotionAsset / MotionVersion
 -> ContactGraph / surface binding
 -> Contact Editor
 -> ContactEditPlan
--> generate-lte-augmentation --mode lte_fullbody
+-> generate-ref
 -> generated MotionVersion
 ```
 
@@ -75,7 +75,7 @@ Expected:
 - Before merging to `main`, run:
 
 ```bash
-.venv/bin/python -m unittest discover -s tests
+conda run -n env_holosoma_isaaclab3_newton python -m unittest discover -s tests
 ```
 
 - Isaac Sim / CUDA failures inside Codex sandbox are expected; validate those on the local machine.
