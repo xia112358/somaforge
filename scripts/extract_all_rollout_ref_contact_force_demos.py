@@ -7,16 +7,20 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-
-from somaforge_core import decode_contact_force_provenance, sha256_file
 from holosoma.utils.motion_terrain_manifest import load_motion_terrain_manifest
-
+from somaforge_core import (
+    NEWTON_ROLLOUT_KINEMATICS_BACKEND,
+    decode_contact_force_provenance,
+    decode_kinematics_provenance,
+    sha256_file,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLIMB_RE = re.compile(r"climb[_-](\d+)")
@@ -57,7 +61,9 @@ def _single_motion_manifest(
     terrain_id = motion_entry["terrain_id"]
     terrains = [entry for entry in base["terrains"] if entry["terrain_id"] == terrain_id]
     if len(terrains) != 1:
-        raise ValueError(f"Expected exactly one terrain for climb {climb_id} terrain_id={terrain_id}, got {len(terrains)}")
+        raise ValueError(
+            f"Expected exactly one terrain for climb {climb_id} terrain_id={terrain_id}, got {len(terrains)}"
+        )
     terrain = dict(terrains[0])
     terrain_file = Path(str(terrain["terrain_file"]))
     if not terrain_file.is_absolute():
@@ -71,6 +77,9 @@ def _single_motion_manifest(
         "schema_version": base.get("schema_version", 1),
         "description": f"Single-motion rollout-ref extraction manifest for climb {climb_id:02d}.",
         "robot_asset_id": base.get("robot_asset_id"),
+        "robot_asset_sha256": base.get("robot_asset_sha256"),
+        "robot_asset_bundle_sha256": base.get("robot_asset_bundle_sha256"),
+        "robot_asset_usd_bundle_sha256": base.get("robot_asset_usd_bundle_sha256"),
         "kinematics_backend": base.get("kinematics_backend"),
         "terrains": [terrain],
         "motion_files": [motion],
@@ -153,11 +162,11 @@ def _eval_command(
         str(-1 if parallel_envs > 1 else 0),
         "--recording.config.output-path",
         str(recording_path),
-        "--training.num-envs",
+        "--num-envs",
         str(parallel_envs),
-        "--training.max-eval-steps",
+        "--max-steps",
         str(max_eval_steps),
-        "--training.export-onnx",
+        "--export-onnx",
         "False",
         "--command.setup-terms.motion-command.params.motion-config.motion-manifest",
         str(single_manifest),
@@ -193,7 +202,9 @@ def _build_output_manifest(
     output_manifest: Path,
     allow_missing: bool,
 ) -> None:
-    demo_by_id = {_climb_id(str(path)): path for path in sorted(output_dir.glob("climb_*_rollout_ref_contact_force.npz"))}
+    demo_by_id = {
+        _climb_id(str(path)): path for path in sorted(output_dir.glob("climb_*_rollout_ref_contact_force.npz"))
+    }
     motion_files = []
     missing = []
     for entry in base["motion_files"]:
@@ -205,10 +216,15 @@ def _build_output_manifest(
                 continue
             continue
         with np.load(demo, allow_pickle=False) as data:
-            provenance = decode_contact_force_provenance(
+            contact_provenance = decode_contact_force_provenance(
                 data["contact_force_provenance_json"] if "contact_force_provenance_json" in data else None,
                 context=str(demo),
             )
+            kinematics_provenance = decode_kinematics_provenance(
+                data["kinematics_provenance_json"] if "kinematics_provenance_json" in data else None,
+                context=str(demo),
+            )
+            source_recording = Path(str(np.asarray(data["rollout_ref_source_recording"]).item())).resolve()
         source_motion = _resolve_manifest_path(Path(str(entry["motion_file"])), base_manifest_path)
         motion_files.append(
             {
@@ -216,14 +232,17 @@ def _build_output_manifest(
                 "motion_file": os.path.relpath(demo.resolve(), output_manifest.parent.resolve()),
                 "terrain_id": entry["terrain_id"],
                 "weight": entry.get("weight", 1.0),
-                "source_file": os.path.relpath(source_motion, output_manifest.parent.resolve()),
-                "source_sha256": sha256_file(source_motion),
+                "source_file": os.path.relpath(source_recording, output_manifest.parent.resolve()),
+                "source_sha256": sha256_file(source_recording),
+                "reference_motion_file": os.path.relpath(source_motion, output_manifest.parent.resolve()),
+                "reference_motion_sha256": sha256_file(source_motion),
                 "motion_sha256": sha256_file(demo),
-                "kinematics_schema": entry.get("kinematics_schema"),
-                "kinematics_backend": entry.get("kinematics_backend", "isaaclab3_newton_fk"),
-                "contact_force_schema": provenance["schema"],
-                "contact_force_backend": provenance["source_backend"],
-                "contact_solver_sha256": provenance["solver_config_sha256"],
+                "kinematics_schema": kinematics_provenance["schema"],
+                "kinematics_backend": kinematics_provenance["kinematics_backend"],
+                "velocity_derivation": kinematics_provenance["velocity_derivation"],
+                "contact_force_schema": contact_provenance["schema"],
+                "contact_force_backend": contact_provenance["source_backend"],
+                "contact_solver_sha256": contact_provenance["solver_config_sha256"],
             }
         )
     if missing and not allow_missing:
@@ -244,10 +263,12 @@ def _build_output_manifest(
             "contact_force_schema": "somaforge_contact_force_8part_v1",
             "contact_force_backend": "isaaclab3_newton_mjwarp",
             "collision_pipeline": "newton",
-            "kinematics_backend": base.get("kinematics_backend", "isaaclab3_newton_fk"),
+            "kinematics_backend": NEWTON_ROLLOUT_KINEMATICS_BACKEND,
             "robot_asset_id": base.get("robot_asset_id", "robot.g1.spherehand"),
             "robot_asset": base.get("robot_asset", "g1_29dof_spherehand"),
             "robot_asset_sha256": base.get("robot_asset_sha256"),
+            "robot_asset_bundle_sha256": base.get("robot_asset_bundle_sha256"),
+            "robot_asset_usd_bundle_sha256": base.get("robot_asset_usd_bundle_sha256"),
             "terrains": terrains,
             "motion_files": motion_files,
         },
@@ -258,7 +279,11 @@ def _build_output_manifest(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-manifest", type=Path, default=DEFAULT_BASE_MANIFEST)
-    parser.add_argument("--checkpoint", type=Path, required=True, help="Current canonical baseline WBT checkpoint.")
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        help="Current canonical baseline WBT checkpoint; not required with --extract-only.",
+    )
     parser.add_argument("--work-dir", type=Path, default=DEFAULT_WORK_DIR)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--output-manifest", type=Path, default=DEFAULT_MANIFEST_OUTPUT)
@@ -286,8 +311,10 @@ def main() -> None:
         raise ValueError("--attempts must be at least 1.")
     if args.parallel_envs < 1:
         raise ValueError("--parallel-envs must be at least 1.")
-    checkpoint = args.checkpoint.expanduser().resolve()
-    if not args.dry_run and not checkpoint.is_file():
+    if args.checkpoint is None and not args.extract_only:
+        raise ValueError("--checkpoint is required unless --extract-only is used.")
+    checkpoint = args.checkpoint.expanduser().resolve() if args.checkpoint is not None else None
+    if checkpoint is not None and not args.dry_run and not checkpoint.is_file():
         raise FileNotFoundError(f"Missing baseline checkpoint: {checkpoint}")
 
     base_manifest_path = args.base_manifest.expanduser().resolve()
@@ -320,21 +347,34 @@ def main() -> None:
             continue
 
         if output_path.exists():
-            output_path.unlink()
+            raise FileExistsError(
+                f"Refusing to replace existing rollout output: {output_path}. "
+                "Move it to the system trash or pass --skip-existing."
+            )
 
         attempt_errors = []
         success = False
         for attempt in range(1, args.attempts + 1):
             recording_path = recording_dir / f"climb_{climb_id:02d}_attempt_{attempt:02d}_eval_recording.npz"
-            if recording_path.exists():
-                recording_path.unlink()
-            if output_path.exists():
-                output_path.unlink()
+            attempt_output_path = args.work_dir / "extracted" / f"climb_{climb_id:02d}_attempt_{attempt:02d}.npz"
+            if recording_path.exists() and not args.extract_only:
+                raise FileExistsError(
+                    f"Refusing to replace existing eval recording: {recording_path}. "
+                    "Move it to the system trash before rerunning this attempt."
+                )
+            if attempt_output_path.exists():
+                raise FileExistsError(
+                    f"Refusing to replace existing extraction attempt: {attempt_output_path}. "
+                    "Move it to the system trash before rerunning this attempt."
+                )
 
             print(f"=== climb_{climb_id:02d} attempt {attempt}/{args.attempts} ===", flush=True)
             if not args.extract_only:
+                assert checkpoint is not None
                 eval_ok = _run(
-                    _eval_command(args.python, checkpoint, single_manifest, recording_path, eval_steps, args.parallel_envs),
+                    _eval_command(
+                        args.python, checkpoint, single_manifest, recording_path, eval_steps, args.parallel_envs
+                    ),
                     args.dry_run,
                 )
                 if not eval_ok:
@@ -343,6 +383,11 @@ def main() -> None:
                 if not args.dry_run and not recording_path.exists():
                     attempt_errors.append({"attempt": attempt, "stage": "eval", "error": "recording was not produced"})
                     continue
+            elif not recording_path.exists():
+                attempt_errors.append(
+                    {"attempt": attempt, "stage": "extract", "error": "existing recording was not found"}
+                )
+                continue
 
             if args.record_only:
                 success = True
@@ -350,20 +395,26 @@ def main() -> None:
                     {
                         "climb_id": climb_id,
                         "attempt": attempt,
-                        "checkpoint": str(checkpoint),
+                        "checkpoint": str(checkpoint) if checkpoint is not None else None,
                         "recording": str(recording_path),
                     }
                 )
                 break
 
-            extract_ok = _run(_extract_command(args.python, motion_npz_path, recording_path, output_path), args.dry_run)
-            if extract_ok and (args.dry_run or output_path.exists()):
+            extract_ok = _run(
+                _extract_command(args.python, motion_npz_path, recording_path, attempt_output_path),
+                args.dry_run,
+            )
+            if extract_ok and (args.dry_run or attempt_output_path.exists()):
+                if not args.dry_run:
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(attempt_output_path, output_path)
                 success = True
                 successes.append(
                     {
                         "climb_id": climb_id,
                         "attempt": attempt,
-                        "checkpoint": str(checkpoint),
+                        "checkpoint": str(checkpoint) if checkpoint is not None else None,
                         "recording": str(recording_path),
                         "output": str(output_path),
                     }
@@ -382,7 +433,7 @@ def main() -> None:
                 {
                     "climb_id": climb_id,
                     "motion_file": str(motion_npz_path),
-                    "checkpoint": str(checkpoint),
+                    "checkpoint": str(checkpoint) if checkpoint is not None else None,
                     "attempts": args.attempts,
                     "errors": attempt_errors,
                 }

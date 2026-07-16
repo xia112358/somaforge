@@ -5,11 +5,6 @@ import datetime
 import json
 from datetime import timezone
 
-import tyro
-import yaml
-from pydantic.dataclasses import dataclass
-from typing_extensions import Annotated
-
 import holosoma.config_values.action
 import holosoma.config_values.algo
 import holosoma.config_values.command
@@ -22,10 +17,13 @@ import holosoma.config_values.robot
 import holosoma.config_values.simulator
 import holosoma.config_values.termination
 import holosoma.config_values.terrain
+import tyro
+import yaml
 from holosoma.config_types.action import ActionManagerCfg
 from holosoma.config_types.algo import AlgoConfig
 from holosoma.config_types.command import CommandManagerCfg
 from holosoma.config_types.curriculum import CurriculumManagerCfg
+from holosoma.config_types.eval_callback import EvaluationConfig
 from holosoma.config_types.logger import LoggerConfig
 from holosoma.config_types.observation import ObservationManagerCfg
 from holosoma.config_types.randomization import RandomizationManagerCfg
@@ -34,6 +32,8 @@ from holosoma.config_types.robot import RobotConfig
 from holosoma.config_types.simulator import SimulatorConfig
 from holosoma.config_types.termination import TerminationManagerCfg
 from holosoma.config_types.terrain import TerrainManagerCfg
+from pydantic.dataclasses import dataclass
+from typing_extensions import Annotated
 
 
 def now_timestamp() -> str:
@@ -51,8 +51,8 @@ class TrainingConfig:
     """Configuration for training execution and evaluation."""
 
     # Simulation settings
-    headless: bool = True
-    """Run simulation without rendering."""
+    headless: Annotated[bool, tyro.conf.Suppress] = True
+    """Resolved Kit runtime mode. Select visualizers with AppLauncher ``--visualizer``."""
 
     torch_deterministic: bool = False
     """Enable PyTorch deterministic mode."""
@@ -77,25 +77,6 @@ class TrainingConfig:
 
     name: str = "run"
     """Run name for logging. `logger.name` takes precedence if set."""
-
-    # Evaluation settings
-    max_eval_steps: int | None = None
-    """Maximum number of evaluation steps (None for unlimited)."""
-
-    export_onnx: bool = True
-    """Export policy as ONNX model."""
-
-
-@dataclass(frozen=True)
-class EvalOverridesConfig:
-    headless: bool = False
-    num_envs: int = 1
-    disable_logger: bool = True
-    max_episode_length_s: float = 100000.0
-    randomize_tiles: bool = False
-    """Use deterministic spawn at tile (0,0) for reproducible evaluation."""
-    xy_offset_range: float = 0.0
-    """Disable XY offset for deterministic spawn position."""
 
 
 @dataclass(frozen=True)
@@ -163,7 +144,7 @@ class ExperimentConfig:
     ] = holosoma.config_values.logger.disabled
     nightly: NightlyConfig | None = None
 
-    eval_overrides: EvalOverridesConfig = EvalOverridesConfig()
+    evaluation: Annotated[EvaluationConfig, tyro.conf.Suppress] = EvaluationConfig()
 
     def get_nightly_config(self) -> ExperimentConfig:
         if self.nightly is None:
@@ -180,16 +161,25 @@ class ExperimentConfig:
             ),
         )
 
-    def get_eval_config(self) -> ExperimentConfig:
-        # Create eval spawn config with overrides
+    def get_eval_config(self, evaluation: EvaluationConfig | None = None) -> ExperimentConfig:
+        """Build the simulator/algo config for a resolved evaluation request."""
+
+        evaluation = evaluation or self.evaluation
         eval_spawn_cfg = dataclasses.replace(
             self.terrain.terrain_term.spawn,
-            randomize_tiles=self.eval_overrides.randomize_tiles,
-            xy_offset_range=self.eval_overrides.xy_offset_range,
+            randomize_tiles=evaluation.randomize_tiles,
+            xy_offset_range=evaluation.xy_offset_range,
+        )
+        eval_logger = dataclasses.replace(
+            holosoma.config_values.logger.disabled,
+            base_dir=self.logger.base_dir,
+            video=evaluation.video,
+            headless_recording=False,
         )
 
         return dataclasses.replace(
             self,
+            evaluation=evaluation,
             terrain=dataclasses.replace(
                 self.terrain,
                 terrain_term=dataclasses.replace(
@@ -203,16 +193,15 @@ class ExperimentConfig:
                     self.simulator.config,
                     sim=dataclasses.replace(
                         self.simulator.config.sim,
-                        max_episode_length_s=self.eval_overrides.max_episode_length_s,
+                        max_episode_length_s=evaluation.max_episode_length_s,
                     ),
                 ),
             ),
             training=dataclasses.replace(
                 self.training,
-                headless=self.eval_overrides.headless,
-                num_envs=self.eval_overrides.num_envs,
+                num_envs=evaluation.num_envs,
             ),
-            logger=holosoma.config_values.logger.disabled if self.eval_overrides.disable_logger else self.logger,
+            logger=eval_logger,
         )
 
     def save_config(self, path: str) -> None:

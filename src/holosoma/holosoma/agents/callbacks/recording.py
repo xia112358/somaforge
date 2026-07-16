@@ -1,7 +1,7 @@
 """Eval callback that records per-step trajectory data to an NPZ file.
 
-Records joint positions, velocities, torques, body poses, and root state
-for later visualization with viser_eval_viewer.py.
+Records joint positions, velocities, torques, body poses, contact forces, and
+root state for canonical rollout extraction and diagnostics.
 """
 
 from __future__ import annotations
@@ -79,6 +79,12 @@ class EvalRecordingCallback(RLEvalCallback):
         self._metadata["sim_dt"] = float(env.sim_dt)
         self._metadata["sim_fps"] = round(1.0 / float(env.sim_dt))
         self._metadata["control_decimation"] = env.simulator.simulator_config.sim.control_decimation
+        self._metadata["contact_sensor_history_length"] = int(
+            env.simulator.simulator_config.contact_sensor_history_length
+        )
+        self._metadata["contact_force_history_order"] = "latest_first"
+        self._metadata["raw_contact_sample"] = "latest_physics_step"
+        self._metadata["contact_force_raw_contact_time_aligned"] = True
         self._metadata["env_id"] = self.env_id
         self._metadata["num_envs"] = int(env.num_envs)
         simulator_cfg = env.simulator.simulator_config
@@ -106,6 +112,9 @@ class EvalRecordingCallback(RLEvalCallback):
             self._metadata["dof_names"] = list(sim.dof_names)
         if hasattr(sim, "body_names"):
             self._metadata["body_names"] = list(sim.body_names)
+        contact_sensor = getattr(sim, "contact_sensor", None)
+        if contact_sensor is not None and hasattr(contact_sensor, "body_names"):
+            self._metadata["contact_sensor_body_names"] = list(contact_sensor.body_names)
         try:
             from isaaclab_newton.physics.newton_manager import NewtonManager
 
@@ -147,6 +156,8 @@ class EvalRecordingCallback(RLEvalCallback):
             "body_ang_vel_w",
             "contact_forces",
             "contact_forces_history",
+            "contact_sensor_forces",
+            "contact_sensor_forces_history",
             "raw_contact_count",
             "raw_contact_shape0",
             "raw_contact_shape1",
@@ -324,6 +335,12 @@ class EvalRecordingCallback(RLEvalCallback):
             self._buffers["contact_forces"].append(_to_np(sim.contact_forces[eid]))
         if hasattr(sim, "contact_forces_history"):
             self._buffers["contact_forces_history"].append(_to_np(sim.contact_forces_history[eid]))
+        contact_sensor = getattr(sim, "contact_sensor", None)
+        contact_sensor_data = getattr(contact_sensor, "data", None)
+        if contact_sensor_data is not None and hasattr(contact_sensor_data, "net_forces_w"):
+            self._buffers["contact_sensor_forces"].append(_to_np(contact_sensor_data.net_forces_w[eid]))
+        if contact_sensor_data is not None and hasattr(contact_sensor_data, "net_forces_w_history"):
+            self._buffers["contact_sensor_forces_history"].append(_to_np(contact_sensor_data.net_forces_w_history[eid]))
         if hasattr(sim, "get_raw_rigid_contacts"):
             try:
                 raw_contacts = sim.get_raw_rigid_contacts()

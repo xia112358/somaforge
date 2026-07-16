@@ -18,6 +18,12 @@ from somaforge_core.contact_schema import (
     encode_contact_force_provenance,
     newton_contact_provenance,
 )
+from somaforge_core.motion_schema import (
+    G1_29DOF_JOINT_ORDER,
+    encode_kinematics_provenance,
+    newton_rollout_kinematics_provenance,
+)
+from somaforge_core.asset_registry import sha256_file
 from somaforge_core.robot_assets import decode_robot_asset_json, encode_robot_asset_json
 
 
@@ -54,6 +60,25 @@ def _validate_newton_recording_metadata(metadata: dict[str, Any], recording_path
     if not isinstance(solver_config, dict) or not solver_config:
         raise ValueError(f"{recording_path} is missing newton_solver_config metadata")
     return solver_config
+
+
+def _rollout_kinematics_provenance(
+    recording_path: Path,
+    *,
+    fps: float,
+    body_names: list[str],
+    dof_names: list[str],
+) -> dict[str, Any]:
+    if tuple(dof_names) != G1_29DOF_JOINT_ORDER:
+        raise ValueError("Recording DOF order does not match the canonical G1 29-DOF order.")
+    if not np.isfinite(fps) or fps <= 0.0:
+        raise ValueError(f"Recording FPS must be finite and positive, got {fps}.")
+    return newton_rollout_kinematics_provenance(
+        source_path=str(recording_path.resolve()),
+        source_sha256=sha256_file(recording_path),
+        output_fps=fps,
+        body_names=body_names,
+    )
 
 
 def _with_metadata(recording: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
@@ -174,14 +199,15 @@ def _validate_complete_rollout(recording: dict[str, Any], num_frames: int, allow
     )
 
 
-def _body_force_from_history(contact_history: np.ndarray) -> np.ndarray:
+def _latest_body_force_from_history(contact_history: np.ndarray) -> np.ndarray:
     if contact_history.ndim != 4 or contact_history.shape[-1] != 3:
         raise ValueError(f"Expected contact_forces_history [T,H,B,3], got {contact_history.shape}")
-    magnitude = np.linalg.norm(contact_history, axis=-1)
-    history_idx = magnitude.argmax(axis=1)
-    frame_idx = np.arange(contact_history.shape[0])[:, None]
-    body_idx = np.arange(contact_history.shape[2])[None, :]
-    return contact_history[frame_idx, history_idx, body_idx]
+    if contact_history.shape[1] == 0:
+        raise ValueError("Contact force history has no physics-step samples.")
+    # Isaac Lab stores the most recent physics step at history index zero. Raw
+    # Newton contact points are read from that same step, so this is the only
+    # history sample that is time-aligned with the recorded contact geometry.
+    return contact_history[:, 0]
 
 
 def _reduce_part_force(selected: np.ndarray, reduce: str) -> np.ndarray:
@@ -200,23 +226,129 @@ def _part_forces(
     body_names: list[str],
     part_body_names: dict[str, list[str]],
     force_reduce: str,
+    contact_sensor_body_names: list[str] | None = None,
 ) -> np.ndarray:
-    if "contact_forces_history" in recording:
-        body_force = _body_force_from_history(np.asarray(recording["contact_forces_history"], dtype=np.float32))
+    if "contact_sensor_forces" in recording:
+        if not contact_sensor_body_names:
+            raise ValueError("Recording has contact_sensor_forces but no contact_sensor_body_names metadata.")
+        body_force = np.asarray(recording["contact_sensor_forces"], dtype=np.float32)
+        force_body_names = contact_sensor_body_names
+        if "contact_sensor_forces_history" in recording:
+            latest = _latest_body_force_from_history(
+                np.asarray(recording["contact_sensor_forces_history"], dtype=np.float32)
+            )
+            if latest.shape != body_force.shape or not np.allclose(latest, body_force, rtol=1e-5, atol=1e-5):
+                raise ValueError("contact_sensor_forces is not aligned with history index zero.")
+    elif "contact_sensor_forces_history" in recording:
+        if not contact_sensor_body_names:
+            raise ValueError("Recording has contact_sensor_forces_history but no contact_sensor_body_names metadata.")
+        body_force = _latest_body_force_from_history(
+            np.asarray(recording["contact_sensor_forces_history"], dtype=np.float32)
+        )
+        force_body_names = contact_sensor_body_names
     elif "contact_forces" in recording:
         body_force = np.asarray(recording["contact_forces"], dtype=np.float32)
+        force_body_names = body_names
+    elif "contact_forces_history" in recording:
+        body_force = _latest_body_force_from_history(
+            np.asarray(recording["contact_forces_history"], dtype=np.float32)
+        )
+        force_body_names = body_names
     else:
-        raise ValueError("Recording has neither contact_forces_history nor contact_forces.")
+        raise ValueError("Recording has no contact sensor force channel.")
+
+    if body_force.shape[1] != len(force_body_names):
+        raise ValueError(
+            "Contact force body dimension does not match its body-name metadata: "
+            f"forces={body_force.shape}, body_names={len(force_body_names)}"
+        )
 
     part_forces = []
     for part_name in PART_ORDER:
         names = part_body_names[part_name]
-        ids = [body_names.index(name) for name in names if name in body_names]
+        ids = [force_body_names.index(name) for name in names if name in force_body_names]
         if not ids:
-            raise ValueError(f"No simulator bodies found for part {part_name}: {names}")
+            raise ValueError(
+                f"No force sensor bodies found for part {part_name}: {names}. "
+                "Re-record this rollout with full contact_sensor_forces enabled."
+            )
         selected = body_force[:, ids, :]
         part_forces.append(_reduce_part_force(selected, force_reduce))
     return np.stack(part_forces, axis=1).astype(np.float32)
+
+
+def _part_force_history(
+    recording: dict[str, Any],
+    body_names: list[str],
+    part_body_names: dict[str, list[str]],
+    force_reduce: str,
+    contact_sensor_body_names: list[str] | None = None,
+) -> np.ndarray | None:
+    if "contact_sensor_forces_history" in recording:
+        history = np.asarray(recording["contact_sensor_forces_history"], dtype=np.float32)
+        force_body_names = contact_sensor_body_names or []
+    elif "contact_forces_history" in recording:
+        history = np.asarray(recording["contact_forces_history"], dtype=np.float32)
+        force_body_names = body_names
+    else:
+        return None
+    if history.ndim != 4 or history.shape[-1] != 3:
+        raise ValueError(f"Expected contact force history [T,H,B,3], got {history.shape}")
+    if history.shape[2] != len(force_body_names):
+        raise ValueError(
+            "Contact force history body dimension does not match its body-name metadata: "
+            f"history={history.shape}, body_names={len(force_body_names)}"
+        )
+
+    part_history = []
+    for part_name in PART_ORDER:
+        ids = [force_body_names.index(name) for name in part_body_names[part_name] if name in force_body_names]
+        if not ids:
+            raise ValueError(f"No force sensor bodies found for part {part_name}: {part_body_names[part_name]}")
+        selected = history[:, :, ids, :]
+        if force_reduce == "sum":
+            reduced = selected.sum(axis=2)
+        elif force_reduce == "mean":
+            reduced = selected.mean(axis=2)
+        elif force_reduce == "max":
+            max_ids = np.linalg.norm(selected, axis=-1).argmax(axis=2)
+            reduced = np.take_along_axis(selected, max_ids[:, :, None, None], axis=2).squeeze(2)
+        else:
+            raise ValueError(f"Unsupported --force-reduce '{force_reduce}'.")
+        part_history.append(reduced)
+    return np.stack(part_history, axis=2).astype(np.float32)
+
+
+def _stable_contact_mask(
+    part_force: np.ndarray,
+    *,
+    on_threshold: float,
+    off_threshold: float,
+    close_gap_frames: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    if not 0.0 <= off_threshold <= on_threshold:
+        raise ValueError("Contact mask thresholds must satisfy 0 <= off_threshold <= on_threshold.")
+    magnitude = np.linalg.norm(part_force, axis=-1)
+    raw = magnitude > on_threshold
+    stable = np.zeros_like(raw)
+    active = np.zeros(raw.shape[1], dtype=bool)
+    for frame_idx in range(raw.shape[0]):
+        active = np.where(active, magnitude[frame_idx] > off_threshold, raw[frame_idx])
+        stable[frame_idx] = active
+
+    if close_gap_frames > 0:
+        for part_idx in range(stable.shape[1]):
+            values = stable[:, part_idx]
+            start = 0
+            while start < values.size:
+                end = start + 1
+                while end < values.size and values[end] == values[start]:
+                    end += 1
+                is_internal_gap = not values[start] and start > 0 and end < values.size
+                if is_internal_gap and end - start <= close_gap_frames:
+                    values[start:end] = True
+                start = end
+    return raw, stable
 
 
 def _parse_part_body_names(value: str | None) -> dict[str, list[str]]:
@@ -412,10 +544,32 @@ def main() -> None:
     parser.add_argument("--recording", required=True, type=Path, help="Complete eval recording npz.")
     parser.add_argument("--output", required=True, type=Path, help="Output rollout-ref motion npz.")
     parser.add_argument("--threshold", type=float, default=10.0, help="Contact force mask threshold in Newtons.")
+    parser.add_argument(
+        "--mask-off-threshold",
+        type=float,
+        default=5.0,
+        help="Contact mask release threshold in Newtons; does not alter force values.",
+    )
+    parser.add_argument(
+        "--mask-close-gap-frames",
+        type=int,
+        default=2,
+        help="Close internal false gaps up to this many 50 Hz frames.",
+    )
     parser.add_argument("--force-reduce", choices=("sum", "max", "mean"), default="sum")
+    parser.add_argument(
+        "--forces-only",
+        action="store_true",
+        help="Write canonical rollout state and force channels without contact-point geometry.",
+    )
     parser.add_argument("--part-body-names-json", default=None, help="Optional JSON map for contact-force part body names.")
     parser.add_argument("--allow-timeout", action="store_true", help="Allow timeout flags in the recording.")
     args = parser.parse_args()
+
+    if args.output.exists():
+        raise FileExistsError(
+            f"Refusing to replace existing rollout output: {args.output}. Move it to the system trash first."
+        )
 
     motion = _load_npz(args.motion)
     recording = _load_npz(args.recording)
@@ -431,10 +585,18 @@ def main() -> None:
 
     dof_names = [str(name) for name in meta.get("dof_names", [])]
     body_names = [str(name) for name in meta.get("body_names", [])]
+    contact_sensor_body_names = [str(name) for name in meta.get("contact_sensor_body_names", [])]
     if not dof_names:
         raise ValueError("Recording metadata is missing dof_names.")
     if not body_names:
         raise ValueError("Recording metadata is missing body_names.")
+    fps = float(meta.get("fps", motion.get("fps", 50)))
+    kinematics_provenance = _rollout_kinematics_provenance(
+        args.recording,
+        fps=fps,
+        body_names=body_names,
+        dof_names=dof_names,
+    )
 
     joint_pos = np.concatenate(
         [_require(recording, "root_pos", order), _xyzw_to_wxyz(_require(recording, "root_quat_xyzw", order)), _require(recording, "dof_pos", order)],
@@ -451,14 +613,40 @@ def main() -> None:
     body_ang_vel_w = _require(recording, "body_ang_vel_w", order).astype(np.float32)
 
     part_body_names = _parse_part_body_names(args.part_body_names_json)
-    part_force = _part_forces(recording, body_names, part_body_names, args.force_reduce)[order]
+    part_force = _part_forces(
+        recording,
+        body_names,
+        part_body_names,
+        args.force_reduce,
+        contact_sensor_body_names,
+    )[order]
+    part_force_history = _part_force_history(
+        recording,
+        body_names,
+        part_body_names,
+        args.force_reduce,
+        contact_sensor_body_names,
+    )
+    if part_force_history is not None:
+        part_force_history = part_force_history[order]
+        if not np.allclose(part_force_history[:, 0], part_force, rtol=1e-5, atol=1e-5):
+            raise ValueError("Latest contact force does not match contact_force_part_history_w[:, 0].")
     if not np.isfinite(part_force).all():
         raise ValueError("Computed contact_force_part_w contains NaN or Inf.")
-    part_mask = (np.linalg.norm(part_force, axis=-1) > float(args.threshold)).astype(bool)
-    part_positions = _raw_contact_part_positions(recording, meta, order, body_pos_w, part_body_names)
+    raw_part_mask, part_mask = _stable_contact_mask(
+        part_force,
+        on_threshold=float(args.threshold),
+        off_threshold=float(args.mask_off_threshold),
+        close_gap_frames=int(args.mask_close_gap_frames),
+    )
+    part_positions = (
+        None
+        if args.forces_only
+        else _raw_contact_part_positions(recording, meta, order, body_pos_w, part_body_names)
+    )
 
     out = {
-        "fps": np.asarray(meta.get("fps", motion.get("fps", 50))),
+        "fps": np.asarray(fps),
         "joint_names": np.asarray(dof_names),
         "body_names": np.asarray(body_names),
         "joint_pos": joint_pos,
@@ -469,13 +657,18 @@ def main() -> None:
         "body_ang_vel_w": body_ang_vel_w,
         "contact_force_part_w": part_force,
         "contact_force_part_mask": part_mask,
+        "contact_force_part_mask_raw": raw_part_mask,
         "contact_force_part_order": np.asarray(PART_ORDER),
         "contact_force_part_body_names_json": np.asarray(json.dumps(part_body_names)),
         "rollout_ref_source_recording": np.asarray(str(args.recording)),
         "rollout_ref_source_env_id": np.asarray(-1 if selected_env_id is None else selected_env_id),
         "rollout_ref_source_motion": np.asarray(str(args.motion)),
         "contact_force_demo_threshold": np.asarray(np.float32(args.threshold)),
+        "contact_force_demo_off_threshold": np.asarray(np.float32(args.mask_off_threshold)),
+        "contact_force_demo_close_gap_frames": np.asarray(np.int32(args.mask_close_gap_frames)),
+        "contact_force_sample_semantics": np.asarray("latest_physics_step_time_aligned_with_raw_contacts"),
         "robot_asset_json": np.asarray(encode_robot_asset_json(robot_asset)),
+        "kinematics_provenance_json": np.asarray(encode_kinematics_provenance(kinematics_provenance)),
         "contact_force_provenance_json": np.asarray(
             encode_contact_force_provenance(
                 newton_contact_provenance(
@@ -483,15 +676,27 @@ def main() -> None:
                     source_recording=str(args.recording),
                     force_reduce=args.force_reduce,
                     threshold_n=args.threshold,
+                    mask_off_threshold_n=args.mask_off_threshold,
+                    mask_close_gap_frames=args.mask_close_gap_frames,
+                    history_sample_count=(
+                        int(part_force_history.shape[1]) if part_force_history is not None else None
+                    ),
                 )
             )
         ),
     }
+    if part_force_history is not None:
+        out["contact_force_part_history_w"] = part_force_history
+        out["contact_force_part_history_latest_index"] = np.asarray(np.int32(0))
+        out["contact_force_part_history_dt"] = np.asarray(np.float32(meta.get("sim_dt", 0.0)))
+        out["contact_force_part_history_complete_control_interval"] = np.asarray(
+            bool(part_force_history.shape[1] >= int(meta.get("control_decimation", 0)))
+        )
     if part_positions is not None:
         contact_position_w, contact_position_valid = part_positions
         out["contact_force_part_position_w"] = contact_position_w
         out["contact_force_part_position_valid"] = contact_position_valid
-        out["contact_force_part_position_source"] = np.asarray("newton_raw_rigid_contacts")
+        out["contact_force_part_position_source"] = np.asarray("newton_raw_rigid_contacts_latest_physics_step")
         out.update(_raw_contacts(recording, meta, order))
         if "raw_contact_count" in out:
             out["raw_contact_source"] = np.asarray("newton_raw_rigid_contacts")

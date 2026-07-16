@@ -20,7 +20,6 @@ from pathlib import Path
 
 import numpy as np
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = REPO_ROOT / "runtime/current/manifests/motion_edit_ref_v1.json"
 DEFAULT_PROJECT = "MotionEditFinetune"
@@ -125,11 +124,11 @@ def _build_command(args: argparse.Namespace, motion_count: int, max_motion_len: 
         str(fail_path),
         "--acceptance.config.repeats",
         str(args.repeats),
-        "--training.num-envs",
+        "--num-envs",
         str(motion_count),
-        "--training.max-eval-steps",
+        "--max-steps",
         str(max_eval_steps),
-        "--training.export-onnx",
+        "--export-onnx",
         "False",
         "--command.setup-terms.motion-command.params.motion-config.motion-manifest",
         str(args.motion_manifest.expanduser().resolve()),
@@ -157,11 +156,7 @@ def _build_command(args: argparse.Namespace, motion_count: int, max_motion_len: 
         "False",
         "--terrain.terrain-term.motion-matched-manifest",
         str(args.motion_manifest.expanduser().resolve()),
-        "--terrain.terrain-term.spawn.randomize-tiles",
-        "False",
-        "--terrain.terrain-term.spawn.xy-offset-range",
-        "0.0",
-        "--logger.video.enabled",
+        "--video.enabled",
         "False",
     ]
     return cmd
@@ -200,8 +195,7 @@ def _validate_formal_acceptance_csv(path: Path, *, allow_diagnostic: bool, role:
     path = path.expanduser().resolve()
     if "legacy_unstandardized" in path.parts and not allow_diagnostic:
         raise SystemExit(
-            f"Refusing legacy unstandardized {role}: {path}. "
-            "Use --allow-diagnostic only for temporary diagnostics."
+            f"Refusing legacy unstandardized {role}: {path}. Use --allow-diagnostic only for temporary diagnostics."
         )
     summary_path = _summary_path_for_acceptance_csv(path)
     if allow_diagnostic:
@@ -216,7 +210,11 @@ def _validate_formal_acceptance_csv(path: Path, *, allow_diagnostic: bool, role:
     except json.JSONDecodeError as exc:
         raise SystemExit(f"Refusing {role} with unreadable summary metadata: {summary_path}: {exc}") from exc
     standard = summary.get("eval_standard")
-    if not isinstance(standard, dict) or standard.get("standard_id") != STANDARD_ID or standard.get("formal") is not True:
+    if (
+        not isinstance(standard, dict)
+        or standard.get("standard_id") != STANDARD_ID
+        or standard.get("formal") is not True
+    ):
         raise SystemExit(
             f"Refusing non-standard {role}: {path}. "
             f"Expected eval_standard.standard_id={STANDARD_ID!r} and formal=true in {summary_path}."
@@ -373,7 +371,7 @@ def main() -> None:
         "--repeats",
         type=int,
         default=STANDARD_REPEATS,
-        help=f"Formal standard repeats. Use --allow-diagnostic to run a different value.",
+        help="Formal standard repeats. Use --allow-diagnostic to run a different value.",
     )
     parser.add_argument("--compare-against", type=Path, default=None)
     parser.add_argument(

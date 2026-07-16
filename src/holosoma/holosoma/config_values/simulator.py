@@ -4,9 +4,7 @@ from holosoma.config_types.simulator import (
     SimEngineConfig,
     SimulatorConfig,
     SimulatorInitConfig,
-    MujocoWarpConfig,
 )
-
 
 isaaclab3_newton = SimulatorConfig(
     _target_="holosoma.simulator.isaaclab3_newton.isaaclab3_newton.IsaacLab3Newton",
@@ -27,8 +25,7 @@ isaaclab3_newton = SimulatorConfig(
             render_mode="human",
             render_interval=4,
         ),
-        mujoco_warp=MujocoWarpConfig(nconmax_per_env=64, njmax_per_env=512),
-        contact_sensor_history_length=3,
+        contact_sensor_history_length=4,
     ),
 )
 

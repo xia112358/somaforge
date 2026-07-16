@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import dataclasses
+from dataclasses import field
 
+from holosoma.config_types.video import VideoConfig
 from pydantic.dataclasses import dataclass
 
 
@@ -139,12 +141,34 @@ class PayloadCallbackConfig:
 
 
 @dataclass(frozen=True)
-class EvalCallbacksConfig:
-    """Container for all eval callback configs.
+class EvaluationConfig:
+    """Runtime settings and outputs for one policy evaluation.
 
-    To add a new callback, add a field here with its config type.
-    Each field's value is passed to instantiate() if it has a _target_.
+    Simulator visualization is intentionally not represented here. Isaac Lab 3
+    owns that selection through ``--visualizer`` (for example
+    ``--visualizer kit``).
     """
+
+    num_envs: int = 1
+    """Number of evaluation environments."""
+
+    max_steps: int | None = None
+    """Maximum policy steps. ``None`` runs until a callback stops evaluation."""
+
+    max_episode_length_s: float = 100000.0
+    """Evaluation episode horizon in seconds."""
+
+    randomize_tiles: bool = False
+    """Randomize terrain tiles during evaluation."""
+
+    xy_offset_range: float = 0.0
+    """Terrain spawn XY offset range in meters."""
+
+    export_onnx: bool = False
+    """Export an ONNX artifact into the evaluation output directory."""
+
+    video: VideoConfig = field(default_factory=lambda: VideoConfig(enabled=False, upload_to_wandb=False))
+    """Optional rendered video output. Disabled by default."""
 
     recording: RecordingCallbackConfig = RecordingCallbackConfig()
     """Trajectory recording callback."""
@@ -161,7 +185,10 @@ class EvalCallbacksConfig:
     def collect_active_callbacks(self) -> dict:
         """Collect callback configs where config.enabled is True."""
         cb_configs = {}
+        callback_names = ("recording", "acceptance", "push", "payload")
         for f in dataclasses.fields(self):
+            if f.name not in callback_names:
+                continue
             cfg = getattr(self, f.name)
             if not hasattr(cfg, "_target_"):
                 raise ValueError(f"Callback config '{f.name}' missing _target_ field")

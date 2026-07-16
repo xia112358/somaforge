@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import argparse
 import dataclasses
 import logging
 import os
 import sys
 import traceback
-import argparse
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, TypedDict, cast
@@ -25,7 +25,7 @@ from holosoma.utils.helpers import get_class
 from holosoma.utils.motion_matched_config import normalize_motion_matched_config
 from holosoma.utils.sim_utils import close_simulation_app, parse_isaaclab_launcher_args, sync_launcher_headless_config
 from holosoma.utils.tyro_utils import TYRO_CONIFG
-from holosoma.utils.viewport_camera import prime_overview_viewport
+from holosoma.utils.viewport_camera import prime_overview_camera
 
 
 class TrainingContext:
@@ -274,7 +274,7 @@ def train(
 
         tyro_env_config = get_tyro_env_config(tyro_config)
         env = get_class(env_target)(tyro_env_config, device=device)
-        prime_overview_viewport(env, label="Training")
+        prime_overview_camera(env, label="Training")
 
         # For manager system, pre-process config AFTER env creation
         # (need managers to compute dims)
@@ -304,7 +304,7 @@ def train(
             multi_gpu_cfg=distributed_conf,
         )
         algo.setup()
-        prime_overview_viewport(env, label="Training")
+        prime_overview_camera(env, label="Training")
         algo.attach_checkpoint_metadata(tyro_config, wandb_run_path)
         if tyro_config.training.checkpoint is not None:
             loaded_checkpoint = load_checkpoint(tyro_config.training.checkpoint, str(experiment_save_dir))

@@ -22,7 +22,7 @@ from holosoma.utils.sim_utils import (
     sync_launcher_headless_config,
 )
 from holosoma.utils.tyro_utils import TYRO_CONIFG
-from holosoma.utils.viewport_camera import prime_overview_viewport
+from holosoma.utils.viewport_camera import prime_overview_camera
 
 
 def run_simulation(config: RunSimConfig, launcher_args=None):
@@ -51,7 +51,7 @@ def run_simulation(config: RunSimConfig, launcher_args=None):
 
         # Create and run direct simulation using context manager for automatic clean-up
         with DirectSimulation(config, env, device, simulation_app) as sim:
-            prime_overview_viewport(env, label="RunSim")
+            prime_overview_camera(env, label="RunSim")
             sim.run()
 
     except Exception as e:

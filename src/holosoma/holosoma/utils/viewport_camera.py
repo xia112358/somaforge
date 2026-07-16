@@ -3,24 +3,25 @@ from __future__ import annotations
 from loguru import logger
 
 
-def prime_overview_viewport(env, *, label: str = "Viewport") -> None:
-    """Force the Kit viewport to show the full environment layout."""
-    if getattr(env, "headless", True):
-        return
-
+def prime_overview_camera(env, *, label: str = "Visualizer") -> None:
+    """Set one overview pose through the Isaac Lab visualizer abstraction."""
     simulator = _get_simulator(env)
     sim = getattr(simulator, "sim", None)
-    if sim is None:
+    set_camera_view = getattr(sim, "set_camera_view", None)
+    if not callable(set_camera_view):
         return
 
     target, eye = get_overview_camera(env)
-    sync_visualizer_camera_pose(sim, eye, target)
-    activate_perspective_viewport_camera()
-    if hasattr(sim, "set_camera_view"):
-        try:
-            sim.set_camera_view(eye, target)
-        except Exception as exc:
-            logger.debug(f"{label} SimulationContext camera setup skipped: {exc}")
+    try:
+        set_camera_view(eye, target)
+    except Exception as exc:
+        logger.debug(f"{label} camera setup skipped: {exc}")
+        return
+
+    # SimulationContext keeps the pose pending for visualizers initialized on
+    # reset. Avoid headless render warmup when no visualizer is active.
+    if not (getattr(sim, "visualizers", None) or []):
+        return
 
     for _ in range(12):
         try:
@@ -29,13 +30,11 @@ def prime_overview_viewport(env, *, label: str = "Viewport") -> None:
             logger.debug(f"{label} viewport sim.render() warmup skipped: {exc}")
             break
 
-    sync_visualizer_camera_pose(sim, eye, target)
-    if hasattr(sim, "set_camera_view"):
-        try:
-            sim.set_camera_view(eye, target)
-        except Exception as exc:
-            logger.debug(f"{label} final camera setup skipped: {exc}")
-    logger.info(f"{label} viewport overview primed: eye={eye}, target={target}")
+    try:
+        set_camera_view(eye, target)
+    except Exception as exc:
+        logger.debug(f"{label} final camera setup skipped: {exc}")
+    logger.info(f"{label} overview camera primed: eye={eye}, target={target}")
 
 
 def get_overview_camera(env) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
@@ -61,42 +60,3 @@ def get_overview_camera(env) -> tuple[tuple[float, float, float], tuple[float, f
 
 def _get_simulator(env):
     return getattr(env, "simulator", None) or getattr(env, "sim", None)
-
-
-def sync_visualizer_camera_pose(
-    sim,
-    eye: tuple[float, float, float],
-    target: tuple[float, float, float],
-) -> None:
-    visualizers = getattr(sim, "visualizers", None) or []
-    for visualizer in visualizers:
-        cfg = getattr(visualizer, "cfg", None)
-        if cfg is not None:
-            try:
-                cfg.eye = eye
-                cfg.lookat = target
-            except Exception as exc:
-                logger.debug(f"Visualizer camera cfg sync skipped for {type(visualizer).__name__}: {exc}")
-        set_camera_view = getattr(visualizer, "set_camera_view", None)
-        if callable(set_camera_view):
-            try:
-                set_camera_view(eye, target)
-            except Exception as exc:
-                logger.debug(f"Visualizer camera view sync skipped for {type(visualizer).__name__}: {exc}")
-
-
-def activate_perspective_viewport_camera() -> None:
-    try:
-        import omni.kit.viewport.utility as viewport_utils
-    except Exception:
-        return
-
-    viewport_api = viewport_utils.get_active_viewport()
-    if viewport_api is None:
-        return
-    set_active_camera = getattr(viewport_api, "set_active_camera", None)
-    if set_active_camera is not None:
-        try:
-            set_active_camera("/OmniverseKit_Persp")
-        except Exception:
-            return

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import re
@@ -11,19 +12,25 @@ import yaml
 from loguru import logger
 from omegaconf import DictConfig
 from pydantic.dataclasses import dataclass
+from somaforge_core.robot_assets import validate_g1_asset_metadata
 from tqdm import tqdm
+
+from holosoma.config_types.algo import DistillPPOConfig
+from holosoma.config_types.command import MotionConfig
+from holosoma.config_types.eval_callback import EvaluationConfig
 
 # CONFIG_NAME is "holosoma_config.yaml" - the primary configuration file for Holosoma
 # This file contains all settings for training and evaluation of models
 from holosoma.config_types.experiment import ExperimentConfig
-from holosoma.config_types.algo import DistillPPOConfig
-from holosoma.config_types.command import MotionConfig
+from holosoma.config_types.simulator import (
+    DEFAULT_MJWARP_NCONMAX_PER_ENV,
+    DEFAULT_MJWARP_NJMAX_PER_ENV,
+)
 from holosoma.utils.config_utils import CONFIG_NAME
 from holosoma.utils.file_cache import get_cached_file_path
 from holosoma.utils.logging import LoguruLoggingBridge
 from holosoma.utils.safe_torch_import import torch
 from holosoma.utils.simulator_config import SimulatorType, get_simulator_type
-from somaforge_core.robot_assets import validate_g1_asset_metadata
 
 _WANDB_PREFIX = "wandb://"
 _WANDB_REFERENCE_FORMAT = f"{_WANDB_PREFIX}<entity>/<project>/<run_id>/[<artifact_name>]"
@@ -117,6 +124,35 @@ def _load_config_from_checkpoint(checkpoint_path: Path) -> tuple[ExperimentConfi
 def _experiment_config_from_serialized(config_data: dict) -> ExperimentConfig:
     """Restore dataclass subtypes that are lost in plain dict checkpoint metadata."""
 
+    config_data = dict(config_data)
+    training_data = config_data.get("training")
+    legacy_max_steps = None
+    legacy_export_onnx = False
+    if isinstance(training_data, dict):
+        training_data = dict(training_data)
+        legacy_max_steps = training_data.pop("max_eval_steps", None)
+        legacy_export_onnx = bool(training_data.pop("export_onnx", False))
+        config_data["training"] = training_data
+
+    evaluation_data = config_data.get("evaluation")
+    legacy_overrides = config_data.pop("eval_overrides", None)
+    if not isinstance(evaluation_data, dict):
+        evaluation_data = {}
+    else:
+        evaluation_data = dict(evaluation_data)
+    if isinstance(legacy_overrides, dict):
+        for old_name, new_name in (
+            ("num_envs", "num_envs"),
+            ("max_episode_length_s", "max_episode_length_s"),
+            ("randomize_tiles", "randomize_tiles"),
+            ("xy_offset_range", "xy_offset_range"),
+        ):
+            if old_name in legacy_overrides and new_name not in evaluation_data:
+                evaluation_data[new_name] = legacy_overrides[old_name]
+    evaluation_data.setdefault("max_steps", legacy_max_steps)
+    evaluation_data.setdefault("export_onnx", legacy_export_onnx)
+    config_data["evaluation"] = EvaluationConfig(**evaluation_data)
+
     algo_data = config_data.get("algo")
     if isinstance(algo_data, dict) and algo_data.get("_target_") == "holosoma.agents.ppo.distill_ppo.DistillPPO":
         algo_config = algo_data.get("config")
@@ -143,7 +179,31 @@ def _experiment_config_from_serialized(config_data: dict) -> ExperimentConfig:
                     command_data["setup_terms"] = setup_terms
                     config_data = dict(config_data)
                     config_data["command"] = command_data
-    return ExperimentConfig(**config_data)
+    config = ExperimentConfig(**config_data)
+    if config.simulator.config.name != "isaaclab3_newton":
+        return config
+
+    mjwarp = config.simulator.config.mujoco_warp
+    nconmax = max(int(mjwarp.nconmax_per_env), DEFAULT_MJWARP_NCONMAX_PER_ENV)
+    njmax = mjwarp.njmax_per_env
+    if njmax is not None:
+        njmax = max(int(njmax), DEFAULT_MJWARP_NJMAX_PER_ENV)
+    if nconmax == mjwarp.nconmax_per_env and njmax == mjwarp.njmax_per_env:
+        return config
+
+    logger.warning(
+        "Upgrading legacy Isaac Lab 3/Newton MJWarp capacity from "
+        f"nconmax={mjwarp.nconmax_per_env}, njmax={mjwarp.njmax_per_env} to "
+        f"nconmax={nconmax}, njmax={njmax}."
+    )
+    simulator_init = dataclasses.replace(
+        config.simulator.config,
+        mujoco_warp=dataclasses.replace(mjwarp, nconmax_per_env=nconmax, njmax_per_env=njmax),
+    )
+    return dataclasses.replace(
+        config,
+        simulator=dataclasses.replace(config.simulator, config=simulator_init),
+    )
 
 
 class CheckpointMetadata(TypedDict):
@@ -258,7 +318,7 @@ def get_all_checkpoint_metadata(override_config: DictConfig) -> list[CheckpointM
     return sorted(checkpoint_metadata, key=lambda x: x["global_step"])
 
 
-def load_checkpoint(checkpoint: str, log_dir: str) -> Path:
+def load_checkpoint(checkpoint: str, log_dir: str | None) -> Path:
     """Download checkpoint from W&B or use local checkpoint.
 
     For W&B checkpoints, files are cached globally in ~/.cache/holosoma/file_cache/
@@ -269,9 +329,9 @@ def load_checkpoint(checkpoint: str, log_dir: str) -> Path:
     ----------
     checkpoint : str
         W&B checkpoint URI or path to local checkpoint file.
-    log_dir : str
-        Directory to save downloaded checkpoint. W&B checkpoints are copied here
-        from the global cache.
+    log_dir : str | None
+        Directory used for a persistent copy of a W&B checkpoint. ``None``
+        returns the global cached file directly.
 
     Returns
     -------
@@ -284,6 +344,8 @@ def load_checkpoint(checkpoint: str, log_dir: str) -> Path:
         # 1. Cache globally (fast on repeated access)
         cached_path = get_cached_file_path(checkpoint)
         logger.info(f"Checkpoint cached at: {cached_path}")
+        if log_dir is None:
+            return Path(cached_path)
 
         # 2. Extract original filename from W&B URI to preserve it in log_dir
         _, artifact_path = _parse_wandb_reference(checkpoint)

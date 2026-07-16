@@ -118,7 +118,9 @@ def get_eval_log_dir(
     if eval_timestamp is None:
         eval_timestamp = get_timestamp()
 
-    base_dir = Path(logger_config.base_dir).parent / "logs_eval"
+    # Resolve the training-log symlink first so eval staging stays beside, but
+    # never inside, the persistent training logs.
+    base_dir = Path(logger_config.base_dir).resolve().parent / "eval"
 
     # Use training config for project, with fallback to logger config
     project: str | None = training_config.project

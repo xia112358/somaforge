@@ -6,16 +6,16 @@ from unittest import mock
 
 import pytest
 import torch
-from omegaconf import OmegaConf
-
 from holosoma.config_types.experiment import ExperimentConfig
 from holosoma.utils.config_utils import CONFIG_NAME
 from holosoma.utils.eval_utils import (
     CheckpointConfig,
+    _experiment_config_from_serialized,
     get_all_checkpoint_metadata,
     load_checkpoint,
     load_saved_experiment_config,
 )
+from omegaconf import OmegaConf
 from somaforge_core.robot_assets import canonical_g1_asset_metadata
 
 
@@ -221,6 +221,58 @@ def test_load_saved_experiment_config_from_checkpoint(tmp_path: Path) -> None:
     assert run_path == "entity/project/run"
 
 
+def test_migrates_legacy_eval_overrides_from_checkpoint_config() -> None:
+    serialized = ExperimentConfig().to_serializable_dict()
+    serialized.pop("evaluation")
+    serialized["eval_overrides"] = {
+        "headless": False,
+        "num_envs": 6,
+        "disable_logger": True,
+        "max_episode_length_s": 42.0,
+        "randomize_tiles": True,
+        "xy_offset_range": 0.2,
+    }
+    serialized["training"]["max_eval_steps"] = 321
+    serialized["training"]["export_onnx"] = True
+
+    migrated = _experiment_config_from_serialized(serialized)
+
+    assert migrated.evaluation.num_envs == 6
+    assert migrated.evaluation.max_steps == 321
+    assert migrated.evaluation.export_onnx is True
+    assert migrated.evaluation.max_episode_length_s == 42.0
+    assert migrated.evaluation.randomize_tiles is True
+    assert migrated.evaluation.xy_offset_range == 0.2
+    assert not hasattr(migrated.training, "max_eval_steps")
+    assert not hasattr(migrated.training, "export_onnx")
+
+
+def test_upgrades_legacy_newton_mjwarp_capacity() -> None:
+    serialized = ExperimentConfig().to_serializable_dict()
+    serialized["simulator"]["config"]["mujoco_warp"] = {
+        "nconmax_per_env": 64,
+        "njmax_per_env": 256,
+    }
+
+    migrated = _experiment_config_from_serialized(serialized)
+
+    assert migrated.simulator.config.mujoco_warp.nconmax_per_env == 128
+    assert migrated.simulator.config.mujoco_warp.njmax_per_env == 512
+
+
+def test_preserves_larger_newton_mjwarp_capacity() -> None:
+    serialized = ExperimentConfig().to_serializable_dict()
+    serialized["simulator"]["config"]["mujoco_warp"] = {
+        "nconmax_per_env": 256,
+        "njmax_per_env": 1024,
+    }
+
+    migrated = _experiment_config_from_serialized(serialized)
+
+    assert migrated.simulator.config.mujoco_warp.nconmax_per_env == 256
+    assert migrated.simulator.config.mujoco_warp.njmax_per_env == 1024
+
+
 def test_load_saved_experiment_config_rejects_legacy_g1_checkpoint(tmp_path: Path) -> None:
     checkpoint_path = tmp_path / "legacy_model.pt"
     torch.save({"experiment_config": ExperimentConfig().to_serializable_dict()}, checkpoint_path)
@@ -276,6 +328,23 @@ def test_load_checkpoint(tmp_path: Path) -> None:
         log_dir=str(log_dir),
     )
     assert str(checkpoint_path) == str(local_checkpoint)
+
+
+def test_load_checkpoint_uses_wandb_cache_without_staging(tmp_path: Path) -> None:
+    """Use the shared W&B cache directly when no persistent output is requested."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    cached_file = cache_dir / "abc123hash.pt"
+    cached_file.write_bytes(b"fake checkpoint")
+
+    with mock.patch("holosoma.utils.eval_utils.get_cached_file_path", return_value=str(cached_file)):
+        checkpoint_path = load_checkpoint(
+            checkpoint="wandb://test_entity/test_project/test_run/model_100.pt",
+            log_dir=None,
+        )
+
+    assert checkpoint_path == cached_file
+    assert list(tmp_path.iterdir()) == [cache_dir]
 
 
 def test_load_checkpoint_with_wandb_prefix(tmp_path: Path) -> None:

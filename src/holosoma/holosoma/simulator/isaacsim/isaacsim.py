@@ -786,6 +786,14 @@ class IsaacSim(BaseSimulator):
         self.contact_forces_history = torch.zeros(
             self.num_envs, self.simulator_config.contact_sensor_history_length, self.num_bodies, 3, device=self.device
         )
+        self.contact_link_body_names = list(self.contact_sensor.body_names)
+        self.contact_link_forces_history = torch.zeros(
+            self.num_envs,
+            self.simulator_config.contact_sensor_history_length,
+            len(self.contact_link_body_names),
+            3,
+            device=self.device,
+        )
 
         # Initialize virtual gantry system after object registry setup
         # Initialize virtual gantry using config
@@ -838,10 +846,20 @@ class IsaacSim(BaseSimulator):
         # Issue: data.net_forces_w_history is not cleared after a reset.
         # Solution: We only read the most recent decimation_factor steps.
         control_decimation = self.simulator_config.sim.control_decimation
-        effective_history_length = min(control_decimation, self.simulator_config.contact_sensor_history_length)
+        sensor_force_history = self.contact_sensor.data.net_forces_w_history
+        effective_history_length = min(
+            control_decimation,
+            self.simulator_config.contact_sensor_history_length,
+            sensor_force_history.shape[1],
+        )
+        self.contact_forces_history.zero_()
+        self.contact_link_forces_history.zero_()
         self.contact_forces_history[:, :effective_history_length, :, :] = self.contact_sensor.data.net_forces_w_history[
             :, :effective_history_length, self._contact_to_robot_body_ids
         ]  # (num_envs, history_length, num_bodies, 3), the first index is the most recent
+        self.contact_link_forces_history[:, :effective_history_length, :, :] = sensor_force_history[
+            :, :effective_history_length
+        ]
 
         self._rigid_body_pos = self._robot.data.body_pos_w[:, self.body_ids, :]
         self._rigid_body_rot = self._robot.data.body_quat_w[:, self.body_ids, :]
@@ -955,6 +973,7 @@ class IsaacSim(BaseSimulator):
     def clear_contact_forces_history(self, env_id):
         if len(env_id) > 0:
             self.contact_forces_history[env_id, :, :, :] = 0.0
+            self.contact_link_forces_history[env_id, :, :, :] = 0.0
 
     def apply_torques_at_dof(self, torques):
         self._robot.set_joint_effort_target(torques, joint_ids=self.dof_ids)

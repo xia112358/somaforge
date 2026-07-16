@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from somaforge_core.robot_assets import canonical_g1_asset_metadata
+from somaforge_core.motion_schema import NEWTON_KINEMATICS_BACKENDS
 
 from holosoma.utils.path import resolve_data_file_path
 
@@ -99,9 +100,14 @@ def _validate_canonical_manifest(
             raise ValueError(
                 f"Canonical manifest {key} mismatch: expected {expected}, got {data.get(key)!r}: {path}"
             )
-    if data.get("kinematics_backend") != "isaaclab3_newton_fk":
-        raise ValueError(f"Canonical manifest must use isaaclab3_newton_fk: {path}")
+    manifest_backend = data.get("kinematics_backend")
+    if manifest_backend not in NEWTON_KINEMATICS_BACKENDS:
+        raise ValueError(f"Canonical manifest must use a supported Newton kinematics backend: {path}")
     for entry in motion_files:
+        if entry.get("kinematics_backend") != manifest_backend:
+            raise ValueError(
+                f"motion_id={entry.get('motion_id')} kinematics backend does not match manifest: {path}"
+            )
         _validate_digest(
             entry["motion_file"], entry.get("motion_sha256"), context=f"motion_id={entry.get('motion_id')}"
         )
@@ -111,6 +117,13 @@ def _validate_canonical_manifest(
         _validate_digest(
             str(source_file), entry.get("source_sha256"), context=f"motion_id={entry.get('motion_id')} source"
         )
+        reference_motion_file = entry.get("reference_motion_file")
+        if reference_motion_file is not None:
+            _validate_digest(
+                str(reference_motion_file),
+                entry.get("reference_motion_sha256"),
+                context=f"motion_id={entry.get('motion_id')} reference motion",
+            )
     for entry in terrains:
         _validate_digest(
             entry["terrain_file"], entry.get("terrain_sha256"), context=f"terrain_id={entry.get('terrain_id')}"
@@ -206,5 +219,7 @@ def _normalize_motion_files(
         )
         if entry.get("source_file"):
             entry["source_file"] = _resolve_manifest_path(str(entry["source_file"]), base_dir)
+        if entry.get("reference_motion_file"):
+            entry["reference_motion_file"] = _resolve_manifest_path(str(entry["reference_motion_file"]), base_dir)
         normalized.append(entry)
     return normalized

@@ -11,12 +11,14 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _manifest(tmp_path):
+def _manifest(tmp_path, *, backend="isaaclab3_newton_fk"):
     motion = tmp_path / "motion.npz"
     source = tmp_path / "source.npz"
+    reference = tmp_path / "reference.npz"
     terrain = tmp_path / "terrain.obj"
     motion.write_bytes(b"motion")
     source.write_bytes(b"source")
+    reference.write_bytes(b"reference")
     terrain.write_bytes(b"terrain")
     robot_asset = canonical_g1_asset_metadata()
     payload = {
@@ -25,7 +27,7 @@ def _manifest(tmp_path):
         "robot_asset_sha256": robot_asset["urdf_sha256"],
         "robot_asset_bundle_sha256": robot_asset["asset_bundle_sha256"],
         "robot_asset_usd_bundle_sha256": robot_asset["usd_bundle_sha256"],
-        "kinematics_backend": "isaaclab3_newton_fk",
+        "kinematics_backend": backend,
         "motion_files": [
             {
                 "motion_id": 7,
@@ -33,8 +35,11 @@ def _manifest(tmp_path):
                 "motion_sha256": _sha256(b"motion"),
                 "source_file": source.name,
                 "source_sha256": _sha256(b"source"),
+                "reference_motion_file": reference.name,
+                "reference_motion_sha256": _sha256(b"reference"),
                 "terrain_id": 3,
                 "kinematics_schema": "somaforge_canonical_motion_v1",
+                "kinematics_backend": backend,
             }
         ],
         "terrains": [
@@ -55,6 +60,7 @@ def test_canonical_manifest_validates_hashes_and_preserves_metadata(tmp_path) ->
 
     assert payload["motion_files"][0]["motion_id"] == 7
     assert payload["motion_files"][0]["kinematics_schema"] == "somaforge_canonical_motion_v1"
+    assert payload["motion_files"][0]["reference_motion_file"] == str((tmp_path / "reference.npz").resolve())
     assert payload["terrains"][0]["terrain_sha256"] == _sha256(b"terrain")
 
 
@@ -74,3 +80,9 @@ def test_canonical_manifest_rejects_changed_robot_asset(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="robot_asset_usd_bundle_sha256 mismatch"):
         load_motion_terrain_manifest(str(path))
+
+
+def test_canonical_manifest_accepts_newton_rollout_backend(tmp_path) -> None:
+    payload = load_motion_terrain_manifest(str(_manifest(tmp_path, backend="isaaclab3_newton_rollout")))
+
+    assert payload["kinematics_backend"] == "isaaclab3_newton_rollout"

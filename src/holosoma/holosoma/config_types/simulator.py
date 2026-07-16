@@ -2,14 +2,15 @@ from __future__ import annotations
 
 from dataclasses import field
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import tyro
+from holosoma.config_types.viewer import ViewerConfig
 from pydantic import model_validator
 from pydantic.dataclasses import dataclass
-from typing_extensions import Annotated
 
-from holosoma.config_types.viewer import ViewerConfig
+DEFAULT_MJWARP_NCONMAX_PER_ENV = 128
+DEFAULT_MJWARP_NJMAX_PER_ENV = 512
 
 
 @dataclass(frozen=True)
@@ -20,8 +21,8 @@ class MujocoWarpConfig:
     Increase these values if you encounter overflow warnings during training.
     """
 
-    nconmax_per_env: int = 96
-    """Maximum contacts per environment (default: 96).
+    nconmax_per_env: int = DEFAULT_MJWARP_NCONMAX_PER_ENV
+    """Maximum contacts per environment (default: 128).
 
     Increase for:
     - Complex terrains with many contact points
@@ -31,11 +32,11 @@ class MujocoWarpConfig:
     Memory scales as: num_envs x nconmax_per_env
     """
 
-    njmax_per_env: int | None = None
-    """Maximum constraints per environment (default: auto-calculated).
+    njmax_per_env: int | None = DEFAULT_MJWARP_NJMAX_PER_ENV
+    """Maximum constraints per environment (default: 512).
 
-    If None (default), automatically calculated as: max(nconmax * 6, nv * 4)
-    where nv is the model's velocity dimension.
+    If explicitly set to ``None``, the Holosoma backend allocates
+    ``max(nconmax * 16, 2048)`` constraints per environment.
 
     Constraints include:
     - Contact constraints (friction cones: ~6 per contact)
@@ -471,15 +472,14 @@ class SimulatorInitConfig:
     reset_manager: ResetManagerConfig = field(default_factory=ResetManagerConfig)
     """Reset event manager configuration."""
 
-    contact_sensor_history_length: int = 3
-    """Number of frames of contact data retained for sensors."""
+    contact_sensor_history_length: int = 4
+    """Number of physics steps of contact data retained for sensors."""
 
     mujoco_warp: MujocoWarpConfig = field(default_factory=MujocoWarpConfig)
     """MuJoCo Warp backend memory allocation configuration.
 
-    Controls GPU memory allocation for the Warp backend. Only used when
-
-    for different scenarios.
+    Controls per-environment GPU allocation for the Isaac Lab 3/Newton
+    MJWarp solver.
 
     Command line usage:
         --simulator.config.mujoco-warp.nconmax-per-env=128

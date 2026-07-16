@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert raw OmniRetarget qpos motions with the training Newton articulation FK."""
+"""Canonicalize raw or Motion Edit G1 poses with the training Newton articulation FK."""
 
 from __future__ import annotations
 
@@ -11,14 +11,21 @@ import numpy as np
 
 SOMAFORGE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SOMAFORGE_ROOT / "packages" / "somaforge_core"))
+sys.path.insert(0, str(SOMAFORGE_ROOT / "packages" / "motion_edit"))
 sys.path.insert(0, str(SOMAFORGE_ROOT / "src" / "holosoma"))
 
 from isaaclab.app import AppLauncher  # noqa: E402
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("inputs", nargs="*", type=Path, help="Raw OmniRetarget NPZ files containing qpos[T,36].")
+parser.add_argument("inputs", nargs="*", type=Path, help="Input G1 motion NPZ files.")
 parser.add_argument("--output-dir", type=Path)
 parser.add_argument("--output-fps", type=float, default=50.0)
+parser.add_argument(
+    "--input-format",
+    choices=("omniretarget_qpos", "holosoma_joint_pos"),
+    default="omniretarget_qpos",
+    help="Input pose layout. Physics-retarget candidates use holosoma_joint_pos.",
+)
 parser.add_argument(
     "--batch-size",
     type=int,
@@ -48,9 +55,9 @@ from isaaclab.assets import ArticulationCfg  # noqa: E402
 from isaaclab.sim import SimulationCfg, build_simulation_context  # noqa: E402
 from isaaclab_newton.assets import Articulation  # noqa: E402
 from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg  # noqa: E402
+from motion_edit.physics_retarget.canonical_input import load_canonical_qpos_input  # noqa: E402
 from somaforge_core import (  # noqa: E402
     G1_29DOF_JOINT_ORDER,
-    angular_velocity_wxyz,
     body_velocities_from_pose,
     canonical_g1_asset_metadata,
     encode_kinematics_provenance,
@@ -60,51 +67,6 @@ from somaforge_core import (  # noqa: E402
     validate_pose_velocity_consistency,
     validate_root_body_consistency,
 )
-
-
-def _slerp_wxyz(q0: np.ndarray, q1: np.ndarray, blend: np.ndarray) -> np.ndarray:
-    q0 = q0 / np.maximum(np.linalg.norm(q0, axis=-1, keepdims=True), 1.0e-12)
-    q1 = q1 / np.maximum(np.linalg.norm(q1, axis=-1, keepdims=True), 1.0e-12)
-    dot = np.sum(q0 * q1, axis=-1, keepdims=True)
-    q1 = np.where(dot < 0.0, -q1, q1)
-    dot = np.clip(np.abs(dot), 0.0, 1.0)
-    theta = np.arccos(dot)
-    sin_theta = np.sin(theta)
-    t = blend[:, None]
-    close = sin_theta < 1.0e-8
-    out = np.sin((1.0 - t) * theta) / np.maximum(sin_theta, 1.0e-12) * q0
-    out += np.sin(t * theta) / np.maximum(sin_theta, 1.0e-12) * q1
-    out = np.where(close, (1.0 - t) * q0 + t * q1, out)
-    return out / np.maximum(np.linalg.norm(out, axis=-1, keepdims=True), 1.0e-12)
-
-
-def _resample_qpos(qpos: np.ndarray, input_fps: float, output_fps: float) -> np.ndarray:
-    duration = (qpos.shape[0] - 1) / input_fps
-    times = np.arange(0.0, duration, 1.0 / output_fps, dtype=np.float64)
-    phase = times * input_fps
-    i0 = np.floor(phase).astype(np.int64)
-    i1 = np.minimum(i0 + 1, qpos.shape[0] - 1)
-    blend = phase - i0
-    out = qpos[i0] * (1.0 - blend[:, None]) + qpos[i1] * blend[:, None]
-    out[:, :4] = _slerp_wxyz(qpos[i0, :4], qpos[i1, :4], blend)
-    return out.astype(np.float32)
-
-
-def _load_input(path: Path, output_fps: float) -> tuple[np.ndarray, np.ndarray]:
-    with np.load(path, allow_pickle=False) as data:
-        if "qpos" not in data:
-            raise KeyError(f"{path} is missing qpos")
-        qpos = np.asarray(data["qpos"], dtype=np.float32)
-        fps = float(np.asarray(data.get("fps", 30.0)).reshape(-1)[0])
-    if qpos.ndim != 2 or qpos.shape[1] != 36:
-        raise ValueError(f"{path} qpos must have shape [T,36], got {qpos.shape}")
-    qpos = _resample_qpos(qpos, fps, output_fps)
-    dt = 1.0 / output_fps
-    root_linear = np.gradient(qpos[:, 4:7], dt, axis=0).astype(np.float32)
-    root_angular = angular_velocity_wxyz(qpos[:, :4], dt)
-    joint_velocity = np.gradient(qpos[:, 7:], dt, axis=0).astype(np.float32)
-    qvel = np.concatenate((root_linear, root_angular, joint_velocity), axis=1)
-    return qpos, qvel
 
 
 def _build_robot(batch_size: int, device: str) -> Articulation:
@@ -143,7 +105,11 @@ def _build_robot(batch_size: int, device: str) -> Articulation:
 
 
 def _canonicalize(path: Path, output: Path, robot: Articulation, device: str) -> None:
-    qpos, qvel = _load_input(path, args_cli.output_fps)
+    qpos, qvel = load_canonical_qpos_input(
+        path,
+        input_format=args_cli.input_format,
+        output_fps=args_cli.output_fps,
+    )
     robot_joint_names = list(robot.joint_names)
     missing = [name for name in G1_29DOF_JOINT_ORDER if name not in robot_joint_names]
     if missing:
