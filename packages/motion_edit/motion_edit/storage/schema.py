@@ -16,7 +16,12 @@ class MotionAssetRecord:
     motion_id: str | None = None
     terrain_id: str | None = None
     terrain_urdf: str | None = None
+    terrain_mesh: str | None = None
     surface_catalog_path: str | None = None
+    source_motion_path: str | None = None
+    contact_force_npz: str | None = None
+    source_manifest: str | None = None
+    asset_hashes: dict[str, str] = field(default_factory=dict)
     contact_layer: str | None = None
     bound_contact_layer: str | None = None
     edit_plan_path: str | None = None
@@ -63,8 +68,8 @@ class MotionAssetRecord:
             missing.append("motion_id")
         if not self.source_contact_layer:
             missing.append("contact_layer")
-        if not (self.surface_catalog_path or self.terrain_urdf):
-            missing.append("surface_catalog_path_or_terrain_urdf")
+        if not (self.surface_catalog_path or self.terrain_mesh or self.terrain_urdf):
+            missing.append("surface_catalog_path_or_terrain_asset")
         return missing
 
     def validate(self) -> None:

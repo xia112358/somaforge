@@ -1,15 +1,13 @@
 from __future__ import annotations
 
+import argparse
+import json
 import tempfile
 import unittest
 from pathlib import Path
-import argparse
-import json
 from unittest import mock
 
 import numpy as np
-from somaforge_core.robot_assets import encode_robot_asset_json
-
 from motion_edit import cli
 from motion_edit.contact import (
     ContactEditPlan,
@@ -22,9 +20,10 @@ from motion_edit.contact import (
 )
 from motion_edit.contact.generation import apply_contact_edit_plan_to_motion, resolve_body_index
 from motion_edit.contact.graph import ContactGraph
-from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord
+from motion_edit.contact.io import write_contact_surfaces
+from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord, ContactSurfaceRecord
 from motion_edit.layers import read_layer
-
+from somaforge_core.robot_assets import encode_robot_asset_json
 
 _NP_SAVEZ = np.savez
 
@@ -147,6 +146,16 @@ def _write_fullbody_lte_source(root: Path) -> tuple[Path, ContactEditPlan]:
             "right_shoulder_roll_link",
             "right_elbow_link",
             "right_wrist_yaw_link",
+            "left_ankle_roll_sphere_1_link",
+            "left_ankle_roll_sphere_2_link",
+            "left_ankle_roll_sphere_3_link",
+            "left_ankle_roll_sphere_4_link",
+            "left_ankle_roll_sphere_5_link",
+            "right_ankle_roll_sphere_1_link",
+            "right_ankle_roll_sphere_2_link",
+            "right_ankle_roll_sphere_3_link",
+            "right_ankle_roll_sphere_4_link",
+            "right_ankle_roll_sphere_5_link",
         ],
         dtype=object,
     )
@@ -183,6 +192,28 @@ def _write_fullbody_lte_source(root: Path) -> tuple[Path, ContactEditPlan]:
         ],
     )
     write_contact_layer(root / "layers" / "contact" / "force_contact", anchor)
+    terrain = root / "terrain.obj"
+    terrain.write_text(
+        "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\n"
+        "f 1 2 3\nf 1 2 4\nf 1 3 4\nf 2 3 4\n",
+        encoding="utf-8",
+    )
+    write_contact_surfaces(
+        root / "layers" / "contact" / "force_contact" / "surfaces" / "motion_a.jsonl",
+        [
+            ContactSurfaceRecord(
+                motion_id="motion_a",
+                surface_id="platform_top",
+                object_id="terrain",
+                surface_type="mesh_face",
+                origin=[0.0, 0.0, 0.0],
+                normal=[0.0, 0.0, 1.0],
+                tangent_u=[1.0, 0.0, 0.0],
+                tangent_v=[0.0, 1.0, 0.0],
+                metadata={"mesh_path": str(terrain)},
+            )
+        ],
+    )
     edit = ContactAnchorEditRecord(
         edit_id="fullbody_edit",
         motion_id="motion_a",
@@ -493,8 +524,8 @@ class ContactEditPlanTests(unittest.TestCase):
                     "left_ankle_roll_sphere_1_link",
                     "left_ankle_roll_link",
                     "right_ankle_roll_sphere_1_link",
-                    "left_rubber_hand_link",
-                    "right_rubber_hand_link",
+                    "left_sphere_hand_link",
+                    "right_sphere_hand_link",
                 ],
                 dtype=object,
             )
@@ -777,7 +808,8 @@ class ContactEditPlanTests(unittest.TestCase):
             self.assertTrue((intermediate / "out.contact_laplacian_taskspace_motion.npz").exists())
             self.assertTrue((intermediate / "out.contact_laplacian_fullbody_ik_motion.npz").exists())
             self.assertEqual(run_mock.call_args.kwargs["check"], True)
-            self.assertIn("pyroki_fullbody_ik.py", run_mock.call_args.args[0][5])
+            self.assertIn("-m", run_mock.call_args.args[0])
+            self.assertIn("motion_edit.generation.pyroki_fullbody_ik", run_mock.call_args.args[0])
             self.assertIn("body_pos_w", generated.files)
             self.assertIn("joint_pos", generated.files)
             np.testing.assert_allclose(generated["joint_pos"], 7.0)
@@ -820,7 +852,8 @@ class ContactEditPlanTests(unittest.TestCase):
             self.assertEqual(result.output_motion_path, root / "out.npz")
             self.assertTrue((root / "out.npz").exists())
             cmd = run_mock.call_args.args[0]
-            self.assertIn("pyroki_fullbody_ik.py", cmd[5])
+            self.assertIn("-m", cmd)
+            self.assertIn("motion_edit.generation.pyroki_fullbody_ik", cmd)
             self.assertNotIn("/home/xiaz/lte/scripts/solve_lte_fullbody_ik.py", cmd)
 
     def test_generate_lte_augmentation_can_register_motion_version(self) -> None:

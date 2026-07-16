@@ -443,8 +443,34 @@ def surfaces_from_urdf_collision_boxes(*_args, **_kwargs) -> list[ContactSurface
     raise NotImplementedError("URDF primitive box surface loading is not implemented yet; use surfaces_from_urdf_meshes for OBJ terrain meshes")
 
 
-def surfaces_from_obj_mesh_faces(*_args, **_kwargs) -> list[ContactSurfaceRecord]:
-    raise NotImplementedError("OBJ mesh face surface loading is not implemented yet")
+def surfaces_from_obj_mesh_faces(
+    *,
+    motion_id: str,
+    obj_path: str | Path,
+    include_sides: bool = True,
+    include_downward: bool = False,
+    include_ground: bool = True,
+    ground_z: float = 0.0,
+    ground_half_extent: float = 10.0,
+    source: str = "obj_mesh_surface_catalog",
+) -> list[ContactSurfaceRecord]:
+    mesh_path = Path(obj_path).expanduser().resolve()
+    vertices, faces = _load_obj_mesh(mesh_path)
+    surfaces = _mesh_face_surfaces(
+        motion_id=motion_id,
+        object_id=mesh_path.stem,
+        vertices=vertices,
+        faces=faces,
+        include_sides=include_sides,
+        include_downward=include_downward,
+        source=source,
+        metadata={"mesh_path": str(mesh_path)},
+    )
+    if include_ground:
+        surfaces.append(ground_surface(motion_id=motion_id, half_extent=ground_half_extent, z=ground_z))
+    if not surfaces:
+        raise ValueError(f"{mesh_path} has no eligible mesh surfaces")
+    return surfaces
 
 
 def surfaces_from_heightfield_patches(*_args, **_kwargs) -> list[ContactSurfaceRecord]:

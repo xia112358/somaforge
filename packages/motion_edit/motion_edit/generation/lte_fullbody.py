@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 from somaforge_core.contact_schema import CONTACT_BODY_NAMES_BY_PART, canonical_contact_part_name
 from somaforge_core.robot_assets import (
-    canonical_g1_asset_metadata,
+    canonical_g1_source_metadata,
     decode_robot_asset_json,
     encode_robot_asset_json,
 )
@@ -273,7 +273,7 @@ def _validate_source_robot_asset(path: Path) -> None:
 
 def _stamp_robot_asset(payload: dict[str, Any]) -> dict[str, Any]:
     output = dict(payload)
-    metadata = canonical_g1_asset_metadata()
+    metadata = canonical_g1_source_metadata()
     output["robot_asset_json"] = np.asarray(encode_robot_asset_json(metadata))
     if "motion_edit_generation_metadata" in output:
         generation_metadata = json.loads(np.asarray(output["motion_edit_generation_metadata"]).item())

@@ -5,6 +5,7 @@ from dataclasses import replace
 import shutil
 from pathlib import Path
 
+from .adapters.asset_manifest import load_asset_manifest
 from .adapters.omniretarget import detect_omniretarget_paths
 from .adapters.lte import import_lte_catalog
 from .curation import filter_segments, load_layer_segments, write_status_layer
@@ -43,7 +44,7 @@ from .contact.jitter import DEFAULT_JITTER_BODIES, generate_contact_jitter_plans
 from .generation import apply_contact_aware_edit_plan_to_motion, apply_contact_edit_plan_to_motion
 from .contact.layers import read_contact_graph
 from .contact.patches import patches_from_anchors
-from .contact.surface_catalog import box_surfaces, parse_box_descriptor, surfaces_from_urdf_meshes
+from .contact.surface_catalog import box_surfaces, parse_box_descriptor, surfaces_from_obj_mesh_faces, surfaces_from_urdf_meshes
 from .storage.canonical import build_canonical_segments, mark_canonical_segment_statuses, write_motion_version_with_canonical_segments
 from .storage.io import (
     list_motion_assets,
@@ -129,6 +130,71 @@ def _cmd_import_force_proto(args: argparse.Namespace) -> None:
             )
         total += len(segments)
     print(f"wrote {total} candidate segments to {out_dir}; contact layer={LAYERS_ROOT / 'contact' / args.layer_name}")
+
+
+def _cmd_import_asset_manifest(args: argparse.Namespace) -> None:
+    ensure_data_dirs()
+    selected = set(args.motion_id or [])
+    assets = load_asset_manifest(args.manifest, verify_hashes=args.verify_hashes)
+    if selected:
+        assets = [asset for asset in assets if asset.motion_id in selected or str(asset.motion_index) in selected]
+    candidate_root = layer_dir("candidate", args.layer_name)
+    candidate_root.mkdir(parents=True, exist_ok=True)
+    contact_layer = f"contact/{args.layer_name}"
+    segment_count = 0
+    for asset in assets:
+        surfaces = surfaces_from_obj_mesh_faces(
+            motion_id=asset.motion_id,
+            obj_path=asset.terrain_mesh_path,
+            include_sides=False,
+            include_ground=True,
+        )
+        surface_path = SURFACES_ROOT / f"{asset.motion_id}_terrain_surfaces.jsonl"
+        write_contact_surfaces(surface_path, surfaces)
+        segments = segments_from_masked_motion(
+            asset.force_motion_path,
+            source=args.layer_name,
+            status="candidate",
+            motion_id=asset.motion_id,
+        )
+        write_layer(candidate_root / f"{asset.motion_id}.jsonl", segments)
+        graph = contact_graph_from_masked_motion(
+            asset.force_motion_path,
+            source=args.layer_name,
+            motion_id=asset.motion_id,
+        )
+        write_contact_layer(LAYERS_ROOT / contact_layer, graph)
+        record = MotionAssetRecord(
+            motion_asset_id=asset.motion_asset_id,
+            motion_path=str(asset.force_motion_path),
+            source="newton_asset_manifest",
+            fps=args.fps,
+            motion_id=asset.motion_id,
+            terrain_id=str(asset.motion_index),
+            terrain_mesh=str(asset.terrain_mesh_path),
+            surface_catalog_path=str(surface_path),
+            source_motion_path=str(asset.source_motion_path),
+            contact_force_npz=str(asset.force_motion_path),
+            source_manifest=str(asset.manifest_path),
+            asset_hashes={
+                "motion_sha256": asset.motion_sha256,
+                "source_sha256": asset.source_sha256,
+                "terrain_sha256": asset.terrain_sha256,
+                "contact_solver_sha256": asset.contact_solver_sha256,
+            },
+            contact_layer=contact_layer,
+            raw_contact={"available": True, "source": "newton_8part"},
+            metadata={
+                "manifest_motion_index": asset.motion_index,
+                "contact_force_provenance": asset.provenance,
+            },
+        )
+        write_motion_asset(record)
+        segment_count += len(segments)
+    print(
+        f"imported {len(assets)} manifest assets, {segment_count} candidate segments; "
+        f"contact layer={LAYERS_ROOT / contact_layer}"
+    )
 
 
 def _warn_legacy_layer_workflow(preferred: str) -> None:
@@ -1596,7 +1662,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     public_commands = (
         "init,register-motion,register-motion-asset,list-motions,show-motion,"
-        "import-force-proto,bind-contact-surfaces,summarize-surface-bindings,"
+        "import-asset-manifest,import-force-proto,bind-contact-surfaces,summarize-surface-bindings,"
         "export-surface-binding-report,export-surface-binding-overlay,"
         "contact-editor,validate-contact-edit-plan,generate-ref,"
         "generate-contact-jitter-plans,"
@@ -1621,6 +1687,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--use-registered-motion-ids", action="store_true")
     p.add_argument("--update-motions", action="store_true")
     p.set_defaults(func=_cmd_import_force_proto)
+
+    p = sub.add_parser("import-asset-manifest")
+    p.add_argument("--manifest", required=True)
+    p.add_argument("--layer-name", default="newton_8part")
+    p.add_argument("--motion-id", action="append", default=None, help="Import one climb_XX or numeric motion id; repeatable")
+    p.add_argument("--fps", type=float, default=50.0)
+    p.add_argument("--verify-hashes", action=argparse.BooleanOptionalAction, default=True)
+    p.set_defaults(func=_cmd_import_asset_manifest)
 
     p = add_hidden_parser("import-manual-cuts")
     p.add_argument("--segments-dir", required=True)
@@ -2165,6 +2239,7 @@ def build_parser() -> argparse.ArgumentParser:
         "list-motions": "list registered motions",
         "show-motion": "show one registered motion",
         "import-force-proto": "extract contact-first proto layers from rollout motions",
+        "import-asset-manifest": "register canonical Newton force, source motion, and terrain assets from a manifest",
         "bind-contact-surfaces": "bind contact anchors to known terrain/object surfaces",
         "summarize-surface-bindings": "summarize surface binding quality",
         "export-surface-binding-report": "write a surface binding inspection report",

@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from motion_edit.adapters.omniretarget import detect_omniretarget_paths
 from motion_edit.contact import (
     bind_anchors_to_surfaces,
     filter_short_raw_missing_anchors,
@@ -17,7 +16,7 @@ from motion_edit.contact import (
 from motion_edit.contact.graph import ContactGraph
 from motion_edit.contact.layers import read_contact_graph
 from motion_edit.contact.patches import patches_from_anchors
-from motion_edit.contact.surface_catalog import surfaces_from_urdf_meshes
+from motion_edit.contact.surface_catalog import surfaces_from_obj_mesh_faces, surfaces_from_urdf_meshes
 from motion_edit.io import write_jsonl
 from motion_edit.paths import LAYERS_ROOT, SURFACES_ROOT, WORKBENCH_ROOT
 from motion_edit.contact.segmentation.editor_cuts import stable_proto_transitions_for_editor
@@ -32,6 +31,7 @@ class ContactEditorConfig:
     session_name: str
     surface_catalog: str | None = None
     terrain_urdf: str | None = None
+    terrain_mesh: str | None = None
     output_prefix: str | None = None
     edit_plan: str | None = None
     output_contact_layer: str | None = None
@@ -112,11 +112,35 @@ def write_urdf_surface_catalog(
     return out
 
 
+def write_obj_surface_catalog(
+    *,
+    motion_id: str,
+    terrain_mesh: str | Path,
+    output: str | Path | None,
+    include_side_surfaces: bool = False,
+    include_ground: bool = True,
+    ground_z: float = 0.0,
+    ground_half_extent: float = 10.0,
+) -> Path:
+    out = Path(output).expanduser() if output is not None else default_terrain_surface_catalog(motion_id)
+    surfaces = surfaces_from_obj_mesh_faces(
+        motion_id=motion_id,
+        obj_path=terrain_mesh,
+        include_sides=include_side_surfaces,
+        include_ground=include_ground,
+        ground_z=ground_z,
+        ground_half_extent=ground_half_extent,
+    )
+    write_contact_surfaces(out, surfaces)
+    return out
+
+
 def resolve_surface_catalog(
     *,
     motion_id: str,
     surface_catalog: str | None,
     terrain_urdf: str | Path | None,
+    terrain_mesh: str | Path | None = None,
     include_side_surfaces: bool = False,
     include_ground: bool = True,
     ground_z: float = 0.0,
@@ -127,6 +151,16 @@ def resolve_surface_catalog(
         if not path.exists():
             raise FileNotFoundError(path)
         return path
+    if terrain_mesh:
+        return write_obj_surface_catalog(
+            motion_id=motion_id,
+            terrain_mesh=terrain_mesh,
+            output=None,
+            include_side_surfaces=include_side_surfaces,
+            include_ground=include_ground,
+            ground_z=ground_z,
+            ground_half_extent=ground_half_extent,
+        )
     if terrain_urdf:
         return write_urdf_surface_catalog(
             motion_id=motion_id,
@@ -137,7 +171,7 @@ def resolve_surface_catalog(
             ground_z=ground_z,
             ground_half_extent=ground_half_extent,
         )
-    raise ValueError("surface catalog is required; pass surface_catalog or terrain_urdf")
+    raise ValueError("surface catalog is required; pass surface_catalog, terrain_mesh, or terrain_urdf")
 
 
 def filter_surfaces_for_binding(surfaces, *, include_side_surfaces: bool):
@@ -151,12 +185,7 @@ def filter_surfaces_for_binding(surfaces, *, include_side_surfaces: bool):
 
 
 def infer_terrain_urdf(config: ContactEditorConfig) -> str | None:
-    if config.terrain_urdf:
-        return config.terrain_urdf
-    if not config.with_terrain:
-        return None
-    paths = detect_omniretarget_paths(config.motion, repo_root=config.repo_root)
-    return str(paths.terrain_urdf) if paths.terrain_urdf is not None else None
+    return config.terrain_urdf
 
 
 def prepare_contact_editor_session(
@@ -170,6 +199,7 @@ def prepare_contact_editor_session(
         motion_id=config.motion_id,
         surface_catalog=config.surface_catalog,
         terrain_urdf=terrain_urdf,
+        terrain_mesh=config.terrain_mesh,
         include_side_surfaces=False,
         include_ground=True,
         ground_z=config.ground_z,

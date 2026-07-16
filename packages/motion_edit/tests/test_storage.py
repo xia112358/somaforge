@@ -505,25 +505,25 @@ class StorageSchemaTests(unittest.TestCase):
                 proto_end_idx=np.asarray([3], dtype=np.int64),
                 contact_part_mask=np.asarray(
                     [
-                        [True, False, False, False, False, False],
-                        [True, False, False, False, False, False],
-                        [False, True, False, False, False, False],
+                        [True, False, False, False, False, False, False, False],
+                        [True, False, False, False, False, False, False, False],
+                        [False, True, False, False, False, False, False, False],
                     ],
                     dtype=bool,
                 ),
                 active_part_mask=np.asarray(
                     [
-                        [True, False, False, False, False, False],
-                        [True, False, False, False, False, False],
-                        [False, True, False, False, False, False],
+                        [True, False, False, False, False, False, False, False],
+                        [True, False, False, False, False, False, False, False],
+                        [False, True, False, False, False, False, False, False],
                     ],
                     dtype=bool,
                 ),
                 support_part_mask=np.asarray(
                     [
-                        [False, True, False, False, False, False],
-                        [False, True, False, False, False, False],
-                        [True, False, False, False, False, False],
+                        [False, True, False, False, False, False, False, False],
+                        [False, True, False, False, False, False, False, False],
+                        [True, False, False, False, False, False, False, False],
                     ],
                     dtype=bool,
                 ),
@@ -577,20 +577,20 @@ class StorageSchemaTests(unittest.TestCase):
             motion = motion_dir / "climb_02_rollout_ref_contact_force.npz"
             np.savez(
                 motion,
-                contact_force_part_order=np.asarray(["left_foot", "right_foot", "left_hand", "right_hand", "left_knee", "right_knee"]),
+                contact_force_part_order=np.asarray(["LHEE", "LTOE", "RHEE", "RTOE", "LH", "RH", "LK", "RK"]),
                 contact_force_part_mask=np.asarray(
                     [
-                        [True, False, False, False, False, False],
-                        [True, False, False, False, False, False],
-                        [False, False, False, False, False, False],
+                        [True, False, False, False, False, False, False, False],
+                        [True, False, False, False, False, False, False, False],
+                        [False, False, False, False, False, False, False, False],
                     ],
                     dtype=bool,
                 ),
                 contact_force_part_position_w=np.asarray(
                     [
-                        [[0.0, 0.0, 0.0]] * 6,
-                        [[0.1, 0.0, 0.0]] * 6,
-                        [[0.0, 0.0, 0.0]] * 6,
+                        [[0.0, 0.0, 0.0]] * 8,
+                        [[0.1, 0.0, 0.0]] * 8,
+                        [[0.0, 0.0, 0.0]] * 8,
                     ],
                     dtype=np.float32,
                 ),
@@ -625,7 +625,7 @@ class StorageSchemaTests(unittest.TestCase):
                 graph = read_contact_graph(root / "layers" / "contact" / "raw_contact_alias", "climb_02_rollout_ref_contact_force")
 
         self.assertGreater(len(graph.anchors), 0)
-        self.assertEqual(graph.anchors[0].body, "left_foot")
+        self.assertEqual(graph.anchors[0].body, "left_heel")
 
     def test_register_motion_version_cli_writes_metadata_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
