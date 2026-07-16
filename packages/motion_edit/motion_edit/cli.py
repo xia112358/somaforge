@@ -5,8 +5,8 @@ from dataclasses import replace
 import shutil
 from pathlib import Path
 
-from .adapters.asset_manifest import load_asset_manifest
 from .adapters.omniretarget import detect_omniretarget_paths
+from .adapters.asset_manifest import load_asset_manifest
 from .adapters.lte import import_lte_catalog
 from .curation import filter_segments, load_layer_segments, write_status_layer
 from .editing import clip_motion, splice_motions
@@ -60,7 +60,6 @@ from .storage.io import (
 )
 from .storage.schema import MotionAssetRecord, MotionVersionRecord
 from .storage.tokens import build_tokens_from_segments
-from .viewer import launch_viewer
 from .workbench import (
     WorkbenchSession,
     curate_segment,
@@ -113,21 +112,7 @@ def _cmd_import_force_proto(args: argparse.Namespace) -> None:
         if registered is not None and getattr(args, "update_motions", False):
             derived = dict(registered.derived or {})
             derived["contact_layer"] = f"contact/{args.layer_name}"
-            write_motion_asset(
-                MotionAssetRecord(
-                    motion_asset_id=registered.motion_asset_id,
-                    motion_path=registered.motion_path,
-                    source=registered.source,
-                    fps=registered.fps,
-                    motion_id=registered.motion_id,
-                    terrain_id=registered.terrain_id,
-                    terrain_urdf=registered.terrain_urdf,
-                    surface_catalog_path=registered.surface_catalog_path,
-                    raw_contact=dict(registered.raw_contact or {}),
-                    derived=derived,
-                    metadata=dict(registered.metadata),
-                )
-            )
+            write_motion_asset(replace(registered, contact_layer=f"contact/{args.layer_name}", derived=derived))
         total += len(segments)
     print(f"wrote {total} candidate segments to {out_dir}; contact layer={LAYERS_ROOT / 'contact' / args.layer_name}")
 
@@ -555,54 +540,6 @@ def _prepare_contact_editor_layer(args: argparse.Namespace) -> tuple[str, str]:
     return ready_layer, str(surface_catalog)
 
 
-def _launch_surface_editor_for_args(args: argparse.Namespace, *, contact_layer: str, surface_catalog: str | None) -> None:
-    session = prepare_surface_editor_session(
-        motion_path=args.motion,
-        motion_id=args.motion_id,
-        contact_layer=contact_layer,
-        surface_catalog=surface_catalog,
-        session_name=args.session_name,
-        edit_plan_path=args.edit_plan,
-        output_contact_layer=args.output_contact_layer,
-        layers_root=LAYERS_ROOT,
-        workbench_root=WORKBENCH_ROOT,
-    )
-    user_port = args.timeline_port + 1
-    print(f"contact editor session: {session.session_dir}")
-    print(f"contact editor url: http://localhost:{user_port}")
-    if args.edit_mode == "request":
-        print(f"[debug] sync pending viewer requests: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'}")
-        print(f"[debug] save after sync: motion-edit surface-editor-sync --session {session.session_dir / 'session.json'} --save")
-    else:
-        print("direct edit mode: edit contacts in the Contact Editor page, then validate the plan and run motion-edit generate-ref")
-    process = launch_viewer(
-        args.motion,
-        repo_root=args.repo_root,
-        layer=None,
-        conda_env=args.conda_env,
-        timeline_port=args.timeline_port,
-        fps=args.fps,
-        with_terrain=args.with_terrain,
-        surface_binding_overlay=session.overlay_path,
-        surface_editor_session=session.session_dir / "session.json",
-        surface_editor_requests=session.request_path,
-        surface_editor_edit_mode=args.edit_mode,
-        surface_editor_step_size=args.step_size,
-        surface_editor_default_mode=args.default_mode,
-        surface_editor_show_only=args.show_only,
-        surface_editor_select_anchor=args.select_anchor,
-        prefer_local_surface_editor=not args.external_viewer,
-    )
-    print(f"viewer pid={process.pid}")
-    print(f"Open Contact Editor: http://localhost:{user_port}")
-    process.wait()
-    if args.save_on_exit:
-        out = save_surface_editor_session(session, layers_root=LAYERS_ROOT)
-        print(f"saved surface editor session output_contact_layer={out}")
-    else:
-        print("surface editor session prepared; no ContactLayer was saved because --save-on-exit was not set")
-
-
 def _apply_motion_asset_defaults_to_contact_editor_args(args: argparse.Namespace) -> bool:
     motion_key = getattr(args, "motion_asset_id", None) or getattr(args, "motion_id", None)
     if not motion_key:
@@ -611,9 +548,10 @@ def _apply_motion_asset_defaults_to_contact_editor_args(args: argparse.Namespace
         record = read_motion_asset(motion_key)
     except FileNotFoundError:
         return False
-    args.motion = args.motion or record.motion_path
+    args.motion = args.motion or record.contact_force_npz or record.motion_path
     args.motion_id = args.motion_id or record.motion_id or record.motion_asset_id
     args.terrain_urdf = args.terrain_urdf or record.terrain_urdf
+    args.terrain_mesh = getattr(args, "terrain_mesh", None) or record.terrain_mesh
     args.surface_catalog = args.surface_catalog or record.surface_catalog_path
     derived = record.derived or {}
     args.source_contact_layer = args.source_contact_layer or derived.get("bound_contact_layer") or derived.get("contact_layer")
@@ -621,7 +559,7 @@ def _apply_motion_asset_defaults_to_contact_editor_args(args: argparse.Namespace
     args.output_contact_layer = args.output_contact_layer or derived.get("output_contact_layer")
     if not args.output_prefix:
         args.output_prefix = f"contact/{args.session_name}"
-    if record.terrain_urdf and not args.with_terrain:
+    if (record.terrain_urdf or record.terrain_mesh or record.surface_catalog_path) and not args.with_terrain:
         args.with_terrain = True
     if record.fps and args.fps == 50:
         args.fps = int(record.fps)
@@ -629,54 +567,18 @@ def _apply_motion_asset_defaults_to_contact_editor_args(args: argparse.Namespace
 
 
 def _cmd_contact_editor(args: argparse.Namespace) -> None:
+    from .web import run_contact_editor
+
     ensure_data_dirs()
-    loaded_registered_motion = _apply_motion_asset_defaults_to_contact_editor_args(args)
-    if loaded_registered_motion:
-        print(f"loaded registered motion {args.motion_asset_id or args.motion_id}")
-    if args.motion is not None and not args.motion_id:
-        raise ValueError("--motion-id is required when motion is provided")
-    if args.motion is not None and not args.source_contact_layer:
-        raise ValueError("--source-contact-layer is required when motion is provided")
-    if args.include_side_surfaces:
-        raise ValueError("contact-editor does not allow side surfaces; use surface-editor only for debug")
-    if args.no_ground:
-        raise ValueError("contact-editor requires ground surface support")
-    if args.motion is not None and args.surface_catalog is None and args.terrain_urdf is None and args.with_terrain:
-        paths = detect_omniretarget_paths(args.motion, repo_root=args.repo_root)
-        if paths.terrain_urdf is None:
-            raise ValueError("--with-terrain could not resolve a terrain URDF; pass --surface-catalog or --terrain-urdf")
-        args.terrain_urdf = str(paths.terrain_urdf)
-    if args.motion is not None and args.output_contact_layer is None:
-        args.output_contact_layer = f"contact/{args.session_name}_editor_ready_edited"
-    defaults = {
-        "motion": args.motion or "",
-        "motion_id": args.motion_id or "",
-        "source_contact_layer": args.source_contact_layer or "",
-        "terrain_urdf": args.terrain_urdf or "",
-        "surface_catalog": args.surface_catalog or "",
-        "session_name": args.session_name or "",
-        "output_prefix": args.output_prefix or "",
-        "output_contact_layer": args.output_contact_layer or "",
-        "edit_plan": args.edit_plan or "",
-        "repo_root": args.repo_root or "",
-        "with_terrain": args.with_terrain,
-    }
-    process = launch_viewer(
-        "",
-        timeline_port=args.timeline_port,
-        fps=args.fps,
-        surface_binding_overlay="__setup__",
-        surface_editor_session="__setup__",
-        surface_editor_requests="__setup__",
-        surface_editor_edit_mode=args.edit_mode,
-        surface_editor_default_mode=args.default_mode,
-        surface_editor_show_only=args.show_only,
-        contact_editor_defaults=defaults,
-        prefer_local_surface_editor=True,
+    motion_asset_id = args.motion_asset_id or args.motion_id
+    if args.motion and not motion_asset_id:
+        raise ValueError("direct motion paths are no longer accepted by contact-editor; register a MotionAsset first")
+    run_contact_editor(
+        motion_asset_id=motion_asset_id,
+        host=args.host,
+        port=args.port,
+        open_browser=not args.no_browser,
     )
-    print(f"viewer pid={process.pid}")
-    print(f"Open Motion Contact Editor: http://localhost:{args.timeline_port + 1}")
-    process.wait()
 
 
 def _cmd_create_box_surface_catalog(args: argparse.Namespace) -> None:
@@ -939,6 +841,54 @@ def _cmd_generate_ref(args: argparse.Namespace) -> None:
         print(f"warning: {warning}")
 
 
+def _cmd_force_retarget(args: argparse.Namespace) -> None:
+    from .generation.pyroki_trajectory_optimizer import WholeTrajectoryConfig
+    from .physics_retarget import (
+        ForceGuidedRetargetConfig,
+        NewtonSubprocessRunner,
+        WholeTrajectoryPhysicsProjector,
+        load_newton_force_target,
+        run_force_guided_retarget,
+    )
+
+    target = load_newton_force_target(args.target_force_motion)
+    projector = WholeTrajectoryPhysicsProjector(
+        lte_path=args.lte,
+        config=WholeTrajectoryConfig(max_iterations=args.pyroki_iterations),
+    )
+    runner = NewtonSubprocessRunner(
+        base_manifest_path=args.manifest,
+        target_force_motion_path=args.target_force_motion,
+        motion_id=args.motion_id,
+        checkpoint_path=args.checkpoint,
+        python_executable=args.newton_python,
+        repo_root=Path(__file__).resolve().parents[3],
+        parallel_envs=args.num_envs,
+        device=args.device,
+        output_fps=args.fps,
+    )
+    result = run_force_guided_retarget(
+        initial_motion_path=args.initial_motion,
+        target_force_w=target.force_w,
+        target_mask=target.mask,
+        target_joint_pos=target.joint_pos,
+        projector=projector,
+        physics_runner=runner,
+        output_motion_path=args.output_motion,
+        work_dir=args.work_dir,
+        config=ForceGuidedRetargetConfig(
+            max_iterations=args.physics_iterations,
+            force_weight=args.force_weight,
+            tangential_force_weight=args.tangential_force_weight,
+            unexpected_contact_weight=args.unexpected_contact_weight,
+            contact_state_weight=args.contact_state_weight,
+            tracking_weight=args.tracking_weight,
+        ),
+    )
+    print(f"wrote Newton force-retargeted motion {result.output_motion_path}")
+    print(f"best objective={result.best_objective:.6f} iterations={len(result.iterations) - 1}")
+
+
 def _cmd_generate_contact_jitter_plans(args: argparse.Namespace) -> None:
     results, stats = generate_contact_jitter_plans(
         args.cut_summary,
@@ -1054,6 +1004,7 @@ def _cmd_register_motion_asset(args: argparse.Namespace) -> None:
         motion_id=getattr(args, "motion_id", None),
         terrain_id=getattr(args, "terrain_id", None),
         terrain_urdf=str(Path(args.terrain_urdf).expanduser()) if getattr(args, "terrain_urdf", None) else None,
+        terrain_mesh=str(Path(args.terrain_mesh).expanduser()) if getattr(args, "terrain_mesh", None) else None,
         surface_catalog_path=str(Path(args.surface_catalog).expanduser()) if getattr(args, "surface_catalog", None) else None,
         raw_contact={
             "available": bool(getattr(args, "raw_contact", False)),
@@ -1080,6 +1031,7 @@ def _add_register_motion_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--rollout-motion-id", dest="motion_id", default=None)
     parser.add_argument("--terrain-id", default=None)
     parser.add_argument("--terrain-urdf", default=None)
+    parser.add_argument("--terrain-mesh", default=None)
     parser.add_argument("--surface-catalog", default=None)
     parser.add_argument("--contact-layer", default=None)
     parser.add_argument("--bound-contact-layer", default=None)
@@ -1254,21 +1206,6 @@ def _cmd_detect_motion(args: argparse.Namespace) -> None:
     print(f"terrain_obj: {paths.terrain_obj}")
     print(f"contact_force_npz: {paths.contact_force_npz}")
     print(f"holosoma_motion_path: {paths.holosoma_motion_path}")
-
-
-def _cmd_view(args: argparse.Namespace) -> None:
-    process = launch_viewer(
-        args.motion,
-        repo_root=args.repo_root,
-        layer=args.layer,
-        conda_env=args.conda_env,
-        timeline_port=args.timeline_port,
-        fps=args.fps,
-        with_terrain=args.with_terrain,
-    )
-    print(f"viewer pid={process.pid}")
-    print(f"Open Motion Cutter: http://localhost:{args.timeline_port}")
-    process.wait()
 
 
 def _cmd_edit_clip(args: argparse.Namespace) -> None:
@@ -1469,165 +1406,6 @@ def _cmd_workbench_action(args: argparse.Namespace) -> None:
     print(f"wrote {len(output_segments)} workbench segments to {out}")
 
 
-def _cmd_cutter(args: argparse.Namespace) -> None:
-    ensure_data_dirs()
-    motion_id = args.motion_id or Path(args.motion).expanduser().stem
-    if args.update_canonical:
-        if not args.motion_version_id:
-            raise ValueError("--update-canonical requires --motion-version-id")
-        if args.destination:
-            raise ValueError("--destination is a legacy layer output and cannot be used with --update-canonical")
-        version = read_motion_version(args.motion_version_id)
-        contact_graph = None
-        if version.contact_layer:
-            try:
-                contact_graph = read_contact_graph(LAYERS_ROOT / version.contact_layer, motion_id)
-            except FileNotFoundError:
-                print(f"warning: contact graph not found for {version.contact_layer}; canonical cutter edits will not be rebound")
-        segments = read_canonical_segments(args.motion_version_id)
-        session_dir = WORKBENCH_ROOT / "sessions" / args.session_name
-        segment_path = session_dir / f"{motion_id}.segments.jsonl"
-        write_jsonl(segment_path, (segment.to_cutter_json() for segment in segments if segment.motion_id == motion_id))
-        print(f"cutter session file: {segment_path}")
-        process = launch_viewer(
-            args.motion,
-            repo_root=args.repo_root,
-            layer=None,
-            segment_path=segment_path,
-            conda_env=args.conda_env,
-            timeline_port=args.timeline_port,
-            fps=args.fps,
-            with_terrain=args.with_terrain,
-        )
-        print(f"viewer pid={process.pid}")
-        print(f"Open Motion Cutter: http://localhost:{args.timeline_port}")
-        process.wait()
-        edited_segments = []
-        for item in read_jsonl(segment_path):
-            parsed = segment_from_dict(item, default_source="viser_cutter", default_status="manual")
-            metadata = dict(parsed.metadata)
-            metadata["motion_version_id"] = args.motion_version_id
-            metadata["cut_source"] = "cutter_refined"
-            edits = list(metadata.get("motion_edit_edits") or [])
-            edits.append({"kind": "import_from_cutter", "source": "viser_cutter", "params": {"motion_version_id": args.motion_version_id}})
-            metadata["motion_edit_edits"] = edits
-            updated = replace(
-                parsed,
-                source="viser_cutter",
-                status="manual",
-                motion_path=parsed.motion_path or version.motion_path or args.motion,
-                clip_npz=parsed.clip_npz or version.motion_path or args.motion,
-                metadata=metadata,
-            )
-            if contact_graph is not None:
-                updated = bind_segment_to_contact_graph(updated, contact_graph)
-                rebound_meta = dict(updated.metadata)
-                rebound_meta["motion_version_id"] = args.motion_version_id
-                rebound_meta["cut_source"] = "cutter_refined"
-                rebound_meta["motion_edit_edits"] = edits
-                transition = rebound_meta.get("contact_transition")
-                if isinstance(transition, dict) and transition.get("transition_id"):
-                    rebound_meta["parent_transition_id"] = transition["transition_id"]
-                updated = replace(updated, metadata=rebound_meta)
-            edited_segments.append(updated)
-        out = replace_canonical_segments(
-            args.motion_version_id,
-            edited_segments,
-            reason=f"cutter session {args.session_name}",
-            source="viser_cutter",
-            kind="cutter_refine",
-        )
-        print(f"updated canonical segmentation from cutter {out}")
-        return
-    if not args.source:
-        raise ValueError("cutter requires --source unless --update-canonical is used")
-    session = export_cutter_session_file(
-        motion_id=motion_id,
-        source_layer=args.source,
-        session_name=args.session_name,
-        destination_layer=args.destination,
-        motion_path=args.motion,
-        viewer_port=args.timeline_port,
-    )
-    print(f"cutter session file: {session.segment_path}")
-    process = launch_viewer(
-        args.motion,
-        repo_root=args.repo_root,
-        layer=None,
-        segment_path=session.segment_path,
-        conda_env=args.conda_env,
-        timeline_port=args.timeline_port,
-        fps=args.fps,
-        with_terrain=args.with_terrain,
-    )
-    print(f"viewer pid={process.pid}")
-    print(f"Open Motion Cutter: http://localhost:{args.timeline_port}")
-    process.wait()
-    out = sync_cutter_session_file(
-        session.segment_path,
-        source_layer=args.source,
-        session_name=args.session_name,
-        destination_layer=args.destination,
-    )
-    print(f"synced cutter session to {out}")
-
-
-def _cmd_surface_editor(args: argparse.Namespace) -> None:
-    ensure_data_dirs()
-    print("warning: surface-editor is a debug/internal entry; use contact-editor for the main curation workflow")
-    surface_catalog = args.surface_catalog
-    terrain_urdf_arg = getattr(args, "terrain_urdf", None)
-    if surface_catalog is None and (args.with_terrain or terrain_urdf_arg):
-        terrain_urdf = Path(terrain_urdf_arg).expanduser() if terrain_urdf_arg else None
-        if terrain_urdf is None:
-            paths = detect_omniretarget_paths(args.motion, repo_root=args.repo_root)
-            terrain_urdf = paths.terrain_urdf
-        if terrain_urdf is None:
-            raise ValueError("--with-terrain could not resolve a terrain URDF; pass --surface-catalog or --terrain-urdf")
-        surface_catalog = str(
-            _write_urdf_surface_catalog(
-                motion_id=args.motion_id,
-                terrain_urdf=terrain_urdf,
-                output=None,
-                include_side_surfaces=getattr(args, "include_side_surfaces", False),
-                include_ground=not getattr(args, "no_ground", False),
-                ground_z=getattr(args, "ground_z", 0.0),
-                ground_half_extent=getattr(args, "ground_half_extent", 10.0),
-            )
-        )
-        print(f"generated terrain surface catalog from URDF: {surface_catalog}")
-    _launch_surface_editor_for_args(args, contact_layer=args.contact_layer, surface_catalog=surface_catalog)
-
-
-def _cmd_surface_editor_move_anchor(args: argparse.Namespace) -> None:
-    session = read_surface_editor_session(args.session)
-    moved_graph, edit = move_surface_editor_anchor(
-        session,
-        anchor_id=args.anchor_id,
-        tangent_delta=args.tangent_delta,
-        requested_world_position=args.requested_world_position,
-        mode=args.mode,
-    )
-    print(
-        f"moved surface anchor {args.anchor_id} motion={session.motion_id} "
-        f"delta_world={edit.delta_world} tangent_delta={edit.tangent_delta}"
-    )
-    print(f"updated overlay {session.overlay_path}")
-    if args.save:
-        out = save_surface_editor_session(session, layers_root=LAYERS_ROOT)
-        print(f"saved surface editor session output_contact_layer={out}")
-
-
-def _cmd_surface_editor_sync(args: argparse.Namespace) -> None:
-    session = read_surface_editor_session(args.session)
-    count, out = sync_surface_editor_requests(session, save=args.save, layers_root=LAYERS_ROOT)
-    print(f"synced surface editor requests session={args.session} applied={count}")
-    print(f"updated overlay {session.overlay_path}")
-    print(f"pending edits {session.pending_edits_path}")
-    if args.save:
-        print(f"saved surface editor session output_contact_layer={out}")
-
-
 def _cmd_workbench(args: argparse.Namespace) -> None:
     ensure_data_dirs()
     session = WorkbenchSession(
@@ -1665,6 +1443,7 @@ def build_parser() -> argparse.ArgumentParser:
         "import-asset-manifest,import-force-proto,bind-contact-surfaces,summarize-surface-bindings,"
         "export-surface-binding-report,export-surface-binding-overlay,"
         "contact-editor,validate-contact-edit-plan,generate-ref,"
+        "force-retarget,"
         "generate-contact-jitter-plans,"
         "register-motion-version,build-canonical-segmentation,build-token-catalog,"
         "export-manifest,export-split-npz"
@@ -1857,6 +1636,28 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--intermediate-dir", default=None)
     p.set_defaults(func=_cmd_generate_ref)
 
+    p = sub.add_parser("force-retarget", help="match an edited trajectory to a real Newton 8-part force rollout")
+    p.add_argument("--initial-motion", required=True, help="Edited PyRoki/Holosoma motion used as the first candidate")
+    p.add_argument("--lte", required=True, help="Contact-Laplacian keypoint NPZ produced by generate-ref")
+    p.add_argument("--target-force-motion", required=True, help="Canonical Newton rollout containing target 8-part force")
+    p.add_argument("--manifest", required=True, help="Canonical base motion/terrain manifest")
+    p.add_argument("--motion-id", required=True)
+    p.add_argument("--checkpoint", required=True, help="WBT checkpoint used to roll out every candidate")
+    p.add_argument("--newton-python", required=True, help="Python executable in the Isaac Lab 3/Newton conda environment")
+    p.add_argument("--output-motion", required=True)
+    p.add_argument("--work-dir", required=True)
+    p.add_argument("--device", default="cuda:0")
+    p.add_argument("--num-envs", type=int, default=16)
+    p.add_argument("--fps", type=float, default=50.0)
+    p.add_argument("--physics-iterations", type=int, default=4)
+    p.add_argument("--pyroki-iterations", type=int, default=25)
+    p.add_argument("--force-weight", type=float, default=1.0)
+    p.add_argument("--tangential-force-weight", type=float, default=0.25)
+    p.add_argument("--unexpected-contact-weight", type=float, default=0.5)
+    p.add_argument("--contact-state-weight", type=float, default=0.25)
+    p.add_argument("--tracking-weight", type=float, default=0.1)
+    p.set_defaults(func=_cmd_force_retarget)
+
     p = add_hidden_parser("generate-lte-augmentation")
     p.add_argument("--plan", required=True)
     p.add_argument("--output-motion", required=True)
@@ -1904,7 +1705,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-edits", type=int, default=12)
     p.add_argument("--max-attempts", type=int, default=32)
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--body", action="append", choices=("left_foot", "right_foot", "left_hand", "right_hand", "left_knee", "right_knee"))
+    p.add_argument(
+        "--body",
+        action="append",
+        choices=("left_heel", "left_toe", "right_heel", "right_toe", "left_hand", "right_hand", "left_knee", "right_knee"),
+    )
     p.add_argument("--mode", choices=("reject", "clamp"), default="reject")
     p.add_argument("--sampler", choices=("local_disk", "local_annulus", "surface_uniform", "mixed"), default="local_disk")
     p.add_argument("--min-radius-fraction", type=float, default=0.5)
@@ -1951,6 +1756,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--motion-id", default=None)
     p.add_argument("--terrain-id", default=None)
     p.add_argument("--terrain-urdf", default=None)
+    p.add_argument("--terrain-mesh", default=None)
     p.add_argument("--surface-catalog", default=None)
     p.add_argument("--contact-layer", default=None)
     p.add_argument("--bound-contact-layer", default=None)
@@ -2098,94 +1904,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=_cmd_workbench_action)
 
-    p = add_hidden_parser("cutter")
-    p.add_argument("motion")
-    p.add_argument("--source", default=None, help="Source layer path relative to data/layers")
-    p.add_argument("--session-name", required=True)
-    p.add_argument("--destination", default=None, help="Destination layer path, default manual/<session-name>")
-    p.add_argument("--motion-version-id", default=None)
-    p.add_argument("--update-canonical", action="store_true")
-    p.add_argument("--motion-id", default=None)
-    p.add_argument("--repo-root", default=None)
-    p.add_argument("--conda-env", default="hsretargeting")
-    p.add_argument("--timeline-port", type=int, default=8094)
-    p.add_argument("--fps", type=int, default=50)
-    p.add_argument("--with-terrain", action="store_true")
-    p.set_defaults(func=_cmd_cutter)
-
     p = sub.add_parser("contact-editor", help="launch the main interactive contact-anchor editor")
-    p.add_argument("motion", nargs="?", default=None)
+    p.add_argument("motion", nargs="?", default=None, help=argparse.SUPPRESS)
     p.add_argument("--motion-id", default=None)
     p.add_argument("--motion-asset-id", default=None)
-    p.add_argument("--source-contact-layer", default=None)
-    p.add_argument("--surface-catalog", default=None)
-    p.add_argument("--terrain-urdf", default=None)
-    p.add_argument("--include-side-surfaces", action="store_true", help=argparse.SUPPRESS)
-    p.add_argument("--no-ground", action="store_true", help=argparse.SUPPRESS)
-    p.add_argument("--ground-z", type=float, default=0.0)
-    p.add_argument("--ground-half-extent", type=float, default=10.0)
-    p.add_argument("--output-prefix", default=None, help="Contact layer prefix for generated *_merged, *_editor_visible, *_editor_ready layers")
-    p.add_argument("--session-name", default="contact_editor")
-    p.add_argument("--edit-plan", default=None)
-    p.add_argument("--output-contact-layer", default=None)
-    p.add_argument("--repo-root", default=None)
-    p.add_argument("--conda-env", default="hsretargeting")
-    p.add_argument("--timeline-port", type=int, default=8094)
-    p.add_argument("--fps", type=int, default=50)
-    p.add_argument("--with-terrain", action="store_true")
-    p.add_argument("--save-on-exit", action="store_true")
-    p.add_argument("--edit-mode", choices=("direct", "request"), default="direct")
-    p.add_argument("--step-size", type=float, default=0.02)
-    p.add_argument("--default-mode", choices=("reject", "clamp"), default="reject")
-    p.add_argument("--show-only", choices=("all", "bound", "edited", "clamped", "suspicious", "failed", "unbound"), default="all")
-    p.add_argument("--select-anchor", default=None)
-    p.add_argument("--external-viewer", action="store_true", help=argparse.SUPPRESS)
-    p.add_argument("--merge-max-gap", type=int, default=3)
-    p.add_argument("--merge-max-distance", type=float, default=0.06)
-    p.add_argument("--max-surface-distance", type=float, default=0.08)
-    p.add_argument("--bind-mode", choices=("reject", "clamp"), default="reject")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8094)
+    p.add_argument("--no-browser", action="store_true")
     p.set_defaults(func=_cmd_contact_editor)
-
-    p = add_hidden_parser("surface-editor")
-    p.add_argument("motion")
-    p.add_argument("--motion-id", required=True)
-    p.add_argument("--contact-layer", required=True)
-    p.add_argument("--surface-catalog", default=None)
-    p.add_argument("--terrain-urdf", default=None)
-    p.add_argument("--include-side-surfaces", action="store_true")
-    p.add_argument("--no-ground", action="store_true")
-    p.add_argument("--ground-z", type=float, default=0.0)
-    p.add_argument("--ground-half-extent", type=float, default=10.0)
-    p.add_argument("--session-name", required=True)
-    p.add_argument("--edit-plan", default=None)
-    p.add_argument("--output-contact-layer", default=None)
-    p.add_argument("--repo-root", default=None)
-    p.add_argument("--conda-env", default="hsretargeting")
-    p.add_argument("--timeline-port", type=int, default=8094)
-    p.add_argument("--fps", type=int, default=50)
-    p.add_argument("--with-terrain", action="store_true")
-    p.add_argument("--save-on-exit", action="store_true")
-    p.add_argument("--edit-mode", choices=("direct", "request"), default="direct")
-    p.add_argument("--step-size", type=float, default=0.02)
-    p.add_argument("--default-mode", choices=("reject", "clamp"), default="reject")
-    p.add_argument("--show-only", choices=("all", "bound", "edited", "clamped", "suspicious", "failed", "unbound"), default="all")
-    p.add_argument("--select-anchor", default=None)
-    p.add_argument("--external-viewer", action="store_true", help="Use the legacy external Holosoma viewer instead of the local surface overlay adapter")
-    p.set_defaults(func=_cmd_surface_editor)
-
-    p = add_hidden_parser("surface-editor-sync")
-    p.add_argument("--session", required=True, help="Path to surface editor session.json")
-    p.add_argument("--save", action="store_true")
-    p.set_defaults(func=_cmd_surface_editor_sync)
-
-    p = add_hidden_parser("surface-editor-move-anchor")
-    p.add_argument("--session", required=True, help="Path to surface editor session.json")
-    p.add_argument("--anchor-id", required=True)
-    p.add_argument("--tangent-delta", nargs=2, type=float, default=None)
-    p.add_argument("--requested-world-position", nargs=3, type=float, default=None)
-    p.add_argument("--mode", choices=("reject", "clamp"), default="reject")
-    p.add_argument("--save", action="store_true")
-    p.set_defaults(func=_cmd_surface_editor_move_anchor)
 
     p = add_hidden_parser("workbench")
     p.add_argument("motion", nargs="?", default=None, help="Optional .npz motion path for state metadata")
@@ -2208,16 +1934,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dataset-root", default=None)
     p.set_defaults(func=_cmd_detect_motion)
 
-    p = add_hidden_parser("view")
-    p.add_argument("motion")
-    p.add_argument("--repo-root", default=None)
-    p.add_argument("--layer", default=None, help="Layer path relative to data/layers, e.g. candidates/force_contact")
-    p.add_argument("--conda-env", default="hsretargeting")
-    p.add_argument("--timeline-port", type=int, default=8094)
-    p.add_argument("--fps", type=int, default=50)
-    p.add_argument("--with-terrain", action="store_true")
-    p.set_defaults(func=_cmd_view)
-
     p = add_hidden_parser("edit-clip")
     p.add_argument("--input", required=True)
     p.add_argument("--output", required=True)
@@ -2238,15 +1954,16 @@ def build_parser() -> argparse.ArgumentParser:
         "register-motion-asset": "register a motion asset path",
         "list-motions": "list registered motions",
         "show-motion": "show one registered motion",
-        "import-force-proto": "extract contact-first proto layers from rollout motions",
         "import-asset-manifest": "register canonical Newton force, source motion, and terrain assets from a manifest",
+        "import-force-proto": "extract contact-first proto layers from rollout motions",
         "bind-contact-surfaces": "bind contact anchors to known terrain/object surfaces",
         "summarize-surface-bindings": "summarize surface binding quality",
         "export-surface-binding-report": "write a surface binding inspection report",
         "export-surface-binding-overlay": "write a viewer overlay for surface bindings",
         "contact-editor": "launch the main Contact Editor UI",
         "validate-contact-edit-plan": "validate staged contact-anchor edits",
-        "generate-ref": "generate a WBT-ready force trajectory with retargeted contact force",
+        "generate-ref": "generate an edited kinematic candidate for Newton force retargeting",
+        "force-retarget": "match an edited trajectory to target force using repeated Newton rollouts",
         "generate-contact-jitter-plans": "generate surface-constrained contact jitter plans",
         "register-motion-version": "register an archived source or generated force-ref motion version",
         "build-canonical-segmentation": "initialize the canonical segmentation for a motion version",

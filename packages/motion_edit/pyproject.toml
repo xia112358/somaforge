@@ -9,23 +9,21 @@ description = "Motion edit layers, segment candidates, and export tools for Holo
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+  "fastapi",
   "numpy",
   "scipy",
   "somaforge-core",
   "trimesh",
-]
-
-[project.optional-dependencies]
-viewer = [
-  "viser",
-  "yourdfpy",
+  "uvicorn",
 ]
 
 [project.scripts]
 motion-edit = "motion_edit.cli:main"
 motion-edit-seg = "motion_edit.segmentation.cli:main"
-motion-edit-seg-cutter = "motion_edit.segmentation.cutter:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["motion_edit*"]
+
+[tool.setuptools.package-data]
+motion_edit = ["web_dist/**/*"]

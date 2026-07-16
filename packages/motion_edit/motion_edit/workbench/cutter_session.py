@@ -42,7 +42,7 @@ def _write_session_manifest(
     manifest_path: Path,
     motion_path: str | None = None,
     contact_overlay_path: Path | None = None,
-    viewer_port: int | None = None,
+    ui_port: int | None = None,
     sync_status: str = "prepared",
 ) -> None:
     existing: dict = {}
@@ -59,7 +59,7 @@ def _write_session_manifest(
         "working_cutter_file": str(segment_path),
         "contact_overlay_file": str(contact_overlay_path) if contact_overlay_path is not None else existing.get("contact_overlay_file"),
         "output_layer": destination_layer,
-        "viewer_port": viewer_port if viewer_port is not None else existing.get("viewer_port"),
+        "ui_port": ui_port if ui_port is not None else existing.get("ui_port"),
         "sync_status": sync_status,
         "created_at": existing.get("created_at") or now,
         "updated_at": now,
@@ -119,7 +119,7 @@ def export_cutter_session_file(
     session_name: str,
     destination_layer: str | None = None,
     motion_path: str | Path | None = None,
-    viewer_port: int | None = None,
+    ui_port: int | None = None,
     layers_root: Path = LAYERS_ROOT,
     workbench_root: Path = WORKBENCH_ROOT,
 ) -> CutterSession:
@@ -153,7 +153,7 @@ def export_cutter_session_file(
         manifest_path=manifest_path,
         motion_path=source_motion_path,
         contact_overlay_path=contact_overlay_path,
-        viewer_port=viewer_port,
+        ui_port=ui_port,
         sync_status="prepared",
     )
     return CutterSession(
@@ -189,7 +189,7 @@ def segments_from_cutter_file(
     contact_graph = _read_source_contact_graph(motion_id=motion_id, source_layer=source_layer, layers_root=layers_root)
     segments: list[SegmentRecord] = []
     for item in records:
-        parsed = segment_from_dict(item, default_source="viser_cutter", default_status="manual")
+        parsed = segment_from_dict(item, default_source="motion_edit_workbench", default_status="manual")
         existing_meta = dict(parsed.metadata)
         session_meta = dict(existing_meta.get("motion_edit_cutter_session") or {})
         original_segment_id = session_meta.get("original_segment_id")
@@ -199,7 +199,7 @@ def segments_from_cutter_file(
             "source_layer": source_layer,
             "session_name": session_name,
             "original_segment_id": original_segment_id,
-            "edit_source": "viser_cutter",
+            "edit_source": "motion_edit_workbench",
         }
         parsed = replace(parsed, metadata=existing_meta)
         if contact_graph is not None:
@@ -207,7 +207,7 @@ def segments_from_cutter_file(
         segments.append(
             replace(
                 parsed,
-                source="viser_cutter",
+                source="motion_edit_workbench",
                 status="manual",
             )
         )
@@ -228,7 +228,7 @@ def _with_import_edit(
     edits.append(
         {
             "kind": "import_from_cutter",
-            "source": "viser_cutter",
+            "source": "motion_edit_workbench",
             "parent_segment_id": session_meta.get("original_segment_id"),
             "params": {
                 "source_layer": source_layer,

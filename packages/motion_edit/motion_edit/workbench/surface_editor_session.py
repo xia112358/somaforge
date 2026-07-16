@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Iterable
 
-from motion_edit.contact import append_anchor_edit_to_plan, read_contact_graph, write_contact_layer, write_contact_surfaces
+from motion_edit.contact import ContactEditPlan, read_contact_graph, write_contact_edit_plan, write_contact_layer, write_contact_surfaces
 from motion_edit.contact.actions import move_anchor_in_graph
 from motion_edit.contact.graph import ContactGraph
 from motion_edit.contact.io import read_contact_surfaces, write_contact_jsonl
@@ -201,7 +201,7 @@ def move_surface_editor_anchor(
         tangent_delta=tangent_delta,
         new_world_position=requested_world_position,
         mode=mode,
-        source="viser_surface_editor",
+        source="motion_edit_web",
     )
     edited_anchors = []
     for anchor in moved_graph.anchors:
@@ -263,7 +263,7 @@ def coalesce_pending_surface_edits(session: SurfaceEditorSession) -> list[Contac
             tangent_delta=_delta_uv(before_uv, after_uv),
             surface_coordinates_before=before_uv,
             surface_coordinates_after=after_uv,
-            source="viser_surface_editor",
+            source="motion_edit_web",
             metadata=metadata,
         )
     return [coalesced[key] for key in order]
@@ -276,7 +276,7 @@ def append_surface_editor_request(
     tangent_delta: Iterable[float] | None = None,
     requested_world_position: Iterable[float] | None = None,
     mode: str = "reject",
-    source: str = "viser_ui",
+    source: str = "motion_edit_web",
 ) -> dict:
     existing = read_surface_editor_requests(session)
     request = {
@@ -351,6 +351,7 @@ def save_surface_editor_session(
             write_contact_surfaces(out_layer / "surfaces" / f"{session.motion_id}.jsonl", surfaces)
     plan_path = edit_plan_path or session.edit_plan_path
     if plan_path:
+        edits: list[dict] = []
         for edit in coalesce_pending_surface_edits(session):
             metadata = dict(edit.metadata)
             metadata.update(
@@ -361,15 +362,21 @@ def save_surface_editor_session(
                     "binding_granularity": "anchor_point",
                 }
             )
-            enriched = replace(edit, source="viser_surface_editor", metadata=metadata)
-            append_anchor_edit_to_plan(
-                plan_path,
-                enriched,
+            enriched = replace(edit, source="motion_edit_web", metadata=metadata)
+            edits.append(enriched.to_dict())
+        write_contact_edit_plan(
+            plan_path,
+            ContactEditPlan(
                 plan_id=Path(plan_path).stem,
                 source_motion_path=session.motion_path,
                 source_motion_id=session.motion_id,
                 source_contact_layer=session.contact_layer,
-            )
+                edits=edits,
+                status="draft",
+                output_contact_layer=destination,
+                metadata={"surface_editor_session": session.session_name},
+            ),
+        )
     _write_json(
         session.state_path,
         {

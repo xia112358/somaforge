@@ -40,8 +40,8 @@ git rebase origin/main
 ## Project Workflow
 
 - Primary UI path is `motion-edit contact-editor`.
-- Primary wrapper is `motion_edit/viewer/contact_timeline.py`.
-- Do not promote segmentation wrapper UI as the main workflow.
+- The UI is the single-port `motion_edit/web/server.py` + `web/` Three.js app.
+- Do not reintroduce Viser, iframe wrappers, a second UI port, or file-polling bridges.
 - Current product flow:
 
 ```text
@@ -76,6 +76,8 @@ Expected:
 
 ```bash
 conda run -n env_holosoma_isaaclab3_newton python -m unittest discover -s tests
+npm --prefix web run build
+npm --prefix web exec -- playwright test
 ```
 
 - Isaac Sim / CUDA failures inside Codex sandbox are expected; validate those on the local machine.

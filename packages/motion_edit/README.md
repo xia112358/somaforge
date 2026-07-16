@@ -40,22 +40,25 @@ data/
 
 ## Recommended Workflow
 
-Motion Edit uses the shared Conda environment by default. Install or refresh its
-viewer dependencies there before launching the local Viser editor:
+Motion Edit uses the shared Conda environment. Install the Python service and
+build the bundled Three.js frontend before launching the editor:
 
 ```bash
 conda run -n env_holosoma_isaaclab3_newton \
-  python -m pip install -e ".[viewer]"
+  python -m pip install -e .
+npm --prefix web install
+npm --prefix web run build
 ```
 
 Set `MOTION_EDIT_CONDA_ENV` only when intentionally testing another Conda
 environment. Project-local `.venv` environments are not used.
 
-The main user-facing path is:
+The main user-facing path starts from the canonical asset manifest:
 
 ```text
-archived source rollout with contact-force channels
-  -> MotionAsset / MotionVersion source reference
+Somaforge Newton 8-part asset manifest
+  -> verified force trajectory + canonical source motion + terrain OBJ
+  -> MotionAsset / ContactGraph / surface catalog
   -> ContactGraph / surface binding
   -> contact-editor
   -> ContactEditPlan
@@ -66,30 +69,11 @@ archived source rollout with contact-force channels
 ```
 
 ```bash
-./motion-edit register-motion \
-  --motion-asset-id climb00 \
-  --motion /path/to/climb_00_rollout_ref_contact_force.npz \
-  --motion-id climb_00_z_scale_1.0 \
-  --terrain-urdf /path/to/multi_boxes_z_scale_1.0.urdf \
-  --fps 50 \
-  --source rollout
+./motion-edit import-asset-manifest \
+  --manifest ../../runtime/current/manifests/newton_contact_force_8part.json
 
-./motion-edit import-force-proto \
-  --motion-dir /path/to/rollout_motions \
-  --layer-name force_contact \
-  --use-registered-motion-ids
-
-./motion-edit bind-contact-surfaces \
-  --contact-layer contact/force_contact \
-  --motion-id climb_00_z_scale_1.0 \
-  --terrain-urdf /path/to/multi_boxes_z_scale_1.0.urdf \
-  --output-contact-layer contact/force_contact_bound
-
-./motion-edit summarize-surface-bindings \
-  --contact-layer contact/force_contact_bound \
-  --motion-id climb_00_z_scale_1.0
-
-./motion-edit contact-editor
+./motion-edit contact-editor \
+  --motion-asset-id climb_01_newton_8part
 
 ./motion-edit validate-contact-edit-plan \
   --plan data/workbench/climb00_surface_edits.json
@@ -110,7 +94,18 @@ archived source rollout with contact-force channels
   --motion-version-id climb00_farther
 ```
 
-`contact-editor` is the only recommended interactive UI. It opens the local Viser Contact Editor wrapper page, loads registered source motions, displays the motion/timeline/contact anchors, edits surface-bound anchors, and saves a `ContactEditPlan`. Anchor dragging is same-surface constrained: normal displacement is discarded, `surface_id`/`object_id` are preserved, and surface bounds use reject/clamp semantics.
+`import-asset-manifest` verifies the recorded motion, canonical source motion,
+terrain OBJ, Newton provenance, and solver fingerprint. It then writes the
+standard `newton_8part` ContactGraph/candidate layers, a terrain surface
+catalog, and one complete MotionAsset per available motion. The command is
+idempotent, so rerun it after the training/extraction queue adds entries to the
+manifest. Direct terrain OBJ loading is supported; a terrain URDF wrapper is
+not required.
+
+`contact-editor` starts one FastAPI/Uvicorn process on one port and serves the
+bundled Three.js UI. It loads registered assets, displays the sphere robot,
+terrain, 8-part force/contact timeline and anchors, and saves a
+`ContactEditPlan`. Anchor dragging remains same-surface constrained.
 
 `generate-ref` is the formal edited-kinematics path. It runs contact-aware
 geometry generation and full-body IK, but deliberately does not solve contact
@@ -143,7 +138,9 @@ it does not write the WBT contact-force contract:
   --mode lte_fullbody
 ```
 
-Legacy/debug commands such as `surface-editor`, `surface-editor-sync`, `cutter`, `view`, `accept`, `reject`, `import-lte-catalog`, `move-contact-anchor`, and raw segment workbench actions remain available for tests, migration, or diagnostics, but they are hidden from the main `motion-edit --help` flow. New work should enter through `contact-editor` and `generate-ref`.
+The former viewer, iframe timeline, surface-editor bridge, and interactive
+cutter commands were removed. New work enters through `contact-editor` and
+`generate-ref`.
 
 ## Component Boundaries
 
@@ -152,7 +149,7 @@ Keep these boundaries clear when debugging or adding features:
 | Component | Owns | Does not own |
 | --- | --- | --- |
 | `motion_edit/contact/` | Contact records, ContactGraph, ContactEditPlan, ContactPhase, surface binding, layer I/O | Running fullbody generation or policy rollout |
-| `motion_edit/viewer/contact_timeline.py` | Main `motion-edit contact-editor` UI and anchor-edit workflow | Segmentation cutter as a primary workflow |
+| `motion_edit/web/` + `web/` | Single-port API and Three.js Contact Editor | Contact dynamics or policy rollout |
 | `motion_edit/generation/` | ContactEditPlan -> edited kinematic reference; hidden geometry diagnostics | Contact dynamics or policy rollout |
 | `motion_edit/contact_laplacian/` | Batch contact-Laplacian solver, ContactHandleSpec, residual weights, solver metadata | Policy-force writing or simulator rollout |
 | `motion_edit/contact_force/` | Canonical contact-force schema and explicitly diagnostic prescribed-force tools | Production force generation |
@@ -179,6 +176,11 @@ simultaneous heel-plus-toe contact are all preserved.
 - Use `motion-edit generate-ref` for edited kinematic trajectories.
 - Force-training files require `contact_force_part_w`, `contact_force_part_mask`,
   `contact_force_part_order`, and Newton `contact_force_provenance_json`.
+- Treat `contact_force_part_w` and `contact_force_part_history_w` as physical
+  data. Do not smooth them for editing. The former is aligned with the latest
+  raw contact point; the latter stores physics substeps in latest-first order.
+  Stable editor phases come from `contact_force_part_mask`, while
+  `contact_force_part_mask_raw` retains the direct force-threshold decision.
 - Use `generate-lte-augmentation --mode lte_fullbody` only for hidden geometry
   diagnostics.
 - Pass a logical contact layer such as `contact/raw29_00_editor_ready`; it
@@ -239,7 +241,8 @@ Expected:
 0
 ```
 
-The primary UI path remains `motion_edit/viewer/contact_timeline.py` through `motion-edit contact-editor`. Do not promote `motion_edit/viewer/segmentation_timeline.py` or `motion-edit-seg cutter` as the main workflow; those are legacy/debug paths.
+The primary UI path is `motion_edit/web/server.py` plus the bundled `web/`
+Three.js application through `motion-edit contact-editor`.
 
 ## Concepts
 
@@ -291,9 +294,41 @@ that must subsequently pass a Newton policy rollout:
   --register-motion-version
 ```
 
-The default geometry solver is `batch_contact_laplacian`:
-`ContactEditPlan -> body-space batch contact-Laplacian proxy -> IK trajectory`.
-Contact dynamics are deliberately outside Motion Edit.
+The production projection backend is one whole-trajectory PyRoki/JAXLS graph.
+All frames, floating-base poses, and joint configurations are optimized
+together. The graph has exactly three objective families:
+
+1. `contact_interaction_laplacian`
+2. `temporal_laplacian`
+3. `contact_force`
+
+Joint limits, foot orientation, contact sticking, and nonpenetration are soft
+residuals inside the contact/interaction family, not separate hard constraints.
+The force family linearizes force response from the latest Newton rollout.
+Newton evaluates each candidate and returns the next real 8-part force tensor;
+contact points, penetration depth, and overlap distance are not extracted as
+optimization targets. The temporary correction direction comes from the target
+force vector itself. There is no per-frame SciPy/SQP production path.
+
+Run the complete black-box Newton force loop from the PyRoki environment:
+
+```bash
+/home/xiaz/somaforge/packages/motion_edit/motion-edit force-retarget \
+  --initial-motion data/motions/generated/climb00.policy_ref_v1.npz \
+  --lte data/motions/generated/climb00.policy_ref_v1/climb00.policy_ref_v1.contact_laplacian_keypoints.npz \
+  --target-force-motion runtime/current/motions/newton_contact_force/climb_00_rollout_ref_contact_force.npz \
+  --manifest runtime/current/manifests/newton_contact_force_8part.json \
+  --motion-id 00 \
+  --checkpoint /path/to/wbt_model.pt \
+  --newton-python /home/xiaz/miniforge3/envs/env_holosoma_isaaclab3_newton/bin/python \
+  --output-motion data/motions/generated/climb00.force_ref_v1.npz \
+  --work-dir tmp/climb00_force_retarget
+```
+
+Before every rollout, the command canonicalizes the PyRoki candidate with the
+same sphere-hand URDF and Newton FK used by training, then writes a fully hashed
+single-motion manifest. The final output is the accepted Newton rollout, not a
+kinematically fabricated force field.
 
 The geometry-only command is hidden and should be treated as a diagnostic
 intermediate producer:
@@ -302,7 +337,7 @@ intermediate producer:
 /home/xiaz/somaforge/packages/motion_edit/motion-edit generate-lte-augmentation \
   --mode lte_fullbody \
   --plan data/workbench/climb00_edits.json \
-  --output-motion /tmp/climb00.geometry_debug.npz
+  --output-motion tmp/climb00.geometry_debug.npz
 ```
 
 Do not use the edited output directly for force-aware WBT. First collect a
@@ -349,7 +384,10 @@ Contact anchors are editable first-class objects. When `body_pos_w` is available
 
 ## Surface Binding
 
-`ContactAnchor.world_position` is not enough for safe dragging. Before Viser dragging can move an anchor, the anchor should be bound to its original terrain/object surface. A bound anchor stores `object_id`, `surface_id`, normal/tangent basis, surface bounds, and `surface_coordinates`. The editor moves anchors in surface coordinates; normal motion is removed and bounds prevent dragging off the original platform/face.
+`ContactAnchor.world_position` is not enough for safe dragging. Before browser
+dragging can move an anchor, it must be bound to its original terrain/object
+surface. The Python API applies the authoritative surface projection and
+reject/clamp bounds; the browser does not duplicate this solver.
 
 Surface binding is explicit and does not generate a trajectory. It writes a new ContactLayer by default.
 
@@ -388,7 +426,8 @@ Surface binding should be inspected before using bound anchors for ContactEditPl
 
 The report export summarizes known surfaces, bound anchors, failed/unbound anchors, clamped bindings, and suspicious bindings. It also records that the binding granularity is `anchor_point`, not a full foot sole contact model.
 
-The overlay export is a lightweight frontend-agnostic JSON file. It contains `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects with status tags. Future Viser integration can render those objects and color them by status.
+The overlay export is a lightweight frontend-agnostic JSON file containing
+`surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects.
 
 ```bash
 /home/xiaz/somaforge/packages/motion_edit/motion-edit create-urdf-surface-catalog \
@@ -419,25 +458,38 @@ The overlay export is a lightweight frontend-agnostic JSON file. It contains `su
 
 ## Interactive Surface Editor
 
-`contact-editor` is the single main entry point for anchor-level contact editing. It prepares an editor-ready ContactLayer and then launches the local `motion_edit` Viser surface overlay adapter. The command always runs the fixed preparation line first: merge nearby reliable anchors, filter invalid binding candidates, bind to real ground/top surfaces, validate that all remaining anchors are bound, and only then open Viser.
+`contact-editor` is the single entry point for anchor-level contact editing. It
+starts a single-port local service. Loading an asset runs the fixed preparation
+line: merge reliable anchors, filter invalid candidates, bind to real
+ground/top surfaces, and validate the remaining anchors before returning the
+session to Three.js.
 
 The editor preparation is intentionally strict:
 
 - `raw_missing`, `edge_candidate`, and `outside_known_surfaces` anchors are filtered before editing.
 - Side surfaces are not allowed in the main editor path.
 - Fallback planes are not created.
-- If any remaining anchor is unbound or failed, Viser is not opened.
-- Low-level surface editor commands remain only for debug/internal prepared-layer checks.
+- If any remaining anchor is unbound or failed, the asset is rejected before rendering.
 
 The session includes a surface binding report, surface binding overlay, contact overlay, session state, request file, and pending edit file under `data/workbench/surface_sessions/<session_name>/`.
 
-The local adapter reads the existing overlay JSON and renders the motion root trace, robot playback, optional terrain/object URDF, `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects in Viser. The bottom cutter-style timeline owns playback/scrubbing and contact interval selection. The right sidebar is organized around the current workflow:
+The Three.js client renders the sphere URDF, terrain OBJ, surface catalog,
+contact anchors and force arrows. The bottom 8-part timeline owns playback and
+scrubbing; the right inspector owns filtering, boundary mode and selection.
 
-- `Motion`: current motion/session, overlay reload, and status.
-- `Contact Anchor`: selected-anchor metadata only.
-- `Diagnostic Geometry`: write/validate the ContactEditPlan, dry-run the geometry stage, generate diagnostic geometry output, reset the session, and optionally export a debug ContactLayer. Use `generate-ref` for the standard edited trajectory.
+- Asset selector: registered Newton force assets and reload.
+- Contact tab: body/surface/status filters, current-frame mode, previous/next
+  contact, exact `u/v`, stepped `du/dv`, restore and reject/clamp.
+- Display tab: terrain, contact surfaces, anchors, forces, root path, selection
+  guides, anchor size and force scale.
+- Output tab: ContactEditPlan path/status, output contact layer, save, validate,
+  reload and discard.
+- Timeline: 8-part lane labels, frame ruler, stable cut markers, direct scrub,
+  frame stepping and previous/next cut navigation.
+- Toolbar: camera framing, undo, redo and save.
 
-The bottom timeline top bar owns motion switching. It includes a recent-motion dropdown plus `Open`, `Open latest`, and `Reload`. All entries are treated as regular motions with the same bundle-style fields. Raw rollout motions are source/archive refs; diagnostic geometry outputs and unvalidated `generate-ref` outputs are not force-checkpoint payloads.
+The asset selector switches complete MotionAsset bundles. Raw paths must be
+registered first so robot, force, terrain and provenance cannot drift apart.
 
 The bottom timeline separates contact-point intervals from edit cut frames:
 
@@ -447,98 +499,32 @@ The bottom timeline separates contact-point intervals from edit cut frames:
 
 Avoid reviving old UI/test vocabulary such as `segmentBlock` or `protoBoundary` for the visible contact timeline.
 
-3D selection and handle editing are same-surface constrained. Anchor markers can be clicked in the 3D view when supported by the local Viser runtime. The selected anchor shows a handle with tangent axes, normal axis, and surface bounds. Dragging this handle is not a free 3D transform: the dragged world point is projected back into the anchor's original surface coordinates, any normal component is discarded, and the anchor keeps the same `surface_id` and `object_id`. Bounds are enforced by the current reject/clamp mode. A normal-only drag is ignored as a no-op.
+3D selection and editing are same-surface constrained. Three.js raycasts the
+selected marker and drag plane, then sends the requested world position to the
+Python API. Python projects it into the original surface coordinates, removes
+normal displacement, preserves `surface_id`/`object_id`, and applies the
+current reject/clamp mode.
 
-The local Viser direct editor renders the overlay, highlights the selected
-anchor, moves anchors with same-surface constrained 3D handles, refreshes the
-overlay, supports full-session reset, validates the edit plan, and can launch
-diagnostic geometry generation from the Viser GUI. The final force-bearing
-trajectory is produced by the subsequent Newton rollout. A request-file bridge remains
-for debug fallback but is not part of the normal workflow.
-
-The older external Holosoma viewer can still be used with `--external-viewer`, but it is no longer required for the surface overlay bridge. The local editor owns the surface overlay and same-surface anchor handle interactions.
+The API owns move, undo, redo and save state. There is no request-file bridge,
+iframe, external viewer, or second port. The final force-bearing trajectory is
+still produced by the subsequent Newton rollout.
 
 Edits remain anchor-level and surface-constrained. They use `move_contact_anchor_on_surface`, never allow normal displacement, never jump to another surface, and do not model full foot sole contact, toe/heel rolling, pressure, or physical sticking.
 
 ```bash
-/home/xiaz/somaforge/packages/motion_edit/motion-edit contact-editor /path/to/climb_00.npz \
-  --motion-id climb_00_z_scale_1.0 \
-  --source-contact-layer contact/force_contact_raw_point_merged_wide \
-  --terrain-urdf /path/to/multi_boxes_z_scale_1.0.urdf \
-  --session-name climb00_surface \
-  --edit-plan data/workbench/climb00_surface_edits.json \
-  --output-contact-layer contact/climb00_surface_edited \
-  --with-terrain
+/home/xiaz/somaforge/packages/motion_edit/motion-edit contact-editor \
+  --motion-asset-id climb_01_newton_8part \
+  --port 8094
 ```
 
-### Terrain Bundle Data
-
-Terrain rendering expects the URDF bundle to be self-contained. For Holosoma/OmniRetarget climb assets, the runtime bundle has this shape:
-
-```text
-.../tmp/rollout_ref_contact_points_29/bundled/climb_00/
-  multi_boxes_z_scale_1.0.urdf
-  multi_boxes_z_scale_1.0.obj
-  box_models/
-    box1.obj
-    box2.obj
-    ...
-```
-
-If Viser prints an error like:
-
-```text
-Unable to resolve filename: box_models/box1.obj
-Can't find box_models/box1.obj
-```
-
-that is a data bundle problem, not a Contact Editor code path problem. The URDF references `box_models/*.obj`, so copy the missing `box_models/` directory from the source terrain data into each bundled climb directory:
-
-```bash
-for d in /home/xiaz/somaforge/tmp/rollout_ref_contact_points_29/bundled/climb_*; do
-  name=$(basename "$d")
-  src="/home/xiaz/somaforge/OmniRetarget_Dataset/models/terrain/$name/box_models"
-  if [ -d "$src" ] && [ ! -d "$d/box_models" ]; then
-    cp -a "$src" "$d/box_models"
-  fi
-done
-```
-
-Validate that all bundled terrain URDF mesh references resolve before launching the editor:
-
-```bash
-conda run -n env_holosoma_isaaclab3_newton python - <<'PY'
-from pathlib import Path
-import xml.etree.ElementTree as ET
-
-root = Path("/home/xiaz/somaforge/tmp/rollout_ref_contact_points_29/bundled")
-missing = []
-for urdf in sorted(root.glob("climb_*/multi_boxes_z_scale_1.0.urdf")):
-    tree = ET.parse(urdf)
-    for mesh in tree.findall(".//mesh"):
-        filename = mesh.attrib.get("filename", "")
-        if filename and not (urdf.parent / filename).exists():
-            missing.append((str(urdf), filename))
-print("urdfs", len(list(root.glob("climb_*/multi_boxes_z_scale_1.0.urdf"))))
-print("missing_mesh_refs", len(missing))
-for item in missing[:20]:
-    print(item)
-PY
-```
-
-The expected `missing_mesh_refs` value is `0`.
-
-In the Viser GUI, select an anchor from the bottom timeline or 3D view, drag its same-surface contact handle, then validate the plan. The in-viewer generate button is diagnostic; use `motion-edit generate-ref` for the edited kinematic trajectory.
-
-Practical in-viewer workflow:
+Practical editor workflow:
 
 1. Filter or select an anchor.
 2. Inspect the selected anchor metadata and surface binding.
-3. Move by 3D same-surface drag, `du`/`dv`, step buttons, or target `u/v`.
-4. Use `Reset session` or `Discard unsaved edits` if needed.
-5. Click `Validate plan`.
-6. Run `motion-edit generate-ref` to write edited kinematics.
-7. Run and record the edited reference in Newton to produce the WBT-ready force trajectory.
+3. Move it with a same-surface 3D drag.
+4. Use undo/redo as needed and save the edit plan.
+5. Run `motion-edit generate-ref` to write edited kinematics.
+6. Run and record the edited reference in Newton to produce the WBT-ready force trajectory.
 
 Validation writes pending `ContactAnchorEditRecord` entries into the ContactEditPlan and marks a valid draft plan as `validated`; it does not export a ContactLayer. Diagnostic geometry generation can create a non-force intermediate for inspection, but it is not the main workflow. `Export debug ContactLayer` is available for inspection. None of these actions modify the archived source motion `.npz` or mutate canonical segmentation by default.
 
@@ -565,7 +551,7 @@ Use `generate-lte-augmentation` only when debugging the geometry stage:
 /home/xiaz/somaforge/packages/motion_edit/motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
 /home/xiaz/somaforge/packages/motion_edit/motion-edit generate-lte-augmentation \
   --plan data/workbench/climb00_farther.json \
-  --output-motion /tmp/climb00_farther.geometry_debug.npz \
+  --output-motion tmp/climb00_farther.geometry_debug.npz \
   --output-contact-layer contact/climb00_farther \
   --output-segment-layer candidates/climb00_farther \
   --output-motion-version-id climb00_farther \
@@ -575,8 +561,11 @@ Use `generate-lte-augmentation` only when debugging the geometry stage:
 
 Generation requires a `validated` or `locked` plan by default. `generate-ref`
 extracts semantic `body_pos_w` keypoints, applies ContactEditPlan handles through
-the batch contact-Laplacian proxy solve, and runs IK. It does not retarget or
-solve forces. Legacy external LTE/IK options only matter in hidden diagnostics.
+the whole-trajectory three-family graph. A geometry-only run has a zero force
+mask; a physics-guided run supplies target force plus the latest real Newton
+force to the same graph. Motion Edit never fabricates the
+force field written to a training reference: the final force-bearing trajectory
+still comes from the accepted Newton rollout.
 
 The archived source `.npz`, source ContactLayer, and source canonical segmentation are not modified. `--output-contact-layer` writes a graph derived from the source ContactGraph with edited anchor positions. `--output-segment-layer` writes candidate segments for the edited reference. `--register-motion-version` registers that edited trajectory. Canonical segmentation for the new version is only built when `--build-canonical` is passed explicitly.
 
