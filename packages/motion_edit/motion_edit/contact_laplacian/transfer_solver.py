@@ -222,6 +222,7 @@ def _slice_interaction_mesh(mesh: InteractionMeshSpec | None, *, start: int, end
         object_points=np.asarray(mesh.object_points, dtype=np.float64),
         edges=mesh.edges,
         knn_k=int(mesh.knn_k),
+        topology=mesh.topology,
         reference_robot_points=reference_robot_points,
         reference_object_points=mesh.reference_object_points,
         metadata=dict(mesh.metadata),

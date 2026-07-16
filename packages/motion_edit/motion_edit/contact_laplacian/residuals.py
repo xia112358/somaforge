@@ -8,6 +8,7 @@ import numpy as np
 from motion_edit.contact.dynamics import contact_local_phase
 
 from .kinematics import KinematicsProvider
+from .omniretarget_mesh import build_omniretarget_interaction_mesh
 from .schema import ContactHandleSpec, InteractionMeshSpec
 
 
@@ -268,20 +269,32 @@ def add_interaction_mesh_laplacian_residuals(
     vertex_count = robot_count + object_count
 
     ref_robot_all = _reference_robot_points(mesh, q_ref, kinematics, robot_points)
-    ref_vertices_first = np.vstack([ref_robot_all[0], ref_object_points])
-    edges = tuple(mesh.edges) if mesh.edges else build_knn_edges(ref_vertices_first, int(mesh.knn_k))
-    if not edges:
-        return {"active": False, "rows": 0, "warning": "interaction mesh has no edges"}
-    laplacian = build_uniform_laplacian_matrix(vertex_count, edges)
-    active_lap_rows = tuple(
-        row for row in range(vertex_count) if np.any(laplacian[row, :robot_count])
-    )
-    if not active_lap_rows:
-        return {"active": False, "rows": 0, "warning": "interaction mesh has no robot-coupled Laplacian rows"}
-    laplacian_row_weight = float(weight) / float(len(active_lap_rows))
+    if mesh.topology == "omniretarget_delaunay":
+        aligned_mesh = build_omniretarget_interaction_mesh(ref_robot_all, ref_object_points)
+        laplacians = aligned_mesh.laplacian_matrices
+        edge_counts = aligned_mesh.edge_counts
+    else:
+        ref_vertices_first = np.vstack([ref_robot_all[0], ref_object_points])
+        edges = tuple(mesh.edges) if mesh.edges else build_knn_edges(ref_vertices_first, int(mesh.knn_k))
+        if not edges:
+            return {"active": False, "rows": 0, "warning": "interaction mesh has no edges"}
+        laplacian = build_uniform_laplacian_matrix(vertex_count, edges)
+        laplacians = np.broadcast_to(laplacian[None], (n_frames, vertex_count, vertex_count))
+        edge_counts = np.full((n_frames,), len(edges), dtype=np.int32)
 
     row_count = 0
+    active_counts: list[int] = []
+    per_vertex_weights: list[float] = []
     for frame in range(n_frames):
+        laplacian = laplacians[frame]
+        active_lap_rows = tuple(
+            row for row in range(vertex_count) if np.any(laplacian[row, :robot_count])
+        )
+        if not active_lap_rows:
+            continue
+        laplacian_row_weight = float(weight) / float(len(active_lap_rows))
+        active_counts.append(len(active_lap_rows))
+        per_vertex_weights.append(laplacian_row_weight)
         robot_current = kinematics.fk_points(q_arr[frame], robot_points)
         robot_jac = kinematics.jacobian_points(q_arr[frame], robot_points)
         vertices_current = np.vstack([robot_current, object_points])
@@ -308,16 +321,25 @@ def add_interaction_mesh_laplacian_residuals(
                     system.add_row(values, float(residual[lap_row, axis]), "mesh_laplacian", laplacian_row_weight)
                     row_count += 1
 
+    if not active_counts:
+        return {"active": False, "rows": 0, "warning": "interaction mesh has no robot-coupled Laplacian rows"}
     return {
         "active": True,
         "rows": int(row_count),
         "vertex_count": int(vertex_count),
         "robot_vertex_count": int(robot_count),
         "object_vertex_count": int(object_count),
-        "edge_count": int(len(edges)),
-        "active_laplacian_vertex_count": int(len(active_lap_rows)),
+        "topology": mesh.topology,
+        "edge_count": int(np.max(edge_counts)),
+        "edge_count_min": int(np.min(edge_counts)),
+        "edge_count_max": int(np.max(edge_counts)),
+        "active_laplacian_vertex_count": int(np.max(active_counts)),
+        "active_laplacian_vertex_count_min": int(np.min(active_counts)),
+        "active_laplacian_vertex_count_max": int(np.max(active_counts)),
         "family_weight": float(weight),
-        "per_vertex_weight": float(laplacian_row_weight),
+        "per_vertex_weight": float(np.min(per_vertex_weights)),
+        "per_vertex_weight_min": float(np.min(per_vertex_weights)),
+        "per_vertex_weight_max": float(np.max(per_vertex_weights)),
         "normalization": "mean_over_robot_coupled_laplacian_vertices",
     }
 

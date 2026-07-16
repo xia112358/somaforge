@@ -21,6 +21,20 @@ CONTACT_FORCE_PART_ORDER = (
     "RK",
 )
 
+CONTACT_FORCE_PART_NAMES = (
+    "left_heel",
+    "left_toe",
+    "right_heel",
+    "right_toe",
+    "left_hand",
+    "right_hand",
+    "left_knee",
+    "right_knee",
+)
+
+CONTACT_FORCE_PART_NAME_BY_ID = dict(zip(CONTACT_FORCE_PART_ORDER, CONTACT_FORCE_PART_NAMES, strict=True))
+CONTACT_FORCE_PART_ID_BY_NAME = dict(zip(CONTACT_FORCE_PART_NAMES, CONTACT_FORCE_PART_ORDER, strict=True))
+
 CONTACT_FORCE_PART_BODY_NAMES: dict[str, tuple[str, ...]] = {
     "LHEE": ("left_ankle_roll_sphere_1_link", "left_ankle_roll_sphere_2_link"),
     "LTOE": (
@@ -39,6 +53,42 @@ CONTACT_FORCE_PART_BODY_NAMES: dict[str, tuple[str, ...]] = {
     "LK": ("left_knee_link",),
     "RK": ("right_knee_link",),
 }
+
+CONTACT_BODY_NAMES_BY_PART: dict[str, tuple[str, ...]] = {
+    **{
+        part_name: CONTACT_FORCE_PART_BODY_NAMES[part_id]
+        for part_id, part_name in CONTACT_FORCE_PART_NAME_BY_ID.items()
+    },
+    "left_foot": (
+        "left_ankle_roll_link",
+        *CONTACT_FORCE_PART_BODY_NAMES["LHEE"],
+        *CONTACT_FORCE_PART_BODY_NAMES["LTOE"],
+    ),
+    "right_foot": (
+        "right_ankle_roll_link",
+        *CONTACT_FORCE_PART_BODY_NAMES["RHEE"],
+        *CONTACT_FORCE_PART_BODY_NAMES["RTOE"],
+    ),
+    "left_hip": ("left_hip_roll_link",),
+    "right_hip": ("right_hip_roll_link",),
+}
+
+
+def canonical_contact_part_id(value: str) -> str:
+    """Return the canonical short ID for one production contact channel."""
+
+    raw = str(value).strip()
+    upper = raw.upper()
+    if upper in CONTACT_FORCE_PART_NAME_BY_ID:
+        return upper
+    lowered = raw.lower()
+    if lowered in CONTACT_FORCE_PART_ID_BY_NAME:
+        return CONTACT_FORCE_PART_ID_BY_NAME[lowered]
+    raise ValueError(f"unknown 8-part contact channel: {value!r}")
+
+
+def canonical_contact_part_name(value: str) -> str:
+    return CONTACT_FORCE_PART_NAME_BY_ID[canonical_contact_part_id(value)]
 
 
 def newton_contact_provenance(

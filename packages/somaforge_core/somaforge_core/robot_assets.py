@@ -88,32 +88,38 @@ def canonical_g1_asset_metadata() -> dict[str, str]:
 
 
 def validate_g1_asset_metadata(metadata: Mapping[str, Any] | None, *, context: str) -> None:
-    expected = canonical_g1_asset_metadata()
     if metadata is None:
         raise ValueError(
             f"{context} has no robot asset fingerprint and is treated as legacy wrong-URDF data; regenerate it"
         )
+    expected = canonical_g1_source_metadata()
     actual_id = str(metadata.get("asset_id") or "")
     actual_sha256 = str(metadata.get("urdf_sha256") or "")
     actual_bundle_sha256 = str(metadata.get("asset_bundle_sha256") or "")
-    actual_usd_bundle_sha256 = str(metadata.get("usd_bundle_sha256") or "")
     if (
         actual_id != expected["asset_id"]
         or actual_sha256 != expected["urdf_sha256"]
         or actual_bundle_sha256 != expected["asset_bundle_sha256"]
-        or actual_usd_bundle_sha256 != expected["usd_bundle_sha256"]
     ):
         raise ValueError(
             f"{context} uses an incompatible robot asset "
             f"(asset_id={actual_id!r}, urdf_sha256={actual_sha256!r}, "
-            f"usd_bundle_sha256={actual_usd_bundle_sha256!r}); expected {expected['asset_id']} / "
-            f"{expected['urdf_sha256']} / {expected['asset_bundle_sha256']} / "
-            f"{expected['usd_bundle_sha256']}"
+            f"asset_bundle_sha256={actual_bundle_sha256!r}); expected {expected['asset_id']} / "
+            f"{expected['urdf_sha256']} / {expected['asset_bundle_sha256']}"
         )
+    actual_usd_bundle_sha256 = str(metadata.get("usd_bundle_sha256") or "")
+    if actual_usd_bundle_sha256:
+        expected_usd_bundle_sha256 = canonical_g1_asset_metadata()["usd_bundle_sha256"]
+        if actual_usd_bundle_sha256 != expected_usd_bundle_sha256:
+            raise ValueError(
+                f"{context} uses an incompatible G1 USD bundle "
+                f"(usd_bundle_sha256={actual_usd_bundle_sha256!r}); "
+                f"expected {expected_usd_bundle_sha256!r}"
+            )
 
 
 def encode_robot_asset_json(metadata: Mapping[str, Any] | None = None) -> str:
-    return json.dumps(dict(metadata or canonical_g1_asset_metadata()), sort_keys=True)
+    return json.dumps(dict(metadata or canonical_g1_source_metadata()), sort_keys=True)
 
 
 def decode_robot_asset_json(value: Any, *, context: str) -> dict[str, Any]:

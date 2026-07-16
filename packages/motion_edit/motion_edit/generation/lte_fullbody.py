@@ -2,36 +2,41 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
 from dataclasses import dataclass, replace
-import importlib.util
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-
-from motion_edit.contact.io import read_contact_surfaces
-from motion_edit.contact.dynamics import load_profile_from_motion_force
-from motion_edit.contact.layers import read_contact_graph, write_contact_layer
-from motion_edit.contact.patches import patches_from_anchors
-from motion_edit.contact.plans import ContactEditPlan, validate_contact_edit_plan
-from motion_edit.contact.schema import ContactAnchorEditRecord
-from motion_edit.contact_laplacian.kinematics import BodyPositionTrajectoryKinematicsProvider
-from motion_edit.contact_laplacian.schema import BatchContactLaplacianConfig, ContactHandleSpec, InteractionMeshSpec
-from motion_edit.contact_laplacian.solver import solve_batch_contact_laplacian
-from motion_edit.layers import write_layer
-from motion_edit.paths import LAYERS_ROOT
-from motion_edit.schema import SegmentRecord
-from motion_edit.storage.canonical import segments_from_contact_transitions, write_motion_version_with_canonical_segments
-from motion_edit.storage.io import write_motion_version
-from motion_edit.storage.schema import MotionVersionRecord
+from somaforge_core.contact_schema import CONTACT_BODY_NAMES_BY_PART, canonical_contact_part_name
 from somaforge_core.robot_assets import (
     canonical_g1_asset_metadata,
     decode_robot_asset_json,
     encode_robot_asset_json,
 )
+
+from motion_edit.contact.dynamics import load_profile_from_motion_force
+from motion_edit.contact.io import read_contact_surfaces
+from motion_edit.contact.layers import read_contact_graph, write_contact_layer
+from motion_edit.contact.patches import patches_from_anchors
+from motion_edit.contact.plans import ContactEditPlan, validate_contact_edit_plan
+from motion_edit.contact.schema import ContactAnchorEditRecord
+from motion_edit.contact_laplacian.kinematics import BodyPositionTrajectoryKinematicsProvider
+from motion_edit.contact_laplacian.omniretarget_mesh import sample_terrain_mesh_points
+from motion_edit.contact_laplacian.schema import BatchContactLaplacianConfig, ContactHandleSpec, InteractionMeshSpec
+from motion_edit.contact_laplacian.solver import solve_batch_contact_laplacian
+from motion_edit.layers import write_layer
+from motion_edit.paths import LAYERS_ROOT
+from motion_edit.schema import SegmentRecord
+from motion_edit.storage.canonical import (
+    segments_from_contact_transitions,
+    write_motion_version_with_canonical_segments,
+)
+from motion_edit.storage.io import write_motion_version
+from motion_edit.storage.schema import MotionVersionRecord
 
 
 @dataclass(frozen=True)
@@ -64,44 +69,62 @@ LTE_FULLBODY_KEYPOINT_LINKS = {
     "torso": ("torso_link",),
     "left_shoulder": ("left_shoulder_roll_link", "left_shoulder_pitch_link"),
     "left_elbow": ("left_elbow_link",),
-    "left_hand": ("left_wrist_yaw_link", "left_rubber_hand_link"),
+    "left_hand": (*CONTACT_BODY_NAMES_BY_PART["left_hand"], "left_wrist_yaw_link"),
     "right_shoulder": ("right_shoulder_roll_link", "right_shoulder_pitch_link"),
     "right_elbow": ("right_elbow_link",),
-    "right_hand": ("right_wrist_yaw_link", "right_rubber_hand_link"),
+    "right_hand": (*CONTACT_BODY_NAMES_BY_PART["right_hand"], "right_wrist_yaw_link"),
 }
 
-LTE_FULLBODY_CONTACT_NAMES = ("left_hand", "right_hand", "left_foot", "right_foot", "left_knee", "right_knee")
-LTE_HANDLE_KEYPOINT_NAMES = ("root", "torso", "left_hand", "right_hand", "left_foot", "right_foot", "left_knee", "right_knee")
+LTE_FOOT_CONTACT_GROUP_LINKS = {
+    part_name: CONTACT_BODY_NAMES_BY_PART[part_name]
+    for part_name in ("left_heel", "left_toe", "right_heel", "right_toe")
+}
+
+LTE_FULLBODY_CONTACT_NAMES = (
+    "left_heel",
+    "left_toe",
+    "right_heel",
+    "right_toe",
+    "left_hand",
+    "right_hand",
+    "left_knee",
+    "right_knee",
+)
+LTE_HANDLE_KEYPOINT_NAMES = ("root", "torso", *LTE_FULLBODY_CONTACT_NAMES)
 
 CONTACT_BODY_LINK_CANDIDATES = {
     "lf": ("left_foot",),
     "rf": ("right_foot",),
+    "lhee": ("left_heel",),
+    "ltoe": ("left_toe",),
+    "rhee": ("right_heel",),
+    "rtoe": ("right_toe",),
+    "left_heel": ("left_heel",),
+    "left_foot_heel": ("left_heel",),
+    "left_toe": ("left_toe",),
+    "left_foot_toe": ("left_toe",),
+    "right_heel": ("right_heel",),
+    "right_foot_heel": ("right_heel",),
+    "right_toe": ("right_toe",),
+    "right_foot_toe": ("right_toe",),
     "lh": ("left_hand",),
     "rh": ("right_hand",),
     "lk": ("left_knee",),
     "rk": ("right_knee",),
     "left_foot": (
-        "left_ankle_roll_sphere_1_link",
-        "left_ankle_roll_sphere_2_link",
-        "left_ankle_roll_sphere_3_link",
-        "left_ankle_roll_sphere_4_link",
-        "left_ankle_roll_sphere_5_link",
+        *CONTACT_BODY_NAMES_BY_PART["left_heel"],
+        *CONTACT_BODY_NAMES_BY_PART["left_toe"],
         "left_ankle_roll_link",
-        "left_ankle_pitch_link",
     ),
     "right_foot": (
-        "right_ankle_roll_sphere_1_link",
-        "right_ankle_roll_sphere_2_link",
-        "right_ankle_roll_sphere_3_link",
-        "right_ankle_roll_sphere_4_link",
-        "right_ankle_roll_sphere_5_link",
+        *CONTACT_BODY_NAMES_BY_PART["right_heel"],
+        *CONTACT_BODY_NAMES_BY_PART["right_toe"],
         "right_ankle_roll_link",
-        "right_ankle_pitch_link",
     ),
-    "left_hand": ("left_rubber_hand_link", "left_thumb_link", "left_pinky_link", "left_wrist_yaw_link"),
-    "right_hand": ("right_rubber_hand_link", "right_thumb_link", "right_pinky_link", "right_wrist_yaw_link"),
-    "left_knee": ("left_knee_link",),
-    "right_knee": ("right_knee_link",),
+    "left_hand": CONTACT_BODY_NAMES_BY_PART["left_hand"],
+    "right_hand": CONTACT_BODY_NAMES_BY_PART["right_hand"],
+    "left_knee": CONTACT_BODY_NAMES_BY_PART["left_knee"],
+    "right_knee": CONTACT_BODY_NAMES_BY_PART["right_knee"],
     "left_hip": ("left_hip_yaw_link", "left_hip_roll_link", "left_hip_pitch_link"),
     "right_hip": ("right_hip_yaw_link", "right_hip_roll_link", "right_hip_pitch_link"),
     "torso": ("torso_link",),
@@ -282,17 +305,34 @@ def _semantic_keypoints_from_motion(motion: dict[str, Any]) -> dict[str, np.ndar
     names = _motion_strings(motion, ("body_names", "body_name", "body_pos_w_names", "body_pos_names"))
     if not names:
         raise ValueError("lte_fullbody requires body_names metadata")
-    return {name: body_pos[:, _index_by_alias(names, aliases), :3].copy() for name, aliases in LTE_FULLBODY_KEYPOINT_LINKS.items()}
+    keypoints = {name: body_pos[:, _index_by_alias(names, aliases), :3].copy() for name, aliases in LTE_FULLBODY_KEYPOINT_LINKS.items()}
+    for keypoint_name, part_name in (("left_hand", "left_hand"), ("right_hand", "right_hand")):
+        physical_indices = [
+            index
+            for body_name in CONTACT_BODY_NAMES_BY_PART[part_name]
+            if (index := _index_by_alias_or_none(names, (body_name,))) is not None
+        ]
+        if physical_indices:
+            keypoints[keypoint_name] = np.mean(body_pos[:, physical_indices, :3], axis=1)
+    for name, group_names in LTE_FOOT_CONTACT_GROUP_LINKS.items():
+        indices = [_index_by_alias(names, (body_name,)) for body_name in group_names]
+        keypoints[name] = np.mean(body_pos[:, indices, :3], axis=1)
+    return keypoints
 
 
 def _contact_mask_for_keypoint(motion: dict[str, Any], keypoint: str, n_frames: int) -> np.ndarray:
     mask = np.zeros(n_frames, dtype=bool)
-    if "part_order" not in motion or "contact_part_mask" not in motion:
+    order_key = next((key for key in ("contact_force_part_order", "part_order", "contact_part_names") if key in motion), None)
+    mask_key = next((key for key in ("contact_force_part_mask", "contact_part_mask") if key in motion), None)
+    if order_key is None or mask_key is None:
         return mask
-    part_order = _motion_strings(motion, ("part_order",))
+    try:
+        part_order = [canonical_contact_part_name(name) for name in _motion_strings(motion, (order_key,))]
+    except ValueError:
+        return mask
     if keypoint not in part_order:
         return mask
-    raw = np.asarray(motion["contact_part_mask"], dtype=bool)
+    raw = np.asarray(motion[mask_key], dtype=bool)
     if raw.ndim != 2:
         return mask
     count = min(n_frames, raw.shape[0])
@@ -385,23 +425,21 @@ def _handles_from_contact_edits(
 
 
 def _legacy_lte_solver_keypoints(keypoints: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-    return {
+    solver_keypoints = {
         "root": keypoints["pelvis"],
         "torso": keypoints["torso"],
-        "left_hand": keypoints["left_hand"],
-        "right_hand": keypoints["right_hand"],
         "left_foot": keypoints["left_foot"],
         "right_foot": keypoints["right_foot"],
-        "left_knee": keypoints["left_knee"],
-        "right_knee": keypoints["right_knee"],
     }
+    solver_keypoints.update({name: keypoints[name] for name in LTE_FULLBODY_CONTACT_NAMES})
+    return solver_keypoints
 
 
 def _merge_solver_keypoints(original: dict[str, np.ndarray], solver_edited: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     edited = {name: value.copy() for name, value in original.items()}
     if "root" in solver_edited:
         edited["pelvis"] = np.asarray(solver_edited["root"], dtype=np.float64)
-    for name in ("torso", "left_hand", "right_hand", "left_foot", "right_foot", "left_knee", "right_knee"):
+    for name in ("torso", "left_foot", "right_foot", *LTE_FULLBODY_CONTACT_NAMES):
         if name in solver_edited:
             edited[name] = np.asarray(solver_edited[name], dtype=np.float64)
     return edited
@@ -418,7 +456,19 @@ def _save_lte_keypoints(path: Path, *, keypoints: dict[str, np.ndarray], motion:
         arrays[f"contact_mask_{name}"] = _contact_mask_for_keypoint(motion, name, n_frames)
         arrays[f"contact_weight_{name}"] = _keypoint_contact_weights(motion, name, n_frames)
     arrays.update(_foot_orientation_target_arrays(motion, n_frames))
+    if "interaction_object_points_w" in motion:
+        arrays["interaction_object_points_w"] = np.asarray(
+            motion["interaction_object_points_w"], dtype=np.float64
+        )
     if graph is not None:
+        arrays.update(
+            _environment_contact_anchor_arrays(
+                graph=graph,
+                edits=edits,
+                keypoints=keypoints,
+                n_frames=n_frames,
+            )
+        )
         foot_summaries = {
             anchor.anchor_id: anchor.metadata.get("raw_contact_position_refinement", {}).get("foot_contact_summary")
             for anchor in graph.anchors
@@ -428,6 +478,66 @@ def _save_lte_keypoints(path: Path, *, keypoints: dict[str, np.ndarray], motion:
             arrays["motion_edit_foot_contact_summaries"] = _json_npz_value(foot_summaries)
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(path, **arrays)
+
+
+def _environment_contact_anchor_arrays(
+    *,
+    graph: Any,
+    edits: list[ContactAnchorEditRecord],
+    keypoints: dict[str, np.ndarray],
+    n_frames: int,
+) -> dict[str, np.ndarray]:
+    """Serialize external environment handles without collapsing them by body."""
+
+    edits_by_anchor = {edit.anchor_id: edit for edit in edits}
+    records: list[tuple[Any, str, int, int, int, np.ndarray, np.ndarray, bool]] = []
+    for anchor in graph.anchors:
+        if anchor.world_position is None:
+            continue
+        semantic_name = _resolve_lte_handle_name(anchor.body, keypoints)
+        if semantic_name is None:
+            continue
+        start = max(0, min(int(n_frames), int(anchor.start_frame)))
+        end = max(start, min(int(n_frames), int(anchor.end_frame)))
+        if end <= start:
+            continue
+        representative = start + (end - start - 1) // 2
+        source_position = np.asarray(anchor.world_position, dtype=np.float64)
+        if source_position.shape != (3,) or not np.all(np.isfinite(source_position)):
+            raise ValueError(f"{anchor.anchor_id}: environment contact world_position must be finite xyz")
+        edit = edits_by_anchor.get(anchor.anchor_id)
+        target_position = source_position.copy()
+        edited = False
+        if edit is not None:
+            if edit.new_world_position is not None:
+                target_position = np.asarray(edit.new_world_position, dtype=np.float64)
+            else:
+                target_position = source_position + _edit_delta(edit)
+            edited = bool(np.linalg.norm(target_position - source_position) > 1.0e-9)
+        records.append(
+            (anchor, semantic_name, start, end, representative, source_position, target_position, edited)
+        )
+    if not records:
+        return {}
+    return {
+        "environment_contact_anchor_ids": np.asarray([item[0].anchor_id for item in records]),
+        "environment_contact_anchor_bodies": np.asarray([item[0].body for item in records]),
+        "environment_contact_anchor_semantic_names": np.asarray([item[1] for item in records]),
+        "environment_contact_anchor_start_frames": np.asarray([item[2] for item in records], dtype=np.int64),
+        "environment_contact_anchor_end_frames": np.asarray([item[3] for item in records], dtype=np.int64),
+        "environment_contact_anchor_representative_frames": np.asarray(
+            [item[4] for item in records], dtype=np.int64
+        ),
+        "environment_contact_anchor_source_position_w": np.stack([item[5] for item in records]),
+        "environment_contact_anchor_target_position_w": np.stack([item[6] for item in records]),
+        "environment_contact_anchor_edited": np.asarray([item[7] for item in records], dtype=bool),
+        "environment_contact_anchor_surface_ids": np.asarray(
+            [item[0].surface_id or "" for item in records]
+        ),
+        "environment_contact_anchor_object_ids": np.asarray(
+            [item[0].object_id or "" for item in records]
+        ),
+    }
 
 
 def _foot_orientation_target_arrays(motion: dict[str, Any], n_frames: int) -> dict[str, np.ndarray]:
@@ -442,13 +552,12 @@ def _foot_orientation_target_arrays(motion: dict[str, Any], n_frames: int) -> di
         return {}
     if joint_pos.ndim != 2 or joint_pos.shape[1] < 7:
         return {}
-    root_quat = _normalize_quat_wxyz(joint_pos[:n_frames, 3:7])
     out: dict[str, np.ndarray] = {}
     for foot_name, link_name in (("left_foot", "left_ankle_roll_link"), ("right_foot", "right_ankle_roll_link")):
         index = _index_by_alias_or_none(names, (link_name, f"{foot_name}_contact_point"))
         if index is not None:
             foot_world = _normalize_quat_wxyz(body_quat[:n_frames, index, :4])
-            out[f"orientation_target_{foot_name}"] = _quat_mul_wxyz(_quat_conj_wxyz(root_quat), foot_world)
+            out[f"orientation_target_{foot_name}"] = foot_world
     return out
 
 
@@ -529,7 +638,7 @@ def _dense_taskspace_from_keypoints(motion: dict[str, Any], original: dict[str, 
     body_pos = raw_body_pos[:n_frames].copy()
     body_names_arr = np.asarray(motion["body_names"])
     body_names = [str(item) for item in body_names_arr.reshape(-1).tolist()]
-    keypoint_names = list(LTE_FULLBODY_KEYPOINT_LINKS)
+    keypoint_names = [*LTE_FULLBODY_KEYPOINT_LINKS, *LTE_FOOT_CONTACT_GROUP_LINKS]
     offsets = np.stack([edited[name] - original[name] for name in keypoint_names], axis=1)
     dense_offset = np.einsum("tsc,bs->tbc", offsets, _semantic_body_weights(body_names, keypoint_names))
     edited_body_pos = body_pos + dense_offset
@@ -608,6 +717,7 @@ def _batch_contact_laplacian_proxy_motion(
     )
     edited_keypoints = _merge_solver_keypoints(original_keypoints, edited_solver)
     arrays = _dense_taskspace_from_keypoints(motion, original_keypoints, edited_keypoints, source_motion, source_motion.with_suffix(".batch_contact_laplacian_proxy.npz"))
+    arrays["interaction_object_points_w"] = np.asarray(mesh.object_points, dtype=np.float64)
     warnings = [
         "batch_contact_laplacian generated an experimental body_pos_w proxy motion; joint/orientation fields are preserved",
         *mesh_warnings,
@@ -689,6 +799,7 @@ def _write_contact_laplacian_intermediates(
     intermediate_dir: str | Path | None,
     proxy_taskspace: dict[str, Any],
     metadata: dict[str, Any],
+    graph: Any,
 ) -> tuple[Path, Path, Path]:
     work_dir = Path(intermediate_dir).expanduser() if intermediate_dir is not None else out.with_suffix("")
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -703,7 +814,14 @@ def _write_contact_laplacian_intermediates(
     source_motion = Path(str(metadata.get("source_motion", out)))
     edits = [ContactAnchorEditRecord(**raw) for raw in metadata.get("edits", [])]
     motion_for_masks = {key: value for key, value in proxy_taskspace.items()}
-    _save_lte_keypoints(lte_path, keypoints=keypoint_arrays, motion=motion_for_masks, source_motion=source_motion, edits=edits, graph=None)
+    _save_lte_keypoints(
+        lte_path,
+        keypoints=keypoint_arrays,
+        motion=motion_for_masks,
+        source_motion=source_motion,
+        edits=edits,
+        graph=graph,
+    )
     taskspace_payload = dict(proxy_taskspace)
     taskspace_payload["algorithm"] = np.asarray("motion_edit_batch_contact_laplacian_taskspace")
     np.savez(taskspace_path, **taskspace_payload)
@@ -731,7 +849,7 @@ def _merge_contact_laplacian_ik_output(
     else:
         resolved_ik_script = str(Path(__file__).with_name("pyroki_fullbody_ik.py"))
     generated = dict(proxy_taskspace)
-    for key in ("joint_pos", "joint_vel", "joint_names", "is_qpos"):
+    for key in ("joint_pos", "joint_vel", "joint_names", "body_pos_w", "body_quat_w", "body_names", "is_qpos"):
         if key in ik_motion:
             generated[key] = ik_motion[key]
     final_metadata = {
@@ -889,42 +1007,21 @@ def _interaction_mesh_from_motion_and_graph(
     robot_points: tuple[str, ...],
 ) -> tuple[InteractionMeshSpec, list[str]]:
     warnings: list[str] = []
-    points: list[np.ndarray] = []
-    surface_by_id = {surface.surface_id: surface for surface in surfaces}
-    used_surfaces: set[str] = set()
-    for anchor in graph.anchors:
-        surface = surface_by_id.get(anchor.surface_id or "")
-        polygon = None
-        if surface is not None and isinstance(surface.metadata, dict):
-            polygon = surface.metadata.get("polygon_world")
-        if polygon is not None and anchor.surface_id not in used_surfaces:
-            arr = np.asarray(polygon, dtype=np.float64)
-            if arr.ndim == 2 and arr.shape[1] == 3:
-                points.extend(arr)
-                used_surfaces.add(anchor.surface_id)
-                continue
-        if anchor.world_position is not None:
-            center = np.asarray(anchor.world_position, dtype=np.float64)
-            if center.shape == (3,):
-                points.append(center)
-    if not points:
-        warnings.append("interaction mesh has no surface/object points; using origin fallback")
-        points.append(np.zeros(3, dtype=np.float64))
-    object_points = _dedupe_points(np.asarray(points, dtype=np.float64))
-    return InteractionMeshSpec(robot_points=robot_points, object_points=object_points, knn_k=3), warnings
-
-
-def _dedupe_points(points: np.ndarray, eps: float = 1.0e-5) -> np.ndarray:
-    out: list[np.ndarray] = []
-    seen: set[tuple[int, int, int]] = set()
-    for point in np.asarray(points, dtype=np.float64).reshape(-1, 3):
-        key = tuple(np.round(point / eps).astype(int).tolist())
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(point)
-    return np.asarray(out, dtype=np.float64)
-
+    mesh_paths = {
+        str(surface.metadata["mesh_path"])
+        for surface in surfaces
+        if isinstance(surface.metadata, dict) and surface.metadata.get("mesh_path")
+    }
+    if len(mesh_paths) != 1:
+        raise ValueError(f"interaction mesh requires exactly one terrain mesh path, got {sorted(mesh_paths)}")
+    mesh_path = next(iter(mesh_paths))
+    object_points = sample_terrain_mesh_points(mesh_path, count=100, seed=0)
+    warnings.append(f"sampled 100 deterministic OmniRetarget interaction points from {mesh_path}")
+    return InteractionMeshSpec(
+        robot_points=robot_points,
+        object_points=object_points,
+        topology="omniretarget_delaunay",
+    ), warnings
 
 def _run_fullbody_ik_subprocess(
     *,
@@ -947,9 +1044,21 @@ def _run_fullbody_ik_subprocess(
         script = repo / "scripts" / "solve_lte_fullbody_ik.py"
         cwd = repo
     else:
-        script = Path(__file__).with_name("pyroki_fullbody_ik.py")
+        script = None
         cwd = Path(__file__).resolve().parents[2]
-    cmd = ["conda", "run", "-n", str(ik_conda_env), "python", str(script.resolve()), "--lte", str(lte_path.resolve()), "--out", str(ik_output_path.resolve())]
+    if script is None:
+        cmd = [
+            "conda",
+            "run",
+            "-n",
+            str(ik_conda_env),
+            "python",
+            "-m",
+            "motion_edit.generation.pyroki_fullbody_ik",
+        ]
+    else:
+        cmd = ["conda", "run", "-n", str(ik_conda_env), "python", str(script.resolve())]
+    cmd.extend(["--lte", str(lte_path.resolve()), "--out", str(ik_output_path.resolve())])
     if ik_max_nfev is not None:
         cmd.extend(["--max-nfev", str(int(ik_max_nfev))])
     cmd.extend(
@@ -1157,6 +1266,7 @@ def apply_contact_edit_plan_to_motion(
                     intermediate_dir=intermediate_dir,
                     proxy_taskspace=generated,
                     metadata=proxy_metadata,
+                    graph=graph,
                 )
                 _run_fullbody_ik_subprocess(
                     lte_path=lte_path,

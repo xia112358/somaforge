@@ -135,6 +135,7 @@ class InteractionMeshSpec:
     object_points: np.ndarray
     edges: tuple[tuple[int, int], ...] = ()
     knn_k: int = 0
+    topology: Literal["explicit_or_knn", "omniretarget_delaunay"] = "explicit_or_knn"
     reference_robot_points: np.ndarray | None = None
     reference_object_points: np.ndarray | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -156,6 +157,8 @@ class InteractionMeshSpec:
                 raise ValueError(f"mesh edge {edge!r} outside vertex range 0..{total_vertices - 1}")
         if int(self.knn_k) < 0:
             raise ValueError("knn_k must be nonnegative")
+        if self.topology not in {"explicit_or_knn", "omniretarget_delaunay"}:
+            raise ValueError(f"unsupported interaction mesh topology: {self.topology}")
         if self.reference_robot_points is not None:
             ref_robot = np.asarray(self.reference_robot_points, dtype=np.float64)
             if ref_robot.ndim not in {2, 3} or ref_robot.shape[-2:] != (len(self.robot_points), 3):
