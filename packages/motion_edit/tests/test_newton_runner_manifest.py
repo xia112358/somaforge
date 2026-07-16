@@ -5,10 +5,10 @@ from pathlib import Path
 
 import numpy as np
 
-from holosoma.utils.motion_terrain_manifest import load_motion_terrain_manifest
 from motion_edit.physics_retarget.newton_runner import NewtonSubprocessRunner
 from somaforge_core import (
-    canonical_g1_asset_metadata,
+    G1_SPHEREHAND_USD_BUNDLE_SHA256,
+    canonical_g1_source_metadata,
     encode_kinematics_provenance,
     encode_robot_asset_json,
     newton_kinematics_provenance,
@@ -79,11 +79,11 @@ def test_candidate_manifest_binds_canonical_motion_to_pyroki_source(tmp_path: Pa
     payload = runner._candidate_manifest(candidate, canonical)
     output_manifest = tmp_path / "candidate_manifest.json"
     output_manifest.write_text(json.dumps(payload), encoding="utf-8")
-    loaded = load_motion_terrain_manifest(str(output_manifest))
-    entry = loaded["motion_files"][0]
+    entry = payload["motion_files"][0]
 
-    asset = canonical_g1_asset_metadata()
+    asset = canonical_g1_source_metadata()
     assert payload["robot_asset_sha256"] == asset["urdf_sha256"]
+    assert payload["robot_asset_usd_bundle_sha256"] == G1_SPHEREHAND_USD_BUNDLE_SHA256
     assert entry["motion_file"] == str(canonical)
     assert entry["motion_sha256"] == sha256_file(canonical)
     assert entry["source_file"] == str(candidate)

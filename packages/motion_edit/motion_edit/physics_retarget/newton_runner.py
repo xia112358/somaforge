@@ -9,7 +9,8 @@ from typing import Any
 
 import numpy as np
 from somaforge_core import (
-    canonical_g1_asset_metadata,
+    G1_SPHEREHAND_USD_BUNDLE_SHA256,
+    canonical_g1_source_metadata,
     decode_kinematics_provenance,
     decode_robot_asset_json,
     sha256_file,
@@ -260,7 +261,7 @@ class NewtonSubprocessRunner:
             source_entry["reference_motion_file"] = str(reference_path)
         source_entry["contact_force_target_file"] = str(self.target_force_motion_path)
         source_entry["contact_force_target_sha256"] = sha256_file(self.target_force_motion_path)
-        robot_asset = canonical_g1_asset_metadata()
+        robot_asset = canonical_g1_source_metadata()
         return {
             **{
                 key: value
@@ -274,7 +275,7 @@ class NewtonSubprocessRunner:
             "robot_asset_id": "robot.g1.spherehand",
             "robot_asset_sha256": robot_asset["urdf_sha256"],
             "robot_asset_bundle_sha256": robot_asset["asset_bundle_sha256"],
-            "robot_asset_usd_bundle_sha256": robot_asset["usd_bundle_sha256"],
+            "robot_asset_usd_bundle_sha256": G1_SPHEREHAND_USD_BUNDLE_SHA256,
             "kinematics_backend": provenance["kinematics_backend"],
             "motion_files": [source_entry],
             "terrains": terrains,
