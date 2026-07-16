@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 from somaforge_core import (
+    canonical_g1_asset_metadata,
     encode_contact_force_provenance,
     encode_kinematics_provenance,
     newton_contact_provenance,
@@ -15,13 +16,45 @@ from holosoma.utils.motion_terrain_manifest import load_motion_terrain_manifest
 from scripts.extract_all_rollout_ref_contact_force_demos import _build_output_manifest, _single_motion_manifest
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+def _write_base_manifest(tmp_path: Path) -> tuple[Path, dict]:
+    motion = tmp_path / "climb_01.npz"
+    np.savez_compressed(motion, joint_pos=np.zeros((2, 36), dtype=np.float32))
+    source = tmp_path / "climb_01_source.npz"
+    np.savez_compressed(source, qpos=np.zeros((2, 36), dtype=np.float32))
+    terrain = tmp_path / "terrain_01.obj"
+    terrain.write_text("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", encoding="utf-8")
+    asset = canonical_g1_asset_metadata()
+    payload = {
+        "schema": "somaforge_motion_terrain_manifest_v1",
+        "schema_version": 1,
+        "robot_asset_id": "robot.g1.spherehand",
+        "robot_asset_sha256": asset["urdf_sha256"],
+        "robot_asset_bundle_sha256": asset["asset_bundle_sha256"],
+        "robot_asset_usd_bundle_sha256": asset["usd_bundle_sha256"],
+        "kinematics_backend": "isaaclab3_newton_fk",
+        "terrains": [
+            {"terrain_id": 1, "terrain_file": terrain.name, "terrain_sha256": sha256_file(terrain)}
+        ],
+        "motion_files": [
+            {
+                "motion_id": "01",
+                "motion_file": motion.name,
+                "motion_sha256": sha256_file(motion),
+                "source_file": source.name,
+                "source_sha256": sha256_file(source),
+                "terrain_id": 1,
+                "kinematics_backend": "isaaclab3_newton_fk",
+            }
+        ],
+    }
+    path = tmp_path / "base_manifest.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path, load_motion_terrain_manifest(str(path))
 
 
 def test_single_motion_manifest_preserves_canonical_robot_fingerprints(tmp_path: Path) -> None:
-    base_path = REPO_ROOT / "runtime/current/manifests/omniretarget_baseline_29.json"
-    base = load_motion_terrain_manifest(str(base_path))
-    motion_entry = base["motion_files"][1]
+    base_path, base = _write_base_manifest(tmp_path)
+    motion_entry = base["motion_files"][0]
 
     single = _single_motion_manifest(base, base_path, motion_entry, climb_id=1)
     output = tmp_path / "climb_01_manifest.json"
@@ -36,8 +69,7 @@ def test_single_motion_manifest_preserves_canonical_robot_fingerprints(tmp_path:
 
 
 def test_output_manifest_preserves_canonical_robot_fingerprints(tmp_path: Path) -> None:
-    base_path = REPO_ROOT / "runtime/current/manifests/omniretarget_baseline_29.json"
-    base = load_motion_terrain_manifest(str(base_path))
+    base_path, base = _write_base_manifest(tmp_path)
     output_dir = tmp_path / "motions"
     output_dir.mkdir()
     recording = tmp_path / "test_recording.npz"
