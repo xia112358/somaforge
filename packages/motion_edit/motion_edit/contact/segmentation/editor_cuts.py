@@ -35,6 +35,18 @@ def _resolve_editor_cut_config(stable_cfg: StableContactProtoConfig, cut_config:
 
 def _parent_body(body: str) -> str:
     lowered = str(body).lower()
+    foot_channel_parents = {
+        "left_heel": "left_foot",
+        "left_toe": "left_foot",
+        "right_heel": "right_foot",
+        "right_toe": "right_foot",
+        "lhee": "left_foot",
+        "ltoe": "left_foot",
+        "rhee": "right_foot",
+        "rtoe": "right_foot",
+    }
+    if lowered in foot_channel_parents:
+        return foot_channel_parents[lowered]
     for foot in ("left_foot", "right_foot"):
         if lowered == foot or lowered.startswith(f"{foot}_") or foot in lowered:
             return foot

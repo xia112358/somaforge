@@ -10,9 +10,12 @@ from somaforge_core.kinematics import (
 )
 from somaforge_core.motion_schema import (
     G1_29DOF_JOINT_ORDER,
+    NEWTON_ROLLOUT_KINEMATICS_BACKEND,
+    NEWTON_SIMULATION_STATE,
     decode_kinematics_provenance,
     encode_kinematics_provenance,
     newton_kinematics_provenance,
+    newton_rollout_kinematics_provenance,
 )
 
 
@@ -27,6 +30,19 @@ def test_newton_kinematics_provenance_round_trip() -> None:
     assert tuple(decoded["joint_order"]) == G1_29DOF_JOINT_ORDER
     assert decoded["body_names"] == ["pelvis"]
     assert decoded["velocity_derivation"] == POSE_FINITE_DIFFERENCE
+
+
+def test_newton_rollout_kinematics_provenance_round_trip() -> None:
+    metadata = newton_rollout_kinematics_provenance(
+        source_path="recording.npz",
+        source_sha256="b" * 64,
+        output_fps=50.0,
+        body_names=["pelvis"],
+    )
+    decoded = decode_kinematics_provenance(encode_kinematics_provenance(metadata), context="test rollout")
+    assert decoded["kinematics_backend"] == NEWTON_ROLLOUT_KINEMATICS_BACKEND
+    assert decoded["velocity_derivation"] == NEWTON_SIMULATION_STATE
+    assert decoded["state_sampling"] == "control_step_post_physics"
 
 
 def test_body_velocities_are_derived_from_pose() -> None:

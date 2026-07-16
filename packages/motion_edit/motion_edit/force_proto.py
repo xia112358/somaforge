@@ -4,41 +4,20 @@ from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
+from somaforge_core.contact_schema import (
+    CONTACT_FORCE_PART_BODY_NAMES,
+    CONTACT_FORCE_PART_NAMES,
+    canonical_contact_part_name,
+)
 
 from .contact import contact_graph_from_masks, mask_string, segment_from_contact_transition
 from .contact.graph import ContactGraph
 from .schema import SegmentRecord
 
-CONTACT_PART_ORDER = ("left_foot", "right_foot", "left_hand", "right_hand", "left_knee", "right_knee")
-_CONTACT_PART_ALIASES = {
-    "LF": "left_foot",
-    "RF": "right_foot",
-    "LH": "left_hand",
-    "RH": "right_hand",
-    "LK": "left_knee",
-    "RK": "right_knee",
-}
+CONTACT_PART_ORDER = CONTACT_FORCE_PART_NAMES
 _CONTACT_PART_BODY_CANDIDATES = {
-    "left_foot": (
-        "left_ankle_roll_sphere_1_link",
-        "left_ankle_roll_sphere_2_link",
-        "left_ankle_roll_sphere_3_link",
-        "left_ankle_roll_sphere_4_link",
-        "left_ankle_roll_sphere_5_link",
-        "left_ankle_roll_link",
-    ),
-    "right_foot": (
-        "right_ankle_roll_sphere_1_link",
-        "right_ankle_roll_sphere_2_link",
-        "right_ankle_roll_sphere_3_link",
-        "right_ankle_roll_sphere_4_link",
-        "right_ankle_roll_sphere_5_link",
-        "right_ankle_roll_link",
-    ),
-    "left_hand": ("left_rubber_hand_link", "left_thumb_link", "left_pinky_link", "left_wrist_yaw_link"),
-    "right_hand": ("right_rubber_hand_link", "right_thumb_link", "right_pinky_link", "right_wrist_yaw_link"),
-    "left_knee": ("left_knee_link",),
-    "right_knee": ("right_knee_link",),
+    canonical_contact_part_name(part_id): body_names
+    for part_id, body_names in CONTACT_FORCE_PART_BODY_NAMES.items()
 }
 
 
@@ -68,14 +47,14 @@ def _string_array(data: np.lib.npyio.NpzFile, keys: tuple[str, ...]) -> list[str
 
 
 def _normalize_contact_part(name: str) -> str:
-    return _CONTACT_PART_ALIASES.get(name, name)
+    return canonical_contact_part_name(name)
 
 
 def _contact_part_indices(data: np.lib.npyio.NpzFile, width: int | None) -> list[int]:
     raw_names = _string_array(data, ("contact_part_names", "contact_force_part_order", "part_order", "part_names", "contact_body_names"))
     if raw_names is None:
         if width is not None and width < len(CONTACT_PART_ORDER):
-            raise ValueError(f"contact mask has {width} columns; expected fixed 6 contact parts")
+            raise ValueError(f"contact mask has {width} columns; expected canonical 8 contact parts")
         return list(range(len(CONTACT_PART_ORDER)))
     normalized = [_normalize_contact_part(name) for name in raw_names]
     missing = [part for part in CONTACT_PART_ORDER if part not in normalized]

@@ -12,10 +12,11 @@ from motion_edit.contact.plans import ContactEditPlan, validate_contact_edit_pla
 from motion_edit.contact.schema import ContactAnchorRecord
 from motion_edit.contact.surface_geometry import point_in_polygon_uv
 from motion_edit.paths import LAYERS_ROOT
+from somaforge_core.contact_schema import CONTACT_FORCE_PART_NAMES
 
 
-DEFAULT_JITTER_BODIES = ("left_foot", "right_foot", "left_hand", "right_hand", "left_knee", "right_knee")
-FOOT_JITTER_BODIES = {"left_foot", "right_foot"}
+DEFAULT_JITTER_BODIES = CONTACT_FORCE_PART_NAMES
+FOOT_JITTER_BODIES = {"left_heel", "left_toe", "right_heel", "right_toe"}
 FOOT_GROUP_MAX_GAP_FRAMES = 3
 JitterSampler = str
 

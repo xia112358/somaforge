@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from somaforge_core.contact_schema import CONTACT_BODY_NAMES_BY_PART
 
 from motion_edit.contact.graph import ContactGraph
 from motion_edit.contact.patches import patches_from_anchors
@@ -12,17 +13,36 @@ from motion_edit.contact.schema import ContactAnchorRecord, ContactSurfaceRecord
 from motion_edit.contact.surface_geometry import point_in_polygon_uv, surface_polygon_uv
 
 PART_ALIASES = {
+    # Whole-foot aliases remain valid for raw-contact diagnostics. Production
+    # force/contact channels are still the canonical heel/toe 8-part schema.
     "lf": ("lf", "left_foot", "left_ankle", "left_ankle_roll_link"),
     "rf": ("rf", "right_foot", "right_ankle", "right_ankle_roll_link"),
-    "lh": ("lh", "left_hand", "left_wrist", "left_wrist_yaw_link"),
-    "rh": ("rh", "right_hand", "right_wrist", "right_wrist_yaw_link"),
+    "lhee": ("lhee", "left_heel"),
+    "ltoe": ("ltoe", "left_toe"),
+    "rhee": ("rhee", "right_heel"),
+    "rtoe": ("rtoe", "right_toe"),
+    "lh": ("lh", "left_hand", *CONTACT_BODY_NAMES_BY_PART["left_hand"]),
+    "rh": ("rh", "right_hand", *CONTACT_BODY_NAMES_BY_PART["right_hand"]),
     "lk": ("lk", "left_knee", "left_knee_link"),
     "rk": ("rk", "right_knee", "right_knee_link"),
 }
 
 UP_DOT_THRESHOLD = 0.5
 EDGE_DISTANCE_THRESHOLD = 0.05
-FOOT_PARTS = {"left_foot", "right_foot", "lf", "rf"}
+FOOT_PARTS = {
+    "left_foot",
+    "right_foot",
+    "lf",
+    "rf",
+    "left_heel",
+    "left_toe",
+    "right_heel",
+    "right_toe",
+    "lhee",
+    "ltoe",
+    "rhee",
+    "rtoe",
+}
 
 
 @dataclass(frozen=True)
@@ -136,7 +156,7 @@ def _anchor_part_index(anchor: ContactAnchorRecord, raw: RawContactMotion) -> in
 
 def _is_foot_anchor(anchor: ContactAnchorRecord) -> bool:
     body = anchor.body.lower()
-    return body in FOOT_PARTS or "foot" in body or "ankle" in body
+    return body in FOOT_PARTS or "foot" in body or "ankle" in body or "heel" in body or "toe" in body
 
 
 def _prepare_surface(surface: ContactSurfaceRecord, *, require_polygon: bool) -> _PreparedSurface:

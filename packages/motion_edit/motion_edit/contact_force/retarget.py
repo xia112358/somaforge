@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 import numpy as np
+from somaforge_core.contact_schema import CONTACT_FORCE_PART_BODY_NAMES, canonical_contact_part_name
 
 from motion_edit.contact.phases import (
     ContactPhase,
@@ -36,28 +37,8 @@ _PART_ALIASES = {
 }
 
 _PART_BODY_CANDIDATES = {
-    "left_heel": (
-        "left_ankle_roll_sphere_1_link",
-        "left_ankle_roll_sphere_2_link",
-    ),
-    "left_toe": (
-        "left_ankle_roll_sphere_3_link",
-        "left_ankle_roll_sphere_4_link",
-        "left_ankle_roll_sphere_5_link",
-    ),
-    "right_heel": (
-        "right_ankle_roll_sphere_1_link",
-        "right_ankle_roll_sphere_2_link",
-    ),
-    "right_toe": (
-        "right_ankle_roll_sphere_3_link",
-        "right_ankle_roll_sphere_4_link",
-        "right_ankle_roll_sphere_5_link",
-    ),
-    "left_hand": ("left_rubber_hand_link", "left_thumb_link", "left_pinky_link", "left_wrist_yaw_link", "left_hand"),
-    "right_hand": ("right_rubber_hand_link", "right_thumb_link", "right_pinky_link", "right_wrist_yaw_link", "right_hand"),
-    "left_knee": ("left_knee_link", "left_knee"),
-    "right_knee": ("right_knee_link", "right_knee"),
+    canonical_contact_part_name(part_id): body_names
+    for part_id, body_names in CONTACT_FORCE_PART_BODY_NAMES.items()
 }
 
 

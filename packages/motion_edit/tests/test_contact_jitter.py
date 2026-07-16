@@ -25,8 +25,8 @@ class ContactJitterPlanTests(unittest.TestCase):
 
             anchor = {
                 "motion_id": motion_id,
-                "anchor_id": "anchor_left_foot_0000_0010",
-                "body": "left_foot",
+                "anchor_id": "anchor_left_heel_0000_0010",
+                "body": "left_heel",
                 "start_frame": 0,
                 "end_frame": 10,
                 "editable": True,
@@ -108,7 +108,7 @@ class ContactJitterPlanTests(unittest.TestCase):
 
             base_anchor = {
                 "motion_id": motion_id,
-                "body": "right_foot",
+                "body": "right_heel",
                 "editable": True,
                 "surface_id": "box_top",
                 "surface_type": "mesh_face",
@@ -191,7 +191,7 @@ class ContactJitterPlanTests(unittest.TestCase):
             for edit in plan["edits"]:
                 metadata = edit["metadata"]
                 self.assertTrue(metadata["foot_group_jitter"])
-                self.assertEqual(metadata["foot_group_body"], "right_foot")
+                self.assertEqual(metadata["foot_group_body"], "right_heel")
                 self.assertEqual(
                     metadata["foot_group_anchor_ids"],
                     ["anchor_right_foot_sole_0000_0003", "anchor_right_foot_heel_0003_0005"],

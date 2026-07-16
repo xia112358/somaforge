@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from typing import Any
-
 
 CONTACT_FORCE_SCHEMA = "somaforge_contact_force_8part_v1"
 NEWTON_CONTACT_BACKEND = "isaaclab3_newton_mjwarp"
@@ -73,6 +73,29 @@ CONTACT_BODY_NAMES_BY_PART: dict[str, tuple[str, ...]] = {
     "right_hip": ("right_hip_roll_link",),
 }
 
+CONTACT_KINEMATIC_BODY_NAMES_BY_PART: dict[str, tuple[str, ...]] = {
+    "left_heel": ("left_ankle_roll_link",),
+    "left_toe": ("left_ankle_roll_link",),
+    "right_heel": ("right_ankle_roll_link",),
+    "right_toe": ("right_ankle_roll_link",),
+    "left_foot": ("left_ankle_roll_link",),
+    "right_foot": ("right_ankle_roll_link",),
+    "left_hand": ("left_wrist_yaw_link",),
+    "right_hand": ("right_wrist_yaw_link",),
+    "left_knee": ("left_knee_link",),
+    "right_knee": ("right_knee_link",),
+    "left_hip": ("left_hip_roll_link",),
+    "right_hip": ("right_hip_roll_link",),
+}
+
+
+def disallowed_contact_body_pattern(allowed_body_names: tuple[str, ...] | list[str]) -> str:
+    """Build a full-match regex selecting every body except the contact allowlist."""
+
+    names = tuple(dict.fromkeys(str(name) for name in allowed_body_names))
+    exclusions = "".join(f"(?!{re.escape(name)}$)" for name in names)
+    return f"^{exclusions}.+$"
+
 
 def canonical_contact_part_id(value: str) -> str:
     """Return the canonical short ID for one production contact channel."""
@@ -97,6 +120,9 @@ def newton_contact_provenance(
     source_recording: str | None = None,
     force_reduce: str = "sum",
     threshold_n: float = 10.0,
+    mask_off_threshold_n: float = 5.0,
+    mask_close_gap_frames: int = 2,
+    history_sample_count: int | None = None,
 ) -> dict[str, Any]:
     config = _json_safe_mapping(solver_config)
     config_json = json.dumps(config, sort_keys=True, separators=(",", ":"))
@@ -109,14 +135,27 @@ def newton_contact_provenance(
         "force_unit": "N",
         "force_direction": "environment_on_robot",
         "force_channel": "contact_sensor.net_forces_w",
+        "force_sampling": "latest_physics_step",
+        "force_history_order": "latest_first",
+        "position_sampling": "latest_physics_step",
+        "force_position_time_aligned": True,
         "part_order": list(CONTACT_FORCE_PART_ORDER),
         "part_body_names": {key: list(value) for key, value in CONTACT_FORCE_PART_BODY_NAMES.items()},
         "force_reduce": str(force_reduce),
         "contact_threshold_n": float(threshold_n),
+        "contact_off_threshold_n": float(mask_off_threshold_n),
+        "contact_mask_close_gap_frames": int(mask_close_gap_frames),
+        "contact_mask_filter_alters_force": False,
         "solver_config": config,
         "solver_config_sha256": hashlib.sha256(config_json.encode("utf-8")).hexdigest(),
         "training_eligible": True,
     }
+    if history_sample_count is not None:
+        control_decimation = int(config.get("control_decimation", 0) or 0)
+        provenance["force_history_sample_count"] = int(history_sample_count)
+        provenance["force_history_complete_control_interval"] = (
+            control_decimation > 0 and int(history_sample_count) >= control_decimation
+        )
     if source_recording is not None:
         provenance["source_recording"] = str(source_recording)
     return provenance

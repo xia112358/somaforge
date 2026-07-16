@@ -4,18 +4,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-from somaforge_core.contact_schema import CONTACT_FORCE_PART_ORDER
+from somaforge_core.contact_schema import CONTACT_FORCE_PART_NAMES, CONTACT_FORCE_PART_ORDER
 
-DEFAULT_CONTACT_FORCE_PART_ORDER = (
-    "left_heel",
-    "left_toe",
-    "right_heel",
-    "right_toe",
-    "left_hand",
-    "right_hand",
-    "left_knee",
-    "right_knee",
-)
+DEFAULT_CONTACT_FORCE_PART_ORDER = CONTACT_FORCE_PART_NAMES
 
 WBT_8PART_CONTACT_FORCE_PART_ORDER = CONTACT_FORCE_PART_ORDER
 
