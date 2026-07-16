@@ -113,7 +113,7 @@ forces. Run the result through the Holosoma Newton rollout recorder and
 `scripts/extract_rollout_ref_contact_force_demo.py` before force-aware training.
 
 ```bash
-/home/xiaz/somaforge/packages/motion_edit/motion-edit generate-ref \
+./motion-edit generate-ref \
   --plan data/workbench/climb00_surface_edits.json \
   --output-motion data/motions/generated/climb00_farther.policy_ref_v1.npz \
   --output-contact-layer contact/climb00_farther \
@@ -128,9 +128,9 @@ geometry diagnostic. Its output is not a standard generated trajectory because
 it does not write the WBT contact-force contract:
 
 ```bash
-/home/xiaz/somaforge/packages/motion_edit/motion-edit generate-lte-augmentation \
+./motion-edit generate-lte-augmentation \
   --plan data/workbench/climb00_surface_edits.json \
-  --output-motion /tmp/climb00_farther.geometry_debug.npz \
+  --output-motion ../../tmp/motion_edit/climb00_farther.geometry_debug.npz \
   --output-contact-layer contact/climb00_farther \
   --output-segment-layer candidates/climb00_farther \
   --output-motion-version-id climb00_farther \
@@ -153,7 +153,7 @@ Keep these boundaries clear when debugging or adding features:
 | `motion_edit/generation/` | ContactEditPlan -> edited kinematic reference; hidden geometry diagnostics | Contact dynamics or policy rollout |
 | `motion_edit/contact_laplacian/` | Batch contact-Laplacian solver, ContactHandleSpec, residual weights, solver metadata | Policy-force writing or simulator rollout |
 | `motion_edit/contact_force/` | Canonical contact-force schema and explicitly diagnostic prescribed-force tools | Production force generation |
-| `motion_edit/segmentation/` | Draft segmentation sessions and legacy cutter workflow | Main contact-anchor editing |
+| `motion_edit/segmentation/` | Draft segmentation sessions with explicit start/list/edit/save/discard commands | Main contact-anchor editing |
 | `motion_edit/storage/` | MotionAsset, MotionVersion, canonical segments, token catalogs | Runtime `.npz` payload ownership |
 | `data/` | Local runtime data and generated artifacts | Git-tracked package source |
 
@@ -172,7 +172,9 @@ simultaneous heel-plus-toe contact are all preserved.
 ## Avoiding Common Errors
 
 - Use `motion-edit contact-editor` for interactive contact-anchor editing.
-  `motion-edit-seg cutter` and `surface-editor` are legacy/debug tools.
+  The old `motion-edit-seg cutter` and `surface-editor` entry points were
+  removed; segmentation diagnostics use the explicit `motion-edit-seg`
+  session commands.
 - Use `motion-edit generate-ref` for edited kinematic trajectories.
 - Force-training files require `contact_force_part_w`, `contact_force_part_mask`,
   `contact_force_part_order`, and Newton `contact_force_provenance_json`.
@@ -205,31 +207,13 @@ simultaneous heel-plus-toe contact are all preserved.
   inspecting the dry-run output; local `.agents/` and `.codex/` directories are
   workspace configuration.
 
-## Current Branch / PR Organization
+## Integration and Review Boundaries
 
-The old `solver/contact-laplacian-stability` branch mixed solver, contact segmentation, Contact Editor cuts, timeline UI, motion asset bundle work, local rollout data cleanup, and third-party proto scripts. Do not merge it as one large branch. Keep the work split in reviewable dependency order:
-
-```text
-feature/contact-laplacian-core
-  batch_contact_laplacian / dual_laplacian_contact_deformation core
-
-feature/stable-contact-proto
-  stable contact proto segmentation, graph transitions, fallback policies
-
-feature/contact-editor-cuts
-  cleaned parent-limb contact phases -> editor cut frames
-
-feature/contact-timeline-cut-ui
-  Contact Editor wrapper timeline, cut-frame markers, recent motion UI
-
-feature/motion-asset-generation-bundle
-  MotionAsset bundle compatibility and generated-motion recent entries
-
-tools/holosoma-proto-extraction
-  third_party/holosoma_proto extraction/reference scripts
-```
-
-The feature stack should sit on the data cleanup baseline that stops tracking runtime `data/` artifacts. Before opening or merging a PR, verify:
+Keep future changes split by ownership: trajectory optimization and schemas,
+Contact Editor UI/save behavior, Newton rollout and extraction, and
+documentation. Do not revive the historical multi-branch Contact Editor stack
+or mix local runtime data into a source change. Before opening or merging a PR,
+verify:
 
 ```bash
 git ls-files data | wc -l
@@ -285,7 +269,7 @@ The standard generation entry is `generate-ref`. It writes edited kinematics
 that must subsequently pass a Newton policy rollout:
 
 ```bash
-/home/xiaz/somaforge/packages/motion_edit/motion-edit generate-ref \
+./motion-edit generate-ref \
   --plan data/workbench/climb00_edits.json \
   --output-motion data/motions/generated/climb00.policy_ref_v1.npz \
   --output-contact-layer contact/climb00_policy_ref \
@@ -313,7 +297,7 @@ force vector itself. There is no per-frame SciPy/SQP production path.
 Run the complete black-box Newton force loop from the PyRoki environment:
 
 ```bash
-/home/xiaz/somaforge/packages/motion_edit/motion-edit force-retarget \
+./motion-edit force-retarget \
   --initial-motion data/motions/generated/climb00.policy_ref_v1.npz \
   --lte data/motions/generated/climb00.policy_ref_v1/climb00.policy_ref_v1.contact_laplacian_keypoints.npz \
   --target-force-motion runtime/current/motions/newton_contact_force/climb_00_rollout_ref_contact_force.npz \
@@ -322,7 +306,7 @@ Run the complete black-box Newton force loop from the PyRoki environment:
   --checkpoint /path/to/wbt_model.pt \
   --newton-python /home/xiaz/miniforge3/envs/env_holosoma_isaaclab3_newton/bin/python \
   --output-motion data/motions/generated/climb00.force_ref_v1.npz \
-  --work-dir tmp/climb00_force_retarget
+  --work-dir ../../tmp/motion_edit/climb00_force_retarget
 ```
 
 Before every rollout, the command canonicalizes the PyRoki candidate with the
@@ -334,10 +318,10 @@ The geometry-only command is hidden and should be treated as a diagnostic
 intermediate producer:
 
 ```bash
-/home/xiaz/somaforge/packages/motion_edit/motion-edit generate-lte-augmentation \
+./motion-edit generate-lte-augmentation \
   --mode lte_fullbody \
   --plan data/workbench/climb00_edits.json \
-  --output-motion tmp/climb00.geometry_debug.npz
+  --output-motion ../../tmp/motion_edit/climb00.geometry_debug.npz
 ```
 
 Do not use the edited output directly for force-aware WBT. First collect a
@@ -392,26 +376,26 @@ reject/clamp bounds; the browser does not duplicate this solver.
 Surface binding is explicit and does not generate a trajectory. It writes a new ContactLayer by default.
 
 ```bash
-/home/xiaz/somaforge/packages/motion_edit/motion-edit create-urdf-surface-catalog \
+./motion-edit create-urdf-surface-catalog \
   --motion-id climb_00_z_scale_1.0 \
   --terrain-urdf /path/to/multi_boxes_z_scale_1.0.urdf \
   --output data/surfaces/climb_00_surfaces.jsonl
 
-/home/xiaz/somaforge/packages/motion_edit/motion-edit refine-contact-anchor-positions \
+./motion-edit refine-contact-anchor-positions \
   --contact-layer contact/force_contact \
   --motion-id climb_00_z_scale_1.0 \
   --motion /path/to/climb_00_with_raw_contacts.npz \
   --surface-catalog data/surfaces/climb_00_surfaces.jsonl \
   --output-contact-layer contact/force_contact_raw_point_refined
 
-/home/xiaz/somaforge/packages/motion_edit/motion-edit merge-contact-anchors \
+./motion-edit merge-contact-anchors \
   --contact-layer contact/force_contact_raw_point_refined \
   --motion-id climb_00_z_scale_1.0 \
   --output-contact-layer contact/force_contact_raw_point_merged \
   --max-gap 3 \
   --max-distance 0.06
 
-/home/xiaz/somaforge/packages/motion_edit/motion-edit bind-contact-surfaces \
+./motion-edit bind-contact-surfaces \
   --contact-layer contact/force_contact_raw_point_merged \
   --motion-id climb_00_z_scale_1.0 \
   --surface-catalog data/surfaces/climb_00_surfaces.jsonl \
@@ -430,28 +414,28 @@ The overlay export is a lightweight frontend-agnostic JSON file containing
 `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects.
 
 ```bash
-/home/xiaz/somaforge/packages/motion_edit/motion-edit create-urdf-surface-catalog \
+./motion-edit create-urdf-surface-catalog \
   --motion-id climb_00_z_scale_1.0 \
   --terrain-urdf /path/to/multi_boxes_z_scale_1.0.urdf \
   --output data/surfaces/climb_00_surfaces.jsonl
 
-/home/xiaz/somaforge/packages/motion_edit/motion-edit bind-contact-surfaces \
+./motion-edit bind-contact-surfaces \
   --contact-layer contact/force_contact \
   --motion-id climb_00_z_scale_1.0 \
   --surface-catalog data/surfaces/climb_00_surfaces.jsonl \
   --output-contact-layer contact/force_contact_bound
 
-/home/xiaz/somaforge/packages/motion_edit/motion-edit export-surface-binding-report \
+./motion-edit export-surface-binding-report \
   --contact-layer contact/force_contact_bound \
   --motion-id climb_00_z_scale_1.0 \
   --output data/exports/surface_binding_reports/climb_00.json
 
-/home/xiaz/somaforge/packages/motion_edit/motion-edit export-surface-binding-overlay \
+./motion-edit export-surface-binding-overlay \
   --contact-layer contact/force_contact_bound \
   --motion-id climb_00_z_scale_1.0 \
   --output data/exports/surface_binding_overlays/climb_00.overlay.json
 
-/home/xiaz/somaforge/packages/motion_edit/motion-edit summarize-surface-bindings \
+./motion-edit summarize-surface-bindings \
   --contact-layer contact/force_contact_bound \
   --motion-id climb_00_z_scale_1.0
 ```
@@ -512,7 +496,7 @@ still produced by the subsequent Newton rollout.
 Edits remain anchor-level and surface-constrained. They use `move_contact_anchor_on_surface`, never allow normal displacement, never jump to another surface, and do not model full foot sole contact, toe/heel rolling, pressure, or physical sticking.
 
 ```bash
-/home/xiaz/somaforge/packages/motion_edit/motion-edit contact-editor \
+./motion-edit contact-editor \
   --motion-asset-id climb_01_newton_8part \
   --port 8094
 ```
@@ -534,8 +518,8 @@ Contact-anchor editing is intentionally staged. The editor only stages edits in
 a `ContactEditPlan`; use `generate-ref` for the formal edited-kinematics path:
 
 ```bash
-/home/xiaz/somaforge/packages/motion_edit/motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
-/home/xiaz/somaforge/packages/motion_edit/motion-edit generate-ref \
+./motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
+./motion-edit generate-ref \
   --plan data/workbench/climb00_farther.json \
   --output-motion data/motions/generated/climb00_farther.policy_ref_v1.npz \
   --output-contact-layer contact/climb00_farther \
@@ -548,10 +532,10 @@ a `ContactEditPlan`; use `generate-ref` for the formal edited-kinematics path:
 Use `generate-lte-augmentation` only when debugging the geometry stage:
 
 ```bash
-/home/xiaz/somaforge/packages/motion_edit/motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
-/home/xiaz/somaforge/packages/motion_edit/motion-edit generate-lte-augmentation \
+./motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
+./motion-edit generate-lte-augmentation \
   --plan data/workbench/climb00_farther.json \
-  --output-motion tmp/climb00_farther.geometry_debug.npz \
+  --output-motion ../../tmp/motion_edit/climb00_farther.geometry_debug.npz \
   --output-contact-layer contact/climb00_farther \
   --output-segment-layer candidates/climb00_farther \
   --output-motion-version-id climb00_farther \
@@ -571,11 +555,11 @@ The archived source `.npz`, source ContactLayer, and source canonical segmentati
 
 ## Legacy And Developer Notes
 
-Legacy layer curation, the old Holosoma cutter adapter, manual `surface-editor`
-entry points, request-file sync, old LTE catalog import, and low-level clip
-editing remain in the codebase for compatibility and tests. They are hidden
-from the primary `motion-edit --help` output. Prefer the main workflow unless
-you are migrating old data or debugging one subsystem.
+Legacy layer curation, cutter segment export/sync helpers, request-file
+migration, old LTE catalog import, and low-level clip editing remain in the
+codebase for compatibility and tests. They are hidden from the primary
+`motion-edit --help` output. Prefer the main workflow unless you are migrating
+old data or debugging one subsystem.
 
 See also:
 

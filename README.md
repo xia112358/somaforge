@@ -127,13 +127,17 @@ python src/holosoma/holosoma/train_agent.py \
 
 ### 3. Create the Motion Edit reference
 
-Use the Newton rollout contact manifest as the Motion Edit source. Open a
-`ContactEditPlan`, validate it, then write an edited kinematic reference into
-`runtime/current/motions/`:
+Use the Newton rollout contact manifest as the Motion Edit source. Import it to
+register immutable `MotionAsset` records, open one registered asset in the
+Contact Editor, validate its `ContactEditPlan`, then write an edited kinematic
+reference into `runtime/current/motions/`:
 
 ```bash
 source scripts/source_somaforge.sh
-packages/motion_edit/motion-edit contact-editor /path/to/source_motion.npz
+packages/motion_edit/motion-edit import-asset-manifest \
+  --manifest runtime/current/manifests/newton_contact_force_8part.json
+packages/motion_edit/motion-edit contact-editor \
+  --motion-asset-id climb_01_newton_8part
 packages/motion_edit/motion-edit validate-contact-edit-plan --plan /path/to/plan.json
 packages/motion_edit/motion-edit generate-ref --plan /path/to/plan.json \
   --output-motion runtime/current/motions/example.policy_ref_v1.npz \
