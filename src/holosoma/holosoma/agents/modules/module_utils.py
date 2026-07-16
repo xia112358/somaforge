@@ -10,6 +10,7 @@ def setup_ppo_actor_module(
     init_noise_std,
     device,
     history_length: dict[str, int],
+    action_clip: float = 10.0,
 ):
     module_type = module_config.type
     if module_type in ["MLPEncoder", "CNNEncoder"]:
@@ -18,6 +19,8 @@ def setup_ppo_actor_module(
             module_config_dict=module_config,
             num_actions=num_actions,
             init_noise_std=init_noise_std,
+            history_length=history_length,
+            action_clip=action_clip,
         ).to(device)
     if module_type == "MLP":
         return PPOActor(
@@ -26,6 +29,7 @@ def setup_ppo_actor_module(
             num_actions=num_actions,
             init_noise_std=init_noise_std,
             history_length=history_length,
+            action_clip=action_clip,
         ).to(device)
 
     raise ValueError(f"Invalid actor type: {module_type}")

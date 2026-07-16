@@ -1,15 +1,60 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import math
+from copy import deepcopy
 
 import torch
+from holosoma.config_types.algo import ModuleConfig
 from torch import nn
 from torch.distributions import Normal
 
-from holosoma.config_types.algo import ModuleConfig
-
 from .modules import BaseModule
+
+
+class CensoredNormal:
+    """Normal distribution observed after hard clipping to symmetric bounds."""
+
+    def __init__(self, loc: torch.Tensor, scale: torch.Tensor, action_clip: float):
+        if action_clip <= 0.0:
+            raise ValueError(f"action_clip must be positive, got {action_clip}")
+        self.loc = loc
+        self.scale = scale
+        self.action_clip = float(action_clip)
+        self.base_dist = Normal(loc, scale)
+
+    def sample(self) -> torch.Tensor:
+        return self.base_dist.sample().clamp(min=-self.action_clip, max=self.action_clip)
+
+    def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
+        lower = -self.action_clip
+        upper = self.action_clip
+        lower_z = (lower - self.loc) / self.scale
+        upper_z = (upper - self.loc) / self.scale
+        interior_log_prob = self.base_dist.log_prob(actions)
+        lower_log_prob = torch.special.log_ndtr(lower_z)
+        upper_log_prob = torch.special.log_ndtr(-upper_z)
+        return torch.where(
+            actions <= lower,
+            lower_log_prob,
+            torch.where(actions >= upper, upper_log_prob, interior_log_prob),
+        )
+
+    def entropy(self) -> torch.Tensor:
+        lower_z = (-self.action_clip - self.loc) / self.scale
+        upper_z = (self.action_clip - self.loc) / self.scale
+        lower_mass = torch.special.ndtr(lower_z)
+        upper_mass = torch.special.ndtr(-upper_z)
+        interior_mass = (1.0 - lower_mass - upper_mass).clamp_min(0.0)
+
+        normalizer = math.sqrt(2.0 * math.pi)
+        lower_density = torch.exp(-0.5 * lower_z.square()) / normalizer
+        upper_density = torch.exp(-0.5 * upper_z.square()) / normalizer
+        continuous_entropy = interior_mass * (self.scale.log() + 0.5 * math.log(2.0 * math.pi * math.e))
+        continuous_entropy += 0.5 * (lower_z * lower_density - upper_z * upper_density)
+        min_mass = torch.finfo(self.loc.dtype).tiny
+        boundary_entropy = -lower_mass * lower_mass.clamp_min(min_mass).log()
+        boundary_entropy -= upper_mass * upper_mass.clamp_min(min_mass).log()
+        return continuous_entropy + boundary_entropy
 
 
 class PPOActor(nn.Module):
@@ -20,6 +65,7 @@ class PPOActor(nn.Module):
         num_actions,
         init_noise_std,
         history_length: dict[str, int],
+        action_clip: float = 10.0,
     ):
         super().__init__()
 
@@ -33,6 +79,9 @@ class PPOActor(nn.Module):
         self.min_noise_std = module_config_dict.min_noise_std
         self.max_noise_std = module_config_dict.max_noise_std
         self.min_mean_noise_std = module_config_dict.min_mean_noise_std
+        if action_clip <= 0.0:
+            raise ValueError(f"action_clip must be positive, got {action_clip}")
+        self.action_clip = float(action_clip)
         self.distribution = None
         # disable args validation for speedup
         Normal.set_default_validate_args(False)
@@ -64,11 +113,11 @@ class PPOActor(nn.Module):
 
     @property
     def action_mean(self):
-        return self.distribution.mean
+        return self.distribution.loc
 
     @property
     def action_std(self):
-        return self.distribution.stddev
+        return self.distribution.scale
 
     @property
     def std(self):
@@ -96,7 +145,7 @@ class PPOActor(nn.Module):
     def update_distribution(self, actor_obs):
         mean = self.actor(actor_obs)
         mean = torch.nan_to_num(mean, nan=0.0, posinf=1.0, neginf=-1.0)
-        self.distribution = Normal(mean, self._current_std().expand_as(mean))
+        self.distribution = CensoredNormal(mean, self._current_std().expand_as(mean), self.action_clip)
 
     def act(self, policy_state_dict):
         self.update_distribution(policy_state_dict["actor_obs"])
@@ -106,6 +155,10 @@ class PPOActor(nn.Module):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
     def act_inference(self, policy_state_dict):
+        raw_mean = PPOActor.act_raw_inference(self, policy_state_dict)
+        return raw_mean.clamp(min=-self.action_clip, max=self.action_clip)
+
+    def act_raw_inference(self, policy_state_dict):
         mean = self.actor(policy_state_dict["actor_obs"])
         return torch.nan_to_num(mean, nan=0.0, posinf=1.0, neginf=-1.0)
 
@@ -113,7 +166,9 @@ class PPOActor(nn.Module):
         self.actor_module = deepcopy(self.actor_module).to("cpu")
         self.log_std.data = self.log_std.data.to("cpu")
 
-    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
+    def _load_from_state_dict(
+        self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+    ):
         old_std_key = f"{prefix}std"
         new_log_std_key = f"{prefix}log_std"
         if old_std_key in state_dict and new_log_std_key not in state_dict:
@@ -148,8 +203,23 @@ class PPOCritic(nn.Module):
 
 
 class PPOActorEncoder(PPOActor):
-    def __init__(self, obs_dim_dict, module_config_dict, num_actions, init_noise_std):
-        super().__init__(obs_dim_dict, module_config_dict, num_actions, init_noise_std)
+    def __init__(
+        self,
+        obs_dim_dict,
+        module_config_dict,
+        num_actions,
+        init_noise_std,
+        history_length: dict[str, int],
+        action_clip: float = 10.0,
+    ):
+        super().__init__(
+            obs_dim_dict,
+            module_config_dict,
+            num_actions,
+            init_noise_std,
+            history_length,
+            action_clip,
+        )
         self.module_input_name = module_config_dict.layer_config.module_input_name
         self.encoder_input_name = module_config_dict.layer_config.encoder_input_name
 
@@ -178,6 +248,11 @@ class PPOActorEncoder(PPOActor):
         actor_obs = policy_state_dict["actor_obs"]
         input_actor = self._get_input(actor_obs)
         return super().act_inference({"actor_obs": input_actor})
+
+    def act_raw_inference(self, policy_state_dict):
+        actor_obs = policy_state_dict["actor_obs"]
+        input_actor = self._get_input(actor_obs)
+        return super().act_raw_inference({"actor_obs": input_actor})
 
 
 class PPOCriticEncoder(PPOCritic):

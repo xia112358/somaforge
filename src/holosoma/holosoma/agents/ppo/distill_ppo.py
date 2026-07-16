@@ -63,6 +63,7 @@ class DistillPPO(PPO):
             init_noise_std=init_noise_std,
             device=self.device,
             history_length=self.algo_history_length_dict,
+            action_clip=self.config.action_clip,
         )
         self.teacher_actor.eval()
         for param in self.teacher_actor.parameters():
@@ -108,7 +109,7 @@ class DistillPPO(PPO):
                 dagger_valid_mask = self._compute_dagger_valid_mask().view(-1, 1)
 
                 actions = self.actor.act({"actor_obs": actor_obs})
-                actions = self._finite_tensor(actions, clamp=10.0)
+                actions = self._finite_tensor(actions, clamp=self.config.action_clip)
                 values = self._finite_tensor(self.critic.evaluate({"critic_obs": critic_obs}).detach(), clamp=1.0e4)
 
                 obs_dict, rewards, dones, infos = self.env.step({"actions": actions})
@@ -144,7 +145,7 @@ class DistillPPO(PPO):
                     actions=actions,
                     values=values,
                     actions_log_prob=actions_log_prob,
-                    action_mean=self._finite_tensor(self.actor.action_mean.detach(), clamp=10.0),
+                    action_mean=self._finite_tensor(self.actor.action_mean.detach(), clamp=1.0e3),
                     action_sigma=self._finite_tensor(self.actor.action_std.detach(), fill=1.0, clamp=10.0).clamp_min(
                         1.0e-6
                     ),

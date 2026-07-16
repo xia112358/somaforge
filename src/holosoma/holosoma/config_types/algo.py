@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import field
-from typing import Any, List, Union
+from typing import Any, List
 
 from pydantic.dataclasses import dataclass
 
@@ -189,6 +189,9 @@ class PPOConfig:
     init_noise_std: float = 0.8
     """Initial noise standard deviation."""
 
+    action_clip: float = 10.0
+    """Symmetric policy action bound shared by rollout, evaluation, and export."""
+
     num_learning_iterations: int = 1000000
     """Total number of learning iterations."""
 
@@ -205,6 +208,20 @@ class PPOConfig:
     min_actor_learning_rate: float | None = None
     max_critic_learning_rate: float | None = None
     min_critic_learning_rate: float | None = None
+
+
+@dataclass(frozen=True)
+class KLEarlyStopPPOConfig(PPOConfig):
+    """PPO configuration with per-rollout actor KL safeguards."""
+
+    actor_early_stop_kl: float = 0.02
+    """Stop actor updates for the current rollout at or above this KL."""
+
+    actor_rollback_kl: float = 0.04
+    """Roll back the last actor update at or above this post-update KL."""
+
+    reshuffle_minibatches_each_epoch: bool = True
+    """Draw a fresh minibatch permutation for every learning epoch."""
 
 
 @dataclass(frozen=True)
@@ -429,6 +446,15 @@ class PPOAlgoConfig:
 
 
 @dataclass(frozen=True)
+class KLEarlyStopPPOAlgoConfig:
+    """Configuration wrapper for the KL-guarded PPO comparison."""
+
+    _target_: str
+    _recursive_: bool
+    config: KLEarlyStopPPOConfig
+
+
+@dataclass(frozen=True)
 class FastSACAlgoConfig:
     """Configuration for algorithm wrapper."""
 
@@ -442,6 +468,6 @@ class FastSACAlgoConfig:
     """Algorithm-specific configuration."""
 
 
-AlgoInitConfig = Union[PPOConfig, DistillPPOConfig, FastSACConfig]
+AlgoInitConfig = PPOConfig | KLEarlyStopPPOConfig | DistillPPOConfig | FastSACConfig
 
-AlgoConfig = Union[PPOAlgoConfig, FastSACAlgoConfig]
+AlgoConfig = PPOAlgoConfig | KLEarlyStopPPOAlgoConfig | FastSACAlgoConfig

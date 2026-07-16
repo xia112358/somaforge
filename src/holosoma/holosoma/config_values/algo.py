@@ -1,6 +1,10 @@
+from dataclasses import fields
+
 from holosoma.config_types.algo import (
     FastSACAlgoConfig,
     FastSACConfig,
+    KLEarlyStopPPOAlgoConfig,
+    KLEarlyStopPPOConfig,
     LayerConfig,
     ModuleConfig,
     OptimizerConfig,
@@ -55,6 +59,17 @@ ppo = PPOAlgoConfig(
     ),
 )
 
+kl_early_stop_ppo = KLEarlyStopPPOAlgoConfig(
+    _target_="holosoma.agents.ppo.kl_early_stop_ppo.KLEarlyStopPPO",
+    _recursive_=False,
+    config=KLEarlyStopPPOConfig(
+        **{config_field.name: getattr(ppo.config, config_field.name) for config_field in fields(PPOConfig)},
+        actor_early_stop_kl=0.02,
+        actor_rollback_kl=0.04,
+        reshuffle_minibatches_each_epoch=True,
+    ),
+)
+
 fast_sac = FastSACAlgoConfig(
     _target_="holosoma.agents.fast_sac.fast_sac_agent.FastSACAgent",
     _recursive_=False,
@@ -103,5 +118,6 @@ fast_sac = FastSACAlgoConfig(
 
 DEFAULTS = {
     "ppo": ppo,
+    "kl_early_stop_ppo": kl_early_stop_ppo,
     "fast_sac": fast_sac,
 }

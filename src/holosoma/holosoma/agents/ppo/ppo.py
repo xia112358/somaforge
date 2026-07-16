@@ -250,6 +250,7 @@ class PPO(BaseAlgo):
             init_noise_std=self.config.init_noise_std,
             device=self.device,
             history_length=self.algo_history_length_dict,
+            action_clip=self.config.action_clip,
         )
         self.critic = setup_ppo_critic_module(
             obs_dim_dict=self.algo_obs_dim_dict,
@@ -266,6 +267,7 @@ class PPO(BaseAlgo):
                 init_noise_std=self.config.init_noise_std,
                 device=self.device,
                 history_length=self.algo_history_length_dict,
+                action_clip=self.config.action_clip,
             )
             checkpoint_path = os.path.expanduser(self.config.anchor_kl_checkpoint)
             checkpoint = self._load_checked_checkpoint(checkpoint_path)
@@ -435,7 +437,7 @@ class PPO(BaseAlgo):
                 t_obs = _profile_mark()
 
                 actions = self.actor.act({"actor_obs": actor_obs})
-                actions = self._finite_tensor(actions, clamp=10.0)
+                actions = self._finite_tensor(actions, clamp=self.config.action_clip)
                 values = self._finite_tensor(self.critic.evaluate({"critic_obs": critic_obs}).detach(), clamp=1.0e4)
                 t_policy = _profile_mark()
 
@@ -478,7 +480,7 @@ class PPO(BaseAlgo):
                     actions=actions,
                     values=values,
                     actions_log_prob=actions_log_prob,
-                    action_mean=self._finite_tensor(self.actor.action_mean.detach(), clamp=10.0),
+                    action_mean=self._finite_tensor(self.actor.action_mean.detach(), clamp=1.0e3),
                     action_sigma=self._finite_tensor(self.actor.action_std.detach(), fill=1.0, clamp=10.0).clamp_min(
                         1.0e-6
                     ),
@@ -565,14 +567,26 @@ class PPO(BaseAlgo):
 
         minibatch: Minibatch
         loss_dict = {"Value": 0.0, "Surrogate": 0.0, "Entropy": 0.0, "KL": 0.0}
+        action_diagnostics = self._action_diagnostics()
         for minibatch in generator:
             loss_dict = self._update_algo_step(minibatch, loss_dict)
 
         num_updates = self.config.num_learning_epochs * self.config.num_mini_batches
         for key in loss_dict:
             loss_dict[key] /= num_updates
+        loss_dict.update(action_diagnostics)
         self.storage.clear()
         return loss_dict
+
+    def _action_diagnostics(self) -> dict[str, float]:
+        raw_mean = self.storage["action_mean"]
+        actions = self.storage["actions"]
+        action_clip = self.config.action_clip
+        return {
+            "raw_action_mean_abs_max": float(raw_mean.abs().max().item()),
+            "raw_action_mean_out_of_bounds_fraction": float((raw_mean.abs() > action_clip).float().mean().item()),
+            "executed_action_at_bound_fraction": float((actions.abs() >= action_clip).float().mean().item()),
+        }
 
     def _update_algo_step(self, minibatch: Minibatch, loss_dict: dict[str, float]):
         ppo_loss_dict = self._compute_ppo_loss(minibatch)
@@ -648,12 +662,12 @@ class PPO(BaseAlgo):
         return float((~torch.isfinite(tensor)).sum().item())
 
     def _compute_ppo_loss(self, minibatch: Minibatch):
-        actions_batch = self._finite_tensor(minibatch["actions"], clamp=10.0)
+        actions_batch = self._finite_tensor(minibatch["actions"], clamp=self.config.action_clip)
         target_values_batch = self._finite_tensor(minibatch["values"], clamp=1.0e4)
         advantages_batch = self._finite_tensor(minibatch["advantages"], clamp=10.0)
         returns_batch = self._finite_tensor(minibatch["returns"], clamp=1.0e4)
         old_actions_log_prob_batch = self._finite_tensor(minibatch["actions_log_prob"], clamp=1.0e4)
-        old_mu_batch = self._finite_tensor(minibatch["action_mean"], clamp=10.0)
+        old_mu_batch = self._finite_tensor(minibatch["action_mean"], clamp=1.0e3)
         old_sigma_batch = self._finite_tensor(minibatch["action_sigma"], fill=1.0, clamp=10.0).clamp_min(1.0e-6)
 
         # Symmetry augmentation
@@ -755,9 +769,9 @@ class PPO(BaseAlgo):
                 anchor_sigma_batch = self.anchor_actor.action_std.detach()
 
             action_dim = min(mu_batch.shape[-1], anchor_mu_batch.shape[-1])
-            student_mu = self._finite_tensor(mu_batch[:, :action_dim], clamp=10.0)
+            student_mu = self._finite_tensor(mu_batch[:, :action_dim], clamp=1.0e3)
             student_sigma = self._finite_tensor(sigma_batch[:, :action_dim], fill=1.0, clamp=10.0).clamp_min(1.0e-6)
-            anchor_mu = self._finite_tensor(anchor_mu_batch[:, :action_dim], clamp=10.0)
+            anchor_mu = self._finite_tensor(anchor_mu_batch[:, :action_dim], clamp=1.0e3)
             anchor_sigma = self._finite_tensor(
                 anchor_sigma_batch[:, :action_dim], fill=1.0, clamp=10.0
             ).clamp_min(1.0e-6)
@@ -832,7 +846,9 @@ class PPO(BaseAlgo):
                 self.actor_learning_rate = loaded_dict["actor_optimizer_state_dict"]["param_groups"][0]["lr"]
                 self.critic_learning_rate = loaded_dict["critic_optimizer_state_dict"]["param_groups"][0]["lr"]
                 logger.info("Optimizer loaded from checkpoint")
-            self.current_learning_iteration = loaded_dict["iter"]
+            # Checkpoints are written after completing ``iter``. Resume at the
+            # following iteration instead of applying that update twice.
+            self.current_learning_iteration = int(loaded_dict["iter"]) + 1
             self._restore_env_state(loaded_dict.get("env_state"))
             return loaded_dict.get("infos")
         return None
