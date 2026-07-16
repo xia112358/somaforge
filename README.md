@@ -79,7 +79,8 @@ OmniRetarget/PyRoki qpos
 -> initial WBT baseline policy
 -> Newton rollout/contact-force manifest
 -> Motion Edit ContactEditPlan and generate-ref
--> Newton validation rollout and canonical 8-part force manifest
+-> force-retarget (PyRoki three-cost graph + repeated Newton force rollout)
+-> accepted canonical 8-part Newton force reference/manifest
 -> GMVQ segment pack and checkpoint
 -> WBT training from scratch
 ```
@@ -151,6 +152,41 @@ python scripts/extract_all_rollout_ref_contact_force_demos.py \
 
 The resulting force files carry `contact_force_provenance_json` with the
 Newton solver configuration. MuJoCo diagnostic forces are rejected by WBT.
+`contact_force_part_w` is the unfiltered Newton force from the latest physics
+step and is time-aligned with `contact_force_part_position_w` and the raw
+contact channels. `contact_force_part_history_w` preserves the real physics
+substeps in latest-first order. Contact-state hysteresis only affects
+`contact_force_part_mask`; the direct threshold result remains available as
+`contact_force_part_mask_raw` and no mask processing changes either force
+channel.
+
+### Evaluate a checkpoint
+
+Evaluation loads the experiment configuration stored in the checkpoint, then
+applies the dedicated evaluation settings and any advanced experiment
+overrides. Interactive visualization uses only Isaac Lab's
+`--visualizer kit` flag:
+
+```bash
+# Interactive Isaac Sim / Kit window.
+python -m holosoma.eval_agent \
+  --checkpoint /path/to/model.pt \
+  --visualizer kit \
+  --num-envs 1 \
+  --max-steps 2000
+
+# Headless evaluation. Omit --visualizer for the same default, or make it explicit.
+python -m holosoma.eval_agent \
+  --checkpoint /path/to/model.pt \
+  --headless \
+  --num-envs 29 \
+  --max-steps 2000
+```
+
+Evaluation does not write persistent TensorBoard or W&B logs by default.
+`--video.enabled True`, `--recording.config.enabled True`,
+`--acceptance.config.enabled True`, and `--export-onnx True` each enable one
+explicit output type.
 
 ### 4. Prepare and train GM-VQ / HyAR
 
