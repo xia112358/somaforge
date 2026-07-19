@@ -14,7 +14,7 @@ from motion_edit.contact_laplacian import (
 
 
 class DualLaplacianCoreTests(unittest.TestCase):
-    def test_legacy_generation_weight_signature_migrates_to_core_profile(self) -> None:
+    def test_explicit_weight_profile_is_not_silently_rewritten(self) -> None:
         config = BatchContactLaplacianConfig(
             edit_contact_weight=1000.0,
             fixed_contact_weight=1000.0,
@@ -25,11 +25,11 @@ class DualLaplacianCoreTests(unittest.TestCase):
             mesh_laplacian_weight=0.0,
         )
 
-        self.assertEqual(config.temporal_laplacian_weight, 40.0)
+        self.assertEqual(config.temporal_laplacian_weight, 10.0)
         self.assertEqual(config.body_relative_weight, 10.0)
-        self.assertEqual(config.q_prior_weight, 0.02)
-        self.assertEqual(config.q_smooth_weight, 0.0)
-        self.assertEqual(config.mesh_laplacian_weight, 1.0)
+        self.assertEqual(config.q_prior_weight, 1.0)
+        self.assertEqual(config.q_smooth_weight, 1.0)
+        self.assertEqual(config.mesh_laplacian_weight, 0.0)
 
     def test_temporal_laplacian_propagates_contact_deformation_before_window(self) -> None:
         provider = LinearPointKinematicsProvider(

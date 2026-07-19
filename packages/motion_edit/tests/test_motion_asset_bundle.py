@@ -88,6 +88,36 @@ class MotionAssetBundleTests(unittest.TestCase):
         self.assertEqual(loaded[0].surface_catalog, "surfaces.jsonl")
         self.assertEqual(loaded[0].output_segment_layer, "candidates/out")
 
+    def test_recent_motion_keeps_source_and_generated_version_as_peers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_motion = root / "source.npz"
+            generated_motion = root / "generated.npz"
+            source_motion.touch()
+            generated_motion.touch()
+            cache = root / "recent.json"
+            source = RecentMotionEntry(
+                label="climb",
+                motion_path=str(source_motion),
+                motion_id="climb",
+                motion_asset_id="climb-asset",
+            )
+            generated = RecentMotionEntry(
+                label="climb · Edited",
+                motion_path=str(generated_motion),
+                motion_id="climb",
+                motion_asset_id="climb-asset",
+                motion_version_id="climb-asset-edited",
+                metadata={"kind": "generated"},
+            )
+            upsert_recent_motion(source, cache)
+            upsert_recent_motion(generated, cache)
+            loaded = read_recent_motions(cache)
+
+        self.assertEqual(len(loaded), 2)
+        self.assertEqual(loaded[0].key(), "version:climb-asset-edited")
+        self.assertEqual(loaded[1].motion_asset_id, "climb-asset")
+
 
 if __name__ == "__main__":
     unittest.main()

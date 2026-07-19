@@ -158,16 +158,66 @@ def _environment_contacts_from_lte(
         raise ValueError(f"incomplete environment contact anchor payload; missing={missing}")
     anchor_ids = tuple(_motion_strings(lte, (f"{prefix}ids",)))
     semantic_names = tuple(_motion_strings(lte, (f"{prefix}semantic_names",)))
+    start_frames = np.asarray(lte[f"{prefix}start_frames"], dtype=np.int64)
+    end_frames = np.asarray(lte[f"{prefix}end_frames"], dtype=np.int64)
+    source_position_w = np.asarray(lte[f"{prefix}source_position_w"], dtype=np.float64)
+    target_position_w = np.asarray(lte[f"{prefix}target_position_w"], dtype=np.float64)
+    edited = np.asarray(lte[f"{prefix}edited"], dtype=bool)
+    serialized_source = lte.get(f"{prefix}source_trajectory_w")
+    serialized_target = lte.get(f"{prefix}target_trajectory_w")
+    if serialized_source is not None and serialized_target is not None:
+        source_trajectory_array = np.asarray(serialized_source, dtype=np.float64)
+        target_trajectory_array = np.asarray(serialized_target, dtype=np.float64)
+    else:
+        source_trajectories: list[np.ndarray] = []
+        target_trajectories: list[np.ndarray] = []
+        for index, semantic_name in enumerate(semantic_names):
+            candidate = np.asarray(lte.get(semantic_name, np.empty((0, 3))), dtype=np.float64)
+            if candidate.ndim == 2 and candidate.shape[0] >= n_frames and candidate.shape[1] == 3:
+                target_trajectory = candidate[:n_frames].copy()
+                source_trajectory = target_trajectory.copy()
+                if edited[index]:
+                    delta = target_position_w[index] - source_position_w[index]
+                    source_trajectory[start_frames[index] : end_frames[index]] -= delta[None, :]
+            else:
+                source_trajectory = np.broadcast_to(source_position_w[index], (n_frames, 3)).copy()
+                target_trajectory = np.broadcast_to(target_position_w[index], (n_frames, 3)).copy()
+            source_trajectories.append(source_trajectory)
+            target_trajectories.append(target_trajectory)
+        source_trajectory_array = np.stack(source_trajectories)
+        target_trajectory_array = np.stack(target_trajectories)
     contacts = EnvironmentContactAnchors(
         anchor_ids=anchor_ids,
         semantic_names=semantic_names,
-        start_frames=np.asarray(lte[f"{prefix}start_frames"], dtype=np.int64),
-        end_frames=np.asarray(lte[f"{prefix}end_frames"], dtype=np.int64),
+        start_frames=start_frames,
+        end_frames=end_frames,
         representative_frames=np.asarray(lte[f"{prefix}representative_frames"], dtype=np.int64),
-        source_position_w=np.asarray(lte[f"{prefix}source_position_w"], dtype=np.float64),
-        target_position_w=np.asarray(lte[f"{prefix}target_position_w"], dtype=np.float64),
-        edited=np.asarray(lte[f"{prefix}edited"], dtype=bool),
+        source_position_w=source_position_w,
+        target_position_w=target_position_w,
+        edited=edited,
         link_groups=[_resolve_named_link_group(link_names, name) for name in semantic_names],
+        source_trajectory_w=source_trajectory_array,
+        target_trajectory_w=target_trajectory_array,
+        contact_source_trajectory_w=(
+            None
+            if f"{prefix}contact_source_trajectory_w" not in lte
+            else np.asarray(lte[f"{prefix}contact_source_trajectory_w"], dtype=np.float64)
+        ),
+        contact_target_trajectory_w=(
+            None
+            if f"{prefix}contact_target_trajectory_w" not in lte
+            else np.asarray(lte[f"{prefix}contact_target_trajectory_w"], dtype=np.float64)
+        ),
+        force_trajectory_w=(
+            None
+            if f"{prefix}force_trajectory_w" not in lte
+            else np.asarray(lte[f"{prefix}force_trajectory_w"], dtype=np.float64)
+        ),
+        contact_mask=(
+            None
+            if f"{prefix}contact_mask" not in lte
+            else np.asarray(lte[f"{prefix}contact_mask"], dtype=bool)
+        ),
     )
     contacts.validate(frames=n_frames)
     return contacts
@@ -392,7 +442,7 @@ def solve_pyroki_fullbody_ik(
     output_path: str | Path,
     robot_urdf: str | Path = DEFAULT_ROBOT_URDF,
     source_motion_path: str | Path | None = None,
-    max_nfev: int = 25,
+    max_nfev: int = 40,
     q_prior_weight: float = 0.25,
     q_smooth_weight: float = 0.5,
     foot_orientation_weight: float = 20.0,
@@ -473,8 +523,12 @@ def solve_pyroki_fullbody_ik(
         ),
     )
     force_groups = _resolve_force_link_groups(tuple(robot.links.names))
+    force_source_motion = dict(source_motion)
+    force_source_motion.update(
+        {key: value for key, value in lte.items() if key.startswith("contact_force_")}
+    )
     source_force_linearization = _force_linearization_from_source(
-        source_motion=source_motion,
+        source_motion=force_source_motion,
         robot=robot,
         root_qpos=root_source,
         joint_cfg=cfg_source,
@@ -564,7 +618,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--out", required=True)
     parser.add_argument("--robot-urdf", default=str(DEFAULT_ROBOT_URDF))
     parser.add_argument("--source-motion", default=None)
-    parser.add_argument("--max-nfev", type=int, default=25)
+    parser.add_argument("--max-nfev", type=int, default=40)
     parser.add_argument("--q-prior-weight", type=float, default=0.25)
     parser.add_argument("--q-smooth-weight", type=float, default=0.5)
     parser.add_argument("--foot-orientation-weight", type=float, default=20.0)

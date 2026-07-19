@@ -3,10 +3,11 @@ from __future__ import annotations
 import copy
 import socket
 import threading
+import time
 import webbrowser
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -16,14 +17,22 @@ from somaforge_core.robot_assets import canonical_g1_urdf_path, somaforge_root
 
 from motion_edit.contact import read_contact_surfaces
 from motion_edit.contact.plans import read_contact_edit_plan, validate_contact_edit_plan, write_contact_edit_plan
+from motion_edit.generation.contact_aware import ContactAwareGenerationResult, apply_contact_aware_edit_plan_to_motion
 from motion_edit.paths import LAYERS_ROOT, WORKBENCH_ROOT
-from motion_edit.storage import list_motion_assets, read_motion_asset
+from motion_edit.storage import MotionVersionRecord, list_motion_assets, read_motion_asset, read_motion_version, write_motion_version
 from motion_edit.workbench.contact_editor_setup import ContactEditorConfig, prepare_contact_editor_session
+from motion_edit.workbench.edit_handles import (
+    build_contact_episode_handles,
+    contact_episode_handle_payloads as _edit_handle_payloads,
+)
+from motion_edit.workbench.recent import RecentMotionEntry, read_recent_motions, upsert_recent_motion
 from motion_edit.workbench.surface_editor_session import (
     SurfaceEditorSession,
     move_surface_editor_anchor,
+    move_surface_editor_handle,
     read_pending_surface_edits,
     read_surface_editor_graph,
+    restore_surface_editor_handle,
     save_surface_editor_session,
     write_pending_surface_edits,
     write_surface_editor_graph,
@@ -33,10 +42,21 @@ from .motion_data import load_contact_force_payload, load_motion_sequence
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 WEB_DIST = PACKAGE_ROOT / "motion_edit" / "web_dist"
+EDITOR_CONTACT_MAX_GAP_FRAMES = 10
+EDITOR_CONTACT_MIN_DURATION_FRAMES = 20
+
+
+def _editor_contact_handles(anchors: Any) -> list[Any]:
+    return build_contact_episode_handles(
+        anchors,
+        max_gap_frames=EDITOR_CONTACT_MAX_GAP_FRAMES,
+        min_duration_frames=EDITOR_CONTACT_MIN_DURATION_FRAMES,
+    )
 
 
 class LoadRequest(BaseModel):
     motion_asset_id: str
+    motion_version_id: str | None = None
 
 
 class MoveRequest(BaseModel):
@@ -47,18 +67,73 @@ class MoveRequest(BaseModel):
     mode: str = "reject"
 
 
+class HandleMoveRequest(BaseModel):
+    handle_id: str
+    requested_world_position: list[float] | None = None
+    tangent_delta: list[float] | None = None
+    target_uv: list[float] | None = None
+    mode: str = "reject"
+
+
 class SettingsRequest(BaseModel):
     edit_plan_path: str | None = None
     output_contact_layer: str | None = None
+    output_motion_path: str | None = None
+    output_segment_layer: str | None = None
+    output_motion_version_id: str | None = None
+    register_motion_version: bool | None = None
+    overwrite: bool | None = None
+
+
+class GenerateRequest(BaseModel):
+    output_motion_path: str | None = None
+    output_segment_layer: str | None = None
+    output_motion_version_id: str | None = None
+    register_motion_version: bool | None = None
+    overwrite: bool | None = None
+
+
+@dataclass
+class GenerationJob:
+    status: str = "idle"
+    stage: str | None = None
+    output_motion_path: str | None = None
+    output_motion_version_id: str | None = None
+    warnings: list[str] = field(default_factory=list)
+    error: str | None = None
+    started_at: float | None = None
+    finished_at: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "stage": self.stage,
+            "output_motion_path": self.output_motion_path,
+            "output_motion_version_id": self.output_motion_version_id,
+            "warnings": list(self.warnings),
+            "error": self.error,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+        }
 
 
 @dataclass
 class EditorState:
     session: SurfaceEditorSession | None = None
     motion_asset_id: str | None = None
+    motion_version_id: str | None = None
+    fps: float = 50.0
     undo_stack: list[tuple[Any, list[Any]]] = field(default_factory=list)
     redo_stack: list[tuple[Any, list[Any]]] = field(default_factory=list)
     initial_snapshot: tuple[Any, list[Any]] | None = None
+    output_motion_path: str | None = None
+    output_segment_layer: str | None = None
+    output_motion_version_id: str | None = None
+    register_motion_version: bool = True
+    overwrite: bool = False
+    generation: GenerationJob = field(default_factory=GenerationJob)
+    generation_lock: threading.Lock = field(default_factory=threading.Lock)
+    generation_worker: threading.Thread | None = None
 
     def snapshot(self) -> tuple[Any, list[Any]]:
         if self.session is None:
@@ -72,6 +147,26 @@ class EditorState:
         write_surface_editor_graph(self.session, graph)
         write_pending_surface_edits(self.session, edits)
 
+    def generation_payload(self) -> dict[str, Any]:
+        with self.generation_lock:
+            worker = self.generation_worker
+            if (
+                self.generation.status == "running"
+                and worker is not None
+                and worker.ident is not None
+                and not worker.is_alive()
+            ):
+                self.generation.status = "failed"
+                self.generation.stage = "failed"
+                self.generation.error = "generation worker exited before reporting a result"
+                self.generation.finished_at = time.time()
+            return self.generation.to_dict()
+
+
+def _require_generation_idle(state: EditorState) -> None:
+    if state.generation_payload()["status"] == "running":
+        raise HTTPException(status_code=409, detail="the ContactEditPlan is locked while generation is running")
+
 
 def _repo_url(path: str | Path) -> str:
     resolved = Path(path).expanduser().resolve()
@@ -83,25 +178,157 @@ def _repo_url(path: str | Path) -> str:
     return "/repo/" + relative.as_posix()
 
 
-def _asset_config(asset_id: str) -> ContactEditorConfig:
+def _asset_config(asset_id: str, motion_version_id: str | None = None) -> ContactEditorConfig:
     record = read_motion_asset(asset_id)
-    source_contact_layer = record.source_contact_layer
+    version = read_motion_version(motion_version_id) if motion_version_id else None
+    if version is not None and version.motion_asset_id not in {None, asset_id}:
+        raise ValueError(f"{motion_version_id} belongs to {version.motion_asset_id}, not {asset_id}")
+    source_contact_layer = version.contact_layer if version is not None else record.source_contact_layer
     if not source_contact_layer:
-        raise ValueError(f"{asset_id} has no contact layer")
+        raise ValueError(f"{motion_version_id or asset_id} has no contact layer")
+    identity = motion_version_id or record.motion_asset_id
     return ContactEditorConfig(
-        motion=record.contact_force_npz or record.motion_path,
+        motion=version.motion_path if version is not None else record.motion_path,
         motion_id=record.motion_id or record.motion_asset_id,
         source_contact_layer=source_contact_layer,
-        session_name=f"{record.motion_asset_id}_web_contact_editor",
+        session_name=f"{identity}_web_contact_editor",
         surface_catalog=record.surface_catalog_path,
         terrain_urdf=record.terrain_urdf,
         terrain_mesh=record.terrain_mesh,
-        output_prefix=f"contact/{record.motion_asset_id}_web_contact_editor",
-        edit_plan=record.edit_plan_path or str(WORKBENCH_ROOT / "plans" / f"{record.motion_asset_id}.contact_edit_plan.json"),
-        output_contact_layer=record.output_contact_layer or f"contact/{record.motion_asset_id}_edited",
+        output_prefix=f"contact/{identity}_web_contact_editor",
+        edit_plan=(
+            str(WORKBENCH_ROOT / "plans" / f"{identity}.contact_edit_plan.json")
+            if version is not None
+            else (record.edit_plan_path or str(WORKBENCH_ROOT / "plans" / f"{identity}.contact_edit_plan.json"))
+        ),
+        output_contact_layer=(f"contact/{identity}_edited" if version is not None else (record.output_contact_layer or f"contact/{identity}_edited")),
         with_terrain=bool(record.terrain_urdf or record.terrain_mesh or record.surface_catalog_path),
         fps=int(record.fps or 50),
+        prebound_contact_layer=version is not None or bool(record.bound_contact_layer),
+        contact_force_motion=(version.motion_path if version is not None else record.contact_force_npz),
     )
+
+
+def _reset_generation_settings(state: EditorState, asset_id: str, motion_version_id: str | None = None) -> None:
+    record = read_motion_asset(asset_id)
+    stem = f"{motion_version_id or asset_id}_edited"
+    output_motion_path = _default_output_motion_path(motion_version_id or asset_id)
+    state.output_motion_path = str(output_motion_path)
+    state.output_segment_layer = f"candidates/{stem}" if motion_version_id else (record.output_segment_layer or f"candidates/{stem}")
+    state.output_motion_version_id = stem
+    state.register_motion_version = True
+    state.overwrite = output_motion_path.exists()
+    state.fps = float(record.fps or 50.0)
+    with state.generation_lock:
+        state.generation = GenerationJob()
+        state.generation_worker = None
+
+
+def _apply_generation_settings(state: EditorState, request: SettingsRequest | GenerateRequest) -> None:
+    if request.output_motion_path is not None:
+        state.output_motion_path = request.output_motion_path.strip()
+    if request.output_segment_layer is not None:
+        state.output_segment_layer = request.output_segment_layer.strip()
+    if request.output_motion_version_id is not None:
+        state.output_motion_version_id = request.output_motion_version_id.strip()
+    if request.register_motion_version is not None:
+        state.register_motion_version = request.register_motion_version
+    if request.overwrite is not None:
+        state.overwrite = request.overwrite
+    if state.motion_asset_id and state.output_motion_path:
+        output_path = Path(state.output_motion_path).expanduser()
+        default_path = _default_output_motion_path(state.motion_version_id or state.motion_asset_id)
+        if output_path == default_path and default_path.exists():
+            state.overwrite = True
+
+
+def _default_output_motion_path(asset_id: str) -> Path:
+    stem = f"{asset_id}_edited"
+    return PACKAGE_ROOT / "data" / "motions" / "generated" / f"{stem}.policy_ref_v1.npz"
+
+
+def _motion_key(motion_asset_id: str, motion_version_id: str | None) -> str:
+    return f"version:{motion_version_id}" if motion_version_id else f"asset:{motion_asset_id}"
+
+
+def _recent_entry(motion_asset_id: str, motion_version_id: str | None = None) -> RecentMotionEntry:
+    asset = read_motion_asset(motion_asset_id)
+    version = read_motion_version(motion_version_id) if motion_version_id else None
+    motion_path = version.motion_path if version is not None else asset.motion_path
+    source_label = asset.motion_asset_id
+    label = f"{source_label} · Edited" if motion_version_id else source_label
+    return RecentMotionEntry(
+        label=label,
+        motion_path=motion_path,
+        motion_id=asset.motion_id or asset.motion_asset_id,
+        motion_asset_id=asset.motion_asset_id,
+        motion_version_id=motion_version_id,
+        terrain_urdf=asset.terrain_urdf,
+        contact_layer=version.contact_layer if version is not None else asset.source_contact_layer,
+        surface_catalog=asset.surface_catalog_path,
+        edit_plan_path=(
+            str(WORKBENCH_ROOT / "plans" / f"{motion_version_id}.contact_edit_plan.json")
+            if motion_version_id
+            else asset.edit_plan_path
+        ),
+        output_contact_layer=f"contact/{motion_version_id}_edited" if motion_version_id else asset.output_contact_layer,
+        output_segment_layer=f"candidates/{motion_version_id}_edited" if motion_version_id else asset.output_segment_layer,
+        metadata={"kind": "generated" if motion_version_id else "source"},
+    )
+
+
+def _adopt_existing_generated_motion(motion_asset_id: str) -> None:
+    motion_version_id = f"{motion_asset_id}_edited"
+    try:
+        version = read_motion_version(motion_version_id)
+    except FileNotFoundError:
+        return
+    if not Path(version.motion_path).expanduser().exists():
+        return
+    if version.motion_asset_id not in {None, motion_asset_id}:
+        return
+    if version.motion_asset_id is None:
+        write_motion_version(replace(version, motion_asset_id=motion_asset_id))
+    upsert_recent_motion(_recent_entry(motion_asset_id, motion_version_id))
+
+
+def _recent_payload(state: EditorState) -> dict[str, Any]:
+    active_key = _motion_key(state.motion_asset_id, state.motion_version_id) if state.motion_asset_id else None
+    items = []
+    for entry in read_recent_motions():
+        if not entry.motion_asset_id:
+            continue
+        key = _motion_key(entry.motion_asset_id, entry.motion_version_id)
+        items.append(
+            {
+                "key": key,
+                "label": entry.label,
+                "motion_id": entry.motion_id,
+                "motion_asset_id": entry.motion_asset_id,
+                "motion_version_id": entry.motion_version_id,
+                "kind": entry.metadata.get("kind", "generated" if entry.motion_version_id else "source"),
+                "active": key == active_key,
+                "last_opened_at": entry.last_opened_at,
+            }
+        )
+    return {"items": items, "active_key": active_key}
+
+
+def _open_motion(state: EditorState, motion_asset_id: str, motion_version_id: str | None = None) -> dict[str, Any]:
+    if motion_version_id is None:
+        _adopt_existing_generated_motion(motion_asset_id)
+    prepared = prepare_contact_editor_session(
+        _asset_config(motion_asset_id, motion_version_id), layers_root=LAYERS_ROOT, workbench_root=WORKBENCH_ROOT
+    )
+    state.session = prepared.session
+    state.motion_asset_id = motion_asset_id
+    state.motion_version_id = motion_version_id
+    state.undo_stack.clear()
+    state.redo_stack.clear()
+    state.initial_snapshot = state.snapshot()
+    _reset_generation_settings(state, motion_asset_id, motion_version_id)
+    upsert_recent_motion(_recent_entry(motion_asset_id, motion_version_id))
+    return _session_payload(state)
 
 
 def _session_payload(state: EditorState) -> dict[str, Any]:
@@ -110,11 +337,20 @@ def _session_payload(state: EditorState) -> dict[str, Any]:
     record = read_motion_asset(state.motion_asset_id)
     session = state.session
     graph = read_surface_editor_graph(session)
+    handles = _editor_contact_handles(graph.anchors)
+    initial_handles = (
+        _editor_contact_handles(state.initial_snapshot[0].anchors)
+        if state.initial_snapshot is not None
+        else handles
+    )
     surfaces = read_contact_surfaces(session.surface_catalog) if session.surface_catalog else []
     qpos, fps, joint_names = load_motion_sequence(session.motion_path)
-    force = load_contact_force_payload(record.contact_force_npz or record.motion_path, frame_count=qpos.shape[0])
+    state.fps = float(fps)
+    force = load_contact_force_payload(session.contact_force_path or session.motion_path, frame_count=qpos.shape[0])
     return {
         "motion_asset_id": state.motion_asset_id,
+        "motion_version_id": state.motion_version_id,
+        "motion_key": _motion_key(state.motion_asset_id, state.motion_version_id),
         "motion_id": session.motion_id,
         "fps": fps,
         "qpos": qpos.tolist(),
@@ -122,17 +358,24 @@ def _session_payload(state: EditorState) -> dict[str, Any]:
         "robot_urdf_url": _repo_url(canonical_g1_urdf_path()),
         "terrain_obj_url": _repo_url(record.terrain_mesh) if record.terrain_mesh else None,
         "graph": graph.to_dict(),
+        "edit_handles": _edit_handle_payloads(handles, initial_handles),
         "surfaces": [surface.to_dict() for surface in surfaces],
         "contact_force": force,
-        "pending_edit_count": len(read_pending_surface_edits(session)),
+        "pending_edit_count": _edit_operation_count(read_pending_surface_edits(session)),
         "can_undo": bool(state.undo_stack),
         "can_redo": bool(state.redo_stack),
         "settings": {
             "edit_plan_path": session.edit_plan_path,
             "output_contact_layer": session.output_contact_layer,
             "source_contact_layer": session.contact_layer,
+            "output_motion_path": state.output_motion_path,
+            "output_segment_layer": state.output_segment_layer,
+            "output_motion_version_id": state.output_motion_version_id,
+            "register_motion_version": state.register_motion_version,
+            "overwrite": state.overwrite,
         },
         "plan": _plan_payload(session.edit_plan_path),
+        "generation": state.generation_payload(),
     }
 
 
@@ -140,15 +383,56 @@ def _plan_payload(path: str | None) -> dict[str, Any] | None:
     if not path or not Path(path).expanduser().exists():
         return None
     plan = read_contact_edit_plan(path)
-    return {"path": str(Path(path).expanduser()), "status": plan.status, "edit_count": len(plan.edits)}
+    return {
+        "path": str(Path(path).expanduser()),
+        "status": plan.status,
+        "edit_count": _edit_operation_count(plan.edits),
+        "surface_transform_count": len(plan.surface_transforms),
+        "pose_edit_count": len(plan.pose_edits),
+        "contact_episode_count": int(plan.metadata.get("contact_episode_count", 0)),
+        "anchor_constraint_count": int(plan.metadata.get("anchor_constraint_count", 0)),
+    }
+
+
+def _edit_operation_count(edits: list[Any]) -> int:
+    operations: set[str] = set()
+    for index, edit in enumerate(edits):
+        metadata = edit.metadata if hasattr(edit, "metadata") else edit.get("metadata", {})
+        anchor_id = edit.anchor_id if hasattr(edit, "anchor_id") else edit.get("anchor_id")
+        operations.add(str(metadata.get("editor_handle_id") or anchor_id or index))
+    return len(operations)
 
 
 def _save_session(state: EditorState, *, validate: bool = False) -> dict[str, Any]:
     if state.session is None:
         raise ValueError("no motion is loaded")
     plan_path = Path(state.session.edit_plan_path).expanduser() if state.session.edit_plan_path else None
+    previous_plan = read_contact_edit_plan(plan_path) if plan_path is not None and plan_path.exists() else None
     output = save_surface_editor_session(state.session, layers_root=LAYERS_ROOT)
     warnings: list[str] = []
+    if plan_path is not None and plan_path.exists():
+        plan = read_contact_edit_plan(plan_path)
+        status = "draft"
+        if previous_plan is not None and previous_plan.edits == plan.edits:
+            same_outputs = (
+                previous_plan.output_motion_path == state.output_motion_path
+                and previous_plan.output_contact_layer == state.session.output_contact_layer
+                and previous_plan.output_segment_layer == state.output_segment_layer
+            )
+            if previous_plan.status == "generated" and same_outputs:
+                status = "generated"
+            elif previous_plan.status in {"validated", "locked", "generated"}:
+                status = "validated"
+        write_contact_edit_plan(
+            plan_path,
+            replace(
+                plan,
+                status=status,
+                output_motion_path=state.output_motion_path,
+                output_contact_layer=state.session.output_contact_layer,
+                output_segment_layer=state.output_segment_layer,
+            ),
+        )
     if validate:
         if plan_path is None or not plan_path.exists():
             raise ValueError("no ContactEditPlan was written; edit at least one anchor before validation")
@@ -159,15 +443,117 @@ def _save_session(state: EditorState, *, validate: bool = False) -> dict[str, An
         write_contact_edit_plan(plan_path, replace(plan, status="validated"))
     return {
         "output_contact_layer": str(output) if output else None,
-        "pending_edit_count": len(read_pending_surface_edits(state.session)),
+        "pending_edit_count": _edit_operation_count(read_pending_surface_edits(state.session)),
         "plan": _plan_payload(state.session.edit_plan_path),
         "warnings": warnings,
     }
 
 
-def create_app(*, initial_motion_asset_id: str | None = None) -> FastAPI:
+def _run_generation(
+    state: EditorState,
+    generation_fn: Callable[..., ContactAwareGenerationResult],
+    *,
+    plan_path: Path,
+    source_contact_layer: str,
+    output_contact_layer: str,
+    output_motion_path: str,
+    output_segment_layer: str | None,
+    output_motion_version_id: str | None,
+    register_motion_version: bool,
+    overwrite: bool,
+    fps: float,
+    motion_asset_id: str | None = None,
+    parent_motion_version_id: str | None = None,
+    force_source_motion_path: str | None = None,
+) -> None:
+    def update_stage(stage: str) -> None:
+        with state.generation_lock:
+            state.generation.stage = stage
+
+    try:
+        update_stage("reading_plan")
+        plan = read_contact_edit_plan(plan_path)
+        result = generation_fn(
+            plan,
+            output_motion_path=output_motion_path,
+            bake_force=False,
+            overwrite=overwrite,
+            source_plan_path=plan_path,
+            source_contact_layer=source_contact_layer,
+            force_source_motion_path=force_source_motion_path,
+            output_contact_layer=output_contact_layer,
+            output_segment_layer=output_segment_layer,
+            output_motion_version_id=output_motion_version_id,
+            fps=fps,
+            register_motion_version=register_motion_version,
+            fullbody_solver="batch_contact_laplacian",
+            contact_laplacian_iters=8,
+            contact_laplacian_damping=1.0e-4,
+            contact_laplacian_trust=0.05,
+            edit_contact_weight=1000.0,
+            fixed_contact_weight=1000.0,
+            temporal_laplacian_weight=40.0,
+            body_relative_weight=10.0,
+            q_prior_weight=0.02,
+            q_smooth_weight=0.0,
+            mesh_laplacian_weight=1.0,
+            contact_laplacian_proxy_only=False,
+            progress_callback=update_stage,
+        )
+        update_stage("saving_plan")
+        generated_plan = replace(
+            plan,
+            status="generated",
+            output_motion_path=str(result.output_motion_path),
+            output_contact_layer=result.generation.output_contact_layer,
+            output_segment_layer=result.generation.output_segment_layer,
+        )
+        write_contact_edit_plan(plan_path, generated_plan)
+        generated_version_id = result.generation.output_motion_version_id
+        if register_motion_version and generated_version_id and motion_asset_id:
+            registered = read_motion_version(generated_version_id)
+            metadata = dict(registered.metadata)
+            metadata["source_motion_key"] = _motion_key(motion_asset_id, parent_motion_version_id)
+            write_motion_version(
+                MotionVersionRecord(
+                    motion_version_id=registered.motion_version_id,
+                    motion_path=registered.motion_path,
+                    kind=registered.kind,
+                    base_motion_id=registered.base_motion_id,
+                    motion_asset_id=motion_asset_id,
+                    parent_motion_version_id=parent_motion_version_id,
+                    contact_layer=registered.contact_layer,
+                    canonical_segment_path=registered.canonical_segment_path,
+                    token_catalog_path=registered.token_catalog_path,
+                    edit_plan_id=registered.edit_plan_id,
+                    metadata=metadata,
+                )
+            )
+            upsert_recent_motion(_recent_entry(motion_asset_id, generated_version_id))
+        with state.generation_lock:
+            state.generation.status = "succeeded"
+            state.generation.stage = "complete"
+            state.generation.output_motion_path = str(result.output_motion_path)
+            state.generation.output_motion_version_id = result.generation.output_motion_version_id
+            state.generation.warnings = list(result.warnings)
+            state.generation.finished_at = time.time()
+            state.overwrite = True
+    except BaseException as exc:
+        with state.generation_lock:
+            state.generation.status = "failed"
+            state.generation.stage = "failed"
+            state.generation.error = str(exc)
+            state.generation.finished_at = time.time()
+
+
+def create_app(
+    *,
+    initial_motion_asset_id: str | None = None,
+    generation_fn: Callable[..., ContactAwareGenerationResult] = apply_contact_aware_edit_plan_to_motion,
+) -> FastAPI:
     app = FastAPI(title="Motion Edit Contact Editor")
     state = EditorState()
+    app.state.editor_state = state
     app.mount("/repo", StaticFiles(directory=str(somaforge_root())), name="repo")
 
     @app.get("/api/assets")
@@ -185,18 +571,16 @@ def create_app(*, initial_motion_asset_id: str | None = None) -> FastAPI:
             ]
         }
 
+    @app.get("/api/recent-motions")
+    def recent_motions() -> dict:
+        return _recent_payload(state)
+
     @app.post("/api/session/load")
     def load(request: LoadRequest) -> dict:
         try:
-            prepared = prepare_contact_editor_session(
-                _asset_config(request.motion_asset_id), layers_root=LAYERS_ROOT, workbench_root=WORKBENCH_ROOT
-            )
-            state.session = prepared.session
-            state.motion_asset_id = request.motion_asset_id
-            state.undo_stack.clear()
-            state.redo_stack.clear()
-            state.initial_snapshot = state.snapshot()
-            return _session_payload(state)
+            if state.generation_payload()["status"] == "running":
+                raise ValueError("wait for the current generation job to finish before loading another motion")
+            return _open_motion(state, request.motion_asset_id, request.motion_version_id)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -211,6 +595,7 @@ def create_app(*, initial_motion_asset_id: str | None = None) -> FastAPI:
     def move(request: MoveRequest) -> dict:
         if state.session is None:
             raise HTTPException(status_code=409, detail="no motion is loaded")
+        _require_generation_idle(state)
         try:
             before = state.snapshot()
             requested = request.requested_world_position
@@ -240,8 +625,48 @@ def create_app(*, initial_motion_asset_id: str | None = None) -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/api/session/move-handle")
+    def move_handle(request: HandleMoveRequest) -> dict:
+        if state.session is None:
+            raise HTTPException(status_code=409, detail="no motion is loaded")
+        _require_generation_idle(state)
+        try:
+            graph = read_surface_editor_graph(state.session)
+            handle = next(
+                (item for item in _editor_contact_handles(graph.anchors) if item.handle_id == request.handle_id),
+                None,
+            )
+            if handle is None:
+                raise ValueError(f"contact episode handle not found: {request.handle_id}")
+            requested = request.requested_world_position
+            tangent = request.tangent_delta
+            if request.target_uv is not None:
+                tangent = [
+                    float(request.target_uv[0]) - float(handle.surface_coordinates["u"]),
+                    float(request.target_uv[1]) - float(handle.surface_coordinates["v"]),
+                ]
+                requested = None
+            if requested is None and tangent is None:
+                raise ValueError("move-handle requires requested_world_position, tangent_delta, or target_uv")
+            before = state.snapshot()
+            move_surface_editor_handle(
+                state.session,
+                handle_id=request.handle_id,
+                requested_world_position=requested,
+                tangent_delta=tangent,
+                mode=request.mode,
+                max_gap_frames=EDITOR_CONTACT_MAX_GAP_FRAMES,
+                min_duration_frames=EDITOR_CONTACT_MIN_DURATION_FRAMES,
+            )
+            state.undo_stack.append(before)
+            state.redo_stack.clear()
+            return _session_payload(state)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/api/session/undo")
     def undo() -> dict:
+        _require_generation_idle(state)
         if state.session is None or not state.undo_stack:
             raise HTTPException(status_code=409, detail="nothing to undo")
         state.redo_stack.append(state.snapshot())
@@ -250,6 +675,7 @@ def create_app(*, initial_motion_asset_id: str | None = None) -> FastAPI:
 
     @app.post("/api/session/redo")
     def redo() -> dict:
+        _require_generation_idle(state)
         if state.session is None or not state.redo_stack:
             raise HTTPException(status_code=409, detail="nothing to redo")
         state.undo_stack.append(state.snapshot())
@@ -258,6 +684,7 @@ def create_app(*, initial_motion_asset_id: str | None = None) -> FastAPI:
 
     @app.post("/api/session/save")
     def save() -> dict:
+        _require_generation_idle(state)
         if state.session is None:
             raise HTTPException(status_code=409, detail="no motion is loaded")
         try:
@@ -267,6 +694,7 @@ def create_app(*, initial_motion_asset_id: str | None = None) -> FastAPI:
 
     @app.post("/api/session/validate")
     def validate() -> dict:
+        _require_generation_idle(state)
         try:
             return _save_session(state, validate=True)
         except Exception as exc:
@@ -274,6 +702,7 @@ def create_app(*, initial_motion_asset_id: str | None = None) -> FastAPI:
 
     @app.post("/api/session/restore-anchor")
     def restore_anchor(request: MoveRequest) -> dict:
+        _require_generation_idle(state)
         if state.session is None or state.initial_snapshot is None:
             raise HTTPException(status_code=409, detail="no motion is loaded")
         try:
@@ -294,8 +723,31 @@ def create_app(*, initial_motion_asset_id: str | None = None) -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/api/session/restore-handle")
+    def restore_handle(request: HandleMoveRequest) -> dict:
+        _require_generation_idle(state)
+        if state.session is None or state.initial_snapshot is None:
+            raise HTTPException(status_code=409, detail="no motion is loaded")
+        try:
+            original_graph, original_edits = state.initial_snapshot
+            before = state.snapshot()
+            restore_surface_editor_handle(
+                state.session,
+                handle_id=request.handle_id,
+                initial_graph=original_graph,
+                initial_edits=original_edits,
+                max_gap_frames=EDITOR_CONTACT_MAX_GAP_FRAMES,
+                min_duration_frames=EDITOR_CONTACT_MIN_DURATION_FRAMES,
+            )
+            state.undo_stack.append(before)
+            state.redo_stack.clear()
+            return _session_payload(state)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/api/session/reset")
     def reset() -> dict:
+        _require_generation_idle(state)
         if state.session is None or state.initial_snapshot is None:
             raise HTTPException(status_code=409, detail="no motion is loaded")
         state.restore(copy.deepcopy(state.initial_snapshot))
@@ -309,6 +761,7 @@ def create_app(*, initial_motion_asset_id: str | None = None) -> FastAPI:
 
     @app.post("/api/session/reload")
     def reload() -> dict:
+        _require_generation_idle(state)
         if state.motion_asset_id is None:
             raise HTTPException(status_code=409, detail="no motion is loaded")
         try:
@@ -325,6 +778,7 @@ def create_app(*, initial_motion_asset_id: str | None = None) -> FastAPI:
 
     @app.put("/api/session/settings")
     def settings(request: SettingsRequest) -> dict:
+        _require_generation_idle(state)
         if state.session is None:
             raise HTTPException(status_code=409, detail="no motion is loaded")
         state.session = replace(
@@ -332,7 +786,88 @@ def create_app(*, initial_motion_asset_id: str | None = None) -> FastAPI:
             edit_plan_path=request.edit_plan_path or state.session.edit_plan_path,
             output_contact_layer=request.output_contact_layer or state.session.output_contact_layer,
         )
+        _apply_generation_settings(state, request)
         return _session_payload(state)
+
+    @app.get("/api/session/generation")
+    def generation() -> dict:
+        return state.generation_payload()
+
+    @app.post("/api/session/generate", status_code=202)
+    def generate(request: GenerateRequest) -> dict:
+        if state.session is None:
+            raise HTTPException(status_code=409, detail="no motion is loaded")
+        with state.generation_lock:
+            if state.generation.status == "running":
+                raise HTTPException(status_code=409, detail="a generation job is already running")
+        try:
+            _apply_generation_settings(state, request)
+            if not state.output_motion_path:
+                raise ValueError("output motion path is required")
+            if state.register_motion_version and not state.output_motion_version_id:
+                raise ValueError("motion version ID is required when registration is enabled")
+            output_path = Path(state.output_motion_path).expanduser()
+            if output_path.exists() and not state.overwrite:
+                raise FileExistsError(f"{output_path} already exists; enable Replace existing output to overwrite it")
+            _save_session(state, validate=True)
+            if not state.session.edit_plan_path:
+                raise ValueError("ContactEditPlan path is required")
+            worker_kwargs = {
+                "state": state,
+                "generation_fn": generation_fn,
+                "plan_path": Path(state.session.edit_plan_path).expanduser(),
+                "source_contact_layer": state.session.contact_layer,
+                "output_contact_layer": state.session.output_contact_layer or "",
+                "output_motion_path": state.output_motion_path,
+                "output_segment_layer": state.output_segment_layer,
+                "output_motion_version_id": state.output_motion_version_id,
+                "register_motion_version": state.register_motion_version,
+                "overwrite": state.overwrite,
+                "fps": float(state.fps),
+                "motion_asset_id": state.motion_asset_id,
+                "parent_motion_version_id": state.motion_version_id,
+                "force_source_motion_path": getattr(state.session, "contact_force_path", None),
+            }
+            worker = threading.Thread(
+                target=_run_generation,
+                kwargs=worker_kwargs,
+                daemon=True,
+                name="motion-edit-generate-ref",
+            )
+            with state.generation_lock:
+                state.generation = GenerationJob(
+                    status="running",
+                    stage="queued",
+                    output_motion_path=str(output_path),
+                    output_motion_version_id=state.output_motion_version_id,
+                    started_at=time.time(),
+                )
+                state.generation_worker = worker
+            try:
+                worker.start()
+            except BaseException as exc:
+                with state.generation_lock:
+                    state.generation.status = "failed"
+                    state.generation.stage = "failed"
+                    state.generation.error = str(exc)
+                    state.generation.finished_at = time.time()
+                raise
+            return state.generation_payload()
+        except HTTPException:
+            raise
+        except Exception as exc:
+            with state.generation_lock:
+                if state.generation.status != "running":
+                    state.generation = GenerationJob(
+                        status="failed",
+                        stage="preflight",
+                        output_motion_path=state.output_motion_path,
+                        output_motion_version_id=state.output_motion_version_id,
+                        error=str(exc),
+                        finished_at=time.time(),
+                    )
+                    state.generation_worker = None
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/")
     def index() -> FileResponse:
@@ -347,12 +882,7 @@ def create_app(*, initial_motion_asset_id: str | None = None) -> FastAPI:
     if initial_motion_asset_id:
         @app.on_event("startup")
         def load_initial() -> None:
-            prepared = prepare_contact_editor_session(
-                _asset_config(initial_motion_asset_id), layers_root=LAYERS_ROOT, workbench_root=WORKBENCH_ROOT
-            )
-            state.session = prepared.session
-            state.motion_asset_id = initial_motion_asset_id
-            state.initial_snapshot = state.snapshot()
+            _open_motion(state, initial_motion_asset_id)
     return app
 
 

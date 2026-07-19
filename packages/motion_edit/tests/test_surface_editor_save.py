@@ -20,10 +20,16 @@ from motion_edit.contact import (
 from motion_edit.web import server
 from motion_edit.web.server import EditorState
 from motion_edit.workbench.surface_editor_session import (
+    move_surface_editor_handle,
     move_surface_editor_anchor,
     prepare_surface_editor_session,
+    read_pending_surface_edits,
+    read_surface_editor_graph,
+    restore_surface_editor_handle,
     save_surface_editor_session,
+    write_surface_editor_graph,
 )
+from motion_edit.workbench.edit_handles import build_contact_episode_handles
 
 
 class SurfaceEditorSaveTests(unittest.TestCase):
@@ -105,6 +111,80 @@ class SurfaceEditorSaveTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(first.edits[0]["source"], "motion_edit_web")
         self.assertEqual(first.edits[0]["metadata"]["binding_granularity"], "anchor_point")
+
+    def test_preparing_session_resets_graph_and_pending_edits_together(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session, anchor_id, _, layers_root = self._prepare_session(root)
+            move_surface_editor_anchor(session, anchor_id=anchor_id, tangent_delta=[0.1, 0.0])
+            self.assertEqual(len(read_pending_surface_edits(session)), 1)
+
+            reopened = prepare_surface_editor_session(
+                motion_path=session.motion_path,
+                motion_id=session.motion_id,
+                contact_layer=session.contact_layer,
+                surface_catalog=session.surface_catalog,
+                session_name=session.session_name,
+                edit_plan_path=session.edit_plan_path,
+                output_contact_layer=session.output_contact_layer,
+                layers_root=layers_root,
+                workbench_root=root / "workbench",
+            )
+
+            self.assertEqual(read_pending_surface_edits(reopened), [])
+            restored = read_surface_editor_graph(reopened).anchors[0]
+            self.assertAlmostEqual(restored.world_position[0], 0.0)
+
+    def test_moving_one_foot_handle_moves_every_member_anchor_as_one_edit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session, _, _, _ = self._prepare_session(root)
+            graph = read_surface_editor_graph(session)
+            template = graph.anchors[0]
+            members = [
+                replace(template, anchor_id="heel", body="left_heel", start_frame=0, end_frame=1),
+                replace(template, anchor_id="toe", body="left_toe", start_frame=1, end_frame=2),
+            ]
+            write_surface_editor_graph(session, replace(graph, anchors=members, patches=[]))
+            handle = build_contact_episode_handles(members)[0]
+
+            moved_graph, edits = move_surface_editor_handle(
+                session,
+                handle_id=handle.handle_id,
+                tangent_delta=[0.1, 0.0],
+            )
+
+            self.assertEqual(len(edits), 2)
+            self.assertEqual({edit.metadata["editor_handle_id"] for edit in edits}, {handle.handle_id})
+            self.assertEqual(len(read_pending_surface_edits(session)), 2)
+            for anchor in moved_graph.anchors:
+                self.assertAlmostEqual(anchor.world_position[0], 0.1)
+                self.assertEqual(anchor.metadata["editor_handle_id"], handle.handle_id)
+
+    def test_restoring_handle_recovers_exact_episode_snapshot_and_pending_edits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session, _, _, _ = self._prepare_session(root)
+            graph = read_surface_editor_graph(session)
+            template = graph.anchors[0]
+            members = [
+                replace(template, anchor_id="heel", body="left_heel", start_frame=0, end_frame=1),
+                replace(template, anchor_id="toe", body="left_toe", start_frame=1, end_frame=2),
+            ]
+            initial_graph = replace(graph, anchors=members, patches=[])
+            write_surface_editor_graph(session, initial_graph)
+            handle = build_contact_episode_handles(members)[0]
+            move_surface_editor_handle(session, handle_id=handle.handle_id, tangent_delta=[0.1, 0.0])
+
+            restored = restore_surface_editor_handle(
+                session,
+                handle_id=handle.handle_id,
+                initial_graph=initial_graph,
+            )
+
+            self.assertEqual(read_pending_surface_edits(session), [])
+            self.assertEqual([anchor.world_position for anchor in restored.anchors], [[0.0, 0.0, 0.0]] * 2)
+            self.assertTrue(all("editor_handle_id" not in anchor.metadata for anchor in restored.anchors))
 
     def test_save_with_no_pending_edits_replaces_stale_plan_with_empty_draft(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

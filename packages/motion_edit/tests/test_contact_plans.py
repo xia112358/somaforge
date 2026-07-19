@@ -22,6 +22,10 @@ from motion_edit.contact.generation import apply_contact_edit_plan_to_motion, re
 from motion_edit.contact.graph import ContactGraph
 from motion_edit.contact.io import write_contact_surfaces
 from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord, ContactSurfaceRecord
+from motion_edit.generation.lte_fullbody import (
+    _copy_contact_force_payload_with_edits,
+    _semantic_keypoints_from_motion,
+)
 from motion_edit.layers import read_layer
 from somaforge_core.robot_assets import encode_robot_asset_json
 
@@ -98,6 +102,18 @@ def _write_synthetic_motion_and_contact(root: Path, *, plan_status: str = "valid
                     "surface_tangent_u": [1.0, 0.0, 0.0],
                     "surface_tangent_v": [0.0, 1.0, 0.0],
                     "surface_coordinates": {"u": 0.0, "v": 0.0},
+                    "metadata": {
+                        "surface_bindings": [
+                            {
+                                "original_world_position": [0.0, 0.0, 0.0],
+                                "projected_world_position": [0.0, 0.0, 0.0],
+                                "bound_world_position": [0.0, 0.0, 0.0],
+                                "raw_surface_coordinates": {"u": 0.0, "v": 0.0},
+                                "surface_coordinates": {"u": 0.0, "v": 0.0},
+                                "signed_surface_distance": 0.0,
+                            }
+                        ]
+                    },
                 }
             )
         ],
@@ -239,6 +255,67 @@ def _write_fullbody_lte_source(root: Path) -> tuple[Path, ContactEditPlan]:
 
 
 class ContactEditPlanTests(unittest.TestCase):
+    def test_generated_contact_force_points_follow_episode_edit(self) -> None:
+        frames = 5
+        forces = np.arange(frames * 8 * 3, dtype=np.float32).reshape(frames, 8, 3)
+        positions = np.zeros((frames, 8, 3), dtype=np.float32)
+        valid = np.zeros((frames, 8), dtype=bool)
+        valid[1:4, 5] = True
+        position_history = np.zeros((frames, 2, 8, 3), dtype=np.float32)
+        valid_history = np.zeros((frames, 2, 8), dtype=bool)
+        valid_history[1:4, :, 5] = True
+        motion = {
+            "contact_force_part_order": np.asarray(
+                ["LHEE", "LTOE", "RHEE", "RTOE", "LH", "RH", "LK", "RK"]
+            ),
+            "contact_force_part_w": forces,
+            "contact_force_part_mask": valid,
+            "contact_force_part_position_w": positions,
+            "contact_force_part_position_valid": valid,
+            "contact_force_part_position_history_w": position_history,
+            "contact_force_part_position_valid_history": valid_history,
+            "contact_force_provenance_json": np.asarray("{}"),
+            "raw_contact_point0_w": np.ones((frames, 2, 3), dtype=np.float32),
+        }
+        edit = ContactAnchorEditRecord(
+            edit_id="move_right_hand",
+            motion_id="motion_a",
+            anchor_id="right_hand_contact",
+            body="right_hand",
+            old_world_position=[0.0, 0.0, 0.0],
+            new_world_position=[0.1, 0.2, 0.0],
+            delta_world=[0.1, 0.2, 0.0],
+            affected_frames=[1, 4],
+        )
+        generated: dict[str, object] = {}
+
+        _copy_contact_force_payload_with_edits(
+            generated,
+            motion=motion,
+            edits=[edit],
+            n_frames=frames,
+        )
+
+        np.testing.assert_array_equal(generated["contact_force_part_w"], forces)
+        np.testing.assert_allclose(
+            np.asarray(generated["contact_force_part_position_w"])[1:4, 5],
+            [[0.1, 0.2, 0.0]] * 3,
+        )
+        np.testing.assert_allclose(
+            np.asarray(generated["contact_force_part_position_history_w"])[1:4, :, 5],
+            np.broadcast_to([0.1, 0.2, 0.0], (3, 2, 3)),
+        )
+        self.assertNotIn("raw_contact_point0_w", generated)
+        self.assertEqual(
+            str(generated["contact_force_part_position_source"]),
+            "motion_edit_translated_source_contact_position",
+        )
+        provenance = json.loads(str(generated["contact_force_provenance_json"]))
+        self.assertEqual(
+            provenance["motion_edit_contact_position_translation"][0]["part"],
+            "right_hand",
+        )
+
     def test_contact_edit_plan_roundtrip_and_append(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "plan.json"
@@ -447,6 +524,11 @@ class ContactEditPlanTests(unittest.TestCase):
             edited_graph = cli.read_contact_graph(root / "layers" / "contact" / "generated", "motion_a")
             self.assertEqual(edited_graph.anchors[0].world_position, [0.2, 0.0, 0.0])
             self.assertEqual(edited_graph.anchors[0].surface_id, "platform_top")
+            self.assertEqual(edited_graph.anchors[0].position_source, "motion_edit_generated")
+            self.assertEqual(edited_graph.anchors[0].metadata["surface_editor_status"], "edited")
+            binding = edited_graph.anchors[0].metadata["surface_bindings"][-1]
+            self.assertEqual(binding["bound_world_position"], [0.2, 0.0, 0.0])
+            self.assertEqual(binding["surface_coordinates"], {"u": 0.2, "v": 0.0})
             segments = read_layer(root / "layers" / "candidates" / "generated" / "motion_a.jsonl", default_source="lte_windowed", default_status="candidate")
             self.assertTrue(segments)
 
@@ -536,6 +618,72 @@ class ContactEditPlanTests(unittest.TestCase):
         self.assertEqual(resolve_body_index(motion, "left_hand"), 5)
         self.assertEqual(resolve_body_index(motion, "right_hand"), 6)
 
+    def test_fullbody_contact_keypoints_accept_canonical_kinematic_body_subset(self) -> None:
+        body_names = [
+            "pelvis",
+            "left_hip_roll_link",
+            "left_knee_link",
+            "left_ankle_roll_link",
+            "left_ankle_roll_sphere_1_link",
+            "right_hip_roll_link",
+            "right_knee_link",
+            "right_ankle_roll_link",
+            "right_ankle_roll_sphere_1_link",
+            "torso_link",
+            "left_shoulder_roll_link",
+            "left_elbow_link",
+            "left_wrist_yaw_link",
+            "right_shoulder_roll_link",
+            "right_elbow_link",
+            "right_wrist_yaw_link",
+        ]
+        frames = 2
+        body_pos = np.zeros((frames, len(body_names), 3), dtype=np.float64)
+        body_quat = np.zeros((frames, len(body_names), 4), dtype=np.float64)
+        body_quat[..., 0] = 1.0
+        part_positions = np.zeros((frames, 8, 3), dtype=np.float64)
+        part_positions[0, 1] = [0.4, 0.2, 0.1]
+        part_valid = np.zeros((frames, 8), dtype=bool)
+        part_valid[0, 1] = True
+        keypoints = _semantic_keypoints_from_motion(
+            {
+                "body_names": np.asarray(body_names),
+                "body_pos_w": body_pos,
+                "body_quat_w": body_quat,
+                "contact_force_part_order": np.asarray(
+                    ["LHEE", "LTOE", "RHEE", "RTOE", "LH", "RH", "LK", "RK"]
+                ),
+                "contact_force_part_position_w": part_positions,
+                "contact_force_part_position_valid": part_valid,
+            }
+        )
+
+        np.testing.assert_allclose(keypoints["left_toe"][0], part_positions[0, 1])
+        self.assertTrue(np.isfinite(keypoints["left_toe"]).all())
+        self.assertFalse(np.allclose(keypoints["left_toe"][1], np.zeros(3)))
+        self.assertEqual(keypoints["right_toe"].shape, (frames, 3))
+
+    def test_real_newton_rollout_resolves_all_eight_contact_trajectories(self) -> None:
+        repo_root = Path(__file__).resolve().parents[3]
+        motion_path = repo_root / "runtime/current/motions/newton_contact_force/climb_01_rollout_ref_contact_force.npz"
+        if not motion_path.is_file():
+            self.skipTest("canonical climb_01 Newton rollout is not installed")
+        with np.load(motion_path, allow_pickle=True) as source:
+            motion = {key: source[key] for key in source.files}
+        keypoints = _semantic_keypoints_from_motion(motion)
+        for part_name in (
+            "left_heel",
+            "left_toe",
+            "right_heel",
+            "right_toe",
+            "left_hand",
+            "right_hand",
+            "left_knee",
+            "right_knee",
+        ):
+            self.assertEqual(keypoints[part_name].shape, (870, 3))
+            self.assertTrue(np.isfinite(keypoints[part_name]).all())
+
     def test_generate_lte_augmentation_accepts_semantic_contact_body_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -593,7 +741,7 @@ class ContactEditPlanTests(unittest.TestCase):
             output = root / "fullbody_out.npz"
             intermediate = root / "intermediate"
 
-            def fake_run(cmd, cwd=None, check=False):
+            def fake_run(cmd, cwd=None, env=None, check=False):
                 ik_out = Path(cmd[cmd.index("--out") + 1])
                 _savez(
                     ik_out,
@@ -700,7 +848,7 @@ class ContactEditPlanTests(unittest.TestCase):
             )
             write_contact_layer(root / "layers" / "contact" / "force_contact", graph)
 
-            def fake_run(cmd, cwd=None, check=False):
+            def fake_run(cmd, cwd=None, env=None, check=False):
                 ik_out = Path(cmd[cmd.index("--out") + 1])
                 _savez(ik_out, joint_pos=np.zeros((8, 10), dtype=np.float32), joint_vel=np.zeros((8, 10), dtype=np.float32))
                 return mock.Mock(returncode=0)
@@ -771,7 +919,7 @@ class ContactEditPlanTests(unittest.TestCase):
             output = root / "out.npz"
             intermediate = root / "intermediate"
 
-            def fake_run(cmd, cwd=None, check=False):
+            def fake_run(cmd, cwd=None, env=None, check=False):
                 ik_out = Path(cmd[cmd.index("--out") + 1])
                 _savez(
                     ik_out,
@@ -830,7 +978,7 @@ class ContactEditPlanTests(unittest.TestCase):
             root = Path(tmp)
             _motion, plan = _write_fullbody_lte_source(root)
 
-            def fake_run(cmd, cwd=None, check=False):
+            def fake_run(cmd, cwd=None, env=None, check=False):
                 ik_out = Path(cmd[cmd.index("--out") + 1])
                 _savez(
                     ik_out,

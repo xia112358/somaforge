@@ -187,6 +187,28 @@ class ForceProtoContactTests(unittest.TestCase):
         self.assertEqual(lf_anchor.position_source, "body_pos_w_mean")
         self.assertIn("mean_drift_xy", lf_anchor.metadata)
 
+    def test_force_proto_ignores_invalid_contact_part_positions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "motion_valid_positions.npz"
+            contact = np.zeros((3, 8), dtype=bool)
+            contact[:, 0] = True
+            positions = np.zeros((3, 8, 3), dtype=np.float32)
+            positions[:, 0, 0] = [1.0, 0.0, 3.0]
+            valid = np.zeros((3, 8), dtype=bool)
+            valid[[0, 2], 0] = True
+            np.savez(
+                path,
+                contact_force_part_order=CONTACT_PART_ORDER_8,
+                contact_force_part_mask=contact,
+                contact_force_part_position_w=positions,
+                contact_force_part_position_valid=valid,
+            )
+
+            graph = contact_graph_from_masked_motion(path)
+
+        left_heel = next(anchor for anchor in graph.anchors if anchor.body == "left_heel")
+        self.assertEqual(left_heel.world_position, [2.0, 0.0, 0.0])
+
     def test_contact_graph_from_masked_motion_uses_same_contact_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "motion_a.npz"

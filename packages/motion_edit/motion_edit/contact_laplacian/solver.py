@@ -28,6 +28,7 @@ from .residuals import (
     add_q_smooth_residuals,
     add_temporal_laplacian_residuals,
     label_norms,
+    prepare_interaction_mesh_laplacian,
     system_to_sparse_or_dense,
 )
 from .schema import BatchContactLaplacianConfig, ContactHandleSpec, ContactLaplacianSolveResult, InteractionMeshSpec
@@ -110,6 +111,13 @@ def solve_batch_contact_laplacian(
     iteration_meta: list[dict[str, object]] = []
     mesh_meta: dict[str, object] = {"active": False, "rows": 0}
     var_count = n_frames * nq
+    prepared_mesh = None
+    if interaction_mesh is not None and float(cfg.mesh_laplacian_weight) > 0.0:
+        prepared_mesh = prepare_interaction_mesh_laplacian(
+            mesh=interaction_mesh,
+            q_reference=prior,
+            kinematics=kinematics,
+        )
 
     for iteration in range(max(0, int(cfg.num_iters))):
         system, current_mesh_meta = _build_system(
@@ -119,6 +127,7 @@ def solve_batch_contact_laplacian(
             handles=handles,
             body_edges=resolved_body_edges,
             interaction_mesh=interaction_mesh,
+            prepared_mesh=prepared_mesh,
             config=cfg,
         )
         _append_mesh_warning(warnings, current_mesh_meta)
@@ -166,6 +175,7 @@ def solve_batch_contact_laplacian(
                 handles=handles,
                 body_edges=resolved_body_edges,
                 interaction_mesh=interaction_mesh,
+                prepared_mesh=prepared_mesh,
                 config=cfg,
             )
             candidate_rhs = np.asarray(candidate_system.rhs, dtype=np.float64)
@@ -280,6 +290,7 @@ def _build_system(
     handles: Sequence[ContactHandleSpec],
     body_edges: Sequence[tuple[str, str]],
     interaction_mesh: InteractionMeshSpec | None,
+    prepared_mesh: dict[str, object] | None,
     config: BatchContactLaplacianConfig,
 ) -> tuple[LeastSquaresSystem, dict[str, object]]:
     n_frames, nq = q.shape
@@ -315,6 +326,7 @@ def _build_system(
             kinematics=kinematics,
             mesh=interaction_mesh,
             weight=float(config.mesh_laplacian_weight),
+            prepared_mesh=prepared_mesh,
         )
     # Gauge/compatibility regularizers are deliberately assembled after both
     # Laplacian families so they cannot be mistaken for the algorithmic core.

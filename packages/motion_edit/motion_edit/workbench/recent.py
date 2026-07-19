@@ -19,6 +19,7 @@ class RecentMotionEntry:
     motion_id: str
     motion_asset_id: str | None = None
     motion_asset_path: str | None = None
+    motion_version_id: str | None = None
     terrain_urdf: str | None = None
     contact_layer: str | None = None
     surface_catalog: str | None = None
@@ -29,6 +30,8 @@ class RecentMotionEntry:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def key(self) -> str:
+        if self.motion_version_id:
+            return f"version:{self.motion_version_id}"
         return self.motion_asset_path or self.motion_asset_id or self.motion_path
 
     def exists(self) -> bool:
@@ -72,7 +75,7 @@ def write_recent_motions(
         reverse=True,
     )[:limit]
     out.write_text(
-        json.dumps({"schema_version": 1, "items": [item.to_dict() for item in ordered]}, indent=2, sort_keys=True),
+        json.dumps({"schema_version": 2, "items": [item.to_dict() for item in ordered]}, indent=2, sort_keys=True),
         encoding="utf-8",
     )
     return out

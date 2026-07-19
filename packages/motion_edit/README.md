@@ -104,8 +104,13 @@ not required.
 
 `contact-editor` starts one FastAPI/Uvicorn process on one port and serves the
 bundled Three.js UI. It loads registered assets, displays the sphere robot,
-terrain, 8-part force/contact timeline and anchors, and saves a
-`ContactEditPlan`. Anchor dragging remains same-surface constrained.
+terrain, raw point+force contact samples, an 8-part force/contact timeline and
+contact-episode edit handles, and saves a `ContactEditPlan`. Handle dragging
+moves the whole episode while remaining same-surface constrained. Selection
+and dragging are separate actions, and edited handles retain a clickable ghost
+at their session-start position for exact episode restore. The Output tab
+validates the plan and runs the same formal `generate-ref` implementation as a
+background job; the CLI remains available for batch and scripted runs.
 
 `generate-ref` is the formal edited-kinematics path. It runs contact-aware
 geometry generation and full-body IK, but deliberately does not solve contact
@@ -151,7 +156,8 @@ Keep these boundaries clear when debugging or adding features:
 | `motion_edit/contact/` | Contact records, ContactGraph, ContactEditPlan, ContactPhase, surface binding, layer I/O | Running fullbody generation or policy rollout |
 | `motion_edit/web/` + `web/` | Single-port API and Three.js Contact Editor | Contact dynamics or policy rollout |
 | `motion_edit/generation/` | ContactEditPlan -> edited kinematic reference; hidden geometry diagnostics | Contact dynamics or policy rollout |
-| `motion_edit/contact_laplacian/` | Batch contact-Laplacian solver, ContactHandleSpec, residual weights, solver metadata | Policy-force writing or simulator rollout |
+| `motion_edit/contact_laplacian/` | One motion's whole-trajectory Contact Laplacian, ContactHandleSpec, residual weights, solver metadata | Multi-motion queueing, policy-force writing, or simulator rollout |
+| `motion_edit/augmentation.py` | Dataset-level job state, static candidate acceptance, accepted manifest | Editing plans, trajectory solving, Newton replay, or training |
 | `motion_edit/contact_force/` | Canonical contact-force schema and explicitly diagnostic prescribed-force tools | Production force generation |
 | `motion_edit/segmentation/` | Draft segmentation sessions with explicit start/list/edit/save/discard commands | Main contact-anchor editing |
 | `motion_edit/storage/` | MotionAsset, MotionVersion, canonical segments, token catalogs | Runtime `.npz` payload ownership |
@@ -179,9 +185,12 @@ simultaneous heel-plus-toe contact are all preserved.
 - Force-training files require `contact_force_part_w`, `contact_force_part_mask`,
   `contact_force_part_order`, and Newton `contact_force_provenance_json`.
 - Treat `contact_force_part_w` and `contact_force_part_history_w` as physical
-  data. Do not smooth them for editing. The former is aligned with the latest
-  raw contact point; the latter stores physics substeps in latest-first order.
-  Stable editor phases come from `contact_force_part_mask`, while
+  data. Do not smooth them for editing. For complete recordings, the former is
+  the strongest valid sample in the control interval and is aligned with the
+  raw contact point from the same physics substep; the latter stores all
+  physics substeps in latest-first order. Legacy recordings without point
+  history fall back to the latest physics step. Stable editor phases come from
+  `contact_force_part_mask`, while
   `contact_force_part_mask_raw` retains the direct force-threshold decision.
 - Use `generate-lte-augmentation --mode lte_fullbody` only for hidden geometry
   diagnostics.
@@ -341,7 +350,10 @@ Accept/reject writes use upsert-by-segment-id semantics for legacy compatibility
 
 ## Contact-Centric Pipeline
 
-Contact points are the shared editing handle for anchor segmentation, cutter correction, and force-reference generation.
+Contact samples and edit handles are distinct. Each raw sample binds its point
+and force from the same frame and contact index. Interactive editing instead
+uses one representative handle for each continuous same-body, same-surface
+contact episode.
 
 ```text
 masked motion npz
@@ -442,7 +454,7 @@ The overlay export is a lightweight frontend-agnostic JSON file containing
 
 ## Interactive Surface Editor
 
-`contact-editor` is the single entry point for anchor-level contact editing. It
+`contact-editor` is the single entry point for contact-episode editing. It
 starts a single-port local service. Loading an asset runs the fixed preparation
 line: merge reliable anchors, filter invalid candidates, bind to real
 ground/top surfaces, and validate the remaining anchors before returning the
@@ -458,24 +470,41 @@ The editor preparation is intentionally strict:
 The session includes a surface binding report, surface binding overlay, contact overlay, session state, request file, and pending edit file under `data/workbench/surface_sessions/<session_name>/`.
 
 The Three.js client renders the sphere URDF, terrain OBJ, surface catalog,
-contact anchors and force arrows. The bottom 8-part timeline owns playback and
-scrubbing; the right inspector owns filtering, boundary mode and selection.
+per-frame point+force sample glyphs and separate episode edit handles. The
+bottom 8-part timeline owns playback and scrubbing; the right inspector owns
+filtering, boundary mode and selection.
 
-- Asset selector: registered Newton force assets and reload.
+Heel, toe and sole are raw stages of the same parent foot, with no required
+ordering. Any temporally connected contacts for the same parent body and the
+same `surface_id`/`object_id` form one episode. That episode has one handle;
+moving it applies one shared surface displacement to every member anchor while
+preserving the original per-frame contact samples, forces and stage structure.
+
+- Recent motions: a bottom-right vertical scroll list treats the source motion
+  and every generated MotionVersion as peer entries. Selecting an entry opens
+  its complete trajectory while preserving the owning asset context.
 - Contact tab: body/surface/status filters, current-frame mode, previous/next
-  contact, exact `u/v`, stepped `du/dv`, restore and reject/clamp.
-- Display tab: terrain, contact surfaces, anchors, forces, root path, selection
-  guides, anchor size and force scale.
-- Output tab: ContactEditPlan path/status, output contact layer, save, validate,
-  reload and discard.
-- Timeline: 8-part lane labels, frame ruler, stable cut markers, direct scrub,
-  frame stepping and previous/next cut navigation.
+  contact, read-only surface-position offset and reject/clamp boundary mode.
+- Display tab: terrain, contact surfaces, bound point+force samples, episode
+  handles, root path, selection guides, handle size and force scale.
+- Output tab: ContactEditPlan, generated motion/contact/segment paths, MotionVersion
+  registration, overwrite policy, validation, generation status, reload and discard.
+- Timeline: 8-part lane labels, adaptive time/frame ruler, stable cut markers,
+  direct drag scrubbing, frame stepping and previous/next cut navigation. It is
+  the only frame scrub control; there is no duplicate range slider.
 - Toolbar: camera framing, undo, redo and save.
 
-The asset selector switches complete MotionAsset bundles. Raw paths must be
-registered first so robot, force, terrain and provenance cannot drift apart.
+Opening a source or generated entry switches a complete MotionAsset-backed
+bundle. Generated versions inherit robot, force, terrain and surface context,
+but keep their own motion path, contact layer and version-scoped edit/output
+paths. A successful Generate adds the new version to Recent and opens it
+immediately. Raw paths must be registered first so asset context and provenance
+cannot drift apart.
 
-The bottom timeline separates contact-point intervals from edit cut frames:
+The bottom timeline keeps the original 8-part channels for inspection while
+selection is parent-body based. Selecting a left-foot episode outlines both
+`LHEE` and `LTOE` lanes over the episode interval. It also separates contact
+intervals from edit cut frames:
 
 - `contactPointBlock`: editable contact anchor intervals.
 - `cutFrameMarker`: stable/contact-editor cut-frame boundaries.
@@ -483,17 +512,32 @@ The bottom timeline separates contact-point intervals from edit cut frames:
 
 Avoid reviving old UI/test vocabulary such as `segmentBlock` or `protoBoundary` for the visible contact timeline.
 
-3D selection and editing are same-surface constrained. Three.js raycasts the
-selected marker and drag plane, then sends the requested world position to the
-Python API. Python projects it into the original surface coordinates, removes
-normal displacement, preserves `surface_id`/`object_id`, and applies the
-current reject/clamp mode.
+3D selection and editing are same-surface constrained. The first click selects
+an episode handle; a later drag on that selected handle arms the edit. Pointer
+motion must exceed the screen drag threshold, and a submitted edit must exceed
+the minimum world-space displacement, so clicks and small hand motion remain
+no-ops. During a valid drag, Three.js previews the point on the bound surface
+plane and shows read-only `Δu`/`Δv`. Python then projects the requested world
+position into the authoritative surface coordinates, removes normal
+displacement, preserves `surface_id`/`object_id`, and applies the current
+reject/clamp mode.
+
+After an edit, the translucent marker at the original position is a restore
+target, not another contact sample or another episode handle. Clicking it
+restores all member anchors and their metadata from the session-start snapshot.
+Dragging away from it cancels restore. Escape, pointer cancellation and leaving
+the viewport cancel an armed edit and put the preview back at the saved
+position.
 
 The API owns move, undo, redo and save state. There is no request-file bridge,
 iframe, external viewer, or second port. The final force-bearing trajectory is
 still produced by the subsequent Newton rollout.
 
-Edits remain anchor-level and surface-constrained. They use `move_contact_anchor_on_surface`, never allow normal displacement, never jump to another surface, and do not model full foot sole contact, toe/heel rolling, pressure, or physical sticking.
+Edits remain surface-constrained. One episode operation expands to its member
+`ContactAnchorEditRecord` entries before generation. Each member uses
+`move_contact_anchor_on_surface`: normal displacement and cross-surface jumps
+are forbidden. The grouping does not impose heel/sole/toe phases or replace
+the recorded point+force samples with the representative handle.
 
 ```bash
 ./motion-edit contact-editor \
@@ -503,19 +547,28 @@ Edits remain anchor-level and surface-constrained. They use `move_contact_anchor
 
 Practical editor workflow:
 
-1. Filter or select an anchor.
-2. Inspect the selected anchor metadata and surface binding.
-3. Move it with a same-surface 3D drag.
-4. Use undo/redo as needed and save the edit plan.
-5. Run `motion-edit generate-ref` to write edited kinematics.
-6. Run and record the edited reference in Newton to produce the WBT-ready force trajectory.
+1. Filter or select a contact episode.
+2. Inspect its interval, parent body, members and surface binding.
+3. Click once to select the episode, then drag the selected handle along its
+   surface. Inspect the read-only `Δu`/`Δv` while moving it.
+4. To restore that episode exactly, click its translucent original-position
+   marker.
+5. Use undo/redo as needed and save the edit plan.
+6. In Output, validate and press Generate to write and register edited
+   kinematics. Use `motion-edit generate-ref` instead for batch execution.
+7. Run and record the edited reference in Newton to produce the WBT-ready force trajectory.
 
-Validation writes pending `ContactAnchorEditRecord` entries into the ContactEditPlan and marks a valid draft plan as `validated`; it does not export a ContactLayer. Diagnostic geometry generation can create a non-force intermediate for inspection, but it is not the main workflow. `Export debug ContactLayer` is available for inspection. None of these actions modify the archived source motion `.npz` or mutate canonical segmentation by default.
+Validation writes pending `ContactAnchorEditRecord` entries into the
+ContactEditPlan, saves the edited ContactLayer and marks a valid draft plan as
+`validated`. Generate then runs whole-trajectory Contact Laplacian and full-body
+IK without contact-force baking. None of these actions modify the archived
+source motion `.npz` or mutate canonical segmentation by default.
 
 ## Contact-Centered Motion Generation
 
-Contact-anchor editing is intentionally staged. The editor only stages edits in
-a `ContactEditPlan`; use `generate-ref` for the formal edited-kinematics path:
+Contact-anchor editing remains staged through a `ContactEditPlan`. The editor's
+Generate action and the `generate-ref` CLI are two frontends to the same formal
+edited-kinematics implementation; the CLI form is:
 
 ```bash
 ./motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
@@ -552,6 +605,44 @@ force field written to a training reference: the final force-bearing trajectory
 still comes from the accepted Newton rollout.
 
 The archived source `.npz`, source ContactLayer, and source canonical segmentation are not modified. `--output-contact-layer` writes a graph derived from the source ContactGraph with edited anchor positions. `--output-segment-layer` writes candidate segments for the edited reference. `--register-motion-version` registers that edited trajectory. Canonical segmentation for the new version is only built when `--build-canonical` is passed explicitly.
+
+## Dataset Augmentation Queue
+
+Dataset augmentation has four separate stages:
+
+```text
+contact/jitter.py       generate independent ContactEditPlans
+generation/             solve one plan over one complete trajectory
+augmentation.py         schedule/resume/retry independent plan jobs,
+                        statically validate, then admit accepted outputs
+```
+
+`batch_contact_laplacian` is retained as a solver compatibility string. Here
+`batch` means that all frames and contact handles of one motion are optimized
+together; it does not mean that several motions are solved in one tensor batch.
+The outer augmentation queue intentionally runs independent plans one at a
+time and persists progress after every state change.
+
+```bash
+/home/xiaz/somaforge/packages/motion_edit/motion-edit generate-contact-jitter-plans \
+  --cut-summary data/exports/contact_cut_summary.json \
+  --output-dir data/workbench/augmentations/climb_jitter
+
+/home/xiaz/somaforge/packages/motion_edit/motion-edit generate-augmentations \
+  --plan-manifest data/workbench/augmentations/climb_jitter/manifest.json \
+  --output-motion-dir data/motions/generated \
+  --register-motion-version \
+  --continue-on-error
+```
+
+The queue file is execution state: pending/running/retrying/failed/accepted,
+attempt counts and errors. The separate `.accepted.json` manifest contains only
+outputs that passed canonical-asset, shape, finite-value, solver-provenance,
+Contact Laplacian target-error and full-body IK anchor-error checks. A
+MotionVersion is registered only after these checks pass. This is still
+`static_kinematic` acceptance: every accepted manifest explicitly retains
+`physics_replay_required: true`; Newton rollout and force extraction remain the
+next stage before force-aware WBT data admission.
 
 ## Legacy And Developer Notes
 

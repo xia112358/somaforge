@@ -13,6 +13,7 @@ from motion_edit.contact.patches import patches_from_anchors
 from motion_edit.contact.schema import ContactAnchorEditRecord, ContactSurfaceRecord
 from motion_edit.export import export_contact_overlay, export_surface_binding_overlay, export_surface_binding_report
 from motion_edit.paths import LAYERS_ROOT, WORKBENCH_ROOT
+from motion_edit.workbench.edit_handles import build_contact_episode_handles
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,7 @@ class SurfaceEditorSession:
     pending_edits_path: Path
     request_path: Path
     contact_layer_snapshot: Path
+    contact_force_path: str | None = None
 
     def to_manifest(self) -> dict:
         data = asdict(self)
@@ -64,6 +66,7 @@ def _session_paths(
     edit_plan_path: str | None,
     output_contact_layer: str | None,
     workbench_root: Path,
+    contact_force_path: str | None = None,
 ) -> SurfaceEditorSession:
     session_dir = surface_session_dir(session_name, workbench_root=workbench_root)
     return SurfaceEditorSession(
@@ -82,6 +85,7 @@ def _session_paths(
         pending_edits_path=session_dir / f"{motion_id}.pending_edits.jsonl",
         request_path=session_dir / f"{motion_id}.surface_editor_requests.jsonl",
         contact_layer_snapshot=session_dir / "contact_layer",
+        contact_force_path=contact_force_path,
     )
 
 
@@ -93,6 +97,7 @@ def _write_json(path: Path, data: dict) -> None:
 def _write_session_files(session: SurfaceEditorSession, graph: ContactGraph, surfaces: list[ContactSurfaceRecord]) -> None:
     session.session_dir.mkdir(parents=True, exist_ok=True)
     write_contact_layer(session.contact_layer_snapshot, graph)
+    write_contact_jsonl(session.pending_edits_path, [])
     if surfaces:
         write_contact_surfaces(session.contact_layer_snapshot / "surfaces" / f"{session.motion_id}.jsonl", surfaces)
     export_surface_binding_report(session.report_path, graph=graph, surfaces=surfaces)
@@ -120,6 +125,7 @@ def prepare_surface_editor_session(
     session_name: str,
     edit_plan_path: str | None = None,
     output_contact_layer: str | None = None,
+    contact_force_path: str | None = None,
     layers_root: Path = LAYERS_ROOT,
     workbench_root: Path = WORKBENCH_ROOT,
 ) -> SurfaceEditorSession:
@@ -134,6 +140,7 @@ def prepare_surface_editor_session(
         edit_plan_path=edit_plan_path,
         output_contact_layer=output_contact_layer,
         workbench_root=workbench_root,
+        contact_force_path=contact_force_path,
     )
     _write_session_files(session, graph, surfaces)
     return session
@@ -154,6 +161,7 @@ def read_surface_editor_session(path: str | Path) -> SurfaceEditorSession:
     if "request_path" not in data:
         session_dir = Path(data["session_dir"])
         data["request_path"] = session_dir / f"{data['motion_id']}.surface_editor_requests.jsonl"
+    data.setdefault("contact_force_path", data.get("motion_path"))
     for field in path_fields:
         data[field] = Path(data[field])
     return SurfaceEditorSession(**data)
@@ -216,6 +224,128 @@ def move_surface_editor_anchor(
     write_surface_editor_graph(session, moved_graph)
     write_pending_surface_edits(session, [*read_pending_surface_edits(session), edit])
     return moved_graph, edit
+
+
+def move_surface_editor_handle(
+    session: SurfaceEditorSession,
+    *,
+    handle_id: str,
+    tangent_delta: Iterable[float] | None = None,
+    requested_world_position: Iterable[float] | None = None,
+    mode: str = "reject",
+    max_gap_frames: int = 0,
+    min_duration_frames: int = 1,
+) -> tuple[ContactGraph, list[ContactAnchorEditRecord]]:
+    graph = _load_session_graph(session)
+    handle = next(
+        (
+            item
+            for item in build_contact_episode_handles(
+                graph.anchors,
+                max_gap_frames=max_gap_frames,
+                min_duration_frames=min_duration_frames,
+            )
+            if item.handle_id == handle_id
+        ),
+        None,
+    )
+    if handle is None:
+        raise ValueError(f"contact episode handle not found: {handle_id}")
+    requested_delta = None
+    if requested_world_position is not None:
+        target = [float(item) for item in requested_world_position]
+        if len(target) != 3:
+            raise ValueError("requested_world_position must have length 3")
+        requested_delta = [target[index] - handle.world_position[index] for index in range(3)]
+    if tangent_delta is None and requested_delta is None:
+        raise ValueError("contact episode move requires tangent_delta or requested_world_position")
+
+    moved_graph = graph
+    edits: list[ContactAnchorEditRecord] = []
+    member_ids = set(handle.member_anchor_ids)
+    for anchor_id in handle.member_anchor_ids:
+        moved_graph, edit = move_anchor_in_graph(
+            moved_graph,
+            anchor_id=anchor_id,
+            tangent_delta=tangent_delta,
+            delta_world=requested_delta,
+            mode=mode,
+            source="motion_edit_web_contact_episode",
+        )
+        metadata = dict(edit.metadata)
+        metadata.update(
+            {
+                "editor_handle_id": handle.handle_id,
+                "editor_handle_body": handle.body,
+                "editor_handle_start_frame": handle.start_frame,
+                "editor_handle_end_frame": handle.end_frame,
+                "editor_handle_member_count": len(handle.member_anchor_ids),
+            }
+        )
+        edits.append(replace(edit, metadata=metadata))
+
+    edited_anchors = []
+    for anchor in moved_graph.anchors:
+        if anchor.anchor_id in member_ids:
+            metadata = dict(anchor.metadata)
+            metadata["surface_editor_status"] = "edited"
+            metadata["surface_editor_session"] = session.session_name
+            metadata["editor_handle_id"] = handle.handle_id
+            edited_anchors.append(replace(anchor, metadata=metadata))
+        else:
+            edited_anchors.append(anchor)
+    moved_graph = replace(moved_graph, anchors=edited_anchors, patches=patches_from_anchors(edited_anchors))
+    write_surface_editor_graph(session, moved_graph)
+    write_pending_surface_edits(session, [*read_pending_surface_edits(session), *edits])
+    return moved_graph, edits
+
+
+def restore_surface_editor_handle(
+    session: SurfaceEditorSession,
+    *,
+    handle_id: str,
+    initial_graph: ContactGraph,
+    initial_edits: Iterable[ContactAnchorEditRecord] = (),
+    max_gap_frames: int = 0,
+    min_duration_frames: int = 1,
+) -> ContactGraph:
+    """Restore one episode and its pending edits to the session-start snapshot."""
+    original = next(
+        (
+            item
+            for item in build_contact_episode_handles(
+                initial_graph.anchors,
+                max_gap_frames=max_gap_frames,
+                min_duration_frames=min_duration_frames,
+            )
+            if item.handle_id == handle_id
+        ),
+        None,
+    )
+    if original is None:
+        raise ValueError(f"initial contact episode handle not found: {handle_id}")
+
+    member_ids = set(original.member_anchor_ids)
+    original_by_id = {anchor.anchor_id: anchor for anchor in initial_graph.anchors}
+    current_graph = read_surface_editor_graph(session)
+    restored_anchors = [
+        original_by_id[anchor.anchor_id]
+        if anchor.anchor_id in member_ids and anchor.anchor_id in original_by_id
+        else anchor
+        for anchor in current_graph.anchors
+    ]
+    restored_graph = replace(
+        current_graph,
+        anchors=restored_anchors,
+        patches=patches_from_anchors(restored_anchors),
+    )
+    write_surface_editor_graph(session, restored_graph)
+
+    current_edits = read_pending_surface_edits(session)
+    restored_edits = [edit for edit in current_edits if edit.anchor_id not in member_ids]
+    restored_edits.extend(edit for edit in initial_edits if edit.anchor_id in member_ids)
+    write_pending_surface_edits(session, restored_edits)
+    return restored_graph
 
 
 def read_pending_surface_edits(session: SurfaceEditorSession) -> list[ContactAnchorEditRecord]:

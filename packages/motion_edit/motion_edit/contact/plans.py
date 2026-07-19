@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
 import json
+from dataclasses import asdict, dataclass, field
+from math import isfinite
 from pathlib import Path
 from typing import Any, Literal
 
-from motion_edit.contact.schema import ContactAnchorEditRecord
+from motion_edit.contact.schema import ContactAnchorEditRecord, PoseEditRecord
 
 ContactEditPlanStatus = Literal["draft", "validated", "locked", "generated"]
 
@@ -18,6 +19,8 @@ class ContactEditPlan:
     source_contact_layer: str
     source_segment_layer: str | None = None
     edits: list[dict[str, Any]] = field(default_factory=list)
+    surface_transforms: list[dict[str, Any]] = field(default_factory=list)
+    pose_edits: list[dict[str, Any]] = field(default_factory=list)
     status: ContactEditPlanStatus = "draft"
     output_motion_path: str | None = None
     output_contact_layer: str | None = None
@@ -80,6 +83,8 @@ def append_anchor_edit_to_plan(
         source_contact_layer=plan.source_contact_layer,
         source_segment_layer=plan.source_segment_layer or source_segment_layer,
         edits=edits,
+        surface_transforms=list(plan.surface_transforms),
+        pose_edits=list(plan.pose_edits),
         status="draft" if plan.status == "validated" else plan.status,
         output_motion_path=plan.output_motion_path,
         output_contact_layer=plan.output_contact_layer,
@@ -98,6 +103,23 @@ def validate_contact_edit_plan(plan: ContactEditPlan, *, allow_free: bool = Fals
     if not plan.source_contact_layer:
         raise ValueError(f"{plan.plan_id}: source_contact_layer is required")
     warnings: list[str] = []
+    for index, transform in enumerate(plan.surface_transforms):
+        transform_id = str(transform.get("transform_id") or f"surface_transform_{index}")
+        if transform.get("kind") != "surface_follow":
+            raise ValueError(f"{transform_id}: unsupported surface transform kind")
+        source_surface = transform.get("source_surface")
+        target_surface = transform.get("target_surface")
+        if not isinstance(source_surface, dict) or not source_surface.get("surface_id"):
+            raise ValueError(f"{transform_id}: source_surface is required")
+        if not isinstance(target_surface, dict) or not target_surface.get("surface_id"):
+            raise ValueError(f"{transform_id}: target_surface is required")
+        translation = transform.get("translation_world")
+        if not isinstance(translation, list) or len(translation) != 3:
+            raise ValueError(f"{transform_id}: translation_world must be xyz")
+        if not all(isfinite(float(value)) for value in translation):
+            raise ValueError(f"{transform_id}: translation_world must be finite")
+    for raw_pose_edit in plan.pose_edits:
+        PoseEditRecord(**raw_pose_edit).validate()
     for index, raw_edit in enumerate(plan.edits):
         edit = ContactAnchorEditRecord(**raw_edit)
         edit.validate()
@@ -111,8 +133,22 @@ def validate_contact_edit_plan(plan: ContactEditPlan, *, allow_free: bool = Fals
             raise ValueError(f"{edit.edit_id}: edit {index} is not surface-constrained")
         if edit.surface_normal is not None and edit.delta_world is not None:
             normal_component = sum(float(edit.surface_normal[i]) * float(edit.delta_world[i]) for i in range(3))
-            if abs(normal_component) > 1e-6:
+            if abs(normal_component) > 1e-6 and edit.constraint_mode != "surface_transform":
                 raise ValueError(f"{edit.edit_id}: effective delta has surface-normal displacement")
+        if edit.constraint_mode == "surface_transform":
+            transform = edit.metadata.get("surface_transform") if isinstance(edit.metadata, dict) else None
+            if not isinstance(transform, dict) or transform.get("kind") != "surface_follow":
+                raise ValueError(f"{edit.edit_id}: surface_transform requires surface_follow metadata")
+            translation = transform.get("translation_world")
+            if not isinstance(translation, list) or len(translation) != 3:
+                raise ValueError(f"{edit.edit_id}: surface_transform requires xyz translation_world")
+            if edit.delta_world is None:
+                raise ValueError(f"{edit.edit_id}: surface_transform requires delta_world")
+            residual = sum((float(edit.delta_world[i]) - float(translation[i])) ** 2 for i in range(3)) ** 0.5
+            if residual > 1.0e-6:
+                raise ValueError(f"{edit.edit_id}: contact must follow the transformed surface exactly")
+            if edit.surface_coordinates_before != edit.surface_coordinates_after:
+                raise ValueError(f"{edit.edit_id}: surface-follow edit must preserve surface coordinates")
         if edit.constraint_mode == "reject" and edit.clamped:
             raise ValueError(f"{edit.edit_id}: reject-mode edit cannot be clamped")
         if edit.clamped:

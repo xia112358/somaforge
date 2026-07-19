@@ -51,6 +51,7 @@ from .schema import (
     ContactPatchRecord,
     ContactSurfaceRecord,
     ContactTransitionRecord,
+    PoseEditRecord,
 )
 from .surfaces import bind_anchor_to_plane
 from .surface_binding import bind_anchor_to_surface, bind_anchors_to_surfaces, surface_compatible_with_body
@@ -70,6 +71,7 @@ __all__ = [
     "ContactPatchRecord",
     "ContactSurfaceRecord",
     "ContactTransitionRecord",
+    "PoseEditRecord",
     "ContactLoadProfile",
     "ContactPhase",
     "anchors_from_contact_mask",

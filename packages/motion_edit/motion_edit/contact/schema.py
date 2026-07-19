@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
@@ -211,6 +212,42 @@ class ContactAnchorEditRecord:
                 raise ValueError(f"{self.edit_id}: affected_frames start must be >= 0")
             if end <= start:
                 raise ValueError(f"{self.edit_id}: affected_frames must be a non-empty half-open interval")
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class PoseEditRecord:
+    """Task-space pose translation over a half-open frame interval."""
+
+    edit_id: str
+    motion_id: str
+    affected_frames: list[int]
+    translation_world: list[float]
+    semantic_names: list[str]
+    edit_type: str = "translate_pose"
+    weight_scale: float = 1.0
+    source: str = "manual"
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def validate(self) -> None:
+        if self.edit_type != "translate_pose":
+            raise ValueError(f"{self.edit_id}: unsupported pose edit type {self.edit_type!r}")
+        if len(self.affected_frames) != 2:
+            raise ValueError(f"{self.edit_id}: affected_frames must be [start_frame, end_frame)")
+        start, end = (int(value) for value in self.affected_frames)
+        if start < 0 or end <= start:
+            raise ValueError(f"{self.edit_id}: affected_frames must be a non-empty half-open interval")
+        if len(self.translation_world) != 3:
+            raise ValueError(f"{self.edit_id}: translation_world must have length 3")
+        if not all(math.isfinite(float(value)) for value in self.translation_world):
+            raise ValueError(f"{self.edit_id}: translation_world must be finite")
+        if not self.semantic_names or any(not str(name) for name in self.semantic_names):
+            raise ValueError(f"{self.edit_id}: semantic_names must be non-empty")
+        if not math.isfinite(float(self.weight_scale)) or float(self.weight_scale) <= 0.0:
+            raise ValueError(f"{self.edit_id}: weight_scale must be finite and positive")
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()

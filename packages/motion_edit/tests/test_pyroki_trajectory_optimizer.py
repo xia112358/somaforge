@@ -97,7 +97,9 @@ class WholeTrajectoryOptimizerTests(unittest.TestCase):
         )
         self.assertTrue(result.metadata["whole_trajectory_joint_optimization"])
         self.assertEqual(result.metadata["environment_contact_handle_model"], "external_surface_anchor")
-        self.assertEqual(result.metadata["hard_constraint_count"], 3)
+        self.assertEqual(result.metadata["environment_contact_anchor_count_hard"], 1)
+        self.assertEqual(result.metadata["environment_contact_constraint_sample_count"], 3)
+        self.assertEqual(result.metadata["hard_constraint_count"], 9)
         self.assertLessEqual(result.metadata["environment_anchor_error_max_m"], 5.0e-4)
         achieved_normal_displacement = np.sum(
             (result.force_solved_position_w - result.force_reference_position_w) * normals,

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
+from .augmentation import AugmentationRunConfig, run_augmentation_queue
 from .adapters.omniretarget import detect_omniretarget_paths
 from .adapters.asset_manifest import load_asset_manifest
 from .adapters.lte import import_lte_catalog
@@ -45,7 +46,11 @@ from .generation import apply_contact_aware_edit_plan_to_motion, apply_contact_e
 from .contact.layers import read_contact_graph
 from .contact.patches import patches_from_anchors
 from .contact.surface_catalog import box_surfaces, parse_box_descriptor, surfaces_from_obj_mesh_faces, surfaces_from_urdf_meshes
-from .storage.canonical import build_canonical_segments, mark_canonical_segment_statuses, write_motion_version_with_canonical_segments
+from .storage.canonical import (
+    build_canonical_segments,
+    mark_canonical_segment_statuses,
+    write_motion_version_with_canonical_segments,
+)
 from .storage.io import (
     list_motion_assets,
     read_canonical_segments,
@@ -151,7 +156,7 @@ def _cmd_import_asset_manifest(args: argparse.Namespace) -> None:
         write_contact_layer(LAYERS_ROOT / contact_layer, graph)
         record = MotionAssetRecord(
             motion_asset_id=asset.motion_asset_id,
-            motion_path=str(asset.force_motion_path),
+            motion_path=str(asset.reference_motion_path),
             source="newton_asset_manifest",
             fps=args.fps,
             motion_id=asset.motion_id,
@@ -162,6 +167,7 @@ def _cmd_import_asset_manifest(args: argparse.Namespace) -> None:
             contact_force_npz=str(asset.force_motion_path),
             source_manifest=str(asset.manifest_path),
             asset_hashes={
+                "reference_motion_sha256": asset.reference_motion_sha256,
                 "motion_sha256": asset.motion_sha256,
                 "source_sha256": asset.source_sha256,
                 "terrain_sha256": asset.terrain_sha256,
@@ -171,6 +177,8 @@ def _cmd_import_asset_manifest(args: argparse.Namespace) -> None:
             raw_contact={"available": True, "source": "newton_8part"},
             metadata={
                 "manifest_motion_index": asset.motion_index,
+                "kinematic_reference": "clean_reference_motion_file",
+                "contact_force_source": "newton_rollout_motion_file",
                 "contact_force_provenance": asset.provenance,
             },
         )
@@ -328,6 +336,7 @@ def _cmd_bind_contact_surfaces(args: argparse.Namespace) -> None:
         motion_id=args.motion_id,
         surface_catalog=args.surface_catalog,
         terrain_urdf=getattr(args, "terrain_urdf", None),
+        terrain_mesh=getattr(args, "terrain_mesh", None),
         include_side_surfaces=getattr(args, "include_side_surfaces", False),
         include_ground=not getattr(args, "no_ground", False),
         ground_z=getattr(args, "ground_z", 0.0),
@@ -548,7 +557,7 @@ def _apply_motion_asset_defaults_to_contact_editor_args(args: argparse.Namespace
         record = read_motion_asset(motion_key)
     except FileNotFoundError:
         return False
-    args.motion = args.motion or record.contact_force_npz or record.motion_path
+    args.motion = args.motion or record.motion_path
     args.motion_id = args.motion_id or record.motion_id or record.motion_asset_id
     args.terrain_urdf = args.terrain_urdf or record.terrain_urdf
     args.terrain_mesh = getattr(args, "terrain_mesh", None) or record.terrain_mesh
@@ -613,10 +622,43 @@ def _write_urdf_surface_catalog(
     ground_z: float = 0.0,
     ground_half_extent: float = 10.0,
 ) -> Path:
-    out = Path(output).expanduser() if output is not None else _default_terrain_surface_catalog(motion_id)
+    if output is not None:
+        out = Path(output).expanduser()
+    elif include_side_surfaces:
+        out = SURFACES_ROOT / f"{motion_id}_terrain_surfaces_with_sides.jsonl"
+    else:
+        out = _default_terrain_surface_catalog(motion_id)
     surfaces = surfaces_from_urdf_meshes(
         motion_id=motion_id,
         urdf_path=terrain_urdf,
+        include_sides=include_side_surfaces,
+        include_ground=include_ground,
+        ground_z=ground_z,
+        ground_half_extent=ground_half_extent,
+    )
+    write_contact_surfaces(out, surfaces)
+    return out
+
+
+def _write_obj_surface_catalog(
+    *,
+    motion_id: str,
+    terrain_mesh: str | Path,
+    output: str | Path | None,
+    include_side_surfaces: bool = False,
+    include_ground: bool = True,
+    ground_z: float = 0.0,
+    ground_half_extent: float = 10.0,
+) -> Path:
+    if output is not None:
+        out = Path(output).expanduser()
+    elif include_side_surfaces:
+        out = SURFACES_ROOT / f"{motion_id}_terrain_surfaces_with_sides.jsonl"
+    else:
+        out = _default_terrain_surface_catalog(motion_id)
+    surfaces = surfaces_from_obj_mesh_faces(
+        motion_id=motion_id,
+        obj_path=terrain_mesh,
         include_sides=include_side_surfaces,
         include_ground=include_ground,
         ground_z=ground_z,
@@ -631,6 +673,7 @@ def _resolve_surface_catalog(
     motion_id: str,
     surface_catalog: str | None,
     terrain_urdf: str | Path | None,
+    terrain_mesh: str | Path | None = None,
     include_side_surfaces: bool = False,
     include_ground: bool = True,
     ground_z: float = 0.0,
@@ -653,7 +696,19 @@ def _resolve_surface_catalog(
         )
         print(f"generated terrain surface catalog from URDF: {out}")
         return out
-    raise ValueError("surface catalog is required; pass --surface-catalog or --terrain-urdf")
+    if terrain_mesh:
+        out = _write_obj_surface_catalog(
+            motion_id=motion_id,
+            terrain_mesh=terrain_mesh,
+            output=None,
+            include_side_surfaces=include_side_surfaces,
+            include_ground=include_ground,
+            ground_z=ground_z,
+            ground_half_extent=ground_half_extent,
+        )
+        print(f"generated terrain surface catalog from OBJ: {out}")
+        return out
+    raise ValueError("surface catalog is required; pass --surface-catalog, --terrain-urdf, or --terrain-mesh")
 
 
 def _filter_surfaces_for_binding(surfaces, *, include_side_surfaces: bool):
@@ -727,7 +782,11 @@ def _cmd_validate_contact_edit_plan(args: argparse.Namespace) -> None:
     if not args.no_write:
         plan = replace(plan, status="validated")
         write_contact_edit_plan(args.plan, plan)
-    print(f"validated contact edit plan {args.plan} edits={len(plan.edits)} status={plan.status}")
+    print(
+        f"validated contact edit plan {args.plan} edits={len(plan.edits)} "
+        f"surface_transforms={len(plan.surface_transforms)} pose_edits={len(plan.pose_edits)} "
+        f"status={plan.status}"
+    )
     for warning in warnings:
         print(f"warning: {warning}")
 
@@ -772,6 +831,8 @@ def _cmd_generate_lte_augmentation(args: argparse.Namespace) -> None:
         ik_script=args.ik_script,
         ik_conda_env=args.ik_conda_env,
         ik_max_nfev=args.ik_max_nfev,
+        ik_q_prior_weight=args.ik_q_prior_weight,
+        ik_q_smooth_weight=args.ik_q_smooth_weight,
         intermediate_dir=args.intermediate_dir,
     )
     action = "dry-run diagnostic geometry" if args.dry_run else "generated diagnostic geometry"
@@ -825,6 +886,8 @@ def _cmd_generate_ref(args: argparse.Namespace) -> None:
         ik_script=args.ik_script,
         ik_conda_env=args.ik_conda_env,
         ik_max_nfev=args.ik_max_nfev,
+        ik_q_prior_weight=args.ik_q_prior_weight,
+        ik_q_smooth_weight=args.ik_q_smooth_weight,
         intermediate_dir=args.intermediate_dir,
     )
     action = "dry-run WBT ref generation" if args.dry_run else "generated WBT ref"
@@ -915,83 +978,53 @@ def _cmd_generate_contact_jitter_plans(args: argparse.Namespace) -> None:
         print(f"manifest: {Path(args.output_dir).expanduser() / 'manifest.json'}")
 
 
+def _cmd_generate_augmentations(args: argparse.Namespace) -> None:
+    run_augmentation_queue(
+        AugmentationRunConfig(
+            plan_manifest=args.plan_manifest,
+            start_index=args.start_index,
+            limit=args.limit,
+            output_motion_dir=args.output_motion_dir,
+            motion_version_prefix=args.motion_version_prefix,
+            source_contact_layer=args.source_contact_layer,
+            state_path=args.state_path,
+            accepted_manifest=args.accepted_manifest,
+            max_attempts=args.max_attempts,
+            max_proxy_contact_error_m=args.max_proxy_contact_error_m,
+            max_environment_anchor_error_m=args.max_environment_anchor_error_m,
+            allow_draft=args.allow_draft,
+            allow_free=args.allow_free,
+            fullbody_solver=args.fullbody_solver,
+            contact_laplacian_iters=args.contact_laplacian_iters,
+            contact_laplacian_damping=args.contact_laplacian_damping,
+            contact_laplacian_trust=args.contact_laplacian_trust,
+            edit_contact_weight=args.edit_contact_weight,
+            fixed_contact_weight=args.fixed_contact_weight,
+            temporal_laplacian_weight=args.temporal_laplacian_weight,
+            body_relative_weight=args.body_relative_weight,
+            q_prior_weight=args.q_prior_weight,
+            q_smooth_weight=args.q_smooth_weight,
+            mesh_laplacian_weight=args.mesh_laplacian_weight,
+            overwrite=args.overwrite,
+            register_motion_version=args.register_motion_version,
+            build_canonical=args.build_canonical,
+            dry_run=args.dry_run,
+            continue_on_error=args.continue_on_error,
+            lte_repo_root=args.lte_repo_root,
+            ik_script=args.ik_script,
+            ik_conda_env=args.ik_conda_env,
+            ik_max_nfev=args.ik_max_nfev,
+            ik_q_prior_weight=args.ik_q_prior_weight,
+            ik_q_smooth_weight=args.ik_q_smooth_weight,
+            intermediate_dir=args.intermediate_dir,
+        )
+    )
+
+
 def _cmd_batch_generate_lte_augmentations(args: argparse.Namespace) -> None:
-    manifest_path = Path(args.plan_manifest).expanduser()
-    manifest = read_jsonl(manifest_path) if manifest_path.suffix == ".jsonl" else None
-    if manifest is None:
-        import json
+    """Compatibility alias for the dataset-level augmentation queue."""
 
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest = payload.get("plans", []) if isinstance(payload, dict) else payload
-    if not isinstance(manifest, list):
-        raise ValueError(f"plan manifest must contain a list of plans: {manifest_path}")
-
-    total = 0
-    generated = 0
-    skipped = 0
-    failed = 0
-    for index, item in enumerate(manifest):
-        if args.limit is not None and total >= args.limit:
-            break
-        if index < args.start_index:
-            continue
-        total += 1
-        plan_path = Path(str(item.get("plan_path") if isinstance(item, dict) else item)).expanduser()
-        plan = read_contact_edit_plan(plan_path)
-        output_motion = Path(plan.output_motion_path or f"data/motions/generated/{plan.plan_id}.npz")
-        if args.output_motion_dir:
-            output_motion = Path(args.output_motion_dir).expanduser() / output_motion.name
-        output_contact_layer = plan.output_contact_layer
-        output_segment_layer = plan.output_segment_layer
-        output_motion_version_id = args.motion_version_prefix + plan.plan_id if args.motion_version_prefix else plan.plan_id
-        if output_motion.exists() and not args.overwrite:
-            skipped += 1
-            print(f"skip existing {output_motion}")
-            continue
-        try:
-            result = apply_contact_edit_plan_to_motion(
-                plan,
-                output_motion_path=output_motion,
-                mode="lte_fullbody",
-                source_plan_path=plan_path,
-                source_contact_layer=args.source_contact_layer,
-                output_contact_layer=output_contact_layer,
-                output_segment_layer=output_segment_layer,
-                output_motion_version_id=output_motion_version_id,
-                overwrite=args.overwrite,
-                dry_run=args.dry_run,
-                register_motion_version=args.register_motion_version,
-                build_canonical=args.build_canonical,
-                allow_draft=args.allow_draft,
-                allow_free=args.allow_free,
-                fullbody_solver=args.fullbody_solver,
-                contact_laplacian_iters=args.contact_laplacian_iters,
-                contact_laplacian_damping=args.contact_laplacian_damping,
-                contact_laplacian_trust=args.contact_laplacian_trust,
-                edit_contact_weight=args.edit_contact_weight,
-                fixed_contact_weight=args.fixed_contact_weight,
-                temporal_laplacian_weight=args.temporal_laplacian_weight,
-                body_relative_weight=args.body_relative_weight,
-                q_prior_weight=args.q_prior_weight,
-                q_smooth_weight=args.q_smooth_weight,
-                mesh_laplacian_weight=args.mesh_laplacian_weight,
-                contact_laplacian_proxy_only=args.contact_laplacian_proxy_only,
-                lte_repo_root=args.lte_repo_root,
-                ik_script=args.ik_script,
-                ik_conda_env=args.ik_conda_env,
-                ik_max_nfev=args.ik_max_nfev,
-                intermediate_dir=args.intermediate_dir,
-            )
-        except Exception as exc:
-            failed += 1
-            print(f"failed {plan_path}: {exc}")
-            if not args.continue_on_error:
-                raise
-            continue
-        generated += 1
-        action = "dry-run" if args.dry_run else "generated"
-        print(f"{action} {result.output_motion_path}")
-    print(f"batch LTE augmentation total={total} generated={generated} skipped={skipped} failed={failed}")
+    _cmd_generate_augmentations(args)
 
 
 def _cmd_register_motion_asset(args: argparse.Namespace) -> None:
@@ -1444,7 +1477,7 @@ def build_parser() -> argparse.ArgumentParser:
         "export-surface-binding-report,export-surface-binding-overlay,"
         "contact-editor,validate-contact-edit-plan,generate-ref,"
         "force-retarget,"
-        "generate-contact-jitter-plans,"
+        "generate-contact-jitter-plans,generate-augmentations,"
         "register-motion-version,build-canonical-segmentation,build-token-catalog,"
         "export-manifest,export-split-npz"
     )
@@ -1518,6 +1551,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--motion-id", required=True)
     p.add_argument("--surface-catalog", default=None)
     p.add_argument("--terrain-urdf", default=None)
+    p.add_argument("--terrain-mesh", default=None)
     p.add_argument("--include-side-surfaces", action="store_true")
     p.add_argument("--no-ground", action="store_true")
     p.add_argument("--ground-z", type=float, default=0.0)
@@ -1614,16 +1648,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--source-contact-layer", default=None)
     p.add_argument("--allow-draft", action="store_true")
     p.add_argument("--allow-free", action="store_true")
-    p.add_argument("--contact-laplacian-iters", type=int, default=5)
+    p.add_argument("--contact-laplacian-iters", type=int, default=8)
     p.add_argument("--contact-laplacian-damping", type=float, default=1.0e-4)
     p.add_argument("--contact-laplacian-trust", type=float, default=0.05)
     p.add_argument("--edit-contact-weight", type=float, default=1000.0)
     p.add_argument("--fixed-contact-weight", type=float, default=1000.0)
-    p.add_argument("--temporal-laplacian-weight", type=float, default=10.0)
+    p.add_argument("--temporal-laplacian-weight", type=float, default=40.0)
     p.add_argument("--body-relative-weight", type=float, default=10.0)
-    p.add_argument("--q-prior-weight", type=float, default=1.0)
-    p.add_argument("--q-smooth-weight", type=float, default=1.0)
-    p.add_argument("--mesh-laplacian-weight", type=float, default=0.0)
+    p.add_argument("--q-prior-weight", type=float, default=0.02)
+    p.add_argument("--q-smooth-weight", type=float, default=0.0)
+    p.add_argument("--mesh-laplacian-weight", type=float, default=1.0)
     p.add_argument("--fps", type=float, default=50.0)
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--register-motion-version", action="store_true")
@@ -1633,6 +1667,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ik-script", default=None, help=argparse.SUPPRESS)
     p.add_argument("--ik-conda-env", default="env_pyroki_climb_projection", help=argparse.SUPPRESS)
     p.add_argument("--ik-max-nfev", type=int, default=None, help=argparse.SUPPRESS)
+    p.add_argument("--ik-q-prior-weight", type=float, default=12.0, help=argparse.SUPPRESS)
+    p.add_argument("--ik-q-smooth-weight", type=float, default=60.0, help=argparse.SUPPRESS)
     p.add_argument("--intermediate-dir", default=None)
     p.set_defaults(func=_cmd_generate_ref)
 
@@ -1669,16 +1705,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--allow-free", action="store_true")
     p.add_argument("--mode", choices=("lte_fullbody",), default="lte_fullbody")
     p.add_argument("--fullbody-solver", choices=("ik_subprocess", "batch_contact_laplacian"), default="batch_contact_laplacian")
-    p.add_argument("--contact-laplacian-iters", type=int, default=5)
+    p.add_argument("--contact-laplacian-iters", type=int, default=8)
     p.add_argument("--contact-laplacian-damping", type=float, default=1.0e-4)
     p.add_argument("--contact-laplacian-trust", type=float, default=0.05)
     p.add_argument("--edit-contact-weight", type=float, default=1000.0)
     p.add_argument("--fixed-contact-weight", type=float, default=1000.0)
-    p.add_argument("--temporal-laplacian-weight", type=float, default=10.0)
+    p.add_argument("--temporal-laplacian-weight", type=float, default=40.0)
     p.add_argument("--body-relative-weight", type=float, default=10.0)
-    p.add_argument("--q-prior-weight", type=float, default=1.0)
-    p.add_argument("--q-smooth-weight", type=float, default=1.0)
-    p.add_argument("--mesh-laplacian-weight", type=float, default=0.0)
+    p.add_argument("--q-prior-weight", type=float, default=0.02)
+    p.add_argument("--q-smooth-weight", type=float, default=0.0)
+    p.add_argument("--mesh-laplacian-weight", type=float, default=1.0)
     p.add_argument("--contact-laplacian-proxy-only", action="store_true", help="[debug] write only the body-space contact-Laplacian proxy output; do not run IK")
     p.add_argument("--falloff-before", type=int, default=20)
     p.add_argument("--falloff-after", type=int, default=20)
@@ -1693,6 +1729,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ik-script", default=None, help="[legacy ik_subprocess] fullbody IK script")
     p.add_argument("--ik-conda-env", default="env_pyroki_climb_projection", help="[legacy ik_subprocess] conda env for external IK")
     p.add_argument("--ik-max-nfev", type=int, default=None, help="[legacy ik_subprocess] maximum IK evaluations")
+    p.add_argument("--ik-q-prior-weight", type=float, default=12.0)
+    p.add_argument("--ik-q-smooth-weight", type=float, default=60.0)
     p.add_argument("--intermediate-dir", default=None)
     p.set_defaults(func=_cmd_generate_lte_augmentation)
 
@@ -1717,37 +1755,58 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit-motions", type=int, default=None)
     p.set_defaults(func=_cmd_generate_contact_jitter_plans)
 
+    def add_augmentation_queue_arguments(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--plan-manifest", required=True)
+        parser.add_argument("--start-index", type=int, default=0)
+        parser.add_argument("--limit", type=int, default=None)
+        parser.add_argument("--output-motion-dir", default=None)
+        parser.add_argument("--motion-version-prefix", default="")
+        parser.add_argument("--source-contact-layer", default=None)
+        parser.add_argument("--state-path", default=None)
+        parser.add_argument("--accepted-manifest", default=None)
+        parser.add_argument("--max-attempts", type=int, default=2)
+        parser.add_argument("--max-proxy-contact-error-m", type=float, default=5.0e-3)
+        parser.add_argument("--max-environment-anchor-error-m", type=float, default=5.0e-4)
+        parser.add_argument("--allow-draft", action="store_true")
+        parser.add_argument("--allow-free", action="store_true")
+        parser.add_argument(
+            "--fullbody-solver",
+            choices=("batch_contact_laplacian",),
+            default="batch_contact_laplacian",
+            help="compatibility name for one motion's whole-trajectory Contact Laplacian + full-body IK solve",
+        )
+        parser.add_argument("--contact-laplacian-iters", type=int, default=8)
+        parser.add_argument("--contact-laplacian-damping", type=float, default=1.0e-4)
+        parser.add_argument("--contact-laplacian-trust", type=float, default=0.05)
+        parser.add_argument("--edit-contact-weight", type=float, default=1000.0)
+        parser.add_argument("--fixed-contact-weight", type=float, default=1000.0)
+        parser.add_argument("--temporal-laplacian-weight", type=float, default=40.0)
+        parser.add_argument("--body-relative-weight", type=float, default=10.0)
+        parser.add_argument("--q-prior-weight", type=float, default=0.02)
+        parser.add_argument("--q-smooth-weight", type=float, default=0.0)
+        parser.add_argument("--mesh-laplacian-weight", type=float, default=1.0)
+        parser.add_argument("--overwrite", action="store_true")
+        parser.add_argument("--register-motion-version", action="store_true")
+        parser.add_argument("--build-canonical", action="store_true")
+        parser.add_argument("--dry-run", action="store_true")
+        parser.add_argument("--continue-on-error", action="store_true")
+        parser.add_argument("--lte-repo-root", default=None)
+        parser.add_argument("--ik-script", default=None)
+        parser.add_argument("--ik-conda-env", default="env_pyroki_climb_projection")
+        parser.add_argument("--ik-max-nfev", type=int, default=None)
+        parser.add_argument("--ik-q-prior-weight", type=float, default=12.0)
+        parser.add_argument("--ik-q-smooth-weight", type=float, default=60.0)
+        parser.add_argument("--intermediate-dir", default=None)
+
+    p = sub.add_parser(
+        "generate-augmentations",
+        help="run a durable queue of independent ContactEditPlan data augmentations",
+    )
+    add_augmentation_queue_arguments(p)
+    p.set_defaults(func=_cmd_generate_augmentations)
+
     p = add_hidden_parser("batch-generate-lte-augmentations")
-    p.add_argument("--plan-manifest", required=True)
-    p.add_argument("--start-index", type=int, default=0)
-    p.add_argument("--limit", type=int, default=None)
-    p.add_argument("--output-motion-dir", default=None)
-    p.add_argument("--motion-version-prefix", default="")
-    p.add_argument("--source-contact-layer", default=None)
-    p.add_argument("--allow-draft", action="store_true")
-    p.add_argument("--allow-free", action="store_true")
-    p.add_argument("--fullbody-solver", choices=("ik_subprocess", "batch_contact_laplacian"), default="ik_subprocess")
-    p.add_argument("--contact-laplacian-iters", type=int, default=5)
-    p.add_argument("--contact-laplacian-damping", type=float, default=1.0e-4)
-    p.add_argument("--contact-laplacian-trust", type=float, default=0.05)
-    p.add_argument("--edit-contact-weight", type=float, default=1000.0)
-    p.add_argument("--fixed-contact-weight", type=float, default=1000.0)
-    p.add_argument("--temporal-laplacian-weight", type=float, default=10.0)
-    p.add_argument("--body-relative-weight", type=float, default=10.0)
-    p.add_argument("--q-prior-weight", type=float, default=1.0)
-    p.add_argument("--q-smooth-weight", type=float, default=1.0)
-    p.add_argument("--mesh-laplacian-weight", type=float, default=0.0)
-    p.add_argument("--contact-laplacian-proxy-only", action="store_true")
-    p.add_argument("--overwrite", action="store_true")
-    p.add_argument("--register-motion-version", action="store_true")
-    p.add_argument("--build-canonical", action="store_true")
-    p.add_argument("--dry-run", action="store_true")
-    p.add_argument("--continue-on-error", action="store_true")
-    p.add_argument("--lte-repo-root", default=None)
-    p.add_argument("--ik-script", default=None)
-    p.add_argument("--ik-conda-env", default="env_pyroki_climb_projection")
-    p.add_argument("--ik-max-nfev", type=int, default=None)
-    p.add_argument("--intermediate-dir", default=None)
+    add_augmentation_queue_arguments(p)
     p.set_defaults(func=_cmd_batch_generate_lte_augmentations)
 
     p = sub.add_parser("register-motion-asset")
@@ -1965,6 +2024,7 @@ def build_parser() -> argparse.ArgumentParser:
         "generate-ref": "generate an edited kinematic candidate for Newton force retargeting",
         "force-retarget": "match an edited trajectory to target force using repeated Newton rollouts",
         "generate-contact-jitter-plans": "generate surface-constrained contact jitter plans",
+        "generate-augmentations": "run and validate a resumable ContactEditPlan augmentation queue",
         "register-motion-version": "register an archived source or generated force-ref motion version",
         "build-canonical-segmentation": "initialize the canonical segmentation for a motion version",
         "build-token-catalog": "build tokens from canonical segments",

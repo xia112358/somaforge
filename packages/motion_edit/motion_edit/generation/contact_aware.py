@@ -53,6 +53,8 @@ def apply_contact_aware_edit_plan_to_motion(
     generator = _generation_fn or apply_contact_edit_plan_to_motion
     force_baker = _force_bake_fn or bake_retargeted_contact_forces_for_motion
     resolved_force_source_ref_path = force_source_ref_path or plan.source_motion_path
+    if force_source_ref_path is not None:
+        generation_kwargs.setdefault("force_source_motion_path", force_source_ref_path)
     generation_kwargs.setdefault("mode", "lte_fullbody")
     generation_kwargs.setdefault("fullbody_solver", "batch_contact_laplacian")
     generation = generator(

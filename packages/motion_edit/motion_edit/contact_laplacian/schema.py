@@ -22,12 +22,6 @@ DUAL_LAPLACIAN_DEFAULT_WEIGHTS = {
     "mesh_laplacian_weight": 1.0,
 }
 
-# Older generation callers explicitly supplied these temporal/prior defaults.
-# The mesh weight was sometimes overridden independently, so migration detects
-# the old temporal core rather than requiring an exact seven-value tuple.
-_LEGACY_TEMPORAL_CORE_SIGNATURE = (10.0, 10.0, 1.0, 1.0)
-
-
 @dataclass(frozen=True)
 class BatchContactLaplacianConfig:
     num_iters: int = 8
@@ -49,21 +43,6 @@ class BatchContactLaplacianConfig:
     transport_structure_max_step: float = 0.0
 
     def __post_init__(self) -> None:
-        temporal_core = (
-            float(self.temporal_laplacian_weight),
-            float(self.body_relative_weight),
-            float(self.q_prior_weight),
-            float(self.q_smooth_weight),
-        )
-        if temporal_core == _LEGACY_TEMPORAL_CORE_SIGNATURE:
-            object.__setattr__(self, "temporal_laplacian_weight", DUAL_LAPLACIAN_DEFAULT_WEIGHTS["temporal_laplacian_weight"])
-            object.__setattr__(self, "body_relative_weight", DUAL_LAPLACIAN_DEFAULT_WEIGHTS["body_relative_weight"])
-            object.__setattr__(self, "q_prior_weight", DUAL_LAPLACIAN_DEFAULT_WEIGHTS["q_prior_weight"])
-            object.__setattr__(self, "q_smooth_weight", DUAL_LAPLACIAN_DEFAULT_WEIGHTS["q_smooth_weight"])
-            if float(self.mesh_laplacian_weight) == 0.0:
-                object.__setattr__(self, "mesh_laplacian_weight", DUAL_LAPLACIAN_DEFAULT_WEIGHTS["mesh_laplacian_weight"])
-            if int(self.num_iters) == 5:
-                object.__setattr__(self, "num_iters", 8)
         for name in (
             "edit_contact_weight",
             "fixed_contact_weight",

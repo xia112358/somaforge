@@ -85,7 +85,27 @@ def _contact_part_positions(
     if "contact_force_part_position_w" in data:
         arr = np.asarray(data["contact_force_part_position_w"], dtype=float)
         if arr.ndim == 3 and arr.shape[1] >= max(part_indices, default=-1) + 1:
-            return arr[:, part_indices, :3]
+            selected = arr[:, part_indices, :3].copy()
+            valid = _optional_mask(data, "contact_force_part_position_valid")
+            if valid is not None:
+                selected_valid = _select_contact_parts(valid, part_indices)
+                if selected_valid is None or selected_valid.shape != selected.shape[:2]:
+                    raise ValueError(
+                        "contact-force part position validity must match position [T,P] dimensions"
+                    )
+                frame = np.arange(selected.shape[0], dtype=float)
+                for part_index in range(selected.shape[1]):
+                    valid_frame = np.flatnonzero(selected_valid[:, part_index])
+                    if valid_frame.size == 0:
+                        selected[:, part_index] = np.nan
+                        continue
+                    for axis in range(3):
+                        selected[:, part_index, axis] = np.interp(
+                            frame,
+                            valid_frame,
+                            selected[valid_frame, part_index, axis],
+                        )
+            return selected
     if body_pos_w is None:
         return None
     body_names = _string_array(data, ("body_names",))

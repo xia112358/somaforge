@@ -240,6 +240,7 @@ def add_interaction_mesh_laplacian_residuals(
     kinematics: KinematicsProvider,
     mesh: InteractionMeshSpec,
     weight: float,
+    prepared_mesh: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Add whole-trajectory interaction-mesh Laplacian residuals.
 
@@ -268,19 +269,17 @@ def add_interaction_mesh_laplacian_residuals(
     object_count = object_points.shape[0]
     vertex_count = robot_count + object_count
 
-    ref_robot_all = _reference_robot_points(mesh, q_ref, kinematics, robot_points)
-    if mesh.topology == "omniretarget_delaunay":
-        aligned_mesh = build_omniretarget_interaction_mesh(ref_robot_all, ref_object_points)
-        laplacians = aligned_mesh.laplacian_matrices
-        edge_counts = aligned_mesh.edge_counts
-    else:
-        ref_vertices_first = np.vstack([ref_robot_all[0], ref_object_points])
-        edges = tuple(mesh.edges) if mesh.edges else build_knn_edges(ref_vertices_first, int(mesh.knn_k))
-        if not edges:
-            return {"active": False, "rows": 0, "warning": "interaction mesh has no edges"}
-        laplacian = build_uniform_laplacian_matrix(vertex_count, edges)
-        laplacians = np.broadcast_to(laplacian[None], (n_frames, vertex_count, vertex_count))
-        edge_counts = np.full((n_frames,), len(edges), dtype=np.int32)
+    prepared = prepared_mesh or prepare_interaction_mesh_laplacian(
+        mesh=mesh,
+        q_reference=q_ref,
+        kinematics=kinematics,
+    )
+    warning = prepared.get("warning")
+    if warning:
+        return {"active": False, "rows": 0, "warning": str(warning)}
+    ref_robot_all = np.asarray(prepared["reference_robot_points"], dtype=np.float64)
+    laplacians = np.asarray(prepared["laplacian_matrices"], dtype=np.float64)
+    edge_counts = np.asarray(prepared["edge_counts"], dtype=np.int32)
 
     row_count = 0
     active_counts: list[int] = []
@@ -341,6 +340,48 @@ def add_interaction_mesh_laplacian_residuals(
         "per_vertex_weight_min": float(np.min(per_vertex_weights)),
         "per_vertex_weight_max": float(np.max(per_vertex_weights)),
         "normalization": "mean_over_robot_coupled_laplacian_vertices",
+        "topology_precomputed": prepared_mesh is not None,
+    }
+
+
+def prepare_interaction_mesh_laplacian(
+    *,
+    mesh: InteractionMeshSpec,
+    q_reference: np.ndarray,
+    kinematics: KinematicsProvider,
+) -> dict[str, Any]:
+    """Build the reference topology once for all nonlinear/line-search evaluations."""
+
+    mesh.validate()
+    q_ref = np.asarray(q_reference, dtype=np.float64)
+    if q_ref.ndim != 2:
+        raise ValueError(f"q_reference must be [T,nq], got {q_ref.shape}")
+    robot_points = tuple(str(point) for point in mesh.robot_points)
+    object_points = np.asarray(mesh.object_points, dtype=np.float64)
+    ref_object_points = (
+        np.asarray(mesh.reference_object_points, dtype=np.float64)
+        if mesh.reference_object_points is not None
+        else object_points
+    )
+    ref_robot_all = _reference_robot_points(mesh, q_ref, kinematics, robot_points)
+    n_frames = q_ref.shape[0]
+    vertex_count = len(robot_points) + object_points.shape[0]
+    if mesh.topology == "omniretarget_delaunay":
+        aligned_mesh = build_omniretarget_interaction_mesh(ref_robot_all, ref_object_points)
+        laplacians = aligned_mesh.laplacian_matrices
+        edge_counts = aligned_mesh.edge_counts
+    else:
+        ref_vertices_first = np.vstack([ref_robot_all[0], ref_object_points])
+        edges = tuple(mesh.edges) if mesh.edges else build_knn_edges(ref_vertices_first, int(mesh.knn_k))
+        if not edges:
+            return {"warning": "interaction mesh has no edges"}
+        laplacian = build_uniform_laplacian_matrix(vertex_count, edges)
+        laplacians = np.broadcast_to(laplacian[None], (n_frames, vertex_count, vertex_count))
+        edge_counts = np.full((n_frames,), len(edges), dtype=np.int32)
+    return {
+        "reference_robot_points": ref_robot_all,
+        "laplacian_matrices": laplacians,
+        "edge_counts": edge_counts,
     }
 
 

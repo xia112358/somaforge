@@ -47,10 +47,37 @@ def load_contact_force_payload(path: str | Path, *, frame_count: int) -> dict:
             if "contact_force_part_position_w" in data
             else np.zeros_like(forces)
         )
-    count = min(frame_count, forces.shape[0], masks.shape[0], positions.shape[0])
+        position_valid = (
+            np.asarray(data["contact_force_part_position_valid"], dtype=bool)
+            if "contact_force_part_position_valid" in data
+            else masks.copy()
+        )
+        raw_counts = np.asarray(data["raw_contact_count"], dtype=np.int64) if "raw_contact_count" in data else None
+        raw_points = np.asarray(data["raw_contact_point0_w"], dtype=np.float32) if "raw_contact_point0_w" in data else None
+        raw_forces = np.asarray(data["raw_contact_force_w"], dtype=np.float32) if "raw_contact_force_w" in data else None
+    count = min(frame_count, forces.shape[0], masks.shape[0], positions.shape[0], position_valid.shape[0])
+    sample_points: list[list[list[float]]] = []
+    sample_forces: list[list[list[float]]] = []
+    if raw_counts is not None and raw_points is not None and raw_forces is not None:
+        raw_frame_count = min(count, raw_counts.shape[0], raw_points.shape[0], raw_forces.shape[0])
+        for frame in range(raw_frame_count):
+            sample_count = max(0, min(int(raw_counts[frame]), raw_points.shape[1], raw_forces.shape[1]))
+            sample_points.append(raw_points[frame, :sample_count].tolist())
+            sample_forces.append(raw_forces[frame, :sample_count].tolist())
+        for _ in range(raw_frame_count, count):
+            sample_points.append([])
+            sample_forces.append([])
+    else:
+        for frame in range(count):
+            active = np.asarray(masks[frame], dtype=bool)
+            sample_points.append(np.asarray(positions[frame])[active].tolist())
+            sample_forces.append(np.asarray(forces[frame])[active].tolist())
     return {
         "part_order": names,
         "forces": forces[:count].tolist(),
         "masks": masks[:count].tolist(),
         "positions": positions[:count].tolist(),
+        "position_valid": position_valid[:count].tolist(),
+        "sample_points": sample_points,
+        "sample_forces": sample_forces,
     }

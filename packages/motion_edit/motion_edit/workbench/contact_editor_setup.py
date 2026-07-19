@@ -45,6 +45,7 @@ class ContactEditorConfig:
     bind_mode: str = "reject"
     fps: int = 50
     prebound_contact_layer: bool = False
+    contact_force_motion: str | None = None
 
 
 @dataclass(frozen=True)
@@ -213,6 +214,7 @@ def prepare_contact_editor_session(
 
     surfaces = filter_surfaces_for_binding(read_contact_surfaces(surface_catalog), include_side_surfaces=False)
     graph = read_contact_graph(layers_root / source_layer, config.motion_id)
+    contact_motion = config.contact_force_motion or config.motion
     if config.prebound_contact_layer:
         counts = surface_binding_counts(graph)
         if counts["unbound_count"] or counts["failed_count"]:
@@ -223,6 +225,7 @@ def prepare_contact_editor_session(
             )
         session = prepare_surface_editor_session(
             motion_path=config.motion,
+            contact_force_path=contact_motion,
             motion_id=config.motion_id,
             contact_layer=source_layer,
             surface_catalog=str(surface_catalog),
@@ -246,7 +249,7 @@ def prepare_contact_editor_session(
     try:
         graph = refine_contact_graph_anchor_positions_from_raw_contacts(
             graph,
-            config.motion,
+            contact_motion,
             surfaces=surfaces,
             max_surface_distance=config.max_surface_distance,
         )
@@ -291,7 +294,7 @@ def prepare_contact_editor_session(
     )
     ready_transitions = stable_proto_transitions_for_editor(
         graph=bound_graph,
-        motion=config.motion,
+        motion=contact_motion,
         fps=config.fps,
         fallback=visible_graph.transitions,
     )
@@ -313,6 +316,7 @@ def prepare_contact_editor_session(
     write_contact_surfaces(ready_root / "surfaces" / f"{config.motion_id}.jsonl", surfaces)
     session = prepare_surface_editor_session(
         motion_path=config.motion,
+        contact_force_path=contact_motion,
         motion_id=config.motion_id,
         contact_layer=ready_layer,
         surface_catalog=str(surface_catalog),
