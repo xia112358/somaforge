@@ -43,6 +43,20 @@ if [[ ! -f $SENTINEL_FILE ]]; then
   pip install --upgrade pip
   pip install -U torch==2.10.0 torchvision==0.25.0 --index-url https://download.pytorch.org/whl/cu128
   pip install "isaacsim[all,extscache]==6.0.0" --extra-index-url https://pypi.nvidia.com
+  # Motion Edit and GMVQ share this runtime with Isaac Lab. JAX reuses the
+  # CUDA 12 libraries installed with PyTorch; the matching PTX compiler wheel
+  # is pinned explicitly so PyRoki can compile solver graphs on the GPU.
+  pip install \
+    "jax[cuda12]==0.10.2" \
+    "nvidia-cuda-nvcc-cu12==12.8.93" \
+    "jax_dataclasses==1.6.3" \
+    "jaxlie==1.5.0" \
+    "jaxtyping==0.3.11" \
+    "pyliblzfse==0.4.1" \
+    "robot_descriptions==2.0.0"
+  pip install --no-deps \
+    "git+https://github.com/brentyi/jaxls.git@f8f8dbb54b3e0c16e8bf014496462a4e675e9389" \
+    "git+https://github.com/chungmin99/pyroki.git@388e43e1fc0d0ee382968d3dd72970fd62a0450c"
 
   if [[ ! -d $ISAACLAB_PATH ]]; then
     git clone https://github.com/isaac-sim/IsaacLab.git --branch main $ISAACLAB_PATH

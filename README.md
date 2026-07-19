@@ -199,11 +199,11 @@ resulting pack. Keep the pack and checkpoints under `runtime/current/`:
 
 ```bash
 source scripts/source_somaforge.sh
-conda run -n gmvq_vae python -m gmvq.prepare_motion_edit_segments \
+conda run -n env_somaforge python -m gmvq.prepare_motion_edit_segments \
   --motion-edit-manifest runtime/current/manifests/newton_contact_force_8part.json \
   --motion-root runtime/current/motions \
   --output runtime/current/models/example_segment_pack.npz
-conda run -n gmvq_vae python -m gmvq.train_gmvq \
+conda run -n env_somaforge python -m gmvq.train_gmvq \
   --data runtime/current/models/example_segment_pack.npz \
   --save_dir runtime/current/models/example_gmvq
 ```

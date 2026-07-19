@@ -1609,7 +1609,7 @@ def apply_contact_edit_plan_to_motion(
     contact_laplacian_proxy_only: bool = False,
     lte_repo_root: str | Path | None = None,
     ik_script: str | Path | None = None,
-    ik_conda_env: str = "env_pyroki_climb_projection",
+    ik_conda_env: str = "env_somaforge",
     ik_max_nfev: int | None = None,
     ik_q_prior_weight: float = 12.0,
     ik_q_smooth_weight: float = 60.0,

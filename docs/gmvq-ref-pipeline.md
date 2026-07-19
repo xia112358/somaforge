@@ -143,7 +143,7 @@ cd /home/xiaz/somaforge/packages/motion_edit
   --output data/exports/manifests/probe_chain_current.json
 
 cd /home/xiaz/somaforge/packages/gmvq
-conda run -n gmvq_vae python -m gmvq.prepare_motion_edit_segments \
+conda run -n env_somaforge python -m gmvq.prepare_motion_edit_segments \
   --motion-edit-manifest /home/xiaz/somaforge/packages/motion_edit/data/exports/manifests/probe_chain_current.json \
   --motion-root /home/xiaz/somaforge/packages/motion_edit \
   --output data/motion_edit/probe_chain_current_ref_t512.npz \
@@ -156,7 +156,7 @@ conda run -n gmvq_vae python -m gmvq.prepare_motion_edit_segments \
   --min-len 16 \
   --max-len 512
 
-conda run -n gmvq_vae python -m gmvq.train_gmvq \
+conda run -n env_somaforge python -m gmvq.train_gmvq \
   --data data/motion_edit/probe_chain_current_ref_t512.npz \
   --save_dir runs/gmvq_motion_edit_probe_chain_smoke \
   --encoder_type bigru_masked \
@@ -167,7 +167,7 @@ conda run -n gmvq_vae python -m gmvq.train_gmvq \
   --steps 2 \
   --device cpu
 
-conda run -n gmvq_vae python -m gmvq.decode_motion_edit_ref \
+conda run -n env_somaforge python -m gmvq.decode_motion_edit_ref \
   --checkpoint runs/gmvq_motion_edit_probe_chain_smoke/checkpoint.pt \
   --data data/motion_edit/probe_chain_current_ref_t512.npz \
   --output /home/xiaz/somaforge/tmp/gmvq_play/probe_chain_current_gmvq_smoke_ref.npz \

@@ -37,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--contact-laplacian-proxy-only", action="store_true")
     parser.add_argument("--lte-repo-root", default=None)
     parser.add_argument("--ik-script", default=None)
-    parser.add_argument("--ik-conda-env", default="env_pyroki_climb_projection")
+    parser.add_argument("--ik-conda-env", default="env_somaforge")
     parser.add_argument("--ik-max-nfev", type=int, default=None)
     parser.add_argument("--intermediate-dir", default=None)
     parser.add_argument("--no-force-bake", action="store_true")

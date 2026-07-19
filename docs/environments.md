@@ -5,10 +5,8 @@ not part of the supported workflow.
 
 | Environment | Responsibility |
 | --- | --- |
-| `env_somaforge` | SomaForge workspace, Holosoma, Isaac Lab 3/Newton, Motion Edit, evaluation, and TensorBoard |
-| `gmvq_vae` | GMVQ and HyAR model preparation and training |
+| `env_somaforge` | SomaForge workspace, Holosoma, Isaac Lab 3/Newton, Motion Edit/PyRoki, GMVQ/HyAR, evaluation, and TensorBoard |
 | `hsretargeting` | OmniRetarget and source-motion retargeting |
-| `env_pyroki_climb_projection` | Motion Edit PyRoki IK subprocess |
 
 Use the repository setup scripts rather than activating environments manually:
 
@@ -23,4 +21,6 @@ source scripts/source_somaforge.sh
 setup/source scripts accept `SOMAFORGE_CONDA_ENV` when an intentional
 compatibility environment is required. The `motion-edit` launcher follows that
 default and additionally accepts `MOTION_EDIT_CONDA_ENV` as a command-specific
-override. `force-retarget` continues to use `env_pyroki_climb_projection`.
+override. PyRoki/JAXLS and GMVQ use the same `env_somaforge` runtime and CUDA 12
+stack as Isaac Lab; only source-motion retargeting remains isolated in
+`hsretargeting`.
