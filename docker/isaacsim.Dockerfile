@@ -1,5 +1,5 @@
 # Isaac Lab 3 Newton image
-# Runs setup_isaaclab3_newton.sh to create the env_holosoma_isaaclab3_newton
+# Runs setup_isaaclab3_newton.sh to create the env_somaforge
 # conda environment with Isaac Sim 6.0 and Isaac Lab Newton.
 FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 

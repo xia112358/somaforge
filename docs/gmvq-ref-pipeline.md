@@ -76,7 +76,7 @@ Prepare the clean 32-body policy-ref sources and a rebased cut summary with:
 
 ```bash
 cd /home/xiaz/somaforge
-conda run -n env_holosoma_isaaclab3_newton python scripts/gmvq_ref/prepare_clean_source_aug_inputs.py
+conda run -n env_somaforge python scripts/gmvq_ref/prepare_clean_source_aug_inputs.py
 ```
 
 Outputs:
@@ -230,7 +230,7 @@ current code selector and theta selector checkpoints are evaluated with:
 
 ```bash
 cd /home/xiaz/somaforge
-conda run -n env_holosoma_isaaclab3_newton python scripts/gmvq_ref/eval_selector_decode.py
+conda run -n env_somaforge python scripts/gmvq_ref/eval_selector_decode.py
 ```
 
 The old fixed35 large augmented segment pack fixed the `joint_vel` dimension but
@@ -259,7 +259,7 @@ after those generated motions have been canonicalized to `policy_ref_v1`.
 Rebuild it with:
 
 ```bash
-conda run -n env_holosoma_isaaclab3_newton python scripts/gmvq_ref/rebuild_augmented_ref_pack.py
+conda run -n env_somaforge python scripts/gmvq_ref/rebuild_augmented_ref_pack.py
 ```
 
 Historical result on the old `raw29_large_mixed_n64` augmented dataset used a
@@ -285,7 +285,7 @@ To generate a policy-loadable selector-decoded ref:
 
 ```bash
 cd /home/xiaz/somaforge
-conda run -n env_holosoma_isaaclab3_newton python scripts/gmvq_ref/decode_selector_ref.py
+conda run -n env_somaforge python scripts/gmvq_ref/decode_selector_ref.py
 python3 scripts/gmvq_ref/check_data_layout.py \
   --manifest tmp/gmvq_play/selector_decoded_refs/climb00_surface_jitter_0000_selector_manifest.json
 ```

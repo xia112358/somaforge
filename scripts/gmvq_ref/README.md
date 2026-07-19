@@ -57,7 +57,7 @@ Do not train on either old augmented source:
 Build augmentation inputs from the official motion manifest first:
 
 ```bash
-conda run -n env_holosoma_isaaclab3_newton python scripts/gmvq_ref/prepare_clean_source_aug_inputs.py
+conda run -n env_somaforge python scripts/gmvq_ref/prepare_clean_source_aug_inputs.py
 ```
 
 This writes clean `policy_ref_v1` source refs and a cut summary whose
@@ -131,7 +131,7 @@ the segment pack.
 To produce a policy-loadable decoded ref from selector predictions:
 
 ```bash
-conda run -n env_holosoma_isaaclab3_newton python scripts/gmvq_ref/decode_selector_ref.py
+conda run -n env_somaforge python scripts/gmvq_ref/decode_selector_ref.py
 ```
 
 This writes a `policy_ref_v1` npz plus a single-motion manifest under

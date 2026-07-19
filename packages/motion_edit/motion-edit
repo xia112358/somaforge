@@ -5,7 +5,7 @@ SOMAFORGE_ROOT="$(cd "$ROOT/../.." && pwd)"
 if [[ "${1:-}" == "force-retarget" ]]; then
   DEFAULT_CONDA_ENV="env_pyroki_climb_projection"
 else
-  DEFAULT_CONDA_ENV="env_holosoma_isaaclab3_newton"
+  DEFAULT_CONDA_ENV="${SOMAFORGE_CONDA_ENV:-env_somaforge}"
 fi
 CONDA_ENV="${MOTION_EDIT_CONDA_ENV:-$DEFAULT_CONDA_ENV}"
 

@@ -30,7 +30,9 @@ DEFAULT_WORK_DIR = REPO_ROOT / "runtime/current/rollout/newton_contact_force"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "runtime/current/motions/newton_contact_force"
 DEFAULT_MANIFEST_OUTPUT = REPO_ROOT / "runtime/current/manifests/newton_contact_force_8part.json"
 DEFAULT_FAILURE_REPORT = REPO_ROOT / "runtime/current/rollout/newton_contact_force/failures.json"
-DEFAULT_CONDA_PYTHON = Path("/home/xiaz/miniforge3/envs/env_holosoma_isaaclab3_newton/bin/python")
+DEFAULT_CONDA_ROOT = Path(os.environ.get("CONDA_ROOT", Path.home() / "miniforge3"))
+DEFAULT_CONDA_ENV = os.environ.get("SOMAFORGE_CONDA_ENV", "env_somaforge")
+DEFAULT_CONDA_PYTHON = DEFAULT_CONDA_ROOT / "envs" / DEFAULT_CONDA_ENV / "bin" / "python"
 DEFAULT_PARALLEL_ENVS = 16
 
 

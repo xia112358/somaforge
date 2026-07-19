@@ -11,7 +11,7 @@ source ${SCRIPT_DIR}/source_somaforge.sh
 # Use a project-scoped Isaac Lab 3 / Newton environment by default.  Do not
 # reuse the generic env_isaaclab env because it commonly has PhysX and older
 # Isaac Sim/Lab packages installed for other projects.
-CONDA_ENV_NAME=${CONDA_ENV_NAME:-env_holosoma_isaaclab3_newton}
+CONDA_ENV_NAME=${CONDA_ENV_NAME:-${SOMAFORGE_CONDA_ENV:-env_somaforge}}
 ISAACLAB_PATH=${ISAACLAB_PATH:-$HOME/isaaclab_3.0}
 
 echo "conda environment name is set to: $CONDA_ENV_NAME"

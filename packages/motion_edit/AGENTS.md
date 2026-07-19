@@ -75,7 +75,7 @@ Expected:
 - Before merging to `main`, run:
 
 ```bash
-conda run -n env_holosoma_isaaclab3_newton python -m unittest discover -s tests
+conda run -n env_somaforge python -m unittest discover -s tests
 npm --prefix web run build
 npm --prefix web exec -- playwright test
 ```

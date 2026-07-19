@@ -10,7 +10,7 @@ if ! command -v sudo &> /dev/null; then
   export -f sudo
 fi
 
-CONDA_ENV_NAME=${CONDA_ENV_NAME:-env_holosoma_isaaclab3_newton}
+CONDA_ENV_NAME=${CONDA_ENV_NAME:-${SOMAFORGE_CONDA_ENV:-env_somaforge}}
 ISAACLAB_PATH=${ISAACLAB_PATH:-$HOME/isaaclab_3.0}
 
 source ${SCRIPT_DIR}/source_common.sh

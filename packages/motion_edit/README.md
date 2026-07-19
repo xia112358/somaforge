@@ -44,7 +44,7 @@ Motion Edit uses the shared Conda environment. Install the Python service and
 build the bundled Three.js frontend before launching the editor:
 
 ```bash
-conda run -n env_holosoma_isaaclab3_newton \
+conda run -n env_somaforge \
   python -m pip install -e .
 npm --prefix web install
 npm --prefix web run build
@@ -313,7 +313,7 @@ Run the complete black-box Newton force loop from the PyRoki environment:
   --manifest runtime/current/manifests/newton_contact_force_8part.json \
   --motion-id 00 \
   --checkpoint /path/to/wbt_model.pt \
-  --newton-python /home/xiaz/miniforge3/envs/env_holosoma_isaaclab3_newton/bin/python \
+  --newton-python /home/xiaz/miniforge3/envs/env_somaforge/bin/python \
   --output-motion data/motions/generated/climb00.force_ref_v1.npz \
   --work-dir ../../tmp/motion_edit/climb00_force_retarget
 ```
