@@ -12,7 +12,6 @@ from motion_edit.contact.io import read_contact_surfaces
 from motion_edit.contact.layers import read_contact_graph
 from motion_edit.contact.newton_bindings import bind_newton_contact_patches
 from motion_edit.contact.plans import ContactEditPlan, read_contact_edit_plan, validate_contact_edit_plan
-from motion_edit.contact.schema import ContactAnchorEditRecord
 from motion_edit.contact_laplacian.schema import BatchContactLaplacianConfig
 from motion_edit.generation.lte_fullbody import (
     LTE_FULLBODY_KEYPOINT_LINKS,
@@ -20,6 +19,7 @@ from motion_edit.generation.lte_fullbody import (
     _load_motion_npz,
     _stamp_robot_asset,
 )
+from motion_edit.generation.task_variant_compat import apply_pose_edits_to_proxy, expand_task_variant_plan
 from motion_edit.generation.taskspace_builder import build_contact_aware_taskspace_motion
 from motion_edit.generation.taskspace_spec import write_contact_aware_taskspace_motion
 from motion_edit.paths import LAYERS_ROOT
@@ -91,7 +91,12 @@ def generate_contact_aware_pyroki_preview(
 
     contact_layer = source_contact_layer or plan.source_contact_layer
     graph = read_contact_graph(layers_root / contact_layer, plan.source_motion_id)
-    edits = [ContactAnchorEditRecord(**raw) for raw in plan.edits]
+    surface_path = layers_root / contact_layer / "surfaces" / f"{graph.motion_id}.jsonl"
+    source_surfaces = read_contact_surfaces(surface_path) if surface_path.is_file() else []
+    variant = expand_task_variant_plan(plan, anchors=graph.anchors, surfaces=source_surfaces)
+    edits = list(variant.edits)
+    surfaces = list(variant.surfaces)
+
     config = BatchContactLaplacianConfig(
         num_iters=int(contact_laplacian_iters),
         damping=float(contact_laplacian_damping),
@@ -114,14 +119,18 @@ def generate_contact_aware_pyroki_preview(
         source_plan_path=plan_path,
         plan=plan,
     )
+    proxy, pose_metadata = apply_pose_edits_to_proxy(proxy, plan.pose_edits)
+    proxy_metadata = {
+        **dict(proxy_metadata),
+        "task_variant_expansion": variant.metadata,
+        "pose_edit_application": pose_metadata,
+    }
 
     patches, binding_summary = bind_newton_contact_patches(
         graph.anchors,
         motion,
         min_force_norm=float(min_raw_contact_force_norm),
     )
-    surface_path = layers_root / contact_layer / "surfaces" / f"{graph.motion_id}.jsonl"
-    surfaces = read_contact_surfaces(surface_path) if surface_path.is_file() else []
 
     semantic_names = tuple(name for name in LTE_FULLBODY_KEYPOINT_LINKS if f"keypoint_{name}" in proxy)
     if not semantic_names:
@@ -180,6 +189,7 @@ def generate_contact_aware_pyroki_preview(
     diagnostics = _json_object(ik_motion.get("ik_diagnostics_json"))
     warnings = tuple(
         [
+            *variant.warnings,
             *proxy_warnings,
             *[str(item) for item in binding_summary.get("warnings", [])],
             "output is PyRoki-FK-consistent preview only; direct Newton/MJWarp canonicalization is required",
