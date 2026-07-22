@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,6 @@ from motion_edit.generation.lte_fullbody import (
     LTE_FULLBODY_KEYPOINT_LINKS,
     _batch_contact_laplacian_proxy_motion,
     _load_motion_npz,
-    _run_fullbody_ik_subprocess,
     _stamp_robot_asset,
 )
 from motion_edit.generation.taskspace_builder import build_contact_aware_taskspace_motion
@@ -147,10 +147,10 @@ def generate_contact_aware_pyroki_preview(
     taskspace_path = work_dir / f"{output.stem}.contact_aware_taskspace.npz"
     ik_output_path = work_dir / f"{output.stem}.pyroki_preview.npz"
     write_contact_aware_taskspace_motion(taskspace_path, taskspace)
-    _run_fullbody_ik_subprocess(
-        lte_path=taskspace_path,
+    _run_pyroki_preview_subprocess(
+        taskspace_path=taskspace_path,
+        source_motion_path=source_motion_path,
         ik_output_path=ik_output_path,
-        lte_repo_root=None,
         ik_script=ik_script,
         ik_conda_env=ik_conda_env,
         ik_max_nfev=ik_max_nfev,
@@ -186,6 +186,36 @@ def generate_contact_aware_pyroki_preview(
         diagnostics=diagnostics,
         warnings=warnings,
     )
+
+
+def _run_pyroki_preview_subprocess(
+    *,
+    taskspace_path: Path,
+    source_motion_path: Path,
+    ik_output_path: Path,
+    ik_script: str | Path | None,
+    ik_conda_env: str,
+    ik_max_nfev: int | None,
+) -> None:
+    script = Path(ik_script).expanduser() if ik_script is not None else Path(__file__).with_name("pyroki_fullbody_ik.py")
+    package_root = Path(__file__).resolve().parents[2]
+    cmd = [
+        "conda",
+        "run",
+        "-n",
+        str(ik_conda_env),
+        "python",
+        str(script.resolve()),
+        "--taskspace-spec",
+        str(taskspace_path.resolve()),
+        "--source-motion",
+        str(source_motion_path.resolve()),
+        "--out",
+        str(ik_output_path.resolve()),
+    ]
+    if ik_max_nfev is not None:
+        cmd.extend(["--max-nfev", str(int(ik_max_nfev))])
+    subprocess.run(cmd, cwd=str(package_root), check=True)
 
 
 def merge_pyroki_preview_motion(
@@ -251,11 +281,9 @@ def merge_pyroki_preview_motion(
         "source_plan_id": plan.plan_id,
         "source_motion": plan.source_motion_path,
     }
-    generated["motion_edit_generation_metadata"] = np.asarray(
-        json.dumps(metadata, sort_keys=True), dtype=object
-    )
-    generated["source_contact_edit_plan"] = np.asarray(plan.plan_id, dtype=object)
-    generated["source_motion_path"] = np.asarray(plan.source_motion_path, dtype=object)
+    generated["motion_edit_generation_metadata"] = np.asarray(json.dumps(metadata, sort_keys=True))
+    generated["source_contact_edit_plan"] = np.asarray(plan.plan_id)
+    generated["source_motion_path"] = np.asarray(plan.source_motion_path)
     return generated
 
 
