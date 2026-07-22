@@ -14,6 +14,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from motion_edit.generation.contact_semantic_aliases import install_lte_contact_semantic_aliases
+
+install_lte_contact_semantic_aliases()
+
 from motion_edit.generation.contact_aware import ContactAwareGenerationResult, apply_contact_aware_edit_plan_to_motion
 from motion_edit.generation.contact_aware_preview import (
     ContactAwarePreviewResult,
