@@ -70,6 +70,7 @@ def main() -> None:
         json.dumps(
             {
                 "output_motion": str(result.output_motion_path),
+                "semantic_task_proxy": str(result.semantic_task_proxy_path),
                 "taskspace_spec": str(result.taskspace_spec_path),
                 "ik_output": str(result.ik_output_path),
                 "binding_summary": result.binding_summary,
