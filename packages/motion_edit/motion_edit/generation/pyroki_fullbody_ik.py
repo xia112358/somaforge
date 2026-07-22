@@ -1,4 +1,9 @@
-"""PyRoki fullbody IK backend for contact-Laplacian task-space motions."""
+"""PyRoki trajectory IK for contact-aware task-space motions.
+
+This backend is deliberately kinematic. Newton/MJWarp remains the authority for
+collision and contact validation. The output is a PyRoki-FK-consistent preview
+trajectory that must be Newton-canonicalized before training use.
+"""
 
 from __future__ import annotations
 
@@ -12,30 +17,24 @@ from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
 from somaforge_core.robot_assets import canonical_g1_urdf_path
 
+from motion_edit.generation.pyroki_taskspace import (
+    CompiledPyrokiTaskspace,
+    SEMANTIC_DEFAULT_WEIGHTS,
+    SEMANTIC_LINK_ALIASES,
+    compile_pyroki_taskspace,
+    holosoma_body_velocities,
+    holosoma_joint_velocities,
+    normalize_quat_wxyz,
+    quat_apply_wxyz,
+    resolve_link_index,
+    world_body_poses_from_pyroki_fk,
+)
+from motion_edit.generation.taskspace_spec import ContactAwareTaskspaceMotion
+
 
 DEFAULT_ROBOT_URDF = canonical_g1_urdf_path()
-
-TARGET_LINK_ALIASES: dict[str, tuple[str, ...]] = {
-    "pelvis": ("pelvis",),
-    "torso": ("torso_link",),
-    "left_knee": ("left_knee_link",),
-    "right_knee": ("right_knee_link",),
-    "left_foot": ("left_ankle_roll_link", "left_ankle_roll_sphere_1_link"),
-    "right_foot": ("right_ankle_roll_link", "right_ankle_roll_sphere_1_link"),
-    "left_hand": ("left_sphere_hand_tip_link", "left_sphere_hand_link", "left_wrist_yaw_link"),
-    "right_hand": ("right_sphere_hand_tip_link", "right_sphere_hand_link", "right_wrist_yaw_link"),
-}
-
-TARGET_WEIGHTS: dict[str, float] = {
-    "pelvis": 10.0,
-    "torso": 4.0,
-    "left_knee": 4.0,
-    "right_knee": 4.0,
-    "left_foot": 8.0,
-    "right_foot": 8.0,
-    "left_hand": 5.0,
-    "right_hand": 5.0,
-}
+TARGET_LINK_ALIASES = SEMANTIC_LINK_ALIASES
+TARGET_WEIGHTS = SEMANTIC_DEFAULT_WEIGHTS
 
 
 def _load_npz(path: str | Path) -> dict[str, Any]:
@@ -72,47 +71,19 @@ def _motion_strings(data: dict[str, Any], keys: tuple[str, ...]) -> list[str]:
     return []
 
 
-def _resolve_link_indices(link_names: tuple[str, ...], targets: dict[str, np.ndarray]) -> tuple[list[str], np.ndarray, np.ndarray]:
-    names: list[str] = []
-    indices: list[int] = []
-    weights: list[float] = []
-    lowered = {name.lower(): index for index, name in enumerate(link_names)}
-    for target_name, aliases in TARGET_LINK_ALIASES.items():
-        if target_name not in targets:
-            continue
-        resolved = None
-        for alias in aliases:
-            if alias in link_names:
-                resolved = link_names.index(alias)
-                break
-            if alias.lower() in lowered:
-                resolved = lowered[alias.lower()]
-                break
-        if resolved is None:
-            continue
-        names.append(target_name)
-        indices.append(int(resolved))
-        weights.append(float(TARGET_WEIGHTS[target_name]))
-    if not indices:
-        raise ValueError("PyRoki IK could not resolve any target links from LTE keypoints")
-    return names, np.asarray(indices, dtype=np.int32), np.asarray(weights, dtype=np.float64)
-
-
 def _source_motion_from_lte(lte: dict[str, Any], explicit: str | Path | None) -> Path:
     if explicit is not None:
         return Path(explicit).expanduser()
     if "source_demo" not in lte:
-        raise ValueError("LTE keypoint file has no source_demo; pass --source-motion")
+        raise ValueError("legacy LTE keypoint file has no source_demo; pass --source-motion")
     return Path(_decode_scalar(lte["source_demo"])).expanduser()
 
 
-def _source_qpos(source_motion: dict[str, Any], n_frames: int, actuated_count: int) -> tuple[np.ndarray, np.ndarray, list[str]]:
-    if "joint_pos" not in source_motion:
-        raise ValueError("source motion must contain joint_pos for PyRoki IK warm start")
-    raw = np.asarray(source_motion["joint_pos"], dtype=np.float64)
+def _source_qpos_from_array(raw_value: Any, n_frames: int, actuated_count: int) -> tuple[np.ndarray, np.ndarray]:
+    raw = np.asarray(raw_value, dtype=np.float64)
     if raw.ndim != 2:
         raise ValueError(f"source joint_pos must have shape [T,Q], got {raw.shape}")
-    count = min(n_frames, raw.shape[0])
+    count = min(int(n_frames), raw.shape[0])
     if raw.shape[1] >= 7 + actuated_count:
         root = raw[:count, :7].copy()
         cfg = raw[:count, 7 : 7 + actuated_count].copy()
@@ -124,8 +95,24 @@ def _source_qpos(source_motion: dict[str, Any], n_frames: int, actuated_count: i
         raise ValueError(
             f"source joint_pos has {raw.shape[1]} columns; expected {actuated_count} or at least {7 + actuated_count}"
         )
-    names = _motion_strings(source_motion, ("joint_names", "dof_names", "joint_name", "dof_name"))
-    return root, cfg, names
+    root[:, 3:7] = normalize_quat_wxyz(root[:, 3:7])
+    return root, cfg
+
+
+def _align_source_cfg(
+    cfg: np.ndarray,
+    source_joint_names: list[str],
+    robot_joint_names: tuple[str, ...],
+) -> np.ndarray:
+    if not source_joint_names:
+        return cfg
+    if source_joint_names == list(robot_joint_names):
+        return cfg
+    if all(name in source_joint_names for name in robot_joint_names):
+        indices = [source_joint_names.index(name) for name in robot_joint_names]
+        return cfg[:, indices]
+    missing = [name for name in robot_joint_names if name not in source_joint_names]
+    raise ValueError(f"source motion is missing PyRoki actuated joints: {missing}")
 
 
 def _fps_from_motion(source_motion: dict[str, Any]) -> float:
@@ -138,25 +125,134 @@ def _fps_from_motion(source_motion: dict[str, Any]) -> float:
     return 50.0
 
 
-def _linear_velocity(qpos: np.ndarray, fps: float) -> np.ndarray:
-    if qpos.shape[0] <= 1:
-        return np.zeros_like(qpos)
-    dt = 1.0 / float(fps)
-    vel = np.zeros_like(qpos, dtype=np.float64)
-    vel[1:-1] = (qpos[2:] - qpos[:-2]) / (2.0 * dt)
-    vel[0] = (qpos[1] - qpos[0]) / dt
-    vel[-1] = (qpos[-1] - qpos[-2]) / dt
-    return vel
-
-
 def _quat_wxyz_to_rotation(quat: np.ndarray) -> Rotation:
-    q = np.asarray(quat, dtype=np.float64).reshape(4)
-    norm = np.linalg.norm(q)
-    if norm <= 1.0e-12:
-        q = np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
-    else:
-        q = q / norm
+    q = normalize_quat_wxyz(np.asarray(quat, dtype=np.float64).reshape(4))
     return Rotation.from_quat([q[1], q[2], q[3], q[0]])
+
+
+def _legacy_compiled_taskspace(lte: dict[str, Any], link_names: tuple[str, ...]) -> CompiledPyrokiTaskspace:
+    targets = {name: np.asarray(lte[name], dtype=np.float64) for name in TARGET_LINK_ALIASES if name in lte}
+    if "root" in lte and "pelvis" not in targets:
+        targets["pelvis"] = np.asarray(lte["root"], dtype=np.float64)
+    if not targets:
+        raise ValueError("legacy LTE input has no supported PyRoki keypoints")
+    n_frames = min(value.shape[0] for value in targets.values())
+    names: list[str] = []
+    indices: list[int] = []
+    values: list[np.ndarray] = []
+    unresolved: list[str] = []
+    for name, target in targets.items():
+        link_index = resolve_link_index(link_names, name, TARGET_LINK_ALIASES.get(name, (name,)))
+        if link_index is None:
+            unresolved.append(name)
+            continue
+        names.append(name)
+        indices.append(link_index)
+        values.append(target[:n_frames])
+    if not indices:
+        raise ValueError("PyRoki IK could not resolve any legacy target links")
+    semantic_targets = np.stack(values, axis=1)
+    semantic_weights = np.broadcast_to(
+        np.asarray([TARGET_WEIGHTS.get(name, 1.0) for name in names], dtype=np.float64)[None, :],
+        (n_frames, len(names)),
+    ).copy()
+    compiled = CompiledPyrokiTaskspace(
+        semantic_names=tuple(names),
+        semantic_link_indices=np.asarray(indices, dtype=np.int32),
+        semantic_targets_w=semantic_targets,
+        semantic_weights=semantic_weights,
+        contact_link_indices=np.zeros((n_frames, 1), dtype=np.int32),
+        contact_points_local=np.zeros((n_frames, 1, 3), dtype=np.float64),
+        contact_targets_w=np.zeros((n_frames, 1, 3), dtype=np.float64),
+        contact_weights=np.zeros((n_frames, 1), dtype=np.float64),
+        unresolved_semantics=tuple(unresolved),
+        unresolved_contacts=(),
+    )
+    compiled.validate()
+    return compiled
+
+
+def _input_problem(
+    payload: dict[str, Any],
+    *,
+    link_names: tuple[str, ...],
+    actuated_count: int,
+    robot_joint_names: tuple[str, ...],
+    source_motion_path: str | Path | None,
+    edited_contact_weight: float,
+    fixed_contact_weight: float,
+) -> tuple[
+    CompiledPyrokiTaskspace,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    float,
+    list[str],
+    str | None,
+    str,
+]:
+    if "contact_aware_taskspace_json" in payload:
+        spec = ContactAwareTaskspaceMotion.from_arrays(payload)
+        compiled = compile_pyroki_taskspace(
+            spec,
+            link_names,
+            edited_contact_weight=edited_contact_weight,
+            fixed_contact_weight=fixed_contact_weight,
+        )
+        root_source, cfg_source = _source_qpos_from_array(spec.source_qpos, spec.frame_count, actuated_count)
+        source_names: list[str] = []
+        source_path: str | None = None
+        if source_motion_path is not None:
+            source_path_obj = Path(source_motion_path).expanduser()
+            source_motion = _load_npz(source_path_obj)
+            source_names = _motion_strings(source_motion, ("joint_names", "dof_names", "joint_name", "dof_name"))
+            source_path = str(source_path_obj)
+        cfg_source = _align_source_cfg(cfg_source, source_names, robot_joint_names)
+        source_reference = np.asarray(spec.source_reference_weights, dtype=np.float64)[:, 7 : 7 + actuated_count]
+        boundary = np.asarray(spec.boundary_weights, dtype=np.float64)
+        return (
+            compiled,
+            root_source,
+            cfg_source,
+            source_reference,
+            boundary,
+            float(spec.fps),
+            source_names,
+            source_path,
+            "contact_aware_taskspace_motion_v1",
+        )
+
+    compiled = _legacy_compiled_taskspace(payload, link_names)
+    source_path_obj = _source_motion_from_lte(payload, source_motion_path)
+    source_motion = _load_npz(source_path_obj)
+    source_names = _motion_strings(source_motion, ("joint_names", "dof_names", "joint_name", "dof_name"))
+    root_source, cfg_source = _source_qpos_from_array(source_motion["joint_pos"], compiled.frame_count, actuated_count)
+    cfg_source = _align_source_cfg(cfg_source, source_names, robot_joint_names)
+    source_reference = np.ones_like(cfg_source, dtype=np.float64)
+    boundary = np.zeros(cfg_source.shape[0], dtype=np.float64)
+    return (
+        compiled,
+        root_source,
+        cfg_source,
+        source_reference,
+        boundary,
+        _fps_from_motion(source_motion),
+        source_names,
+        str(source_path_obj),
+        "legacy_lte_keypoints",
+    )
+
+
+def _stats(values: np.ndarray) -> dict[str, float]:
+    array = np.asarray(values, dtype=np.float64).reshape(-1)
+    if array.size == 0:
+        return {"mean": 0.0, "max": 0.0, "rms": 0.0}
+    return {
+        "mean": float(np.mean(array)),
+        "max": float(np.max(array)),
+        "rms": float(np.sqrt(np.mean(array * array))),
+    }
 
 
 def solve_pyroki_fullbody_ik(
@@ -168,34 +264,53 @@ def solve_pyroki_fullbody_ik(
     max_nfev: int = 25,
     q_prior_weight: float = 0.25,
     q_smooth_weight: float = 0.5,
+    boundary_pin_weight: float = 2.0,
+    edited_contact_weight: float = 100.0,
+    fixed_contact_weight: float = 80.0,
 ) -> Path:
     import jax
     import jax.numpy as jnp
     import pyroki
     import yourdfpy
 
-    lte = _load_npz(lte_path)
-    targets = {name: np.asarray(lte[name], dtype=np.float64) for name in TARGET_LINK_ALIASES if name in lte}
-    if "root" in lte and "pelvis" not in targets:
-        targets["pelvis"] = np.asarray(lte["root"], dtype=np.float64)
-    if not targets:
-        raise ValueError(f"{lte_path} has no supported PyRoki IK keypoints")
-    n_frames = min(arr.shape[0] for arr in targets.values())
-
+    payload = _load_npz(lte_path)
     robot_path = Path(robot_urdf).expanduser()
     if not robot_path.exists():
         raise FileNotFoundError(f"robot URDF not found for PyRoki IK: {robot_path}")
     urdf = yourdfpy.URDF.load(str(robot_path), load_meshes=False)
     robot = pyroki.Robot.from_urdf(urdf)
+    robot_joint_names = tuple(str(name) for name in robot.joints.actuated_names)
+    link_names = tuple(str(name) for name in robot.links.names)
     actuated_count = int(robot.joints.num_actuated_joints)
-    target_names, link_indices, target_weights = _resolve_link_indices(robot.links.names, targets)
 
-    source_path = _source_motion_from_lte(lte, source_motion_path)
-    source_motion = _load_npz(source_path)
-    root_source, cfg_source, source_joint_names = _source_qpos(source_motion, n_frames, actuated_count)
-    n_frames = min(n_frames, cfg_source.shape[0])
-    root_source = root_source[:n_frames]
-    cfg_source = cfg_source[:n_frames]
+    (
+        compiled,
+        root_source,
+        cfg_source,
+        source_reference,
+        boundary_weights,
+        fps,
+        source_joint_names,
+        source_path,
+        input_schema,
+    ) = _input_problem(
+        payload,
+        link_names=link_names,
+        actuated_count=actuated_count,
+        robot_joint_names=robot_joint_names,
+        source_motion_path=source_motion_path,
+        edited_contact_weight=edited_contact_weight,
+        fixed_contact_weight=fixed_contact_weight,
+    )
+    n_frames = min(compiled.frame_count, cfg_source.shape[0])
+    root_source = root_source[:n_frames].copy()
+    cfg_source = cfg_source[:n_frames].copy()
+    source_reference = source_reference[:n_frames]
+    boundary_weights = boundary_weights[:n_frames]
+
+    pelvis_column = compiled.semantic_names.index("pelvis") if "pelvis" in compiled.semantic_names else None
+    if pelvis_column is not None:
+        root_source[:, :3] = compiled.semantic_targets_w[:n_frames, pelvis_column]
 
     lower = np.asarray(robot.joints.lower_limits, dtype=np.float64)
     upper = np.asarray(robot.joints.upper_limits, dtype=np.float64)
@@ -204,86 +319,215 @@ def solve_pyroki_fullbody_ik(
     upper = np.where(finite, upper, np.pi)
     cfg_source = np.clip(cfg_source, lower, upper)
 
-    link_indices_jax = jnp.asarray(link_indices, dtype=jnp.int32)
-    weights_jax = jnp.asarray(target_weights, dtype=jnp.float32)
+    semantic_indices_jax = jnp.asarray(compiled.semantic_link_indices, dtype=jnp.int32)
 
-    def residual_jax(q_cfg: Any, target_pos_base: Any, q_prior: Any, q_prev: Any) -> Any:
+    def quat_apply_jax(quat: Any, vector: Any) -> Any:
+        qvec = quat[..., 1:4]
+        uv = jnp.cross(qvec, vector)
+        uuv = jnp.cross(qvec, uv)
+        return vector + 2.0 * (quat[..., :1] * uv + uuv)
+
+    def residual_jax(
+        q_cfg: Any,
+        semantic_target_base: Any,
+        semantic_sqrt_weight: Any,
+        contact_link_indices: Any,
+        contact_points_local: Any,
+        contact_target_base: Any,
+        contact_sqrt_weight: Any,
+        q_prior: Any,
+        q_previous: Any,
+        q_prior_scale: Any,
+    ) -> Any:
         fk = robot.forward_kinematics(q_cfg)
-        pos = fk[link_indices_jax, 4:7]
-        pos_res = ((pos - target_pos_base) * weights_jax[:, None]).reshape(-1)
-        prior_res = (q_cfg - q_prior) * float(q_prior_weight)
-        smooth_res = (q_cfg - q_prev) * float(q_smooth_weight)
-        return jnp.concatenate([pos_res, prior_res, smooth_res], axis=0)
+        semantic_pos = fk[semantic_indices_jax, 4:7]
+        semantic_res = ((semantic_pos - semantic_target_base) * semantic_sqrt_weight[:, None]).reshape(-1)
+
+        contact_pose = fk[contact_link_indices]
+        contact_pred = contact_pose[:, 4:7] + quat_apply_jax(contact_pose[:, :4], contact_points_local)
+        contact_res = ((contact_pred - contact_target_base) * contact_sqrt_weight[:, None]).reshape(-1)
+
+        prior_res = (q_cfg - q_prior) * q_prior_scale
+        smooth_res = (q_cfg - q_previous) * float(q_smooth_weight)
+        return jnp.concatenate([semantic_res, contact_res, prior_res, smooth_res], axis=0)
 
     residual_compiled = jax.jit(residual_jax)
     jac_compiled = jax.jit(jax.jacfwd(residual_jax, argnums=0))
 
     out_cfg = np.zeros((n_frames, actuated_count), dtype=np.float64)
-    q_prev = cfg_source[0]
+    q_previous = cfg_source[0]
+    success: list[bool] = []
+    nfev: list[int] = []
+    costs: list[float] = []
     for frame in range(n_frames):
         root = root_source[frame].copy()
-        if "pelvis" in targets:
-            root[:3] = np.asarray(targets["pelvis"][frame], dtype=np.float64)
-        root_rot = _quat_wxyz_to_rotation(root[3:7])
-        target_world = np.stack([targets[name][frame] for name in target_names], axis=0)
-        target_base = root_rot.inv().apply(target_world - root[:3][None, :])
+        root_rotation = _quat_wxyz_to_rotation(root[3:7])
+        semantic_target_base = root_rotation.inv().apply(
+            compiled.semantic_targets_w[frame] - root[:3][None, :]
+        )
+        contact_target_base = root_rotation.inv().apply(
+            compiled.contact_targets_w[frame] - root[:3][None, :]
+        )
+        semantic_sqrt_weight = np.sqrt(np.maximum(compiled.semantic_weights[frame], 0.0))
+        contact_sqrt_weight = np.sqrt(np.maximum(compiled.contact_weights[frame], 0.0))
+        prior_scale = (
+            float(q_prior_weight) * np.maximum(source_reference[frame], 0.0)
+            + float(boundary_pin_weight) * float(boundary_weights[frame])
+        )
         q_prior = cfg_source[frame]
-        x0 = np.clip(q_prev if frame > 0 else q_prior, lower, upper)
+        x0 = np.clip(q_previous if frame > 0 else q_prior, lower, upper)
+
+        args = (
+            np.asarray(semantic_target_base, dtype=np.float64),
+            np.asarray(semantic_sqrt_weight, dtype=np.float64),
+            np.asarray(compiled.contact_link_indices[frame], dtype=np.int32),
+            np.asarray(compiled.contact_points_local[frame], dtype=np.float64),
+            np.asarray(contact_target_base, dtype=np.float64),
+            np.asarray(contact_sqrt_weight, dtype=np.float64),
+            np.asarray(q_prior, dtype=np.float64),
+            np.asarray(q_previous, dtype=np.float64),
+            np.asarray(prior_scale, dtype=np.float64),
+        )
 
         def fun(x: np.ndarray) -> np.ndarray:
-            return np.asarray(residual_compiled(jnp.asarray(x), jnp.asarray(target_base), jnp.asarray(q_prior), jnp.asarray(q_prev)))
+            return np.asarray(residual_compiled(jnp.asarray(x), *(jnp.asarray(value) for value in args)))
 
         def jac(x: np.ndarray) -> np.ndarray:
-            return np.asarray(jac_compiled(jnp.asarray(x), jnp.asarray(target_base), jnp.asarray(q_prior), jnp.asarray(q_prev)))
+            return np.asarray(jac_compiled(jnp.asarray(x), *(jnp.asarray(value) for value in args)))
 
-        result = least_squares(fun, x0, jac=jac, bounds=(lower, upper), max_nfev=int(max_nfev), xtol=1.0e-5, ftol=1.0e-5, gtol=1.0e-5)
-        q_prev = np.clip(result.x, lower, upper)
-        out_cfg[frame] = q_prev
-        root_source[frame] = root
+        result = least_squares(
+            fun,
+            x0,
+            jac=jac,
+            bounds=(lower, upper),
+            max_nfev=int(max_nfev),
+            xtol=1.0e-5,
+            ftol=1.0e-5,
+            gtol=1.0e-5,
+        )
+        q_previous = np.clip(result.x, lower, upper)
+        out_cfg[frame] = q_previous
+        success.append(bool(result.success))
+        nfev.append(int(result.nfev))
+        costs.append(float(result.cost))
 
     qpos = np.concatenate([root_source[:n_frames], out_cfg], axis=1)
-    fps = _fps_from_motion(source_motion)
-    qvel = _linear_velocity(qpos, fps)
+    qpos[:, 3:7] = normalize_quat_wxyz(qpos[:, 3:7])
+    qvel = holosoma_joint_velocities(qpos, fps)
+
+    fk_base = np.asarray(robot.forward_kinematics(jnp.asarray(out_cfg)), dtype=np.float64)
+    body_pos_w, body_quat_w = world_body_poses_from_pyroki_fk(root_source[:n_frames], fk_base)
+    body_lin_vel_w, body_ang_vel_w = holosoma_body_velocities(body_pos_w, body_quat_w, fps)
+
+    semantic_pred = body_pos_w[:, compiled.semantic_link_indices]
+    semantic_error = np.linalg.norm(
+        semantic_pred - compiled.semantic_targets_w[:n_frames], axis=-1
+    )
+    contact_pose_pos = body_pos_w[
+        np.arange(n_frames)[:, None], compiled.contact_link_indices[:n_frames]
+    ]
+    contact_pose_quat = body_quat_w[
+        np.arange(n_frames)[:, None], compiled.contact_link_indices[:n_frames]
+    ]
+    contact_pred = contact_pose_pos + quat_apply_wxyz(
+        contact_pose_quat, compiled.contact_points_local[:n_frames]
+    )
+    contact_error_all = np.linalg.norm(
+        contact_pred - compiled.contact_targets_w[:n_frames], axis=-1
+    )
+    contact_mask = compiled.contact_weights[:n_frames] > 0.0
+    contact_error = contact_error_all[contact_mask]
+
+    pelvis_index = resolve_link_index(link_names, "pelvis", ("pelvis",))
+    root_position_error = 0.0
+    root_quaternion_error = 0.0
+    if pelvis_index is not None:
+        root_position_error = float(np.max(np.abs(body_pos_w[:, pelvis_index] - qpos[:, :3])))
+        quat_delta = np.minimum(
+            np.max(np.abs(body_quat_w[:, pelvis_index] - qpos[:, 3:7]), axis=-1),
+            np.max(np.abs(body_quat_w[:, pelvis_index] + qpos[:, 3:7]), axis=-1),
+        )
+        root_quaternion_error = float(np.max(quat_delta))
+
+    diagnostics = {
+        "input_schema": input_schema,
+        "frame_count": int(n_frames),
+        "semantic_names": list(compiled.semantic_names),
+        "semantic_target_error_m": _stats(semantic_error),
+        "contact_target_error_m": _stats(contact_error),
+        "active_contact_point_samples": int(np.count_nonzero(contact_mask)),
+        "unresolved_semantics": list(compiled.unresolved_semantics),
+        "unresolved_contacts": list(compiled.unresolved_contacts),
+        "least_squares_success_count": int(sum(success)),
+        "least_squares_failure_count": int(len(success) - sum(success)),
+        "least_squares_nfev": _stats(np.asarray(nfev, dtype=np.float64)),
+        "least_squares_cost": _stats(np.asarray(costs, dtype=np.float64)),
+        "root_body_position_error_max_m": root_position_error,
+        "root_body_quaternion_error_max": root_quaternion_error,
+        "newton_canonicalization_required": True,
+    }
+
     output = Path(output_path).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(
+    np.savez_compressed(
         output,
+        fps=np.asarray(float(fps)),
         joint_pos=qpos.astype(np.float32),
         joint_vel=qvel.astype(np.float32),
-        joint_names=np.asarray(tuple(robot.joints.actuated_names), dtype=object),
+        joint_names=np.asarray(robot_joint_names, dtype=object),
         source_joint_names=np.asarray(source_joint_names, dtype=object),
+        body_names=np.asarray(link_names, dtype=object),
+        body_pos_w=body_pos_w.astype(np.float32),
+        body_quat_w=body_quat_w.astype(np.float32),
+        body_lin_vel_w=body_lin_vel_w.astype(np.float32),
+        body_ang_vel_w=body_ang_vel_w.astype(np.float32),
         is_qpos=np.asarray(True),
-        ik_backend=np.asarray("pyroki_internal"),
+        ik_backend=np.asarray("pyroki_contact_aware_taskspace"),
+        kinematics_backend=np.asarray("pyroki_urdf_fk_preview"),
+        newton_canonicalization_required=np.asarray(True),
         robot_urdf=np.asarray(str(robot_path)),
-        target_names=np.asarray(target_names, dtype=object),
-        source_motion=np.asarray(str(source_path)),
-        fps=np.asarray(fps),
+        target_names=np.asarray(compiled.semantic_names, dtype=object),
+        source_motion=np.asarray(source_path or ""),
+        taskspace_input=np.asarray(str(Path(lte_path).expanduser())),
+        ik_diagnostics_json=np.asarray(json.dumps(diagnostics, sort_keys=True), dtype=object),
     )
     return output
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Solve fullbody IK for motion_edit LTE keypoints with PyRoki.")
-    parser.add_argument("--lte", required=True)
+    parser = argparse.ArgumentParser(description="Solve contact-aware fullbody trajectory IK with PyRoki.")
+    parser.add_argument("--lte", default=None, help="Legacy LTE keypoints or ContactAwareTaskspaceMotion NPZ.")
+    parser.add_argument("--taskspace-spec", default=None, help="Explicit ContactAwareTaskspaceMotion NPZ.")
     parser.add_argument("--out", required=True)
     parser.add_argument("--robot-urdf", default=str(DEFAULT_ROBOT_URDF))
     parser.add_argument("--source-motion", default=None)
     parser.add_argument("--max-nfev", type=int, default=25)
     parser.add_argument("--q-prior-weight", type=float, default=0.25)
     parser.add_argument("--q-smooth-weight", type=float, default=0.5)
+    parser.add_argument("--boundary-pin-weight", type=float, default=2.0)
+    parser.add_argument("--edited-contact-weight", type=float, default=100.0)
+    parser.add_argument("--fixed-contact-weight", type=float, default=80.0)
+    # Compatibility arguments retained for existing callers. Contact patch points
+    # replace the old toe/orientation pseudo-targets in the new task-space path.
     parser.add_argument("--foot-orientation-weight", type=float, default=20.0)
     parser.add_argument("--contact-foot-orientation-weight", type=float, default=80.0)
     parser.add_argument("--foot-toe-weight", type=float, default=20.0)
     parser.add_argument("--contact-foot-toe-weight", type=float, default=120.0)
     args = parser.parse_args(argv)
+    input_path = args.taskspace_spec or args.lte
+    if input_path is None:
+        parser.error("one of --lte or --taskspace-spec is required")
     solve_pyroki_fullbody_ik(
-        lte_path=args.lte,
+        lte_path=input_path,
         output_path=args.out,
         robot_urdf=args.robot_urdf,
         source_motion_path=args.source_motion,
         max_nfev=args.max_nfev,
         q_prior_weight=args.q_prior_weight,
         q_smooth_weight=args.q_smooth_weight,
+        boundary_pin_weight=args.boundary_pin_weight,
+        edited_contact_weight=args.edited_contact_weight,
+        fixed_contact_weight=args.fixed_contact_weight,
     )
 
 
