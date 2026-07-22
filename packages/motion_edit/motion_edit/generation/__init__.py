@@ -24,6 +24,7 @@ from motion_edit.generation.lte_fullbody import (
     apply_contact_edit_plan_to_motion as _apply_contact_edit_plan_to_motion,
     resolve_body_index,
 )
+from motion_edit.generation.taskspace_builder import build_contact_aware_taskspace_motion
 from motion_edit.generation.taskspace_spec import (
     ContactAwareTaskspaceMotion,
     ContactPatchTarget,
@@ -52,6 +53,7 @@ __all__ = [
     "apply_contact_aware_edit_plan_to_motion",
     "apply_contact_edit_plan_to_motion",
     "bake_retargeted_contact_forces_for_motion",
+    "build_contact_aware_taskspace_motion",
     "make_boundary_weights",
     "read_contact_aware_taskspace_motion",
     "resolve_body_index",
