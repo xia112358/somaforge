@@ -28,6 +28,7 @@ from motion_edit.paths import LAYERS_ROOT
 @dataclass(frozen=True)
 class ContactAwarePreviewResult:
     output_motion_path: Path
+    semantic_task_proxy_path: Path
     taskspace_spec_path: Path
     ik_output_path: Path
     binding_summary: dict[str, Any]
@@ -144,8 +145,13 @@ def generate_contact_aware_pyroki_preview(
 
     work_dir = Path(intermediate_dir).expanduser() if intermediate_dir is not None else output.with_suffix("")
     work_dir.mkdir(parents=True, exist_ok=True)
+    semantic_task_proxy_path = work_dir / f"{output.stem}.semantic_task_proxy.npz"
     taskspace_path = work_dir / f"{output.stem}.contact_aware_taskspace.npz"
     ik_output_path = work_dir / f"{output.stem}.pyroki_preview.npz"
+    np.savez_compressed(
+        semantic_task_proxy_path,
+        **_task_visualization_proxy(proxy=proxy, source_motion=motion),
+    )
     write_contact_aware_taskspace_motion(taskspace_path, taskspace)
     _run_pyroki_preview_subprocess(
         taskspace_path=taskspace_path,
@@ -163,6 +169,7 @@ def generate_contact_aware_pyroki_preview(
         ik_motion=ik_motion,
         plan=plan,
         proxy_metadata=proxy_metadata,
+        semantic_task_proxy_path=semantic_task_proxy_path,
         taskspace_path=taskspace_path,
         ik_output_path=ik_output_path,
         binding_summary=binding_summary,
@@ -180,6 +187,7 @@ def generate_contact_aware_pyroki_preview(
     )
     return ContactAwarePreviewResult(
         output_motion_path=output,
+        semantic_task_proxy_path=semantic_task_proxy_path,
         taskspace_spec_path=taskspace_path,
         ik_output_path=ik_output_path,
         binding_summary=binding_summary,
@@ -218,12 +226,50 @@ def _run_pyroki_preview_subprocess(
     subprocess.run(cmd, cwd=str(package_root), check=True)
 
 
+def _task_visualization_proxy(
+    *,
+    proxy: dict[str, Any],
+    source_motion: dict[str, Any],
+) -> dict[str, Any]:
+    """Make the first-stage dense task compatible with the existing body viewer."""
+
+    output = dict(proxy)
+    passthrough = (
+        "fps",
+        "joint_pos",
+        "joint_vel",
+        "joint_names",
+        "body_names",
+        "body_quat_w",
+        "body_ang_vel_w",
+    )
+    for key in passthrough:
+        if key not in output and key in source_motion:
+            output[key] = np.asarray(source_motion[key])
+    if "body_pos_w" not in output or "body_lin_vel_w" not in output:
+        raise ValueError("semantic task proxy must contain body_pos_w and body_lin_vel_w")
+    if "body_quat_w" not in output:
+        positions = np.asarray(output["body_pos_w"])
+        quaternions = np.zeros((*positions.shape[:2], 4), dtype=np.float32)
+        quaternions[..., 0] = 1.0
+        output["body_quat_w"] = quaternions
+    if "body_ang_vel_w" not in output:
+        output["body_ang_vel_w"] = np.zeros_like(np.asarray(output["body_pos_w"]), dtype=np.float32)
+    output["algorithm"] = np.asarray("motion_edit_contact_aware_semantic_task_proxy")
+    output["is_qpos"] = np.asarray(False)
+    output["note"] = np.asarray(
+        "First-stage dense task-space target. Green body points are generated targets; the URDF pose remains the source joint seed."
+    )
+    return output
+
+
 def merge_pyroki_preview_motion(
     *,
     source_motion: dict[str, Any],
     ik_motion: dict[str, Any],
     plan: ContactEditPlan,
     proxy_metadata: dict[str, Any],
+    semantic_task_proxy_path: Path | None = None,
     taskspace_path: Path,
     ik_output_path: Path,
     binding_summary: dict[str, Any],
@@ -275,6 +321,7 @@ def merge_pyroki_preview_motion(
         "joint_consistency": "pyroki_urdf_fk",
         "kinematics_provenance": "preview_only_not_newton",
         "newton_canonicalization_required": True,
+        "semantic_task_proxy_motion": str(semantic_task_proxy_path) if semantic_task_proxy_path is not None else None,
         "contact_aware_taskspace_motion": str(taskspace_path),
         "pyroki_preview_motion": str(ik_output_path),
         "newton_contact_patch_binding": binding_summary,
