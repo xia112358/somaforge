@@ -20,9 +20,12 @@ from somaforge_core.kinematics import (
 )
 from somaforge_core.motion_schema import (
     CANONICAL_MOTION_SCHEMA,
+    DIRECT_NEWTON_KINEMATICS_BACKEND,
     G1_29DOF_JOINT_ORDER,
     NEWTON_KINEMATICS_BACKEND,
+    NEWTON_KINEMATICS_BACKENDS,
     decode_kinematics_provenance,
+    direct_newton_kinematics_provenance,
     encode_kinematics_provenance,
     newton_kinematics_provenance,
 )
@@ -55,6 +58,7 @@ __all__ = [
     "CONTACT_FORCE_PART_BODY_NAMES",
     "CONTACT_FORCE_PART_ORDER",
     "CONTACT_FORCE_SCHEMA",
+    "DIRECT_NEWTON_KINEMATICS_BACKEND",
     "G1_29DOF_JOINT_ORDER",
     "G1_SPHEREHAND_BUNDLE_SHA256",
     "G1_SPHEREHAND_SHA256",
@@ -62,6 +66,7 @@ __all__ = [
     "NEWTON_COLLISION_PIPELINE",
     "NEWTON_CONTACT_BACKEND",
     "NEWTON_KINEMATICS_BACKEND",
+    "NEWTON_KINEMATICS_BACKENDS",
     "POSE_FINITE_DIFFERENCE",
     "STAGES",
     "TRAINING_MANIFEST_SCHEMA",
@@ -80,6 +85,7 @@ __all__ = [
     "default_asset_manifest_path",
     "default_training_manifest_path",
     "diagnostic_contact_provenance",
+    "direct_newton_kinematics_provenance",
     "encode_contact_force_provenance",
     "encode_kinematics_provenance",
     "encode_robot_asset_json",
