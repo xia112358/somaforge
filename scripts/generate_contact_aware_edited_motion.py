@@ -95,6 +95,7 @@ def main() -> None:
         json.dumps(
             {
                 "output": str(canonical.output_path),
+                "semantic_task_proxy": str(preview.semantic_task_proxy_path),
                 "preview": str(preview.output_motion_path),
                 "taskspace_spec": str(preview.taskspace_spec_path),
                 "ik_output": str(preview.ik_output_path),
