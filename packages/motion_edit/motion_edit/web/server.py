@@ -19,13 +19,25 @@ from motion_edit.contact import read_contact_surfaces
 from motion_edit.contact.plans import read_contact_edit_plan, validate_contact_edit_plan, write_contact_edit_plan
 from motion_edit.generation.contact_aware import ContactAwareGenerationResult, apply_contact_aware_edit_plan_to_motion
 from motion_edit.paths import LAYERS_ROOT, WORKBENCH_ROOT
-from motion_edit.storage import MotionVersionRecord, list_motion_assets, read_motion_asset, read_motion_version, write_motion_version
+from motion_edit.storage import (
+    MotionVersionRecord,
+    list_motion_assets,
+    list_motion_versions,
+    read_motion_asset,
+    read_motion_version,
+    write_motion_version,
+)
 from motion_edit.workbench.contact_editor_setup import ContactEditorConfig, prepare_contact_editor_session
 from motion_edit.workbench.edit_handles import (
     build_contact_episode_handles,
     contact_episode_handle_payloads as _edit_handle_payloads,
 )
-from motion_edit.workbench.recent import RecentMotionEntry, read_recent_motions, upsert_recent_motion
+from motion_edit.workbench.recent import (
+    RecentMotionEntry,
+    clear_recent_motions,
+    read_recent_motions,
+    upsert_recent_motion,
+)
 from motion_edit.workbench.surface_editor_session import (
     SurfaceEditorSession,
     move_surface_editor_anchor,
@@ -55,8 +67,7 @@ def _editor_contact_handles(anchors: Any) -> list[Any]:
 
 
 class LoadRequest(BaseModel):
-    motion_asset_id: str
-    motion_version_id: str | None = None
+    motion_id: str
 
 
 class MoveRequest(BaseModel):
@@ -80,16 +91,16 @@ class SettingsRequest(BaseModel):
     output_contact_layer: str | None = None
     output_motion_path: str | None = None
     output_segment_layer: str | None = None
-    output_motion_version_id: str | None = None
-    register_motion_version: bool | None = None
+    output_motion_id: str | None = None
+    register_motion: bool | None = None
     overwrite: bool | None = None
 
 
 class GenerateRequest(BaseModel):
     output_motion_path: str | None = None
     output_segment_layer: str | None = None
-    output_motion_version_id: str | None = None
-    register_motion_version: bool | None = None
+    output_motion_id: str | None = None
+    register_motion: bool | None = None
     overwrite: bool | None = None
 
 
@@ -98,7 +109,7 @@ class GenerationJob:
     status: str = "idle"
     stage: str | None = None
     output_motion_path: str | None = None
-    output_motion_version_id: str | None = None
+    output_motion_id: str | None = None
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
     started_at: float | None = None
@@ -109,7 +120,7 @@ class GenerationJob:
             "status": self.status,
             "stage": self.stage,
             "output_motion_path": self.output_motion_path,
-            "output_motion_version_id": self.output_motion_version_id,
+            "output_motion_id": self.output_motion_id,
             "warnings": list(self.warnings),
             "error": self.error,
             "started_at": self.started_at,
@@ -120,6 +131,9 @@ class GenerationJob:
 @dataclass
 class EditorState:
     session: SurfaceEditorSession | None = None
+    motion_id: str | None = None
+    motion_provenance: str = "source"
+    # Compatibility lineage used by generation and context resolution only.
     motion_asset_id: str | None = None
     motion_version_id: str | None = None
     fps: float = 50.0
@@ -128,8 +142,8 @@ class EditorState:
     initial_snapshot: tuple[Any, list[Any]] | None = None
     output_motion_path: str | None = None
     output_segment_layer: str | None = None
-    output_motion_version_id: str | None = None
-    register_motion_version: bool = True
+    output_motion_id: str | None = None
+    register_motion: bool = True
     overwrite: bool = False
     generation: GenerationJob = field(default_factory=GenerationJob)
     generation_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -169,8 +183,9 @@ def _require_generation_idle(state: EditorState) -> None:
 
 
 def _repo_url(path: str | Path) -> str:
-    resolved = Path(path).expanduser().resolve()
     root = somaforge_root().resolve()
+    candidate = Path(path).expanduser()
+    resolved = (root / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
     try:
         relative = resolved.relative_to(root)
     except ValueError as exc:
@@ -178,23 +193,98 @@ def _repo_url(path: str | Path) -> str:
     return "/repo/" + relative.as_posix()
 
 
-def _asset_config(asset_id: str, motion_version_id: str | None = None) -> ContactEditorConfig:
-    record = read_motion_asset(asset_id)
-    version = read_motion_version(motion_version_id) if motion_version_id else None
-    if version is not None and version.motion_asset_id not in {None, asset_id}:
-        raise ValueError(f"{motion_version_id} belongs to {version.motion_asset_id}, not {asset_id}")
+def _repo_path(path: str | Path | None) -> str | None:
+    if path is None:
+        return None
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = somaforge_root() / candidate
+    return str(candidate.resolve())
+
+
+@dataclass(frozen=True)
+class EditorMotion:
+    motion_id: str
+    motion_asset_id: str
+    motion_version_id: str | None
+    motion_path: str
+    provenance: str
+
+
+def _motion_provenance(version: MotionVersionRecord | None) -> str:
+    if version is None:
+        return "source"
+    return str(version.metadata.get("provenance") or version.kind)
+
+
+def _resolve_motion(motion_id: str) -> EditorMotion:
+    try:
+        version = read_motion_version(motion_id)
+    except FileNotFoundError:
+        asset = read_motion_asset(motion_id)
+        return EditorMotion(
+            motion_id=asset.motion_asset_id,
+            motion_asset_id=asset.motion_asset_id,
+            motion_version_id=None,
+            motion_path=asset.motion_path,
+            provenance="source",
+        )
+    if not version.motion_asset_id:
+        raise ValueError(f"{motion_id} has no Motion context binding")
+    asset = read_motion_asset(version.motion_asset_id)
+    return EditorMotion(
+        motion_id=version.motion_version_id,
+        motion_asset_id=asset.motion_asset_id,
+        motion_version_id=version.motion_version_id,
+        motion_path=version.motion_path,
+        provenance=_motion_provenance(version),
+    )
+
+
+def _list_editor_motions() -> list[EditorMotion]:
+    motions = {
+        asset.motion_asset_id: EditorMotion(
+            motion_id=asset.motion_asset_id,
+            motion_asset_id=asset.motion_asset_id,
+            motion_version_id=None,
+            motion_path=asset.motion_path,
+            provenance="source",
+        )
+        for asset in list_motion_assets()
+    }
+    for version in list_motion_versions():
+        if not version.motion_asset_id:
+            continue
+        try:
+            motion = _resolve_motion(version.motion_version_id)
+        except (FileNotFoundError, ValueError):
+            continue
+        if motion.motion_id in motions:
+            raise ValueError(f"duplicate unified Motion ID: {motion.motion_id}")
+        motions[motion.motion_id] = motion
+    return [motions[key] for key in sorted(motions)]
+
+
+def _motion_config(motion_id: str) -> ContactEditorConfig:
+    motion = _resolve_motion(motion_id)
+    record = read_motion_asset(motion.motion_asset_id)
+    version = (
+        read_motion_version(motion.motion_version_id)
+        if motion.motion_version_id
+        else None
+    )
     source_contact_layer = version.contact_layer if version is not None else record.source_contact_layer
     if not source_contact_layer:
-        raise ValueError(f"{motion_version_id or asset_id} has no contact layer")
-    identity = motion_version_id or record.motion_asset_id
+        raise ValueError(f"{motion.motion_id} has no contact layer")
+    identity = motion.motion_id
     return ContactEditorConfig(
-        motion=version.motion_path if version is not None else record.motion_path,
+        motion=_repo_path(motion.motion_path) or motion.motion_path,
         motion_id=record.motion_id or record.motion_asset_id,
         source_contact_layer=source_contact_layer,
         session_name=f"{identity}_web_contact_editor",
-        surface_catalog=record.surface_catalog_path,
-        terrain_urdf=record.terrain_urdf,
-        terrain_mesh=record.terrain_mesh,
+        surface_catalog=_repo_path(record.surface_catalog_path),
+        terrain_urdf=_repo_path(record.terrain_urdf),
+        terrain_mesh=_repo_path(record.terrain_mesh),
         output_prefix=f"contact/{identity}_web_contact_editor",
         edit_plan=(
             str(WORKBENCH_ROOT / "plans" / f"{identity}.contact_edit_plan.json")
@@ -205,18 +295,25 @@ def _asset_config(asset_id: str, motion_version_id: str | None = None) -> Contac
         with_terrain=bool(record.terrain_urdf or record.terrain_mesh or record.surface_catalog_path),
         fps=int(record.fps or 50),
         prebound_contact_layer=version is not None or bool(record.bound_contact_layer),
-        contact_force_motion=(version.motion_path if version is not None else record.contact_force_npz),
+        contact_force_motion=_repo_path(
+            version.motion_path if version is not None else record.contact_force_npz
+        ),
     )
 
 
-def _reset_generation_settings(state: EditorState, asset_id: str, motion_version_id: str | None = None) -> None:
-    record = read_motion_asset(asset_id)
-    stem = f"{motion_version_id or asset_id}_edited"
-    output_motion_path = _default_output_motion_path(motion_version_id or asset_id)
+def _reset_generation_settings(state: EditorState, motion_id: str) -> None:
+    motion = _resolve_motion(motion_id)
+    record = read_motion_asset(motion.motion_asset_id)
+    stem = f"{motion.motion_id}_edited"
+    output_motion_path = _default_output_motion_path(motion.motion_id)
     state.output_motion_path = str(output_motion_path)
-    state.output_segment_layer = f"candidates/{stem}" if motion_version_id else (record.output_segment_layer or f"candidates/{stem}")
-    state.output_motion_version_id = stem
-    state.register_motion_version = True
+    state.output_segment_layer = (
+        f"candidates/{stem}"
+        if motion.motion_version_id
+        else (record.output_segment_layer or f"candidates/{stem}")
+    )
+    state.output_motion_id = stem
+    state.register_motion = True
     state.overwrite = output_motion_path.exists()
     state.fps = float(record.fps or 50.0)
     with state.generation_lock:
@@ -229,110 +326,102 @@ def _apply_generation_settings(state: EditorState, request: SettingsRequest | Ge
         state.output_motion_path = request.output_motion_path.strip()
     if request.output_segment_layer is not None:
         state.output_segment_layer = request.output_segment_layer.strip()
-    if request.output_motion_version_id is not None:
-        state.output_motion_version_id = request.output_motion_version_id.strip()
-    if request.register_motion_version is not None:
-        state.register_motion_version = request.register_motion_version
+    if request.output_motion_id is not None:
+        state.output_motion_id = request.output_motion_id.strip()
+    if request.register_motion is not None:
+        state.register_motion = request.register_motion
     if request.overwrite is not None:
         state.overwrite = request.overwrite
-    if state.motion_asset_id and state.output_motion_path:
+    if state.motion_id and state.output_motion_path:
         output_path = Path(state.output_motion_path).expanduser()
-        default_path = _default_output_motion_path(state.motion_version_id or state.motion_asset_id)
+        default_path = _default_output_motion_path(state.motion_id)
         if output_path == default_path and default_path.exists():
             state.overwrite = True
 
 
-def _default_output_motion_path(asset_id: str) -> Path:
-    stem = f"{asset_id}_edited"
+def _default_output_motion_path(motion_id: str) -> Path:
+    stem = f"{motion_id}_edited"
     return PACKAGE_ROOT / "data" / "motions" / "generated" / f"{stem}.policy_ref_v1.npz"
 
 
-def _motion_key(motion_asset_id: str, motion_version_id: str | None) -> str:
-    return f"version:{motion_version_id}" if motion_version_id else f"asset:{motion_asset_id}"
-
-
-def _recent_entry(motion_asset_id: str, motion_version_id: str | None = None) -> RecentMotionEntry:
-    asset = read_motion_asset(motion_asset_id)
-    version = read_motion_version(motion_version_id) if motion_version_id else None
-    motion_path = version.motion_path if version is not None else asset.motion_path
-    source_label = asset.motion_asset_id
-    label = f"{source_label} · Edited" if motion_version_id else source_label
+def _recent_entry(motion_id: str) -> RecentMotionEntry:
+    motion = _resolve_motion(motion_id)
+    asset = read_motion_asset(motion.motion_asset_id)
+    version = (
+        read_motion_version(motion.motion_version_id)
+        if motion.motion_version_id
+        else None
+    )
     return RecentMotionEntry(
-        label=label,
-        motion_path=motion_path,
+        label=motion.motion_id,
+        motion_path=_repo_path(motion.motion_path) or motion.motion_path,
         motion_id=asset.motion_id or asset.motion_asset_id,
+        motion_ref_id=motion.motion_id,
         motion_asset_id=asset.motion_asset_id,
-        motion_version_id=motion_version_id,
+        motion_version_id=motion.motion_version_id,
         terrain_urdf=asset.terrain_urdf,
         contact_layer=version.contact_layer if version is not None else asset.source_contact_layer,
-        surface_catalog=asset.surface_catalog_path,
+        surface_catalog=_repo_path(asset.surface_catalog_path),
         edit_plan_path=(
-            str(WORKBENCH_ROOT / "plans" / f"{motion_version_id}.contact_edit_plan.json")
-            if motion_version_id
+            str(WORKBENCH_ROOT / "plans" / f"{motion.motion_id}.contact_edit_plan.json")
+            if motion.motion_version_id
             else asset.edit_plan_path
         ),
-        output_contact_layer=f"contact/{motion_version_id}_edited" if motion_version_id else asset.output_contact_layer,
-        output_segment_layer=f"candidates/{motion_version_id}_edited" if motion_version_id else asset.output_segment_layer,
-        metadata={"kind": "generated" if motion_version_id else "source"},
+        output_contact_layer=(
+            f"contact/{motion.motion_id}_edited"
+            if motion.motion_version_id
+            else asset.output_contact_layer
+        ),
+        output_segment_layer=(
+            f"candidates/{motion.motion_id}_edited"
+            if motion.motion_version_id
+            else asset.output_segment_layer
+        ),
+        metadata={"provenance": motion.provenance},
     )
-
-
-def _adopt_existing_generated_motion(motion_asset_id: str) -> None:
-    motion_version_id = f"{motion_asset_id}_edited"
-    try:
-        version = read_motion_version(motion_version_id)
-    except FileNotFoundError:
-        return
-    if not Path(version.motion_path).expanduser().exists():
-        return
-    if version.motion_asset_id not in {None, motion_asset_id}:
-        return
-    if version.motion_asset_id is None:
-        write_motion_version(replace(version, motion_asset_id=motion_asset_id))
-    upsert_recent_motion(_recent_entry(motion_asset_id, motion_version_id))
 
 
 def _recent_payload(state: EditorState) -> dict[str, Any]:
-    active_key = _motion_key(state.motion_asset_id, state.motion_version_id) if state.motion_asset_id else None
+    active_motion_id = state.motion_id
     items = []
     for entry in read_recent_motions():
-        if not entry.motion_asset_id:
+        motion_id = entry.motion_ref_id
+        if not motion_id:
             continue
-        key = _motion_key(entry.motion_asset_id, entry.motion_version_id)
         items.append(
             {
-                "key": key,
                 "label": entry.label,
-                "motion_id": entry.motion_id,
-                "motion_asset_id": entry.motion_asset_id,
-                "motion_version_id": entry.motion_version_id,
-                "kind": entry.metadata.get("kind", "generated" if entry.motion_version_id else "source"),
-                "active": key == active_key,
+                "motion_id": motion_id,
+                "provenance": entry.metadata.get("provenance", "source"),
+                "active": motion_id == active_motion_id,
                 "last_opened_at": entry.last_opened_at,
             }
         )
-    return {"items": items, "active_key": active_key}
+    return {"items": items, "active_motion_id": active_motion_id}
 
 
-def _open_motion(state: EditorState, motion_asset_id: str, motion_version_id: str | None = None) -> dict[str, Any]:
-    if motion_version_id is None:
-        _adopt_existing_generated_motion(motion_asset_id)
+def _open_motion(state: EditorState, motion_id: str) -> dict[str, Any]:
+    motion = _resolve_motion(motion_id)
     prepared = prepare_contact_editor_session(
-        _asset_config(motion_asset_id, motion_version_id), layers_root=LAYERS_ROOT, workbench_root=WORKBENCH_ROOT
+        _motion_config(motion.motion_id),
+        layers_root=LAYERS_ROOT,
+        workbench_root=WORKBENCH_ROOT,
     )
     state.session = prepared.session
-    state.motion_asset_id = motion_asset_id
-    state.motion_version_id = motion_version_id
+    state.motion_id = motion.motion_id
+    state.motion_provenance = motion.provenance
+    state.motion_asset_id = motion.motion_asset_id
+    state.motion_version_id = motion.motion_version_id
     state.undo_stack.clear()
     state.redo_stack.clear()
     state.initial_snapshot = state.snapshot()
-    _reset_generation_settings(state, motion_asset_id, motion_version_id)
-    upsert_recent_motion(_recent_entry(motion_asset_id, motion_version_id))
+    _reset_generation_settings(state, motion.motion_id)
+    upsert_recent_motion(_recent_entry(motion.motion_id))
     return _session_payload(state)
 
 
 def _session_payload(state: EditorState) -> dict[str, Any]:
-    if state.session is None or state.motion_asset_id is None:
+    if state.session is None or state.motion_id is None or state.motion_asset_id is None:
         raise ValueError("no motion is loaded")
     record = read_motion_asset(state.motion_asset_id)
     session = state.session
@@ -348,10 +437,9 @@ def _session_payload(state: EditorState) -> dict[str, Any]:
     state.fps = float(fps)
     force = load_contact_force_payload(session.contact_force_path or session.motion_path, frame_count=qpos.shape[0])
     return {
-        "motion_asset_id": state.motion_asset_id,
-        "motion_version_id": state.motion_version_id,
-        "motion_key": _motion_key(state.motion_asset_id, state.motion_version_id),
-        "motion_id": session.motion_id,
+        "motion_id": state.motion_id,
+        "provenance": state.motion_provenance,
+        "source_motion_id": session.motion_id,
         "fps": fps,
         "qpos": qpos.tolist(),
         "joint_names": list(joint_names),
@@ -370,8 +458,8 @@ def _session_payload(state: EditorState) -> dict[str, Any]:
             "source_contact_layer": session.contact_layer,
             "output_motion_path": state.output_motion_path,
             "output_segment_layer": state.output_segment_layer,
-            "output_motion_version_id": state.output_motion_version_id,
-            "register_motion_version": state.register_motion_version,
+            "output_motion_id": state.output_motion_id,
+            "register_motion": state.register_motion,
             "overwrite": state.overwrite,
         },
         "plan": _plan_payload(session.edit_plan_path),
@@ -458,8 +546,8 @@ def _run_generation(
     output_contact_layer: str,
     output_motion_path: str,
     output_segment_layer: str | None,
-    output_motion_version_id: str | None,
-    register_motion_version: bool,
+    output_motion_id: str | None,
+    register_motion: bool,
     overwrite: bool,
     fps: float,
     motion_asset_id: str | None = None,
@@ -483,9 +571,9 @@ def _run_generation(
             force_source_motion_path=force_source_motion_path,
             output_contact_layer=output_contact_layer,
             output_segment_layer=output_segment_layer,
-            output_motion_version_id=output_motion_version_id,
+            output_motion_version_id=output_motion_id,
             fps=fps,
-            register_motion_version=register_motion_version,
+            register_motion_version=register_motion,
             fullbody_solver="batch_contact_laplacian",
             contact_laplacian_iters=8,
             contact_laplacian_damping=1.0e-4,
@@ -510,10 +598,10 @@ def _run_generation(
         )
         write_contact_edit_plan(plan_path, generated_plan)
         generated_version_id = result.generation.output_motion_version_id
-        if register_motion_version and generated_version_id and motion_asset_id:
+        if register_motion and generated_version_id and motion_asset_id:
             registered = read_motion_version(generated_version_id)
             metadata = dict(registered.metadata)
-            metadata["source_motion_key"] = _motion_key(motion_asset_id, parent_motion_version_id)
+            metadata["parent_motion_id"] = parent_motion_version_id or motion_asset_id
             write_motion_version(
                 MotionVersionRecord(
                     motion_version_id=registered.motion_version_id,
@@ -529,12 +617,11 @@ def _run_generation(
                     metadata=metadata,
                 )
             )
-            upsert_recent_motion(_recent_entry(motion_asset_id, generated_version_id))
         with state.generation_lock:
             state.generation.status = "succeeded"
             state.generation.stage = "complete"
             state.generation.output_motion_path = str(result.output_motion_path)
-            state.generation.output_motion_version_id = result.generation.output_motion_version_id
+            state.generation.output_motion_id = result.generation.output_motion_version_id
             state.generation.warnings = list(result.warnings)
             state.generation.finished_at = time.time()
             state.overwrite = True
@@ -548,7 +635,8 @@ def _run_generation(
 
 def create_app(
     *,
-    initial_motion_asset_id: str | None = None,
+    initial_motion_id: str | None = None,
+    reset_recent_on_start: bool = False,
     generation_fn: Callable[..., ContactAwareGenerationResult] = apply_contact_aware_edit_plan_to_motion,
 ) -> FastAPI:
     app = FastAPI(title="Motion Edit Contact Editor")
@@ -556,18 +644,17 @@ def create_app(
     app.state.editor_state = state
     app.mount("/repo", StaticFiles(directory=str(somaforge_root())), name="repo")
 
-    @app.get("/api/assets")
-    def assets() -> dict:
+    @app.get("/api/motions")
+    def motions() -> dict:
         return {
-            "assets": [
+            "motions": [
                 {
-                    "motion_asset_id": item.motion_asset_id,
-                    "motion_id": item.motion_id or item.motion_asset_id,
-                    "source": item.source,
-                    "has_force": bool(item.contact_force_npz),
-                    "has_terrain": bool(item.terrain_mesh or item.terrain_urdf or item.surface_catalog_path),
+                    "motion_id": item.motion_id,
+                    "label": item.motion_id,
+                    "provenance": item.provenance,
+                    "ready": Path(_repo_path(item.motion_path) or item.motion_path).exists(),
                 }
-                for item in list_motion_assets()
+                for item in _list_editor_motions()
             ]
         }
 
@@ -580,7 +667,7 @@ def create_app(
         try:
             if state.generation_payload()["status"] == "running":
                 raise ValueError("wait for the current generation job to finish before loading another motion")
-            return _open_motion(state, request.motion_asset_id, request.motion_version_id)
+            return _open_motion(state, request.motion_id)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -762,11 +849,13 @@ def create_app(
     @app.post("/api/session/reload")
     def reload() -> dict:
         _require_generation_idle(state)
-        if state.motion_asset_id is None:
+        if state.motion_id is None:
             raise HTTPException(status_code=409, detail="no motion is loaded")
         try:
             prepared = prepare_contact_editor_session(
-                _asset_config(state.motion_asset_id), layers_root=LAYERS_ROOT, workbench_root=WORKBENCH_ROOT
+                _motion_config(state.motion_id),
+                layers_root=LAYERS_ROOT,
+                workbench_root=WORKBENCH_ROOT,
             )
             state.session = prepared.session
             state.undo_stack.clear()
@@ -804,8 +893,8 @@ def create_app(
             _apply_generation_settings(state, request)
             if not state.output_motion_path:
                 raise ValueError("output motion path is required")
-            if state.register_motion_version and not state.output_motion_version_id:
-                raise ValueError("motion version ID is required when registration is enabled")
+            if state.register_motion and not state.output_motion_id:
+                raise ValueError("Motion ID is required when registration is enabled")
             output_path = Path(state.output_motion_path).expanduser()
             if output_path.exists() and not state.overwrite:
                 raise FileExistsError(f"{output_path} already exists; enable Replace existing output to overwrite it")
@@ -820,8 +909,8 @@ def create_app(
                 "output_contact_layer": state.session.output_contact_layer or "",
                 "output_motion_path": state.output_motion_path,
                 "output_segment_layer": state.output_segment_layer,
-                "output_motion_version_id": state.output_motion_version_id,
-                "register_motion_version": state.register_motion_version,
+                "output_motion_id": state.output_motion_id,
+                "register_motion": state.register_motion,
                 "overwrite": state.overwrite,
                 "fps": float(state.fps),
                 "motion_asset_id": state.motion_asset_id,
@@ -839,7 +928,7 @@ def create_app(
                     status="running",
                     stage="queued",
                     output_motion_path=str(output_path),
-                    output_motion_version_id=state.output_motion_version_id,
+                    output_motion_id=state.output_motion_id,
                     started_at=time.time(),
                 )
                 state.generation_worker = worker
@@ -862,7 +951,7 @@ def create_app(
                         status="failed",
                         stage="preflight",
                         output_motion_path=state.output_motion_path,
-                        output_motion_version_id=state.output_motion_version_id,
+                        output_motion_id=state.output_motion_id,
                         error=str(exc),
                         finished_at=time.time(),
                     )
@@ -879,10 +968,13 @@ def create_app(
     if WEB_DIST.exists():
         app.mount("/assets", StaticFiles(directory=str(WEB_DIST / "assets")), name="web-assets")
 
-    if initial_motion_asset_id:
+    if reset_recent_on_start or initial_motion_id:
         @app.on_event("startup")
-        def load_initial() -> None:
-            _open_motion(state, initial_motion_asset_id)
+        def initialize_session() -> None:
+            if reset_recent_on_start:
+                clear_recent_motions()
+            if initial_motion_id:
+                _open_motion(state, initial_motion_id)
     return app
 
 
@@ -891,7 +983,7 @@ def _port_available(port: int) -> bool:
         return sock.connect_ex(("127.0.0.1", int(port))) != 0
 
 
-def run_contact_editor(*, motion_asset_id: str | None, host: str = "127.0.0.1", port: int = 8094, open_browser: bool = True) -> None:
+def run_contact_editor(*, motion_id: str | None, host: str = "127.0.0.1", port: int = 8094, open_browser: bool = True) -> None:
     import uvicorn
 
     if not _port_available(port):
@@ -900,4 +992,12 @@ def run_contact_editor(*, motion_asset_id: str | None, host: str = "127.0.0.1", 
     if open_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     print(f"Motion Edit Contact Editor: {url}")
-    uvicorn.run(create_app(initial_motion_asset_id=motion_asset_id), host=host, port=port, log_level="info")
+    uvicorn.run(
+        create_app(
+            initial_motion_id=motion_id,
+            reset_recent_on_start=True,
+        ),
+        host=host,
+        port=port,
+        log_level="info",
+    )

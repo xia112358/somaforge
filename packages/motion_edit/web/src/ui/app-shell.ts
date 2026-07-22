@@ -75,7 +75,7 @@ const outputPanel = () => `
     <div id="generationStatus" class="generation-status idle"><strong>Ready</strong><span>Formal edited reference</span></div>
     <div id="planStatus" class="plan-status">No plan saved</div>
     <div class="pipeline-actions"><button id="validateBtn" class="secondary-command"><i data-lucide="check"></i><span>Validate</span></button><button id="generateBtn" class="generate-command"><i data-lucide="wand-sparkles"></i><span>Generate</span></button></div>
-    <details class="output-settings"><summary>Advanced settings</summary><label class="stack-field"><span>Edit plan</span><input id="planPath" /></label><label class="stack-field"><span>Generated motion</span><input id="outputMotion" /></label><div class="output-pair"><label class="stack-field"><span>Contact layer</span><input id="outputLayer" /></label><label class="stack-field"><span>Segment layer</span><input id="outputSegment" /></label></div><label class="stack-field"><span>Motion version ID</span><input id="outputVersion" /></label><label class="toggle"><input id="registerVersion" type="checkbox" checked /><span>Register motion version</span></label><label class="toggle"><input id="overwriteOutput" type="checkbox" /><span>Replace existing output</span></label></details>
+    <details class="output-settings"><summary>Advanced settings</summary><label class="stack-field"><span>Edit plan</span><input id="planPath" /></label><label class="stack-field"><span>Generated motion</span><input id="outputMotion" /></label><div class="output-pair"><label class="stack-field"><span>Contact layer</span><input id="outputLayer" /></label><label class="stack-field"><span>Segment layer</span><input id="outputSegment" /></label></div><label class="stack-field"><span>Motion ID</span><input id="outputMotionId" /></label><label class="toggle"><input id="registerMotion" type="checkbox" checked /><span>Register motion</span></label><label class="toggle"><input id="overwriteOutput" type="checkbox" /><span>Replace existing output</span></label></details>
     <div class="source-reference"><span>Source contact layer</span><code id="sourceLayer"></code></div>
     <div class="session-actions"><button id="reloadBtn"><i data-lucide="refresh-cw"></i><span>Reload</span></button><button id="discardBtn"><i data-lucide="trash-2"></i><span>Discard edits</span></button></div>
   </div>`;
@@ -84,7 +84,7 @@ const inspector = () => `
   <aside class="inspector">
     <div class="inspector-tabs"><button data-tab="contact" class="active">Contact</button><button data-tab="display">Display</button><button data-tab="output">Output</button></div>
     <div class="inspector-pages">${contactPanel()}${displayPanel()}${outputPanel()}</div>
-    <section class="recent-motion-dock" aria-label="Recent motions"><div class="recent-motion-head"><span>Recent</span><small id="recentMotionCount">0</small></div><div id="recentMotionList" class="recent-motion-list"></div></section>
+    <section class="recent-motion-dock" aria-label="Motions opened this session"><div class="recent-motion-head"><span>This session</span><small id="recentMotionCount">0</small></div><div id="recentMotionList" class="recent-motion-list"></div></section>
   </aside>`;
 
 const timeline = () => `

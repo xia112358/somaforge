@@ -579,11 +579,11 @@ def _cmd_contact_editor(args: argparse.Namespace) -> None:
     from .web import run_contact_editor
 
     ensure_data_dirs()
-    motion_asset_id = args.motion_asset_id or args.motion_id
-    if args.motion and not motion_asset_id:
-        raise ValueError("direct motion paths are no longer accepted by contact-editor; register a MotionAsset first")
+    motion_id = args.motion_id or args.motion_asset_id
+    if args.motion and not motion_id:
+        raise ValueError("direct motion paths are no longer accepted by contact-editor; register the Motion first")
     run_contact_editor(
-        motion_asset_id=motion_asset_id,
+        motion_id=motion_id,
         host=args.host,
         port=args.port,
         open_browser=not args.no_browser,
@@ -1966,7 +1966,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("contact-editor", help="launch the main interactive contact-anchor editor")
     p.add_argument("motion", nargs="?", default=None, help=argparse.SUPPRESS)
     p.add_argument("--motion-id", default=None)
-    p.add_argument("--motion-asset-id", default=None)
+    p.add_argument("--motion-asset-id", default=None, help=argparse.SUPPRESS)
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8094)
     p.add_argument("--no-browser", action="store_true")

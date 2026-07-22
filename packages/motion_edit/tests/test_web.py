@@ -20,7 +20,7 @@ from motion_edit.web.server import (
     GenerateRequest,
     GenerationJob,
     _apply_generation_settings,
-    _asset_config,
+    _motion_config,
     _edit_handle_payloads,
     _reset_generation_settings,
     _recent_payload,
@@ -78,7 +78,7 @@ class WebMotionDataTests(unittest.TestCase):
         self.assertTrue(payload["has_position_offset"])
 
     @patch("motion_edit.web.server.read_motion_asset")
-    def test_asset_config_uses_bound_layer_as_prevalidated_source(self, read_motion_asset_mock) -> None:
+    def test_motion_config_uses_bound_layer_as_prevalidated_source(self, read_motion_asset_mock) -> None:
         read_motion_asset_mock.return_value = MotionAssetRecord(
             motion_asset_id="motion-bound",
             motion_path="motion.npz",
@@ -89,12 +89,12 @@ class WebMotionDataTests(unittest.TestCase):
             surface_catalog_path="surfaces.jsonl",
         )
 
-        config = _asset_config("motion-bound")
+        config = _motion_config("motion-bound")
 
         self.assertEqual(config.source_contact_layer, "contact/bound")
         self.assertTrue(config.prebound_contact_layer)
-        self.assertEqual(config.motion, "motion.npz")
-        self.assertEqual(config.contact_force_motion, "force.npz")
+        self.assertEqual(Path(config.motion).name, "motion.npz")
+        self.assertEqual(Path(config.contact_force_motion or "").name, "force.npz")
 
     def test_loads_named_motion_and_eight_part_force(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -132,35 +132,40 @@ class WebMotionDataTests(unittest.TestCase):
         self.assertEqual(contacts["sample_forces"][1], [[4.0, 5.0, 6.0]])
 
     @patch("motion_edit.web.server.read_recent_motions")
-    def test_recent_payload_shows_recent_assets_and_versions_as_peers(self, read_recent_motions_mock) -> None:
+    def test_recent_payload_exposes_one_motion_identity_type(self, read_recent_motions_mock) -> None:
         read_recent_motions_mock.return_value = [
-            RecentMotionEntry(label="Current", motion_path="current.npz", motion_id="motion", motion_asset_id="asset-a"),
             RecentMotionEntry(
-                label="Current · Edited",
+                label="source-a",
+                motion_path="current.npz",
+                motion_id="motion",
+                motion_ref_id="source-a",
+                metadata={"provenance": "source"},
+            ),
+            RecentMotionEntry(
+                label="edited-a",
                 motion_path="edited.npz",
                 motion_id="motion",
-                motion_asset_id="asset-a",
-                motion_version_id="asset-a-edited",
-                metadata={"kind": "generated"},
+                motion_ref_id="edited-a",
+                metadata={"provenance": "augmented"},
             ),
-            RecentMotionEntry(label="Old", motion_path="old.npz", motion_id="motion", motion_asset_id="asset-old"),
         ]
-        state = EditorState(motion_asset_id="asset-a", motion_version_id="asset-a-edited")
+        state = EditorState(motion_id="edited-a")
 
         payload = _recent_payload(state)
 
         self.assertEqual(
-            [item["key"] for item in payload["items"]],
-            ["asset:asset-a", "version:asset-a-edited", "asset:asset-old"],
+            [item["motion_id"] for item in payload["items"]],
+            ["source-a", "edited-a"],
         )
-        self.assertEqual(payload["active_key"], "version:asset-a-edited")
+        self.assertEqual(payload["active_motion_id"], "edited-a")
         self.assertTrue(payload["items"][1]["active"])
-        self.assertFalse(payload["items"][2]["active"])
+        self.assertEqual(payload["items"][1]["provenance"], "augmented")
 
     def test_single_port_app_includes_api_and_built_frontend(self) -> None:
         app = create_app()
         paths = {route.path for route in app.routes}
-        self.assertIn("/api/assets", paths)
+        self.assertIn("/api/motions", paths)
+        self.assertNotIn("/api/assets", paths)
         self.assertIn("/api/recent-motions", paths)
         self.assertIn("/api/session/load", paths)
         self.assertIn("/api/session/move", paths)
@@ -176,6 +181,25 @@ class WebMotionDataTests(unittest.TestCase):
         self.assertIn("/api/session/generate", paths)
         self.assertIn("/api/session/generation", paths)
         self.assertTrue((WEB_DIST / "index.html").is_file())
+
+    @patch("motion_edit.web.server._open_motion")
+    @patch("motion_edit.web.server.clear_recent_motions")
+    def test_app_startup_starts_new_recent_session_before_initial_motion(
+        self,
+        clear_recent_motions_mock,
+        open_motion_mock,
+    ) -> None:
+        app = create_app(
+            initial_motion_id="current-motion",
+            reset_recent_on_start=True,
+        )
+
+        for callback in app.router.on_startup:
+            callback()
+
+        clear_recent_motions_mock.assert_called_once_with()
+        open_motion_mock.assert_called_once()
+        self.assertEqual(open_motion_mock.call_args.args[1], "current-motion")
 
     def test_generation_job_uses_formal_generator_and_marks_plan_generated(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -215,8 +239,8 @@ class WebMotionDataTests(unittest.TestCase):
                 output_contact_layer="contact/edited",
                 output_motion_path=str(output_motion),
                 output_segment_layer="candidates/edited",
-                output_motion_version_id="edited-v1",
-                register_motion_version=True,
+                output_motion_id="edited-v1",
+                register_motion=True,
                 overwrite=False,
                 fps=50.0,
             )
@@ -269,10 +293,10 @@ class WebMotionDataTests(unittest.TestCase):
             state.fps = 60.0
             state.output_motion_path = str(output_motion)
             state.output_segment_layer = "candidates/edited"
-            state.register_motion_version = False
+            state.register_motion = False
 
             with patch("motion_edit.web.server._save_session", return_value={}):
-                response = _generate_endpoint(app)(GenerateRequest(register_motion_version=False))
+                response = _generate_endpoint(app)(GenerateRequest(register_motion=False))
 
             self.assertIn(response["status"], {"running", "succeeded"})
             deadline = time.time() + 2.0
@@ -285,7 +309,7 @@ class WebMotionDataTests(unittest.TestCase):
 
             output_motion.touch()
             with patch("motion_edit.web.server._save_session", return_value={}):
-                repeated = _generate_endpoint(app)(GenerateRequest(register_motion_version=False))
+                repeated = _generate_endpoint(app)(GenerateRequest(register_motion=False))
             self.assertIn(repeated["status"], {"running", "succeeded"})
             deadline = time.time() + 2.0
             while state.generation.status == "running" and time.time() < deadline:
@@ -296,7 +320,12 @@ class WebMotionDataTests(unittest.TestCase):
     def test_existing_default_output_enables_repeat_generation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             package_root = Path(tmp)
-            record = SimpleNamespace(output_segment_layer=None, fps=50)
+            record = MotionAssetRecord(
+                motion_asset_id="asset-a",
+                motion_path="source.npz",
+                output_segment_layer=None,
+                fps=50,
+            )
             state = EditorState()
             with (
                 patch("motion_edit.web.server.PACKAGE_ROOT", package_root),
@@ -313,7 +342,7 @@ class WebMotionDataTests(unittest.TestCase):
     def test_stale_client_cannot_disable_overwrite_for_existing_default_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             package_root = Path(tmp)
-            state = EditorState(motion_asset_id="asset-a")
+            state = EditorState(motion_id="asset-a", motion_asset_id="asset-a")
             default_output = package_root / "data" / "motions" / "generated" / "asset-a_edited.policy_ref_v1.npz"
             default_output.parent.mkdir(parents=True)
             default_output.touch()
@@ -346,12 +375,12 @@ class WebMotionDataTests(unittest.TestCase):
                 output_contact_layer="contact/edited",
             )
             state.output_motion_path = str(output_motion)
-            state.register_motion_version = False
+            state.register_motion = False
             state.fps = "invalid"  # type: ignore[assignment]
 
             with patch("motion_edit.web.server._save_session", return_value={}):
                 with self.assertRaises(HTTPException) as caught:
-                    _generate_endpoint(app)(GenerateRequest(register_motion_version=False))
+                    _generate_endpoint(app)(GenerateRequest(register_motion=False))
 
             self.assertEqual(caught.exception.status_code, 400)
             self.assertIn("could not convert string to float", str(caught.exception.detail))

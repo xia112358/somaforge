@@ -17,6 +17,7 @@ class RecentMotionEntry:
     label: str
     motion_path: str
     motion_id: str
+    motion_ref_id: str | None = None
     motion_asset_id: str | None = None
     motion_asset_path: str | None = None
     motion_version_id: str | None = None
@@ -30,6 +31,8 @@ class RecentMotionEntry:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def key(self) -> str:
+        if self.motion_ref_id:
+            return self.motion_ref_id
         if self.motion_version_id:
             return f"version:{self.motion_version_id}"
         return self.motion_asset_path or self.motion_asset_id or self.motion_path
@@ -52,7 +55,16 @@ def read_recent_motions(path: str | Path = RECENT_MOTIONS_PATH, *, prune_missing
     if not source.exists():
         return []
     data = json.loads(source.read_text(encoding="utf-8"))
-    items = [RecentMotionEntry(**item) for item in data.get("items", [])]
+    items = []
+    for item in data.get("items", []):
+        payload = dict(item)
+        payload.setdefault(
+            "motion_ref_id",
+            payload.get("motion_version_id")
+            or payload.get("motion_asset_id")
+            or payload.get("motion_id"),
+        )
+        items.append(RecentMotionEntry(**payload))
     if prune_missing:
         items = [item for item in items if item.exists()]
     return items
@@ -79,6 +91,14 @@ def write_recent_motions(
         encoding="utf-8",
     )
     return out
+
+
+def clear_recent_motions(
+    path: str | Path = RECENT_MOTIONS_PATH,
+) -> Path:
+    """Start a new editor-session history without deleting the cache file."""
+
+    return write_recent_motions([], path)
 
 
 def upsert_recent_motion(

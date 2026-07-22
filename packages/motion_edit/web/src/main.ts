@@ -6,7 +6,7 @@ import { ContactDragController } from './contact/drag-controller';
 import { ContactHandleLayer } from './contact/handle-layer';
 import { contactPositionOffset, formatPositionOffset, POSITION_OFFSET_EPSILON_M } from './contact/offset';
 import { api } from './core/api';
-import type { AssetItem, EditHandle, Generation, RecentMotion, Session, Vec3 } from './core/types';
+import type { EditHandle, Generation, MotionItem, RecentMotion, Session, Vec3 } from './core/types';
 import { formatTimelineTime, frameToX, getTimelineMetrics, renderTimeline, xToFrame } from './timeline/renderer';
 import { mountAppShell, refreshIcons } from './ui/app-shell';
 import { byId, setupTabs } from './ui/dom';
@@ -68,15 +68,15 @@ function setTimelineHeight(value:number,persist=false){timelineHeight=Math.max(1
 setTimelineHeight(timelineHeight);
 
 async function refreshRecentMotions() {
-  const data = await api<{ items: RecentMotion[]; active_key: string | null }>('/api/recent-motions');
+  const data = await api<{ items: RecentMotion[]; active_motion_id: string | null }>('/api/recent-motions');
   const list = byId('recentMotionList');
   byId('recentMotionCount').textContent = String(data.items.length);
   const buttons = data.items.map(item => {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = `recent-motion-item${item.key === data.active_key ? ' active' : ''}`;
-    button.dataset.motionKey = item.key;
-    button.setAttribute('aria-pressed', String(item.key === data.active_key));
+    button.className = `recent-motion-item${item.motion_id === data.active_motion_id ? ' active' : ''}`;
+    button.dataset.motionKey = item.motion_id;
+    button.setAttribute('aria-pressed', String(item.motion_id === data.active_motion_id));
     const marker = document.createElement('span');
     marker.className = 'recent-motion-marker';
     const copy = document.createElement('span');
@@ -84,10 +84,10 @@ async function refreshRecentMotions() {
     const label = document.createElement('strong');
     label.textContent = item.label;
     const kind = document.createElement('small');
-    kind.textContent = item.kind === 'generated' ? 'Generated trajectory' : 'Original trajectory';
+    kind.textContent = item.provenance;
     copy.append(label, kind);
     button.append(marker, copy);
-    button.onclick = () => { void openMotion(item.motion_asset_id, item.motion_version_id); };
+    button.onclick = () => { void openMotion(item.motion_id); };
     return button;
   });
   list.replaceChildren(...buttons);
@@ -102,13 +102,13 @@ function markRecentMotionActive(motionKey: string) {
   });
 }
 
-async function openMotion(motionAssetId: string, motionVersionId: string | null, generated = false) {
-  if (openingMotion || session?.motion_key === (motionVersionId ? `version:${motionVersionId}` : `asset:${motionAssetId}`)) return;
+async function openMotion(motionId: string, generated = false) {
+  if (openingMotion || session?.motion_id === motionId) return;
   openingMotion = true;
   document.querySelectorAll<HTMLButtonElement>('.recent-motion-item').forEach(button=>button.disabled=true);
   try {
     showStatus(generated ? 'Opening generated motion' : 'Opening motion');
-    const next = await api<Session>('/api/session/load', { method: 'POST', body: JSON.stringify({ motion_asset_id: motionAssetId, motion_version_id: motionVersionId }) });
+    const next = await api<Session>('/api/session/load', { method: 'POST', body: JSON.stringify({ motion_id: motionId }) });
     frame = Math.min(frame, next.qpos.length - 1);
     await applySession(next, true);
     await refreshRecentMotions();
@@ -121,8 +121,8 @@ async function openMotion(motionAssetId: string, motionVersionId: string | null,
   }
 }
 
-async function loadAssets() {
-  const data = await api<{ assets: AssetItem[] }>('/api/assets');
+async function loadMotions() {
+  const data = await api<{ motions: MotionItem[] }>('/api/motions');
   try {
     const current = await api<Session>('/api/session');
     await applySession(current, true);
@@ -130,10 +130,10 @@ async function loadAssets() {
   } catch {
     const recent = await refreshRecentMotions();
     const target = recent[0];
-    if (target) await openMotion(target.motion_asset_id, target.motion_version_id);
+    if (target) await openMotion(target.motion_id);
     else {
-      const asset = data.assets.find(item => item.has_force && item.has_terrain);
-      if (asset) await openMotion(asset.motion_asset_id, null);
+      const motion = data.motions.find(item => item.ready);
+      if (motion) await openMotion(motion.motion_id);
     }
   }
 }
@@ -141,8 +141,8 @@ async function loadAssets() {
 async function applySession(next: Session, rebuildScene = false) {
   const selectedId = selectedHandle?.handle_id;
   session = next; selectedHandle = selectedId ? next.edit_handles.find(handle => handle.handle_id === selectedId) || null : null; frame = Math.min(frame, next.qpos.length - 1);
-  markRecentMotionActive(next.motion_key);
-  const motionLabel = next.motion_version_id || next.motion_id;
+  markRecentMotionActive(next.motion_id);
+  const motionLabel = next.motion_id;
   byId('motionLabel').textContent = motionLabel;
   byId('viewportMotion').textContent = motionLabel;
   byId<HTMLInputElement>('fpsInput').value = String(next.fps);
@@ -154,8 +154,8 @@ async function applySession(next: Session, rebuildScene = false) {
   byId<HTMLInputElement>('outputMotion').value = next.settings.output_motion_path || '';
   byId<HTMLInputElement>('outputLayer').value = next.settings.output_contact_layer || '';
   byId<HTMLInputElement>('outputSegment').value = next.settings.output_segment_layer || '';
-  byId<HTMLInputElement>('outputVersion').value = next.settings.output_motion_version_id || '';
-  byId<HTMLInputElement>('registerVersion').checked = next.settings.register_motion_version;
+  byId<HTMLInputElement>('outputMotionId').value = next.settings.output_motion_id || '';
+  byId<HTMLInputElement>('registerMotion').checked = next.settings.register_motion;
   byId<HTMLInputElement>('overwriteOutput').checked = next.settings.overwrite;
   byId('sourceLayer').textContent = next.settings.source_contact_layer || 'None';
   byId('planStatus').textContent = next.plan ? `${next.plan.status} · ${next.plan.edit_count} edits` : 'No plan saved';
@@ -394,13 +394,13 @@ function generationSettings(){return {
   output_motion_path:byId<HTMLInputElement>('outputMotion').value,
   output_contact_layer:byId<HTMLInputElement>('outputLayer').value,
   output_segment_layer:byId<HTMLInputElement>('outputSegment').value,
-  output_motion_version_id:byId<HTMLInputElement>('outputVersion').value,
-  register_motion_version:byId<HTMLInputElement>('registerVersion').checked,
+  output_motion_id:byId<HTMLInputElement>('outputMotionId').value,
+  register_motion:byId<HTMLInputElement>('registerMotion').checked,
   overwrite:byId<HTMLInputElement>('overwriteOutput').checked,
 };}
 async function syncOutputSettings(){const next=await api<Session>('/api/session/settings',{method:'PUT',body:JSON.stringify(generationSettings())});session=next;return next;}
 function stopGenerationPoll(){if(generationPoll!==null){window.clearInterval(generationPoll);generationPoll=null;}}
-function pollGeneration(){if(generationPoll!==null)return;generationPoll=window.setInterval(async()=>{try{const next=await api<Generation>('/api/session/generation');renderGeneration(next);if(next.status!=='running'){stopGenerationPoll();if(next.status==='succeeded'){byId('planStatus').textContent='generated';if(session&&next.output_motion_version_id)await openMotion(session.motion_asset_id,next.output_motion_version_id,true);else await refreshRecentMotions();}}}catch(e){stopGenerationPoll();showStatus(String(e),true);}},900);}
+function pollGeneration(){if(generationPoll!==null)return;generationPoll=window.setInterval(async()=>{try{const next=await api<Generation>('/api/session/generation');renderGeneration(next);if(next.status!=='running'){stopGenerationPoll();if(next.status==='succeeded'){byId('planStatus').textContent='generated';if(next.output_motion_id)await openMotion(next.output_motion_id,true);else await refreshRecentMotions();}}}catch(e){stopGenerationPoll();showStatus(String(e),true);}},900);}
 function renderGeneration(job:Generation){
   const running=job.status==='running',button=byId<HTMLButtonElement>('generateBtn'),status=byId('generationStatus');button.disabled=running||!session;
   button.innerHTML=running?'<i data-lucide="loader-circle" class="spin"></i><span>Generating</span>':'<i data-lucide="wand-sparkles"></i><span>Generate</span>';refreshIcons();
@@ -415,7 +415,7 @@ function renderGeneration(job:Generation){
   else status.innerHTML='<strong>Ready</strong><span>Formal edited reference</span>';
   document.querySelectorAll<HTMLInputElement|HTMLSelectElement|HTMLButtonElement>('.tab-page input,.tab-page select,.tab-page button').forEach(control=>control.disabled=running);
   document.querySelectorAll<HTMLButtonElement>('.recent-motion-item').forEach(control=>control.disabled=running||openingMotion);byId<HTMLButtonElement>('undoBtn').disabled=running||!(session?.can_undo);byId<HTMLButtonElement>('redoBtn').disabled=running||!(session?.can_redo);byId<HTMLButtonElement>('saveBtn').disabled=running;
-  byId<HTMLInputElement>('outputVersion').disabled=running||!byId<HTMLInputElement>('registerVersion').checked;
+  byId<HTMLInputElement>('outputMotionId').disabled=running||!byId<HTMLInputElement>('registerMotion').checked;
   if(running)pollGeneration();else stopGenerationPoll();
 }
 
@@ -450,9 +450,9 @@ timeline.addEventListener('pointerup',event=>{if(!scrubbingTimeline)return;scrub
 timeline.addEventListener('pointercancel',()=>{scrubbingTimeline=false;timeline.classList.remove('scrubbing');});
 timeline.addEventListener('pointerleave',()=>{if(!scrubbingTimeline)byId('timelineHover').classList.add('hidden');});
 
-document.querySelectorAll<HTMLInputElement>('#planPath,#outputMotion,#outputLayer,#outputSegment,#outputVersion,#registerVersion,#overwriteOutput').forEach(input=>{input.dataset.generationSetting='';input.addEventListener('change',()=>{byId<HTMLInputElement>('outputVersion').disabled=!byId<HTMLInputElement>('registerVersion').checked;void syncOutputSettings().catch(e=>showStatus(String(e),true));});});
+document.querySelectorAll<HTMLInputElement>('#planPath,#outputMotion,#outputLayer,#outputSegment,#outputMotionId,#registerMotion,#overwriteOutput').forEach(input=>{input.dataset.generationSetting='';input.addEventListener('change',()=>{byId<HTMLInputElement>('outputMotionId').disabled=!byId<HTMLInputElement>('registerMotion').checked;void syncOutputSettings().catch(e=>showStatus(String(e),true));});});
 byId('validateBtn').onclick=async()=>{try{await syncOutputSettings();const result=await api<{plan:{status:string};warnings:string[]}>('/api/session/validate',{method:'POST'});byId('planStatus').textContent=`${result.plan.status}${result.warnings.length?` · ${result.warnings.length} warnings`:''}`;showStatus('ContactEditPlan validated');}catch(e){showStatus(String(e),true);}};
-byId('generateBtn').onclick=async()=>{try{await syncOutputSettings();const job=await api<Generation>('/api/session/generate',{method:'POST',body:JSON.stringify(generationSettings())});renderGeneration(job);}catch(e){try{renderGeneration(await api<Generation>('/api/session/generation'));}catch{renderGeneration({status:'failed',stage:'preflight',output_motion_path:byId<HTMLInputElement>('outputMotion').value||null,output_motion_version_id:byId<HTMLInputElement>('outputVersion').value||null,warnings:[],error:String(e),started_at:null,finished_at:Date.now()/1000});}}};
+byId('generateBtn').onclick=async()=>{try{await syncOutputSettings();const job=await api<Generation>('/api/session/generate',{method:'POST',body:JSON.stringify(generationSettings())});renderGeneration(job);}catch(e){try{renderGeneration(await api<Generation>('/api/session/generation'));}catch{renderGeneration({status:'failed',stage:'preflight',output_motion_path:byId<HTMLInputElement>('outputMotion').value||null,output_motion_id:byId<HTMLInputElement>('outputMotionId').value||null,warnings:[],error:String(e),started_at:null,finished_at:Date.now()/1000});}}};
 byId('reloadBtn').onclick=()=>{void runSessionAction('/api/session/reload');};byId('discardBtn').onclick=()=>{void runSessionAction('/api/session/discard');};
 
 window.addEventListener('keydown',event=>{if(event.code==='Escape'&&contactDragController.active){event.preventDefault();contactDragController.cancel();return;}if((event.target as HTMLElement).matches('input,select,textarea'))return;if(event.code==='Space'){event.preventDefault();byId<HTMLButtonElement>('playBtn').click();}else if(event.code==='ArrowLeft')setFrame(frame-(event.shiftKey?10:1));else if(event.code==='ArrowRight')setFrame(frame+(event.shiftKey?10:1));else if(event.code==='BracketLeft')selectRelativeAnchor(-1);else if(event.code==='BracketRight')selectRelativeAnchor(1);});
@@ -468,4 +468,4 @@ function updateSelectedHandleProjection(){
   contactHandleLayer.updateProjection(selectedHandle);
 }
 function animate(now:number){requestAnimationFrame(animate);const dt=(now-lastTick)/1000;lastTick=now;if(playing&&session){frameAccumulator+=dt*Number(byId<HTMLInputElement>('fpsInput').value);if(frameAccumulator>=1){const step=Math.floor(frameAccumulator);frameAccumulator-=step;setFrame((frame+step)%session.qpos.length);}}controls.update();updateSelectedHandleProjection();renderer.render(scene,camera);}requestAnimationFrame(animate);
-loadAssets().catch(e=>showStatus(String(e),true));
+loadMotions().catch(e=>showStatus(String(e),true));

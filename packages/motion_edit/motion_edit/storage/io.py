@@ -91,6 +91,13 @@ def read_motion_version(motion_version_id: str, path: str | Path | None = None) 
     return MotionVersionRecord(**data)
 
 
+def list_motion_versions(root: str | Path | None = None) -> list[MotionVersionRecord]:
+    source = Path(root).expanduser() if root is not None else MOTION_VERSIONS_ROOT
+    if not source.exists():
+        return []
+    return [read_motion_version(path.stem, path) for path in sorted(source.glob("*.json"))]
+
+
 def _mark_token_catalog_stale(motion_version_id: str, *, reason: str) -> None:
     try:
         version = read_motion_version(motion_version_id)

@@ -5,7 +5,12 @@ import unittest
 from pathlib import Path
 
 from motion_edit.storage import MotionAssetRecord, read_motion_asset, write_motion_asset
-from motion_edit.workbench.recent import RecentMotionEntry, read_recent_motions, upsert_recent_motion
+from motion_edit.workbench.recent import (
+    RecentMotionEntry,
+    clear_recent_motions,
+    read_recent_motions,
+    upsert_recent_motion,
+)
 
 
 class MotionAssetBundleTests(unittest.TestCase):
@@ -70,6 +75,7 @@ class MotionAssetBundleTests(unittest.TestCase):
                 label="motion",
                 motion_path=str(motion),
                 motion_id="motion",
+                motion_ref_id="motion_asset",
                 motion_asset_id="motion_asset",
                 motion_asset_path=str(asset),
                 terrain_urdf="terrain.urdf",
@@ -83,7 +89,7 @@ class MotionAssetBundleTests(unittest.TestCase):
             loaded = read_recent_motions(cache)
 
         self.assertEqual(len(loaded), 1)
-        self.assertEqual(loaded[0].key(), str(asset))
+        self.assertEqual(loaded[0].key(), "motion_asset")
         self.assertEqual(loaded[0].motion_asset_id, "motion_asset")
         self.assertEqual(loaded[0].surface_catalog, "surfaces.jsonl")
         self.assertEqual(loaded[0].output_segment_layer, "candidates/out")
@@ -100,12 +106,14 @@ class MotionAssetBundleTests(unittest.TestCase):
                 label="climb",
                 motion_path=str(source_motion),
                 motion_id="climb",
+                motion_ref_id="climb-asset",
                 motion_asset_id="climb-asset",
             )
             generated = RecentMotionEntry(
                 label="climb · Edited",
                 motion_path=str(generated_motion),
                 motion_id="climb",
+                motion_ref_id="climb-asset-edited",
                 motion_asset_id="climb-asset",
                 motion_version_id="climb-asset-edited",
                 metadata={"kind": "generated"},
@@ -115,8 +123,29 @@ class MotionAssetBundleTests(unittest.TestCase):
             loaded = read_recent_motions(cache)
 
         self.assertEqual(len(loaded), 2)
-        self.assertEqual(loaded[0].key(), "version:climb-asset-edited")
+        self.assertEqual(loaded[0].key(), "climb-asset-edited")
         self.assertEqual(loaded[1].motion_asset_id, "climb-asset")
+
+    def test_new_editor_session_clears_previous_recent_motions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            motion = root / "source.npz"
+            motion.touch()
+            cache = root / "recent.json"
+            upsert_recent_motion(
+                RecentMotionEntry(
+                    label="old",
+                    motion_path=str(motion),
+                    motion_id="old",
+                    motion_asset_id="old-asset",
+                ),
+                cache,
+            )
+
+            clear_recent_motions(cache)
+
+            self.assertEqual(read_recent_motions(cache), [])
+            self.assertTrue(cache.exists())
 
 
 if __name__ == "__main__":

@@ -1,20 +1,16 @@
 export type Vec3 = [number, number, number];
 
-export type AssetItem = {
-  motion_asset_id: string;
+export type MotionItem = {
   motion_id: string;
-  source: string;
-  has_force: boolean;
-  has_terrain: boolean;
+  label: string;
+  provenance: string;
+  ready: boolean;
 };
 
 export type RecentMotion = {
-  key: string;
   label: string;
   motion_id: string;
-  motion_asset_id: string;
-  motion_version_id: string | null;
-  kind: 'source' | 'generated';
+  provenance: string;
   active: boolean;
   last_opened_at: string | null;
 };
@@ -71,7 +67,7 @@ export type Generation = {
   status: 'idle' | 'running' | 'succeeded' | 'failed';
   stage: string | null;
   output_motion_path: string | null;
-  output_motion_version_id: string | null;
+  output_motion_id: string | null;
   warnings: string[];
   error: string | null;
   started_at: number | null;
@@ -79,10 +75,9 @@ export type Generation = {
 };
 
 export type Session = {
-  motion_asset_id: string;
-  motion_version_id: string | null;
-  motion_key: string;
   motion_id: string;
+  provenance: string;
+  source_motion_id: string;
   fps: number;
   qpos: number[][];
   joint_names: string[];
@@ -112,8 +107,8 @@ export type Session = {
     source_contact_layer: string;
     output_motion_path: string;
     output_segment_layer: string;
-    output_motion_version_id: string;
-    register_motion_version: boolean;
+    output_motion_id: string;
+    register_motion: boolean;
     overwrite: boolean;
   };
   plan: { path: string; status: string; edit_count: number } | null;
