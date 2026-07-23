@@ -26,6 +26,12 @@ from motion_edit.generation.omni_contact_core import install_contact_core_nodes
 
 install_contact_core_nodes()
 
+from motion_edit.generation.foot_contact_handle_contract import (
+    install_foot_contact_handle_contract,
+)
+
+install_foot_contact_handle_contract()
+
 from motion_edit.generation.omni_delaunay_cache import install_delaunay_topology_cache
 
 install_delaunay_topology_cache()
