@@ -1,0 +1,205 @@
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+import motion_edit.generation as generation
+from motion_edit.contact.plans import ContactEditPlan
+from motion_edit.generation import contact_aware_preview as preview
+from motion_edit.generation.rollout_authority import _load_force_rollout
+from motion_edit.generation.taskspace_spec import ContactAwareTaskspaceMotion
+
+
+def _rollout_motion() -> dict[str, np.ndarray]:
+    return {
+        "fps": np.asarray(50.0),
+        "joint_pos": np.asarray([[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]]),
+        "joint_vel": np.zeros((1, 7), dtype=np.float64),
+        "joint_names": np.asarray(["joint_0"], dtype=object),
+        "body_names": np.asarray(["pelvis"], dtype=object),
+        "body_pos_w": np.zeros((1, 1, 3), dtype=np.float64),
+        "body_quat_w": np.asarray([[[1.0, 0.0, 0.0, 0.0]]], dtype=np.float64),
+        "raw_contact_count": np.zeros(1, dtype=np.int32),
+        "raw_contact_shape0": np.full((1, 1), -1, dtype=np.int32),
+        "raw_contact_shape1": np.full((1, 1), -1, dtype=np.int32),
+        "raw_contact_body0": np.full((1, 1), -1, dtype=np.int32),
+        "raw_contact_body1": np.full((1, 1), -1, dtype=np.int32),
+        "raw_contact_point0_w": np.zeros((1, 1, 3), dtype=np.float64),
+        "raw_contact_point1_w": np.zeros((1, 1, 3), dtype=np.float64),
+        "raw_contact_normal_w": np.zeros((1, 1, 3), dtype=np.float64),
+        "raw_contact_force_w": np.zeros((1, 1, 3), dtype=np.float64),
+    }
+
+
+def test_force_rollout_path_is_required_and_original_motion_is_not_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = tmp_path / "original.npz"
+    rollout = tmp_path / "force_rollout.npz"
+    original.touch()
+    rollout.touch()
+    plan = ContactEditPlan(
+        plan_id="plan",
+        source_motion_id="motion",
+        source_motion_path=str(original),
+        source_contact_layer="contact/source",
+        status="validated",
+        edits=[],
+        metadata={"contact_force_source_path": str(rollout)},
+    )
+    loaded: list[Path] = []
+
+    def fake_load(path: str | Path):
+        loaded.append(Path(path).resolve())
+        return _rollout_motion()
+
+    monkeypatch.setattr(preview, "_load_motion_npz", fake_load)
+    motion, path = _load_force_rollout(plan, preview)
+
+    assert motion["joint_pos"].shape == (1, 8)
+    assert path == rollout.resolve()
+    assert loaded == [rollout.resolve()]
+    assert original.resolve() not in loaded
+
+
+def test_generation_routes_every_reference_through_force_rollout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = tmp_path / "original_reference.npz"
+    rollout_path = tmp_path / "force_rollout.npz"
+    original.touch()
+    rollout_path.touch()
+    rollout = _rollout_motion()
+    plan = ContactEditPlan(
+        plan_id="plan",
+        source_motion_id="motion",
+        source_motion_path=str(original),
+        source_contact_layer="contact/source",
+        status="validated",
+        edits=[],
+        metadata={"contact_force_source_path": str(rollout_path)},
+    )
+    output = tmp_path / "output.npz"
+    work = tmp_path / "work"
+    captured: dict[str, object] = {}
+
+    def fake_load(path: str | Path):
+        resolved = Path(path).resolve()
+        if resolved == rollout_path.resolve():
+            return rollout
+        if resolved.name.endswith("pyroki_preview.npz"):
+            return {}
+        raise AssertionError(f"unexpected motion load: {resolved}")
+
+    monkeypatch.setattr(preview, "_load_motion_npz", fake_load)
+    monkeypatch.setattr(preview, "validate_contact_edit_plan", lambda *args, **kwargs: [])
+    monkeypatch.setattr(preview, "_resolve_layers_root", lambda *args, **kwargs: tmp_path)
+    monkeypatch.setattr(
+        preview,
+        "read_contact_graph",
+        lambda *args, **kwargs: SimpleNamespace(motion_id="motion", anchors=[]),
+    )
+    monkeypatch.setattr(
+        preview,
+        "expand_task_variant_plan",
+        lambda *args, **kwargs: SimpleNamespace(
+            edits=[], surfaces=[], metadata={}, warnings=[]
+        ),
+    )
+
+    def fake_proxy(*, motion, source_motion, **kwargs):
+        captured["proxy_motion"] = motion
+        captured["proxy_path"] = Path(source_motion).resolve()
+        return (
+            {
+                "keypoint_pelvis": np.zeros((1, 3), dtype=np.float64),
+                "body_pos_w": np.zeros((1, 1, 3), dtype=np.float64),
+                "body_lin_vel_w": np.zeros((1, 1, 3), dtype=np.float64),
+            },
+            [],
+            {},
+        )
+
+    monkeypatch.setattr(preview, "_batch_contact_laplacian_proxy_motion", fake_proxy)
+    monkeypatch.setattr(preview, "apply_pose_edits_to_proxy", lambda proxy, edits: (proxy, {}))
+
+    def fake_bind(anchors, motion, **kwargs):
+        captured["binding_motion"] = motion
+        return [], {"warnings": []}
+
+    monkeypatch.setattr(preview, "bind_newton_contact_patches", fake_bind)
+
+    def fake_build(*, source_motion, contact_pose_motion, semantic_names, semantic_targets_w, **kwargs):
+        captured["taskspace_source"] = source_motion
+        captured["taskspace_contact_pose"] = contact_pose_motion
+        return ContactAwareTaskspaceMotion(
+            motion_id="motion",
+            fps=50.0,
+            frame_start=0,
+            frame_end=1,
+            semantic_names=tuple(semantic_names),
+            semantic_targets_w=np.asarray(semantic_targets_w, dtype=np.float64),
+            semantic_weights=np.ones((1, len(tuple(semantic_names))), dtype=np.float64),
+            contacts=(),
+            source_qpos=np.asarray(source_motion["joint_pos"], dtype=np.float64),
+            source_qvel=np.asarray(source_motion["joint_vel"], dtype=np.float64),
+            source_reference_weights=np.zeros_like(
+                np.asarray(source_motion["joint_pos"], dtype=np.float64)
+            ),
+            boundary_weights=np.zeros(1, dtype=np.float64),
+            metadata={},
+        )
+
+    monkeypatch.setattr(preview, "build_contact_aware_taskspace_motion", fake_build)
+    monkeypatch.setattr(
+        preview,
+        "_task_visualization_proxy",
+        lambda *, proxy, source_motion: proxy,
+    )
+    monkeypatch.setattr(
+        preview,
+        "write_contact_aware_taskspace_motion",
+        lambda path, spec: Path(path).touch(),
+    )
+
+    def fake_run(*, source_motion_path, ik_output_path, **kwargs):
+        captured["pyroki_source_path"] = Path(source_motion_path).resolve()
+        Path(ik_output_path).touch()
+
+    monkeypatch.setattr(preview, "_run_pyroki_preview_subprocess", fake_run)
+
+    def fake_merge(*, source_motion, **kwargs):
+        captured["merge_source"] = source_motion
+        return {"motion_edit_generation_metadata": np.asarray("{}")}
+
+    monkeypatch.setattr(preview, "merge_pyroki_preview_motion", fake_merge)
+    monkeypatch.setattr(preview, "_stamp_robot_asset", lambda generated: generated)
+
+    generation.generate_contact_aware_pyroki_preview(
+        plan,
+        output_motion_path=output,
+        intermediate_dir=work,
+        overwrite=True,
+    )
+
+    assert captured["proxy_motion"] is rollout
+    assert captured["binding_motion"] is rollout
+    assert captured["taskspace_source"] is rollout
+    assert captured["taskspace_contact_pose"] is rollout
+    assert captured["merge_source"] is rollout
+    assert captured["proxy_path"] == rollout_path.resolve()
+    assert captured["pyroki_source_path"] == rollout_path.resolve()
+    assert output.is_file()
+
+    with np.load(output, allow_pickle=True) as data:
+        assert str(np.asarray(data["source_motion_path"]).item()) == str(
+            rollout_path.resolve()
+        )
+        assert str(np.asarray(data["original_plan_source_motion_path"]).item()) == str(
+            original
+        )
