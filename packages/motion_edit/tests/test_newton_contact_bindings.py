@@ -4,6 +4,7 @@ import unittest
 
 import numpy as np
 
+import motion_edit.generation  # noqa: F401 - installs current Newton binding policy
 from motion_edit.contact.newton_bindings import (
     bind_newton_contact_patches,
     body_local_point_to_world,
@@ -114,26 +115,48 @@ class NewtonContactBindingTests(unittest.TestCase):
         self.assertEqual(patches[0].robot_binding_source, "legacy_center")
         self.assertIsNone(patches[0].robot_points_local)
 
-    def test_heel_and_toe_match_newton_ankle_sphere_body(self) -> None:
+    def test_heel_and_toe_bind_to_distinct_ankle_and_toe_shapes(self) -> None:
         frame_count = 1
         motion = {
-            "body_names": np.asarray(["right_ankle_roll_sphere_1_link"], dtype=object),
-            "body_pos_w": np.zeros((frame_count, 1, 3), dtype=np.float64),
-            "body_quat_w": np.asarray([[[1.0, 0.0, 0.0, 0.0]]], dtype=np.float64),
-            "newton_body_labels": np.asarray(
-                ["/World/envs/env_0/Robot/right_ankle_roll_sphere_1_link", "/World/ground"],
+            "body_names": np.asarray(
+                ["right_ankle_roll_sphere_1_link", "right_ankle_roll_sphere_5_link"],
                 dtype=object,
             ),
-            "newton_shape_labels": np.asarray(["right_toe_collision", "ground"], dtype=object),
-            "raw_contact_count": np.ones(frame_count, dtype=np.int32),
-            "raw_contact_shape0": np.zeros((frame_count, 1), dtype=np.int32),
-            "raw_contact_shape1": np.ones((frame_count, 1), dtype=np.int32),
-            "raw_contact_body0": np.zeros((frame_count, 1), dtype=np.int32),
-            "raw_contact_body1": np.ones((frame_count, 1), dtype=np.int32),
-            "raw_contact_point0_w": np.zeros((frame_count, 1, 3), dtype=np.float64),
-            "raw_contact_point1_w": np.asarray([[[0.05, 0.0, 0.0]]], dtype=np.float64),
-            "raw_contact_normal_w": np.asarray([[[0.0, 0.0, -1.0]]], dtype=np.float64),
-            "raw_contact_force_w": np.asarray([[[0.0, 0.0, 100.0]]], dtype=np.float64),
+            "body_pos_w": np.asarray([[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]], dtype=np.float64),
+            "body_quat_w": np.asarray(
+                [[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]]],
+                dtype=np.float64,
+            ),
+            "newton_body_labels": np.asarray(
+                [
+                    "/World/envs/env_0/Robot/right_ankle_roll_sphere_1_link",
+                    "/World/envs/env_0/Robot/right_ankle_roll_sphere_5_link",
+                    "/World/ground",
+                ],
+                dtype=object,
+            ),
+            "newton_shape_labels": np.asarray(
+                ["right_heel_collision", "right_toe_collision", "ground"],
+                dtype=object,
+            ),
+            "raw_contact_count": np.asarray([2], dtype=np.int32),
+            "raw_contact_shape0": np.asarray([[0, 1]], dtype=np.int32),
+            "raw_contact_shape1": np.asarray([[2, 2]], dtype=np.int32),
+            "raw_contact_body0": np.asarray([[0, 1]], dtype=np.int32),
+            "raw_contact_body1": np.asarray([[2, 2]], dtype=np.int32),
+            "raw_contact_point0_w": np.zeros((frame_count, 2, 3), dtype=np.float64),
+            "raw_contact_point1_w": np.asarray(
+                [[[0.05, 0.0, 0.0], [1.05, 0.0, 0.0]]],
+                dtype=np.float64,
+            ),
+            "raw_contact_normal_w": np.asarray(
+                [[[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]]],
+                dtype=np.float64,
+            ),
+            "raw_contact_force_w": np.asarray(
+                [[[0.0, 0.0, 100.0], [0.0, 0.0, 100.0]]],
+                dtype=np.float64,
+            ),
         }
         anchors = [
             ContactAnchorRecord("motion_a", "right_heel", "right_heel", 0, 1),
@@ -141,9 +164,11 @@ class NewtonContactBindingTests(unittest.TestCase):
         ]
 
         patches, summary = bind_newton_contact_patches(anchors, motion)
+        by_anchor = {patch.anchor_id: patch for patch in patches}
 
         self.assertEqual(summary["bound_patch_count"], 2)
-        self.assertTrue(all(patch.robot_binding_source == "newton_raw_contact" for patch in patches))
+        self.assertEqual(by_anchor["right_heel"].newton_shape_labels, ["right_heel_collision"])
+        self.assertEqual(by_anchor["right_toe"].newton_shape_labels, ["right_toe_collision"])
 
 
 if __name__ == "__main__":
