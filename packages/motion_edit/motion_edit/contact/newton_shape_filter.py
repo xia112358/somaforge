@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 import sys
 from typing import Any, Mapping, Sequence
 
@@ -12,6 +13,63 @@ from .schema import ContactAnchorRecord, ContactPatchRecord
 
 _ORIGINAL_BIND_NEWTON_CONTACT_PATCHES = _legacy.bind_newton_contact_patches
 _INSTALLED = False
+
+# Correct the legacy toe alias groups: sphere 1/2 are rear-foot shapes and must
+# never be accepted as toe bodies merely because the anchor is on the same foot.
+_STRICT_BODY_ALIAS_GROUPS: tuple[tuple[str, ...], ...] = (
+    (
+        "left_heel",
+        "lhee",
+        "left_ankle_roll_link",
+        "left_ankle_roll_sphere_1_link",
+        "left_ankle_roll_sphere_2_link",
+    ),
+    (
+        "left_toe",
+        "ltoe",
+        "left_ankle_roll_link",
+        "left_ankle_roll_sphere_3_link",
+        "left_ankle_roll_sphere_4_link",
+        "left_ankle_roll_sphere_5_link",
+    ),
+    (
+        "right_heel",
+        "rhee",
+        "right_ankle_roll_link",
+        "right_ankle_roll_sphere_1_link",
+        "right_ankle_roll_sphere_2_link",
+    ),
+    (
+        "right_toe",
+        "rtoe",
+        "right_ankle_roll_link",
+        "right_ankle_roll_sphere_3_link",
+        "right_ankle_roll_sphere_4_link",
+        "right_ankle_roll_sphere_5_link",
+    ),
+    ("left_foot", "lf", "left_ankle", "left_ankle_roll_link", "left_ankle_pitch_link"),
+    ("right_foot", "rf", "right_ankle", "right_ankle_roll_link", "right_ankle_pitch_link"),
+    (
+        "left_hand",
+        "lh",
+        "left_wrist",
+        "left_wrist_yaw_link",
+        "left_rubber_hand_link",
+        "left_sphere_hand_link",
+        "left_sphere_hand_tip_link",
+    ),
+    (
+        "right_hand",
+        "rh",
+        "right_wrist",
+        "right_wrist_yaw_link",
+        "right_rubber_hand_link",
+        "right_sphere_hand_link",
+        "right_sphere_hand_tip_link",
+    ),
+    ("left_knee", "lk", "left_knee_link"),
+    ("right_knee", "rk", "right_knee_link"),
+)
 
 
 def _anchor_raw_shape_ids(anchor: ContactAnchorRecord) -> tuple[int, ...]:
@@ -72,7 +130,7 @@ def bind_newton_contact_patches(
     anchors: Sequence[ContactAnchorRecord],
     motion: Mapping[str, Any],
     *,
-    source_recording_path: str | None = None,
+    source_recording_path: str | Path | None = None,
     min_force_norm: float = 0.0,
 ) -> tuple[list[ContactPatchRecord], dict[str, Any]]:
     """Bind Newton patches with strict per-anchor raw shape identity.
@@ -147,6 +205,7 @@ def install_strict_newton_shape_filter() -> None:
     global _INSTALLED
     if _INSTALLED:
         return
+    _legacy._BODY_ALIAS_GROUPS = _STRICT_BODY_ALIAS_GROUPS
     _legacy.bind_newton_contact_patches = bind_newton_contact_patches
     contact_package = sys.modules.get("motion_edit.contact")
     if contact_package is not None:
