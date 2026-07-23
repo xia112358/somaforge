@@ -17,7 +17,7 @@ import argparse
 import json
 from pathlib import Path
 
-from motion_edit.generation.contact_aware_preview import generate_contact_aware_pyroki_preview
+from motion_edit.generation import generate_contact_aware_pyroki_preview
 from motion_edit.generation.newton_direct_fk import canonicalize_motion_with_direct_newton_fk
 from motion_edit.generation.omni_generation_defaults import OMNI_GENERATION_DEFAULTS
 
