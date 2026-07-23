@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,7 +62,7 @@ def generate_contact_aware_pyroki_preview(
     ik_conda_env: str = "env_pyroki_climb_projection",
     ik_script: str | Path | None = None,
     ik_max_nfev: int | None = None,
-    layers_root: Path = LAYERS_ROOT,
+    layers_root: Path | None = None,
 ) -> ContactAwarePreviewResult:
     """Generate one PyRoki-FK-consistent edited motion without starting Isaac.
 
@@ -90,6 +91,7 @@ def generate_contact_aware_pyroki_preview(
     motion = _load_motion_npz(source_motion_path)
 
     contact_layer = source_contact_layer or plan.source_contact_layer
+    layers_root = _resolve_layers_root(layers_root, contact_layer=contact_layer)
     graph = read_contact_graph(layers_root / contact_layer, plan.source_motion_id)
     surface_path = layers_root / contact_layer / "surfaces" / f"{graph.motion_id}.jsonl"
     source_surfaces = read_contact_surfaces(surface_path) if surface_path.is_file() else []
@@ -126,11 +128,13 @@ def generate_contact_aware_pyroki_preview(
         "pose_edit_application": pose_metadata,
     }
 
+    binding_motion, binding_motion_path = _contact_binding_motion(plan, source_motion=motion)
     patches, binding_summary = bind_newton_contact_patches(
         graph.anchors,
-        motion,
+        binding_motion,
         min_force_norm=float(min_raw_contact_force_norm),
     )
+    binding_summary["source_motion_path"] = binding_motion_path
 
     semantic_names = tuple(name for name in LTE_FULLBODY_KEYPOINT_LINKS if f"keypoint_{name}" in proxy)
     if not semantic_names:
@@ -142,6 +146,7 @@ def generate_contact_aware_pyroki_preview(
     taskspace = build_contact_aware_taskspace_motion(
         motion_id=graph.motion_id,
         source_motion=motion,
+        contact_pose_motion=binding_motion,
         semantic_names=semantic_names,
         semantic_targets_w=semantic_targets_w,
         patches=patches,
@@ -204,6 +209,77 @@ def generate_contact_aware_pyroki_preview(
         diagnostics=diagnostics,
         warnings=warnings,
     )
+
+
+def _resolve_layers_root(layers_root: Path | None, *, contact_layer: str) -> Path:
+    """Resolve runtime Motion Edit layers when an isolated worktree has no data symlink."""
+
+    if layers_root is not None:
+        return Path(layers_root).expanduser().resolve()
+    if (LAYERS_ROOT / contact_layer).is_dir():
+        return LAYERS_ROOT
+    configured_root = os.environ.get("SOMAFORGE_ROOT")
+    if configured_root:
+        runtime_layers = (
+            Path(configured_root).expanduser().resolve()
+            / "runtime"
+            / "current"
+            / "motion_edit"
+            / "data"
+            / "layers"
+        )
+        if (runtime_layers / contact_layer).is_dir():
+            return runtime_layers
+    return LAYERS_ROOT
+
+
+def _contact_binding_motion(
+    plan: ContactEditPlan,
+    *,
+    source_motion: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    """Select the Newton rollout that owns raw contacts and their body poses."""
+
+    required_raw = (
+        "raw_contact_count",
+        "raw_contact_shape0",
+        "raw_contact_shape1",
+        "raw_contact_body0",
+        "raw_contact_body1",
+        "raw_contact_point0_w",
+        "raw_contact_point1_w",
+        "raw_contact_normal_w",
+        "raw_contact_force_w",
+    )
+    if all(key in source_motion for key in required_raw):
+        return source_motion, str(plan.source_motion_path)
+
+    candidate_value = plan.metadata.get("contact_force_source_path")
+    if not candidate_value:
+        return source_motion, str(plan.source_motion_path)
+    candidate = Path(str(candidate_value)).expanduser().resolve()
+    if not candidate.is_file():
+        raise FileNotFoundError(f"Newton contact source motion is missing: {candidate}")
+    contact_motion = _load_motion_npz(candidate)
+    missing = [key for key in required_raw if key not in contact_motion]
+    if missing:
+        raise ValueError(f"Newton contact source motion is missing raw-contact arrays: {missing}")
+
+    source_frames = int(np.asarray(source_motion["joint_pos"]).shape[0])
+    contact_frames = int(np.asarray(contact_motion["body_pos_w"]).shape[0])
+    if contact_frames != source_frames:
+        raise ValueError(
+            f"Newton contact source frame count differs from source motion: {contact_frames} != {source_frames}"
+        )
+    source_fps = float(np.asarray(source_motion["fps"]).reshape(-1)[0])
+    contact_fps = float(np.asarray(contact_motion["fps"]).reshape(-1)[0])
+    if not np.isclose(source_fps, contact_fps, atol=1.0e-6, rtol=0.0):
+        raise ValueError(f"Newton contact source fps differs from source motion: {contact_fps} != {source_fps}")
+    source_joint_names = [str(item) for item in np.asarray(source_motion["joint_names"]).reshape(-1)]
+    contact_joint_names = [str(item) for item in np.asarray(contact_motion["joint_names"]).reshape(-1)]
+    if contact_joint_names != source_joint_names:
+        raise ValueError("Newton contact source joint_names differ from source motion")
+    return contact_motion, str(candidate)
 
 
 def _run_pyroki_preview_subprocess(

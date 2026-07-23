@@ -102,6 +102,14 @@ class ContactAwareTaskspaceBuilderTests(unittest.TestCase):
             "body_pos_w": np.asarray([[[0.0, 0.0, 0.5]], [[0.1, 0.0, 0.5]]], dtype=np.float64),
             "body_quat_w": np.tile(np.asarray([[[1.0, 0.0, 0.0, 0.0]]]), (frame_count, 1, 1)),
         }
+        contact_pose_motion = {
+            "body_names": np.asarray(["left_knee_link"], dtype=object),
+            "body_pos_w": np.asarray([[[1.0, 0.0, 0.5]], [[1.2, 0.0, 0.5]]], dtype=np.float64),
+            "body_quat_w": np.tile(
+                np.asarray([[[1.0, 0.0, 0.0, 0.0]]]),
+                (frame_count, 1, 1),
+            ),
+        }
         anchor = ContactAnchorRecord("motion_a", "anchor_lk", "left_knee", 0, frame_count)
         patch = ContactPatchRecord(
             motion_id="motion_a",
@@ -120,6 +128,7 @@ class ContactAwareTaskspaceBuilderTests(unittest.TestCase):
         spec = build_contact_aware_taskspace_motion(
             motion_id="motion_a",
             source_motion=source_motion,
+            contact_pose_motion=contact_pose_motion,
             semantic_names=("left_knee",),
             semantic_targets_w=np.zeros((frame_count, 1, 3), dtype=np.float64),
             patches=[patch],
@@ -132,7 +141,7 @@ class ContactAwareTaskspaceBuilderTests(unittest.TestCase):
         self.assertEqual(contact.kind, "fixed_contact")
         np.testing.assert_allclose(
             contact.resolved_target_points_w()[:, 0],
-            np.asarray([[0.0, 0.0, 0.4], [0.1, 0.0, 0.4]], dtype=np.float64),
+            np.asarray([[1.0, 0.0, 0.4], [1.2, 0.0, 0.4]], dtype=np.float64),
         )
 
 

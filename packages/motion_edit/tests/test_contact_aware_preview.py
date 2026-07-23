@@ -5,7 +5,17 @@ from pathlib import Path
 import numpy as np
 
 from motion_edit.contact.plans import ContactEditPlan
-from motion_edit.generation.contact_aware_preview import merge_pyroki_preview_motion
+from motion_edit.generation.contact_aware_preview import _resolve_layers_root, merge_pyroki_preview_motion
+
+
+def test_resolve_layers_root_uses_somaforge_runtime_for_isolated_worktree(tmp_path, monkeypatch) -> None:
+    repo_root = tmp_path / "somaforge"
+    runtime_layers = repo_root / "runtime" / "current" / "motion_edit" / "data" / "layers"
+    contact_layer = "contact/task_variants/climb_00_height_1p100_source"
+    (runtime_layers / contact_layer).mkdir(parents=True)
+    monkeypatch.setenv("SOMAFORGE_ROOT", str(repo_root))
+
+    assert _resolve_layers_root(None, contact_layer=contact_layer) == runtime_layers
 
 
 def test_merge_pyroki_preview_overwrites_kinematics_and_drops_stale_provenance() -> None:

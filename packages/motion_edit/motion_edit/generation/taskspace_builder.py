@@ -22,6 +22,7 @@ def build_contact_aware_taskspace_motion(
     *,
     motion_id: str,
     source_motion: Mapping[str, Any],
+    contact_pose_motion: Mapping[str, Any] | None = None,
     semantic_names: Sequence[str],
     semantic_targets_w: np.ndarray,
     patches: Sequence[ContactPatchRecord],
@@ -49,9 +50,10 @@ def build_contact_aware_taskspace_motion(
 
     source_qpos = np.asarray(source_motion["joint_pos"], dtype=np.float64)
     source_qvel = np.asarray(source_motion["joint_vel"], dtype=np.float64)
-    body_pos_w = np.asarray(source_motion["body_pos_w"], dtype=np.float64)
-    body_quat_w = np.asarray(source_motion["body_quat_w"], dtype=np.float64)
-    body_names = _string_list(source_motion.get("body_names"))
+    contact_motion = source_motion if contact_pose_motion is None else contact_pose_motion
+    body_pos_w = np.asarray(contact_motion["body_pos_w"], dtype=np.float64)
+    body_quat_w = np.asarray(contact_motion["body_quat_w"], dtype=np.float64)
+    body_names = _string_list(contact_motion.get("body_names"))
     if not body_names:
         raise ValueError("contact-aware taskspace generation requires body_names")
 
