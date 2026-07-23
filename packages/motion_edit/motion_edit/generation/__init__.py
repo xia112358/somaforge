@@ -34,6 +34,10 @@ from motion_edit.generation.omni_legacy_fallback import install_legacy_foot_fall
 
 install_legacy_foot_fallbacks()
 
+from motion_edit.generation.omni_surface_mapping import install_surface_specific_object_mapping
+
+install_surface_specific_object_mapping()
+
 from motion_edit.generation.contact_aware import ContactAwareGenerationResult, apply_contact_aware_edit_plan_to_motion
 from motion_edit.generation.contact_aware_preview import (
     ContactAwarePreviewResult,
