@@ -27,6 +27,14 @@ from .newton_bindings import (
     world_point_to_body_local,
     world_vector_to_body_local,
 )
+from .newton_shape_filter import install_strict_newton_shape_filter
+
+install_strict_newton_shape_filter()
+
+from .foot_runtime_body_aliases import install_split_foot_runtime_body_aliases
+
+install_split_foot_runtime_body_aliases()
+
 from .patches import patches_from_anchors
 from .phases import (
     ContactPhase,
