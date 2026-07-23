@@ -218,14 +218,16 @@ def install_contact_core_nodes() -> None:
         "left_heel",
         "left_ankle_roll_sphere_1_link",
         "left_ankle_roll_sphere_2_link",
+        "left_foot",
     )
     lte.CONTACT_BODY_LINK_CANDIDATES["right_heel"] = (
         "right_heel",
         "right_ankle_roll_sphere_1_link",
         "right_ankle_roll_sphere_2_link",
+        "right_foot",
     )
-    lte.CONTACT_BODY_LINK_CANDIDATES["lhee"] = ("left_heel",)
-    lte.CONTACT_BODY_LINK_CANDIDATES["rhee"] = ("right_heel",)
+    lte.CONTACT_BODY_LINK_CANDIDATES["lhee"] = ("left_heel", "left_foot")
+    lte.CONTACT_BODY_LINK_CANDIDATES["rhee"] = ("right_heel", "right_foot")
     lte._contact_mask_for_keypoint = _contact_mask_for_keypoint
     lte._semantic_body_weights = _semantic_body_weights_with_heels
 
