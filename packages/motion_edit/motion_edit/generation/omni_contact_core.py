@@ -8,80 +8,12 @@ import numpy as np
 from motion_edit.generation import omni_contact_graph as omni
 
 
-# Preserve the eight WBT contact trajectories explicitly:
-# heel/toe on both feet, both hemisphere hands, and both knees.
-OMNI_KEYPOINT_LINKS_WITH_CONTACT_CORE: dict[str, tuple[str, ...]] = {
-    "pelvis": omni.OMNI_KEYPOINT_LINKS["pelvis"],
-    "left_hip": omni.OMNI_KEYPOINT_LINKS["left_hip"],
-    "left_knee": omni.OMNI_KEYPOINT_LINKS["left_knee"],
-    "left_ankle": omni.OMNI_KEYPOINT_LINKS["left_ankle"],
-    "left_heel": (
-        "left_ankle_roll_sphere_1_link",
-        "left_ankle_roll_sphere_2_link",
-    ),
-    "left_foot": omni.OMNI_KEYPOINT_LINKS["left_foot"],
-    "right_hip": omni.OMNI_KEYPOINT_LINKS["right_hip"],
-    "right_knee": omni.OMNI_KEYPOINT_LINKS["right_knee"],
-    "right_ankle": omni.OMNI_KEYPOINT_LINKS["right_ankle"],
-    "right_heel": (
-        "right_ankle_roll_sphere_1_link",
-        "right_ankle_roll_sphere_2_link",
-    ),
-    "right_foot": omni.OMNI_KEYPOINT_LINKS["right_foot"],
-    "torso": omni.OMNI_KEYPOINT_LINKS["torso"],
-    "left_shoulder": omni.OMNI_KEYPOINT_LINKS["left_shoulder"],
-    "left_elbow": omni.OMNI_KEYPOINT_LINKS["left_elbow"],
-    "left_hand": omni.OMNI_KEYPOINT_LINKS["left_hand"],
-    "right_shoulder": omni.OMNI_KEYPOINT_LINKS["right_shoulder"],
-    "right_elbow": omni.OMNI_KEYPOINT_LINKS["right_elbow"],
-    "right_hand": omni.OMNI_KEYPOINT_LINKS["right_hand"],
-}
-
-OMNI_SOLVER_POINT_ORDER_WITH_CONTACT_CORE: tuple[str, ...] = (
-    "root",
-    "torso",
-    "left_hip",
-    "right_hip",
-    "left_knee",
-    "right_knee",
-    "left_ankle",
-    "right_ankle",
-    "left_heel",
-    "right_heel",
-    "left_foot",
-    "right_foot",
-    "left_shoulder",
-    "right_shoulder",
-    "left_elbow",
-    "right_elbow",
-    "left_hand",
-    "right_hand",
-)
-
-OMNI_BODY_EDGES_WITH_CONTACT_CORE: tuple[tuple[str, str], ...] = (
-    ("root", "torso"),
-    ("root", "left_hip"),
-    ("left_hip", "left_knee"),
-    ("left_knee", "left_ankle"),
-    ("left_ankle", "left_heel"),
-    ("left_ankle", "left_foot"),
-    ("root", "right_hip"),
-    ("right_hip", "right_knee"),
-    ("right_knee", "right_ankle"),
-    ("right_ankle", "right_heel"),
-    ("right_ankle", "right_foot"),
-    ("torso", "left_shoulder"),
-    ("left_shoulder", "left_elbow"),
-    ("left_elbow", "left_hand"),
-    ("torso", "right_shoulder"),
-    ("right_shoulder", "right_elbow"),
-    ("right_elbow", "right_hand"),
-)
-
+# Eight physical contact trajectories represented by the two-point foot model:
+# heel channels act on ankle semantics, toe channels act on toe semantics.
 CONTACT_CORE_NAMES: tuple[str, ...] = (
-    "left_heel",
+    "left_ankle",
     "left_foot",
-    "right_heel",
+    "right_ankle",
     "right_foot",
     "left_hand",
     "right_hand",
@@ -90,15 +22,17 @@ CONTACT_CORE_NAMES: tuple[str, ...] = (
 )
 
 _CONTACT_MASK_ALIASES: dict[str, tuple[str, ...]] = {
-    "left_heel": ("left_heel", "LHEE"),
+    "left_ankle": ("left_heel", "LHEE"),
     "left_foot": ("left_toe", "LTOE", "left_foot"),
-    "right_heel": ("right_heel", "RHEE"),
+    "right_ankle": ("right_heel", "RHEE"),
     "right_foot": ("right_toe", "RTOE", "right_foot"),
     "left_hand": ("left_hand", "LH"),
     "right_hand": ("right_hand", "RH"),
     "left_knee": ("left_knee", "LK"),
     "right_knee": ("right_knee", "RK"),
 }
+
+_INSTALLED = False
 
 
 def _contact_mask_for_keypoint(
@@ -130,10 +64,12 @@ def _contact_mask_for_keypoint(
     return mask
 
 
-def _semantic_body_weights_with_heels(
+def _semantic_body_weights_with_ankle_toe(
     body_names: list[str],
     keypoint_names: list[str],
 ) -> np.ndarray:
+    """Assign every robot body to the ankle+toe Omni semantic graph."""
+
     weights = np.zeros((len(body_names), len(keypoint_names)), dtype=np.float64)
     semantic = {name: index for index, name in enumerate(keypoint_names)}
 
@@ -156,13 +92,28 @@ def _semantic_body_weights_with_heels(
                 assign(row, f"{side}_hip")
             elif "knee" in name:
                 assign(row, f"{side}_knee")
-            elif (
-                "ankle_roll_sphere_1" in name
-                or "ankle_roll_sphere_2" in name
-                or "heel" in name
+            elif any(
+                token in name
+                for token in (
+                    "ankle_roll_sphere_1",
+                    "ankle_roll_sphere_2",
+                    "heel",
+                )
             ):
-                assign(row, f"{side}_heel")
-            elif "ankle_roll_sphere_5" in name or "toe" in name:
+                # Rear-foot contact is represented by the ankle trajectory.
+                assign(row, f"{side}_ankle")
+            elif any(
+                token in name
+                for token in (
+                    "ankle_roll_sphere_3",
+                    "ankle_roll_sphere_4",
+                    "ankle_roll_sphere_5",
+                    "toe",
+                    "sole",
+                    "foot_contact",
+                )
+            ):
+                # Fore-foot contact is represented by the toe endpoint.
                 assign(row, f"{side}_foot")
             elif any(token in name for token in ("ankle", "foot")):
                 assign(row, f"{side}_ankle")
@@ -195,45 +146,61 @@ def _semantic_body_weights_with_heels(
 
 
 def install_contact_core_nodes() -> None:
-    """Add independent heel nodes without changing the existing toe/hand/knee API."""
+    """Use ankle and toe as the only two foot nodes, both contact-capable."""
+
+    global _INSTALLED
+    if _INSTALLED:
+        return
 
     lte = importlib.import_module("motion_edit.generation.lte_fullbody")
     solver = importlib.import_module("motion_edit.contact_laplacian.solver")
     pyroki = importlib.import_module("motion_edit.generation.pyroki_taskspace")
 
-    omni.OMNI_KEYPOINT_LINKS = dict(OMNI_KEYPOINT_LINKS_WITH_CONTACT_CORE)
-    omni.OMNI_SOLVER_POINT_ORDER = OMNI_SOLVER_POINT_ORDER_WITH_CONTACT_CORE
-    omni.OMNI_BODY_EDGES = OMNI_BODY_EDGES_WITH_CONTACT_CORE
-    omni.OMNI_SEMANTIC_WEIGHTS = {
-        **omni.OMNI_SEMANTIC_WEIGHTS,
-        "left_heel": 8.0,
-        "right_heel": 8.0,
-    }
-
-    lte.LTE_FULLBODY_KEYPOINT_LINKS.clear()
-    lte.LTE_FULLBODY_KEYPOINT_LINKS.update(omni.OMNI_KEYPOINT_LINKS)
+    # The base Omni graph already contains knee -> ankle -> toe. Do not add an
+    # independent heel vertex. Only change which physical contact channels drive
+    # the existing ankle/toe semantic trajectories.
     lte.LTE_FULLBODY_CONTACT_NAMES = CONTACT_CORE_NAMES
     lte.LTE_HANDLE_KEYPOINT_NAMES = CONTACT_CORE_NAMES
+
     lte.CONTACT_BODY_LINK_CANDIDATES["left_heel"] = (
-        "left_heel",
+        "left_ankle",
+        "left_foot",  # legacy sparse-proxy fallback
         "left_ankle_roll_sphere_1_link",
         "left_ankle_roll_sphere_2_link",
-        "left_foot",
     )
     lte.CONTACT_BODY_LINK_CANDIDATES["right_heel"] = (
-        "right_heel",
+        "right_ankle",
+        "right_foot",  # legacy sparse-proxy fallback
         "right_ankle_roll_sphere_1_link",
         "right_ankle_roll_sphere_2_link",
-        "right_foot",
     )
-    lte.CONTACT_BODY_LINK_CANDIDATES["lhee"] = ("left_heel", "left_foot")
-    lte.CONTACT_BODY_LINK_CANDIDATES["rhee"] = ("right_heel", "right_foot")
+    lte.CONTACT_BODY_LINK_CANDIDATES["left_toe"] = (
+        "left_foot",
+        "left_ankle_roll_sphere_5_link",
+        "left_ankle_roll_sphere_4_link",
+        "left_ankle_roll_sphere_3_link",
+    )
+    lte.CONTACT_BODY_LINK_CANDIDATES["right_toe"] = (
+        "right_foot",
+        "right_ankle_roll_sphere_5_link",
+        "right_ankle_roll_sphere_4_link",
+        "right_ankle_roll_sphere_3_link",
+    )
+    lte.CONTACT_BODY_LINK_CANDIDATES["lhee"] = ("left_ankle", "left_foot")
+    lte.CONTACT_BODY_LINK_CANDIDATES["rhee"] = ("right_ankle", "right_foot")
+    lte.CONTACT_BODY_LINK_CANDIDATES["ltoe"] = ("left_foot",)
+    lte.CONTACT_BODY_LINK_CANDIDATES["rtoe"] = ("right_foot",)
+
     lte._contact_mask_for_keypoint = _contact_mask_for_keypoint
-    lte._semantic_body_weights = _semantic_body_weights_with_heels
+    lte._semantic_body_weights = _semantic_body_weights_with_ankle_toe
 
     solver._SEMANTIC_BODY_EDGE_CANDIDATES = omni.OMNI_BODY_EDGES
 
+    # Remove any stale independent-heel aliases from an already-imported process
+    # and restore the authoritative Omni ankle/toe/hemisphere-hand mapping.
     pyroki.SEMANTIC_LINK_ALIASES.clear()
     pyroki.SEMANTIC_LINK_ALIASES.update(omni.OMNI_KEYPOINT_LINKS)
     pyroki.SEMANTIC_DEFAULT_WEIGHTS.clear()
     pyroki.SEMANTIC_DEFAULT_WEIGHTS.update(omni.OMNI_SEMANTIC_WEIGHTS)
+
+    _INSTALLED = True
