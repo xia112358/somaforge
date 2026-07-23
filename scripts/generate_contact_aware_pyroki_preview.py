@@ -11,7 +11,7 @@ import argparse
 import json
 from pathlib import Path
 
-from motion_edit.generation.contact_aware_preview import generate_contact_aware_pyroki_preview
+from motion_edit.generation import generate_contact_aware_pyroki_preview
 
 
 def main() -> None:
