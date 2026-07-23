@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 
+from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord
 from motion_edit.contact_laplacian import solver
+from motion_edit.contact_laplacian.schema import BatchContactLaplacianConfig
 from motion_edit.generation import lte_fullbody, pyroki_taskspace
 from motion_edit.generation import omni_contact_graph as omni
 from motion_edit.generation.omni_contact_core import CONTACT_CORE_NAMES
@@ -99,6 +103,49 @@ def test_contact_masks_map_heel_to_ankle_and_toe_to_foot() -> None:
 
     np.testing.assert_array_equal(left_ankle, np.asarray([True, False]))
     np.testing.assert_array_equal(left_foot, np.asarray([False, True]))
+
+
+def test_laplacian_handles_map_heel_to_ankle_and_toe_to_toe() -> None:
+    keypoints = {
+        "left_ankle": np.zeros((2, 3), dtype=np.float64),
+        "left_foot": np.ones((2, 3), dtype=np.float64),
+    }
+    anchors = [
+        ContactAnchorRecord("motion_a", "heel_anchor", "left_heel", 0, 2),
+        ContactAnchorRecord("motion_a", "toe_anchor", "left_toe", 0, 2),
+    ]
+    edits = [
+        ContactAnchorEditRecord(
+            edit_id="heel_edit",
+            motion_id="motion_a",
+            anchor_id="heel_anchor",
+            body="left_heel",
+            delta_world=[0.0, 0.0, 0.1],
+            affected_frames=[0, 2],
+        ),
+        ContactAnchorEditRecord(
+            edit_id="toe_edit",
+            motion_id="motion_a",
+            anchor_id="toe_anchor",
+            body="left_toe",
+            delta_world=[0.0, 0.0, 0.1],
+            affected_frames=[0, 2],
+        ),
+    ]
+
+    handles = lte_fullbody._contact_laplacian_handles_from_edits(
+        edits,
+        keypoints,
+        graph=SimpleNamespace(anchors=anchors),
+        config=BatchContactLaplacianConfig(),
+        source_motion=None,
+    )
+    by_anchor = {handle.anchor_id: handle for handle in handles}
+
+    assert by_anchor["heel_anchor"].semantic_name == "left_ankle"
+    assert by_anchor["toe_anchor"].semantic_name == "left_foot"
+    np.testing.assert_allclose(by_anchor["heel_anchor"].target_xyz[:, 2], 0.1)
+    np.testing.assert_allclose(by_anchor["toe_anchor"].target_xyz[:, 2], 1.1)
 
 
 def test_dense_proxy_maps_rear_foot_to_ankle_and_forefoot_to_toe() -> None:
