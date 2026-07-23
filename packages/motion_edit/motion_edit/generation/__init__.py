@@ -30,6 +30,10 @@ from motion_edit.generation.omni_delaunay_cache import install_delaunay_topology
 
 install_delaunay_topology_cache()
 
+from motion_edit.generation.omni_legacy_fallback import install_legacy_foot_fallbacks
+
+install_legacy_foot_fallbacks()
+
 from motion_edit.generation.contact_aware import ContactAwareGenerationResult, apply_contact_aware_edit_plan_to_motion
 from motion_edit.generation.contact_aware_preview import (
     ContactAwarePreviewResult,
