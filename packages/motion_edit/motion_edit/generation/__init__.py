@@ -38,6 +38,10 @@ from motion_edit.generation.omni_surface_mapping import install_surface_specific
 
 install_surface_specific_object_mapping()
 
+from motion_edit.contact.newton_shape_filter import install_strict_newton_shape_filter
+
+install_strict_newton_shape_filter()
+
 from motion_edit.generation.contact_aware import ContactAwareGenerationResult, apply_contact_aware_edit_plan_to_motion
 from motion_edit.generation.contact_aware_preview import (
     ContactAwarePreviewResult,
