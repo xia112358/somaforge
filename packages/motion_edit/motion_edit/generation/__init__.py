@@ -42,6 +42,12 @@ from motion_edit.contact.newton_shape_filter import install_strict_newton_shape_
 
 install_strict_newton_shape_filter()
 
+from motion_edit.generation.contact_target_contract import (
+    install_authoritative_contact_target_contract,
+)
+
+install_authoritative_contact_target_contract()
+
 from motion_edit.generation.contact_aware import ContactAwareGenerationResult, apply_contact_aware_edit_plan_to_motion
 from motion_edit.generation.contact_aware_preview import (
     ContactAwarePreviewResult,
