@@ -43,6 +43,10 @@ from motion_edit.generation.contact_aware_preview import (
     ContactAwarePreviewResult,
     generate_contact_aware_pyroki_preview,
 )
+from motion_edit.generation.omni_generation_defaults import install_generation_defaults
+
+install_generation_defaults(generate_contact_aware_pyroki_preview)
+
 from motion_edit.generation.contact_force_bake import (
     ContactForceBakeResult,
     bake_retargeted_contact_forces_for_motion,
