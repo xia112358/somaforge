@@ -48,6 +48,12 @@ from motion_edit.contact.newton_shape_filter import install_strict_newton_shape_
 
 install_strict_newton_shape_filter()
 
+from motion_edit.contact.foot_runtime_body_aliases import (
+    install_split_foot_runtime_body_aliases,
+)
+
+install_split_foot_runtime_body_aliases()
+
 from motion_edit.generation.contact_target_contract import (
     install_authoritative_contact_target_contract,
 )
