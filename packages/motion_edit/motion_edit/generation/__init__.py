@@ -26,6 +26,10 @@ from motion_edit.generation.omni_contact_core import install_contact_core_nodes
 
 install_contact_core_nodes()
 
+from motion_edit.generation.omni_delaunay_cache import install_delaunay_topology_cache
+
+install_delaunay_topology_cache()
+
 from motion_edit.generation.contact_aware import ContactAwareGenerationResult, apply_contact_aware_edit_plan_to_motion
 from motion_edit.generation.contact_aware_preview import (
     ContactAwarePreviewResult,
