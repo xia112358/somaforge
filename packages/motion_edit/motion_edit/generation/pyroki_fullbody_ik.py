@@ -35,6 +35,10 @@ from motion_edit.generation.taskspace_spec import ContactAwareTaskspaceMotion
 DEFAULT_ROBOT_URDF = canonical_g1_urdf_path()
 TARGET_LINK_ALIASES = SEMANTIC_LINK_ALIASES
 TARGET_WEIGHTS = SEMANTIC_DEFAULT_WEIGHTS
+SOURCE_FOOT_ORIENTATION_LINKS = (
+    ("left_ankle_roll_link", "left_ankle_roll_sphere_1_link"),
+    ("right_ankle_roll_link", "right_ankle_roll_sphere_1_link"),
+)
 
 
 def _load_npz(path: str | Path) -> dict[str, Any]:
@@ -181,6 +185,7 @@ def _input_problem(
     source_motion_path: str | Path | None,
     edited_contact_weight: float,
     fixed_contact_weight: float,
+    contact_ramp_frames: int,
 ) -> tuple[
     CompiledPyrokiTaskspace,
     np.ndarray,
@@ -199,6 +204,7 @@ def _input_problem(
             link_names,
             edited_contact_weight=edited_contact_weight,
             fixed_contact_weight=fixed_contact_weight,
+            contact_ramp_frames=contact_ramp_frames,
         )
         root_source, cfg_source = _source_qpos_from_array(spec.source_qpos, spec.frame_count, actuated_count)
         source_names: list[str] = []
@@ -267,6 +273,10 @@ def solve_pyroki_fullbody_ik(
     boundary_pin_weight: float = 2.0,
     edited_contact_weight: float = 100.0,
     fixed_contact_weight: float = 80.0,
+    contact_ramp_frames: int = 2,
+    foot_orientation_weight: float = 20.0,
+    q_velocity_weight: float = 2.0,
+    q_acceleration_weight: float = 1.0,
 ) -> Path:
     import jax
     import jax.numpy as jnp
@@ -301,6 +311,7 @@ def solve_pyroki_fullbody_ik(
         source_motion_path=source_motion_path,
         edited_contact_weight=edited_contact_weight,
         fixed_contact_weight=fixed_contact_weight,
+        contact_ramp_frames=contact_ramp_frames,
     )
     n_frames = min(compiled.frame_count, cfg_source.shape[0])
     root_source = root_source[:n_frames].copy()
@@ -320,6 +331,14 @@ def solve_pyroki_fullbody_ik(
     cfg_source = np.clip(cfg_source, lower, upper)
 
     semantic_indices_jax = jnp.asarray(compiled.semantic_link_indices, dtype=jnp.int32)
+    source_fk = np.asarray(robot.forward_kinematics(jnp.asarray(cfg_source)), dtype=np.float64)
+    foot_orientation_indices = tuple(
+        index
+        for aliases in SOURCE_FOOT_ORIENTATION_LINKS
+        if (index := resolve_link_index(link_names, aliases[0], aliases)) is not None
+    )
+    foot_orientation_indices_jax = jnp.asarray(foot_orientation_indices, dtype=jnp.int32)
+    source_foot_orientations = source_fk[:, foot_orientation_indices, :4]
 
     def quat_apply_jax(quat: Any, vector: Any) -> Any:
         qvec = quat[..., 1:4]
@@ -337,7 +356,11 @@ def solve_pyroki_fullbody_ik(
         contact_sqrt_weight: Any,
         q_prior: Any,
         q_previous: Any,
+        q_previous_previous: Any,
+        q_prior_previous: Any,
+        q_prior_previous_previous: Any,
         q_prior_scale: Any,
+        source_foot_orientation: Any,
     ) -> Any:
         fk = robot.forward_kinematics(q_cfg)
         semantic_pos = fk[semantic_indices_jax, 4:7]
@@ -349,13 +372,51 @@ def solve_pyroki_fullbody_ik(
 
         prior_res = (q_cfg - q_prior) * q_prior_scale
         smooth_res = (q_cfg - q_previous) * float(q_smooth_weight)
-        return jnp.concatenate([semantic_res, contact_res, prior_res, smooth_res], axis=0)
+        velocity_res = (
+            (q_cfg - q_previous) - (q_prior - q_prior_previous)
+        ) * float(q_velocity_weight)
+        acceleration_res = (
+            (q_cfg - 2.0 * q_previous + q_previous_previous)
+            - (q_prior - 2.0 * q_prior_previous + q_prior_previous_previous)
+        ) * float(q_acceleration_weight)
+
+        foot_pose = fk[foot_orientation_indices_jax]
+        foot_quat = foot_pose[:, :4]
+        target_conjugate = source_foot_orientation.at[:, 1:4].multiply(-1.0)
+        aw, ax, ay, az = jnp.moveaxis(target_conjugate, -1, 0)
+        bw, bx, by, bz = jnp.moveaxis(foot_quat, -1, 0)
+        relative = jnp.stack(
+            (
+                aw * bw - ax * bx - ay * by - az * bz,
+                aw * bx + ax * bw + ay * bz - az * by,
+                aw * by - ax * bz + ay * bw + az * bx,
+                aw * bz + ax * by - ay * bx + az * bw,
+            ),
+            axis=-1,
+        )
+        relative = jnp.where(relative[:, :1] < 0.0, -relative, relative)
+        foot_orientation_res = (
+            2.0 * relative[:, 1:4] * jnp.sqrt(float(foot_orientation_weight))
+        ).reshape(-1)
+        return jnp.concatenate(
+            [
+                semantic_res,
+                contact_res,
+                prior_res,
+                smooth_res,
+                velocity_res,
+                acceleration_res,
+                foot_orientation_res,
+            ],
+            axis=0,
+        )
 
     residual_compiled = jax.jit(residual_jax)
     jac_compiled = jax.jit(jax.jacfwd(residual_jax, argnums=0))
 
     out_cfg = np.zeros((n_frames, actuated_count), dtype=np.float64)
     q_previous = cfg_source[0]
+    q_previous_previous = cfg_source[0]
     success: list[bool] = []
     nfev: list[int] = []
     costs: list[float] = []
@@ -375,6 +436,8 @@ def solve_pyroki_fullbody_ik(
             + float(boundary_pin_weight) * float(boundary_weights[frame])
         )
         q_prior = cfg_source[frame]
+        q_prior_previous = cfg_source[max(frame - 1, 0)]
+        q_prior_previous_previous = cfg_source[max(frame - 2, 0)]
         x0 = np.clip(q_previous if frame > 0 else q_prior, lower, upper)
 
         args = (
@@ -386,7 +449,11 @@ def solve_pyroki_fullbody_ik(
             np.asarray(contact_sqrt_weight, dtype=np.float64),
             np.asarray(q_prior, dtype=np.float64),
             np.asarray(q_previous, dtype=np.float64),
+            np.asarray(q_previous_previous, dtype=np.float64),
+            np.asarray(q_prior_previous, dtype=np.float64),
+            np.asarray(q_prior_previous_previous, dtype=np.float64),
             np.asarray(prior_scale, dtype=np.float64),
+            np.asarray(source_foot_orientations[frame], dtype=np.float64),
         )
 
         def fun(x: np.ndarray) -> np.ndarray:
@@ -405,6 +472,7 @@ def solve_pyroki_fullbody_ik(
             ftol=1.0e-5,
             gtol=1.0e-5,
         )
+        q_previous_previous = q_previous
         q_previous = np.clip(result.x, lower, upper)
         out_cfg[frame] = q_previous
         success.append(bool(result.success))
@@ -462,6 +530,11 @@ def solve_pyroki_fullbody_ik(
         "least_squares_failure_count": int(len(success) - sum(success)),
         "least_squares_nfev": _stats(np.asarray(nfev, dtype=np.float64)),
         "least_squares_cost": _stats(np.asarray(costs, dtype=np.float64)),
+        "contact_ramp_frames": int(contact_ramp_frames),
+        "source_foot_orientation_weight": float(foot_orientation_weight),
+        "source_foot_orientation_link_count": len(foot_orientation_indices),
+        "source_velocity_weight": float(q_velocity_weight),
+        "source_acceleration_weight": float(q_acceleration_weight),
         "root_body_position_error_max_m": root_position_error,
         "root_body_quaternion_error_max": root_quaternion_error,
         "newton_canonicalization_required": True,
@@ -507,9 +580,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--boundary-pin-weight", type=float, default=2.0)
     parser.add_argument("--edited-contact-weight", type=float, default=100.0)
     parser.add_argument("--fixed-contact-weight", type=float, default=80.0)
-    # Compatibility arguments retained for existing callers. Contact patch points
-    # replace the old toe/orientation pseudo-targets in the new task-space path.
+    parser.add_argument("--contact-ramp-frames", type=int, default=2)
     parser.add_argument("--foot-orientation-weight", type=float, default=20.0)
+    parser.add_argument("--q-velocity-weight", type=float, default=2.0)
+    parser.add_argument("--q-acceleration-weight", type=float, default=1.0)
+    # Compatibility arguments retained for existing callers. Contact patch points
+    # replace the old contact-only toe/orientation pseudo-targets.
     parser.add_argument("--contact-foot-orientation-weight", type=float, default=80.0)
     parser.add_argument("--foot-toe-weight", type=float, default=20.0)
     parser.add_argument("--contact-foot-toe-weight", type=float, default=120.0)
@@ -528,6 +604,10 @@ def main(argv: list[str] | None = None) -> None:
         boundary_pin_weight=args.boundary_pin_weight,
         edited_contact_weight=args.edited_contact_weight,
         fixed_contact_weight=args.fixed_contact_weight,
+        contact_ramp_frames=args.contact_ramp_frames,
+        foot_orientation_weight=args.foot_orientation_weight,
+        q_velocity_weight=args.q_velocity_weight,
+        q_acceleration_weight=args.q_acceleration_weight,
     )
 
 
