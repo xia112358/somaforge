@@ -19,6 +19,7 @@ from pathlib import Path
 
 from motion_edit.generation.contact_aware_preview import generate_contact_aware_pyroki_preview
 from motion_edit.generation.newton_direct_fk import canonicalize_motion_with_direct_newton_fk
+from motion_edit.generation.omni_generation_defaults import OMNI_GENERATION_DEFAULTS
 
 
 def main() -> None:
@@ -30,16 +31,40 @@ def main() -> None:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--allow-draft", action="store_true")
     parser.add_argument("--allow-free", action="store_true")
-    parser.add_argument("--contact-laplacian-iters", type=int, default=5)
+    parser.add_argument(
+        "--contact-laplacian-iters",
+        type=int,
+        default=int(OMNI_GENERATION_DEFAULTS["contact_laplacian_iters"]),
+    )
     parser.add_argument("--contact-laplacian-damping", type=float, default=1.0e-4)
     parser.add_argument("--contact-laplacian-trust", type=float, default=0.05)
     parser.add_argument("--edit-contact-weight", type=float, default=1000.0)
     parser.add_argument("--fixed-contact-weight", type=float, default=1000.0)
-    parser.add_argument("--temporal-laplacian-weight", type=float, default=10.0)
-    parser.add_argument("--body-relative-weight", type=float, default=10.0)
-    parser.add_argument("--q-prior-weight", type=float, default=0.05)
-    parser.add_argument("--q-smooth-weight", type=float, default=1.0)
-    parser.add_argument("--mesh-laplacian-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--temporal-laplacian-weight",
+        type=float,
+        default=float(OMNI_GENERATION_DEFAULTS["temporal_laplacian_weight"]),
+    )
+    parser.add_argument(
+        "--body-relative-weight",
+        type=float,
+        default=float(OMNI_GENERATION_DEFAULTS["body_relative_weight"]),
+    )
+    parser.add_argument(
+        "--q-prior-weight",
+        type=float,
+        default=float(OMNI_GENERATION_DEFAULTS["q_prior_weight"]),
+    )
+    parser.add_argument(
+        "--q-smooth-weight",
+        type=float,
+        default=float(OMNI_GENERATION_DEFAULTS["q_smooth_weight"]),
+    )
+    parser.add_argument(
+        "--mesh-laplacian-weight",
+        type=float,
+        default=float(OMNI_GENERATION_DEFAULTS["mesh_laplacian_weight"]),
+    )
     parser.add_argument("--source-reference-weight", type=float, default=0.01)
     parser.add_argument("--boundary-ramp-frames", type=int, default=10)
     parser.add_argument("--min-raw-contact-force-norm", type=float, default=0.0)
