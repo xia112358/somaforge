@@ -12,6 +12,7 @@ uses the external LTE/IK subprocess.
 
 from __future__ import annotations
 
+from dataclasses import replace as _dataclass_replace
 from typing import Any
 
 from motion_edit.generation.contact_semantic_aliases import install_lte_contact_semantic_aliases
@@ -61,10 +62,20 @@ from motion_edit.generation.contact_target_contract import (
 install_authoritative_contact_target_contract()
 
 from motion_edit.generation.contact_aware import ContactAwareGenerationResult, apply_contact_aware_edit_plan_to_motion
-from motion_edit.generation.contact_aware_preview import (
-    ContactAwarePreviewResult,
-    generate_contact_aware_pyroki_preview,
+from motion_edit.generation import contact_aware_preview as _contact_aware_preview
+from motion_edit.generation.rollout_authority import install_rollout_authority
+
+# ``rollout_authority`` replaces immutable taskspace metadata without importing
+# another copy of the taskspace schema. Keep the dataclass operation explicit on
+# the already-loaded preview module.
+_contact_aware_preview.replace = _dataclass_replace
+install_rollout_authority()
+
+ContactAwarePreviewResult = _contact_aware_preview.ContactAwarePreviewResult
+generate_contact_aware_pyroki_preview = (
+    _contact_aware_preview.generate_contact_aware_pyroki_preview
 )
+
 from motion_edit.generation.omni_generation_defaults import install_generation_defaults
 
 install_generation_defaults(generate_contact_aware_pyroki_preview)
