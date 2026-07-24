@@ -4,7 +4,6 @@ import numpy as np
 
 from motion_edit.generation.pyroki_taskspace import (
     compile_pyroki_taskspace,
-    contact_boundary_envelope,
     holosoma_joint_velocities,
     quat_apply_wxyz,
     world_body_poses_from_pyroki_fk,
@@ -54,25 +53,39 @@ def test_compile_pyroki_taskspace_resolves_semantics_and_global_contact_frames()
     assert compiled.unresolved_contacts == ()
 
 
-def test_contact_boundary_ramp_suppresses_one_frame_patch_impulses() -> None:
-    np.testing.assert_allclose(contact_boundary_envelope(1, 4), [0.0])
-    np.testing.assert_allclose(contact_boundary_envelope(2, 4), [0.0, 0.0])
-    envelope = contact_boundary_envelope(11, 4)
-    np.testing.assert_allclose(envelope[[0, -1]], [0.0, 0.0])
-    np.testing.assert_allclose(envelope[5], 1.0)
-    assert np.all(np.diff(envelope[:6]) >= 0.0)
-    assert np.all(np.diff(envelope[5:]) <= 0.0)
-
-
-def test_compile_pyroki_taskspace_applies_contact_boundary_ramp() -> None:
+def test_compile_pyroki_taskspace_keeps_full_contact_weight_at_boundaries() -> None:
     spec = _spec()
     compiled = compile_pyroki_taskspace(
         spec,
         ("pelvis", "left_ankle_roll_link", "left_elbow_link"),
         edited_contact_weight=123.0,
-        contact_ramp_frames=4,
     )
-    assert compiled.contact_weights[:, 0].tolist() == [0.0, 0.0, 0.0]
+    assert compiled.contact_weights[:, 0].tolist() == [0.0, 123.0, 123.0]
+
+
+def test_compile_pyroki_taskspace_keeps_short_fixed_contact() -> None:
+    edited = _spec()
+    fixed_contact = ContactPatchTarget(
+        **{
+            **edited.contacts[0].__dict__,
+            "anchor_id": "fixed_left_foot_0",
+            "kind": "fixed_contact",
+        }
+    )
+    fixed = ContactAwareTaskspaceMotion(
+        **{
+            **edited.__dict__,
+            "contacts": (fixed_contact,),
+        }
+    )
+
+    compiled = compile_pyroki_taskspace(
+        fixed,
+        ("pelvis", "left_ankle_roll_link", "left_elbow_link"),
+        fixed_contact_weight=123.0,
+    )
+
+    assert compiled.contact_weights[:, 0].tolist() == [0.0, 123.0, 123.0]
 
 
 def test_world_body_poses_compose_root_and_link_pose() -> None:

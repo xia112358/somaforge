@@ -185,7 +185,6 @@ def _input_problem(
     source_motion_path: str | Path | None,
     edited_contact_weight: float,
     fixed_contact_weight: float,
-    contact_ramp_frames: int,
 ) -> tuple[
     CompiledPyrokiTaskspace,
     np.ndarray,
@@ -204,7 +203,6 @@ def _input_problem(
             link_names,
             edited_contact_weight=edited_contact_weight,
             fixed_contact_weight=fixed_contact_weight,
-            contact_ramp_frames=contact_ramp_frames,
         )
         root_source, cfg_source = _source_qpos_from_array(spec.source_qpos, spec.frame_count, actuated_count)
         source_names: list[str] = []
@@ -273,7 +271,6 @@ def solve_pyroki_fullbody_ik(
     boundary_pin_weight: float = 2.0,
     edited_contact_weight: float = 100.0,
     fixed_contact_weight: float = 80.0,
-    contact_ramp_frames: int = 2,
     foot_orientation_weight: float = 20.0,
     q_velocity_weight: float = 2.0,
     q_acceleration_weight: float = 1.0,
@@ -311,7 +308,6 @@ def solve_pyroki_fullbody_ik(
         source_motion_path=source_motion_path,
         edited_contact_weight=edited_contact_weight,
         fixed_contact_weight=fixed_contact_weight,
-        contact_ramp_frames=contact_ramp_frames,
     )
     n_frames = min(compiled.frame_count, cfg_source.shape[0])
     root_source = root_source[:n_frames].copy()
@@ -530,7 +526,6 @@ def solve_pyroki_fullbody_ik(
         "least_squares_failure_count": int(len(success) - sum(success)),
         "least_squares_nfev": _stats(np.asarray(nfev, dtype=np.float64)),
         "least_squares_cost": _stats(np.asarray(costs, dtype=np.float64)),
-        "contact_ramp_frames": int(contact_ramp_frames),
         "source_foot_orientation_weight": float(foot_orientation_weight),
         "source_foot_orientation_link_count": len(foot_orientation_indices),
         "source_velocity_weight": float(q_velocity_weight),
@@ -580,7 +575,6 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--boundary-pin-weight", type=float, default=2.0)
     parser.add_argument("--edited-contact-weight", type=float, default=100.0)
     parser.add_argument("--fixed-contact-weight", type=float, default=80.0)
-    parser.add_argument("--contact-ramp-frames", type=int, default=2)
     parser.add_argument("--foot-orientation-weight", type=float, default=20.0)
     parser.add_argument("--q-velocity-weight", type=float, default=2.0)
     parser.add_argument("--q-acceleration-weight", type=float, default=1.0)
@@ -604,7 +598,6 @@ def main(argv: list[str] | None = None) -> None:
         boundary_pin_weight=args.boundary_pin_weight,
         edited_contact_weight=args.edited_contact_weight,
         fixed_contact_weight=args.fixed_contact_weight,
-        contact_ramp_frames=args.contact_ramp_frames,
         foot_orientation_weight=args.foot_orientation_weight,
         q_velocity_weight=args.q_velocity_weight,
         q_acceleration_weight=args.q_acceleration_weight,

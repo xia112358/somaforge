@@ -104,7 +104,6 @@ def compile_pyroki_taskspace(
     *,
     edited_contact_weight: float = 100.0,
     fixed_contact_weight: float = 80.0,
-    contact_ramp_frames: int = 0,
 ) -> CompiledPyrokiTaskspace:
     """Resolve a contact-aware task-space motion against one PyRoki link list."""
 
@@ -142,7 +141,6 @@ def compile_pyroki_taskspace(
         points_local = np.asarray(contact.points_local, dtype=np.float64)
         local_frames = np.asarray(contact.frames, dtype=np.int64) - int(spec.frame_start)
         weight = float(edited_contact_weight if contact.kind == "edited_contact" else fixed_contact_weight)
-        envelope = contact_boundary_envelope(local_frames.size, contact_ramp_frames)
         for contact_frame_index, local_frame in enumerate(local_frames.tolist()):
             if not 0 <= local_frame < spec.frame_count:
                 raise ValueError(f"{contact.anchor_id}: frame {local_frame} lies outside the solve window")
@@ -152,7 +150,7 @@ def compile_pyroki_taskspace(
                         link_index,
                         points_local[point_index],
                         targets_w[contact_frame_index, point_index],
-                        weight * float(envelope[contact_frame_index]),
+                        weight,
                     )
                 )
 
@@ -182,35 +180,6 @@ def compile_pyroki_taskspace(
     )
     compiled.validate()
     return compiled
-
-
-def contact_boundary_envelope(frame_count: int, ramp_frames: int) -> np.ndarray:
-    """Return a smooth contact-confidence envelope with zero-valued endpoints.
-
-    Raw Newton contact segmentation can contain one-frame heel/toe patches. Such
-    patches are useful evidence for contact classification, but applying their
-    full IK weight for one frame creates an impulse in the solved foot pose.
-    Contacts shorter than three frames therefore contribute no IK constraint;
-    longer contacts use a smoothstep ramp at both interval boundaries.
-    """
-
-    count = int(frame_count)
-    ramp = int(ramp_frames)
-    if count < 0:
-        raise ValueError("frame_count must be nonnegative")
-    if ramp < 0:
-        raise ValueError("ramp_frames must be nonnegative")
-    if count == 0:
-        return np.zeros(0, dtype=np.float64)
-    if ramp == 0:
-        return np.ones(count, dtype=np.float64)
-    if count <= 2:
-        return np.zeros(count, dtype=np.float64)
-
-    indices = np.arange(count, dtype=np.float64)
-    distance = np.minimum(indices, indices[::-1])
-    phase = np.clip(distance / float(ramp), 0.0, 1.0)
-    return phase * phase * (3.0 - 2.0 * phase)
 
 
 def resolve_link_index(link_names: Sequence[str], label: str, aliases: Sequence[str]) -> int | None:
