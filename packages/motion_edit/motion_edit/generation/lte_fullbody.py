@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from dataclasses import dataclass, replace
@@ -949,7 +950,22 @@ def _run_fullbody_ik_subprocess(
     else:
         script = Path(__file__).with_name("pyroki_fullbody_ik.py")
         cwd = Path(__file__).resolve().parents[2]
-    cmd = ["conda", "run", "-n", str(ik_conda_env), "python", str(script.resolve()), "--lte", str(lte_path.resolve()), "--out", str(ik_output_path.resolve())]
+    target_env = str(ik_conda_env)
+    current_env = os.environ.get("CONDA_DEFAULT_ENV", "")
+    current_env_name = Path(current_env).name if current_env else ""
+    interpreter = (
+        [sys.executable]
+        if target_env in {current_env, current_env_name}
+        else ["conda", "run", "-n", target_env, "python"]
+    )
+    cmd = [
+        *interpreter,
+        str(script.resolve()),
+        "--lte",
+        str(lte_path.resolve()),
+        "--out",
+        str(ik_output_path.resolve()),
+    ]
     if ik_max_nfev is not None:
         cmd.extend(["--max-nfev", str(int(ik_max_nfev))])
     cmd.extend(
@@ -1084,7 +1100,7 @@ def apply_contact_edit_plan_to_motion(
     contact_laplacian_proxy_only: bool = False,
     lte_repo_root: str | Path | None = None,
     ik_script: str | Path | None = None,
-    ik_conda_env: str = "env_pyroki_climb_projection",
+    ik_conda_env: str = "env_somaforge",
     ik_max_nfev: int | None = None,
     intermediate_dir: str | Path | None = None,
     layers_root: Path = LAYERS_ROOT,
@@ -1145,7 +1161,11 @@ def apply_contact_edit_plan_to_motion(
                 proxy_metadata = json.loads(generated["motion_edit_generation_metadata"].item())
                 proxy_metadata["output_kind"] = "bodyspace_proxy_only"
                 proxy_metadata["joint_consistency"] = "not guaranteed"
-                proxy_warnings = list(proxy_metadata.get("warnings", []))
+                proxy_warnings = list(warnings)
+                proxy_warnings.append(
+                    "experimental body_pos_w proxy output; joint/orientation "
+                    "fields are not regenerated"
+                )
                 proxy_warnings.append("contact-Laplacian proxy-only output is not q/joint consistent")
                 proxy_metadata["warnings"] = proxy_warnings
                 generated["motion_edit_generation_metadata"] = _json_npz_value(proxy_metadata)

@@ -18,6 +18,8 @@ class ContactEditPlan:
     source_contact_layer: str
     source_segment_layer: str | None = None
     edits: list[dict[str, Any]] = field(default_factory=list)
+    pose_edits: list[dict[str, Any]] = field(default_factory=list)
+    surface_transforms: list[dict[str, Any]] = field(default_factory=list)
     status: ContactEditPlanStatus = "draft"
     output_motion_path: str | None = None
     output_contact_layer: str | None = None
@@ -80,6 +82,8 @@ def append_anchor_edit_to_plan(
         source_contact_layer=plan.source_contact_layer,
         source_segment_layer=plan.source_segment_layer or source_segment_layer,
         edits=edits,
+        pose_edits=list(plan.pose_edits),
+        surface_transforms=list(plan.surface_transforms),
         status="draft" if plan.status == "validated" else plan.status,
         output_motion_path=plan.output_motion_path,
         output_contact_layer=plan.output_contact_layer,
@@ -117,4 +121,47 @@ def validate_contact_edit_plan(plan: ContactEditPlan, *, allow_free: bool = Fals
             raise ValueError(f"{edit.edit_id}: reject-mode edit cannot be clamped")
         if edit.clamped:
             warnings.append(f"{edit.edit_id}: clamped to surface bounds")
+
+    for index, raw_edit in enumerate(plan.pose_edits):
+        _validate_pose_edit(plan.plan_id, index, raw_edit)
+    for index, raw_transform in enumerate(plan.surface_transforms):
+        _validate_surface_transform(plan.plan_id, index, raw_transform)
     return warnings
+
+
+def _validate_pose_edit(plan_id: str, index: int, raw: dict[str, Any]) -> None:
+    edit_id = str(raw.get("edit_id") or f"{plan_id}:pose_edits[{index}]")
+    if raw.get("edit_type") != "translate_pose":
+        raise ValueError(f"{edit_id}: unsupported pose edit type {raw.get('edit_type')!r}")
+    translation = raw.get("translation_world")
+    if not isinstance(translation, list) or len(translation) != 3:
+        raise ValueError(f"{edit_id}: translation_world must have length 3")
+    frames = raw.get("affected_frames")
+    if not isinstance(frames, list) or len(frames) != 2 or int(frames[1]) <= int(frames[0]):
+        raise ValueError(f"{edit_id}: affected_frames must be a non-empty [start, end) interval")
+    semantic_names = raw.get("semantic_names")
+    if not isinstance(semantic_names, list) or not semantic_names:
+        raise ValueError(f"{edit_id}: semantic_names must be a non-empty list")
+
+
+def _validate_surface_transform(plan_id: str, index: int, raw: dict[str, Any]) -> None:
+    transform_id = str(raw.get("transform_id") or f"{plan_id}:surface_transforms[{index}]")
+    if raw.get("kind") != "surface_follow":
+        raise ValueError(f"{transform_id}: unsupported surface transform kind {raw.get('kind')!r}")
+    for field_name in ("source_surface", "target_surface"):
+        surface = raw.get(field_name)
+        if not isinstance(surface, dict):
+            raise ValueError(f"{transform_id}: {field_name} must be an object")
+        for required in ("surface_id", "origin", "normal", "tangent_u", "tangent_v"):
+            if required not in surface:
+                raise ValueError(f"{transform_id}: {field_name}.{required} is required")
+        for vector_name in ("origin", "normal", "tangent_u", "tangent_v"):
+            vector = surface.get(vector_name)
+            if not isinstance(vector, list) or len(vector) != 3:
+                raise ValueError(f"{transform_id}: {field_name}.{vector_name} must have length 3")
+    translation = raw.get("translation_world")
+    if translation is not None and (not isinstance(translation, list) or len(translation) != 3):
+        raise ValueError(f"{transform_id}: translation_world must have length 3")
+    height_scale = raw.get("height_scale")
+    if height_scale is not None and float(height_scale) <= 0.0:
+        raise ValueError(f"{transform_id}: height_scale must be positive")

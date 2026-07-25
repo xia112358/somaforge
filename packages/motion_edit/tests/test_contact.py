@@ -760,6 +760,122 @@ class ContactEventTests(unittest.TestCase):
         self.assertGreater(by_role["toe"].world_position[0], by_role["sole"].world_position[0])
         self.assertEqual(by_role["toe"].metadata["parent_anchor_id"], refined.anchors[0].anchor_id)
 
+    def test_split_foot_contact_preserves_short_role_transition_coverage(self) -> None:
+        anchor = ContactAnchorRecord(
+            motion_id="climb_00",
+            anchor_id="climb_00_anchor_left_toe_000147_000171",
+            body="left_toe",
+            start_frame=147,
+            end_frame=171,
+            world_position=[0.0, 0.0, 0.0],
+            surface_id="box_top",
+            metadata={
+                "raw_contact_position_refinement": {
+                    "foot_contact_summary": {
+                        "intervals": [
+                            {"patch_role": "heel", "frame_start": 147, "frame_end": 150},
+                            {"patch_role": "sole", "frame_start": 150, "frame_end": 152},
+                            {"patch_role": "heel", "frame_start": 152, "frame_end": 157},
+                            {"patch_role": "sole", "frame_start": 157, "frame_end": 160},
+                            {"patch_role": "heel", "frame_start": 160, "frame_end": 161},
+                            {"patch_role": "sole", "frame_start": 161, "frame_end": 163},
+                            {"patch_role": "heel", "frame_start": 163, "frame_end": 164},
+                            {"patch_role": "sole", "frame_start": 164, "frame_end": 166},
+                            {"patch_role": "heel", "frame_start": 166, "frame_end": 171},
+                        ],
+                        "contacts": {
+                            "heel": {
+                                "world_position": [0.0, 0.0, 0.0],
+                                "sample_count": 20,
+                                "confidence": 1.0,
+                            },
+                            "toe": {
+                                "world_position": [0.02, 0.0, 0.0],
+                                "sample_count": 20,
+                                "confidence": 1.0,
+                            },
+                        },
+                    }
+                }
+            },
+        )
+        graph_type = type(
+            contact_graph_from_masks(
+                motion_id="climb_00",
+                contact_mask=None,
+            )
+        )
+        graph = graph_type(motion_id="climb_00", anchors=[anchor])
+
+        split = split_foot_contact_anchors(graph)
+
+        bounds = [
+            (item.metadata["patch_role"], item.start_frame, item.end_frame)
+            for item in split.anchors
+        ]
+        self.assertEqual(
+            bounds,
+            [
+                ("heel", 147, 150),
+                ("sole", 150, 166),
+                ("heel", 166, 171),
+            ],
+        )
+        covered = {
+            frame
+            for item in split.anchors
+            for frame in range(item.start_frame, item.end_frame)
+        }
+        self.assertEqual(covered, set(range(anchor.start_frame, anchor.end_frame)))
+
+    def test_split_foot_contact_uses_parent_episode_for_missing_shape_frames(self) -> None:
+        anchor = ContactAnchorRecord(
+            motion_id="motion_a",
+            anchor_id="left_toe_parent",
+            body="left_toe",
+            start_frame=10,
+            end_frame=20,
+            world_position=[0.0, 0.0, 0.0],
+            surface_id="box_top",
+            metadata={
+                "raw_contact_position_refinement": {
+                    "foot_contact_summary": {
+                        "intervals": [
+                            {"patch_role": "heel", "frame_start": 12, "frame_end": 15},
+                            {"patch_role": "sole", "frame_start": 17, "frame_end": 19},
+                        ],
+                        "contacts": {
+                            "heel": {
+                                "world_position": [0.0, 0.0, 0.0],
+                                "sample_count": 3,
+                                "confidence": 1.0,
+                            },
+                            "toe": {
+                                "world_position": [0.02, 0.0, 0.0],
+                                "sample_count": 2,
+                                "confidence": 1.0,
+                            },
+                        },
+                    }
+                }
+            },
+        )
+        graph_type = type(
+            contact_graph_from_masks(motion_id="motion_a", contact_mask=None)
+        )
+
+        split = split_foot_contact_anchors(
+            graph_type(motion_id="motion_a", anchors=[anchor])
+        )
+
+        self.assertEqual(
+            [
+                (item.metadata["patch_role"], item.start_frame, item.end_frame)
+                for item in split.anchors
+            ],
+            [("heel", 10, 16), ("sole", 16, 20)],
+        )
+
     def test_refine_anchor_position_cli_writes_contact_layer(self) -> None:
         graph = contact_graph_from_masks(
             motion_id="motion_a",
