@@ -66,15 +66,22 @@ def test_force_rollout_path_is_required_and_original_motion_is_not_fallback(
     assert original.resolve() not in loaded
 
 
-def test_generation_routes_every_reference_through_force_rollout(
+def test_generation_separates_pose_shape_from_force_rollout_contacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     original = tmp_path / "original_reference.npz"
     rollout_path = tmp_path / "force_rollout.npz"
+    source_terrain = tmp_path / "source_terrain.obj"
+    target_terrain = tmp_path / "target_terrain.obj"
     original.touch()
     rollout_path.touch()
     rollout = _rollout_motion()
+    shape = {
+        key: value
+        for key, value in _rollout_motion().items()
+        if not key.startswith("raw_contact_")
+    }
     plan = ContactEditPlan(
         plan_id="plan",
         source_motion_id="motion",
@@ -82,7 +89,11 @@ def test_generation_routes_every_reference_through_force_rollout(
         source_contact_layer="contact/source",
         status="validated",
         edits=[],
-        metadata={"contact_force_source_path": str(rollout_path)},
+        metadata={
+            "contact_force_source_path": str(rollout_path),
+            "source_terrain_mesh": str(source_terrain),
+            "target_terrain_mesh": str(target_terrain),
+        },
     )
     output = tmp_path / "output.npz"
     work = tmp_path / "work"
@@ -92,6 +103,8 @@ def test_generation_routes_every_reference_through_force_rollout(
         resolved = Path(path).resolve()
         if resolved == rollout_path.resolve():
             return rollout
+        if resolved == original.resolve():
+            return shape
         if resolved.name.endswith("pyroki_preview.npz"):
             return {}
         raise AssertionError(f"unexpected motion load: {resolved}")
@@ -161,10 +174,14 @@ def test_generation_routes_every_reference_through_force_rollout(
         "_task_visualization_proxy",
         lambda *, proxy, source_motion: proxy,
     )
+    def fake_write(path, spec):
+        captured["taskspace_metadata"] = dict(spec.metadata)
+        Path(path).touch()
+
     monkeypatch.setattr(
         preview,
         "write_contact_aware_taskspace_motion",
-        lambda path, spec: Path(path).touch(),
+        fake_write,
     )
 
     def fake_run(*, source_motion_path, ik_output_path, **kwargs):
@@ -187,17 +204,35 @@ def test_generation_routes_every_reference_through_force_rollout(
         overwrite=True,
     )
 
-    assert captured["proxy_motion"] is rollout
+    assert captured["proxy_motion"] is shape
     assert captured["binding_motion"] is rollout
-    assert captured["taskspace_source"] is rollout
-    assert captured["taskspace_contact_pose"] is rollout
-    assert captured["merge_source"] is rollout
-    assert captured["proxy_path"] == rollout_path.resolve()
-    assert captured["pyroki_source_path"] == rollout_path.resolve()
+    assert captured["taskspace_source"] is shape
+    assert captured["taskspace_contact_pose"] is shape
+    assert captured["merge_source"] is shape
+    assert captured["proxy_path"] == original.resolve()
+    assert captured["pyroki_source_path"] == original.resolve()
+    assert captured["taskspace_metadata"] == {
+        "collision_reference_motion": str(rollout_path.resolve()),
+        "contact_patch_source_motion": str(rollout_path.resolve()),
+        "contact_target_pose_source_motion": str(original.resolve()),
+        "cross_reference_mixing": True,
+        "environment_collision_contract": (
+            "source_rollout_soft_signed_distance_similarity"
+        ),
+        "joint_initializer_source_motion": str(original.resolve()),
+        "reference_authority": "pose_shape_plus_force_rollout_contacts",
+        "reference_role_contract": (
+            "shape_from_plan_source_contacts_from_force_rollout"
+        ),
+        "semantic_source_motion": str(original.resolve()),
+        "source_terrain_mesh": str(source_terrain.resolve()),
+        "target_terrain_mesh": str(target_terrain.resolve()),
+    }
     assert output.is_file()
 
     with np.load(output, allow_pickle=True) as data:
-        assert str(np.asarray(data["source_motion_path"]).item()) == str(
+        assert str(np.asarray(data["source_motion_path"]).item()) == str(original.resolve())
+        assert str(np.asarray(data["force_rollout_source_path"]).item()) == str(
             rollout_path.resolve()
         )
         assert str(np.asarray(data["original_plan_source_motion_path"]).item()) == str(

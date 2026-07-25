@@ -986,7 +986,7 @@ def _generate_fullbody_lte_from_session(
     overwrite: bool = False,
     register_motion_version: bool = False,
     lte_repo_root: str | None = None,
-    ik_conda_env: str = "env_pyroki_climb_projection",
+    ik_conda_env: str = "env_somaforge",
     layers_root: Path = LAYERS_ROOT,
 ) -> Any:
     plan_path, _warnings = _validate_session_plan(session, layers_root=layers_root)

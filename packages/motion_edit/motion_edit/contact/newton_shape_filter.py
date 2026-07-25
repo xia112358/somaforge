@@ -224,13 +224,13 @@ def _bind_anchor_canonical(
                 runtime_body_id = body0
                 runtime_shape_id = int(arrays["raw_contact_shape0"][frame, contact_index])
                 runtime_body_label = label0
-                robot_point_w = arrays["raw_contact_point1_w"][frame, contact_index]
+                robot_point_w = arrays["raw_contact_point0_w"][frame, contact_index]
                 robot_normal_w = arrays["raw_contact_normal_w"][frame, contact_index]
             else:
                 runtime_body_id = body1
                 runtime_shape_id = int(arrays["raw_contact_shape1"][frame, contact_index])
                 runtime_body_label = label1
-                robot_point_w = arrays["raw_contact_point0_w"][frame, contact_index]
+                robot_point_w = arrays["raw_contact_point1_w"][frame, contact_index]
                 robot_normal_w = -arrays["raw_contact_normal_w"][frame, contact_index]
 
             matched_unfiltered_count += 1
@@ -337,7 +337,7 @@ def _bind_anchor_canonical(
     metadata = dict(anchor.metadata)
     metadata["newton_robot_contact_binding"] = {
         "backend": "newton_mjwarp",
-        "point_body_pairing": "body0->point1,body1->point0",
+        "point_body_pairing": "body0->point0,body1->point1",
         "normal_convention": "robot_to_counterpart_from_newton_raw_normal",
         "sample_count": int(total_samples),
         "matched_sample_count_before_shape_filter": int(matched_unfiltered_count),
@@ -462,7 +462,7 @@ def bind_newton_contact_patches(
 
     summary = {
         "backend": "newton_mjwarp",
-        "point_body_pairing": "body0->point1,body1->point0",
+        "point_body_pairing": "body0->point0,body1->point1",
         "frame_contract": "newton_body_label_equals_robot_points_local_frame",
         "selected_env_id": int(selected_env_id),
         "anchor_count": len(anchors),

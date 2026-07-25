@@ -25,6 +25,15 @@ _REQUIRED_ROLLOUT_FIELDS: tuple[str, ...] = (
     "raw_contact_normal_w",
     "raw_contact_force_w",
 )
+_REQUIRED_SHAPE_FIELDS: tuple[str, ...] = (
+    "fps",
+    "joint_pos",
+    "joint_vel",
+    "joint_names",
+    "body_names",
+    "body_pos_w",
+    "body_quat_w",
+)
 
 _INSTALLED = False
 
@@ -62,11 +71,24 @@ def _load_force_rollout(plan: Any, preview: Any) -> tuple[dict[str, Any], Path]:
     return motion, path
 
 
+def _load_pose_shape(plan: Any, preview: Any) -> tuple[dict[str, Any], Path]:
+    """Load the kinematic motion whose relative pose is preserved by editing."""
+
+    path = Path(str(getattr(plan, "source_motion_path"))).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"pose-shape source motion is missing: {path}")
+    motion = preview._load_motion_npz(path)
+    missing = [name for name in _REQUIRED_SHAPE_FIELDS if name not in motion]
+    if missing:
+        raise ValueError(f"pose-shape source motion {path} is missing: {missing}")
+    return motion, path
+
+
 def _stamp_rollout_authority_metadata(
     generated: dict[str, Any],
     *,
     rollout_path: Path,
-    original_plan_source_path: str,
+    shape_path: Path,
 ) -> dict[str, Any]:
     output = dict(generated)
     metadata = {}
@@ -83,25 +105,26 @@ def _stamp_rollout_authority_metadata(
             metadata = {}
     metadata.update(
         {
-            "reference_authority": "force_rollout_only",
-            "geometry_source_motion": str(rollout_path),
-            "semantic_source_motion": str(rollout_path),
+            "reference_authority": "pose_shape_plus_force_rollout_contacts",
+            "geometry_source_motion": str(shape_path),
+            "semantic_source_motion": str(shape_path),
             "contact_patch_source_motion": str(rollout_path),
-            "joint_initializer_source_motion": str(rollout_path),
-            "pyroki_source_motion": str(rollout_path),
-            "merge_baseline_motion": str(rollout_path),
-            "original_plan_source_motion_record_only": str(original_plan_source_path),
-            "cross_reference_mixing": False,
+            "contact_target_pose_source_motion": str(shape_path),
+            "joint_initializer_source_motion": str(shape_path),
+            "pyroki_source_motion": str(shape_path),
+            "merge_baseline_motion": str(shape_path),
+            "pose_shape_source_motion": str(shape_path),
+            "force_rollout_source_motion": str(rollout_path),
+            "reference_role_contract": "shape_from_plan_source_contacts_from_force_rollout",
+            "cross_reference_mixing": True,
         }
     )
     output["motion_edit_generation_metadata"] = np.asarray(
         json.dumps(metadata, sort_keys=True)
     )
-    output["source_motion_path"] = np.asarray(str(rollout_path))
+    output["source_motion_path"] = np.asarray(str(shape_path))
     output["force_rollout_source_path"] = np.asarray(str(rollout_path))
-    output["original_plan_source_motion_path"] = np.asarray(
-        str(original_plan_source_path)
-    )
+    output["original_plan_source_motion_path"] = np.asarray(str(shape_path))
     return output
 
 
@@ -127,17 +150,20 @@ def generate_contact_aware_pyroki_preview(
     source_reference_weight: float = 0.01,
     boundary_ramp_frames: int = 10,
     min_raw_contact_force_norm: float = 0.0,
-    ik_conda_env: str = "env_pyroki_climb_projection",
+    ik_conda_env: str = "env_somaforge",
     ik_script: str | Path | None = None,
     ik_max_nfev: int | None = None,
+    ik_collision_similarity_weight: float | None = None,
+    ik_collision_max_refinements: int | None = None,
     layers_root: Path | None = None,
 ):
-    """Generate from exactly one force-bearing rollout reference.
+    """Generate with explicit, non-overlapping pose and contact authorities.
 
-    The force rollout supplies semantic keypoints, fixed and edited contact
-    handles, rigid patch frames, source q/qdot, PyRoki initialization, and the
-    final merge baseline. ``plan.source_motion_path`` is retained only as
-    provenance and never participates in optimization.
+    The plan source supplies relative pose shape, semantic geometry, PyRoki
+    initialization, and the final merge baseline. The force rollout supplies
+    only Newton contact timing, shape identity, and robot-local patch geometry.
+    World-space contact targets are reconstructed through the pose-shape motion
+    before applying the edit plan.
     """
 
     from motion_edit.generation import contact_aware_preview as preview
@@ -160,6 +186,7 @@ def generate_contact_aware_pyroki_preview(
         raise FileExistsError(f"{output} already exists; pass overwrite=True to replace it")
 
     rollout_motion, rollout_path = _load_force_rollout(plan, preview)
+    shape_motion, shape_path = _load_pose_shape(plan, preview)
 
     contact_layer = source_contact_layer or plan.source_contact_layer
     resolved_layers_root = preview._resolve_layers_root(
@@ -188,6 +215,10 @@ def generate_contact_aware_pyroki_preview(
     )
     edits = list(variant.edits)
     surfaces = list(variant.surfaces)
+    semantic_proxy_pose_edits = preview.pose_edits_for_semantic_proxy(
+        edits,
+        plan.pose_edits,
+    )
 
     config = preview.BatchContactLaplacianConfig(
         num_iters=int(contact_laplacian_iters),
@@ -204,8 +235,8 @@ def generate_contact_aware_pyroki_preview(
 
     proxy, proxy_warnings, proxy_metadata = (
         preview._batch_contact_laplacian_proxy_motion(
-            motion=rollout_motion,
-            source_motion=rollout_path,
+            motion=shape_motion,
+            source_motion=shape_path,
             graph=graph,
             contact_layer_root=resolved_layers_root / contact_layer,
             edits=edits,
@@ -216,16 +247,20 @@ def generate_contact_aware_pyroki_preview(
     )
     proxy, pose_metadata = preview.apply_pose_edits_to_proxy(
         proxy,
-        plan.pose_edits,
+        semantic_proxy_pose_edits,
     )
     proxy_metadata = {
         **dict(proxy_metadata),
         "task_variant_expansion": variant.metadata,
         "pose_edit_application": pose_metadata,
-        "reference_authority": "force_rollout_only",
-        "geometry_source_motion": str(rollout_path),
-        "original_plan_source_motion_record_only": str(plan.source_motion_path),
-        "cross_reference_mixing": False,
+        "semantic_proxy_contact_edit_count": len(edits),
+        "semantic_proxy_pose_edit_count": len(semantic_proxy_pose_edits),
+        "rigid_patch_contact_edit_count": len(edits),
+        "reference_authority": "pose_shape_plus_force_rollout_contacts",
+        "geometry_source_motion": str(shape_path),
+        "force_rollout_source_motion": str(rollout_path),
+        "reference_role_contract": "shape_from_plan_source_contacts_from_force_rollout",
+        "cross_reference_mixing": True,
     }
 
     patches, binding_summary = preview.bind_newton_contact_patches(
@@ -234,7 +269,7 @@ def generate_contact_aware_pyroki_preview(
         min_force_norm=float(min_raw_contact_force_norm),
     )
     binding_summary["source_motion_path"] = str(rollout_path)
-    binding_summary["reference_authority"] = "force_rollout_only"
+    binding_summary["reference_authority"] = "force_rollout_contacts_only"
 
     semantic_names = tuple(
         name
@@ -254,8 +289,8 @@ def generate_contact_aware_pyroki_preview(
     )
     taskspace = preview.build_contact_aware_taskspace_motion(
         motion_id=graph.motion_id,
-        source_motion=rollout_motion,
-        contact_pose_motion=rollout_motion,
+        source_motion=shape_motion,
+        contact_pose_motion=shape_motion,
         semantic_names=semantic_names,
         semantic_targets_w=semantic_targets_w,
         patches=patches,
@@ -268,16 +303,37 @@ def generate_contact_aware_pyroki_preview(
     taskspace_metadata = dict(taskspace.metadata)
     taskspace_metadata.update(
         {
-            "reference_authority": "force_rollout_only",
-            "semantic_source_motion": str(rollout_path),
+            "reference_authority": "pose_shape_plus_force_rollout_contacts",
+            "semantic_source_motion": str(shape_path),
             "contact_patch_source_motion": str(rollout_path),
-            "joint_initializer_source_motion": str(rollout_path),
-            "original_plan_source_motion_record_only": str(
-                plan.source_motion_path
-            ),
-            "cross_reference_mixing": False,
+            "contact_target_pose_source_motion": str(shape_path),
+            "joint_initializer_source_motion": str(shape_path),
+            "reference_role_contract": "shape_from_plan_source_contacts_from_force_rollout",
+            "cross_reference_mixing": True,
         }
     )
+    plan_metadata = dict(plan.metadata or {})
+    target_terrain_mesh = plan_metadata.get("target_terrain_mesh")
+    if target_terrain_mesh:
+        source_terrain_mesh = plan_metadata.get("source_terrain_mesh")
+        if not source_terrain_mesh:
+            raise ValueError(
+                "reference-depth collision IK requires plan.metadata.source_terrain_mesh"
+            )
+        taskspace_metadata.update(
+            {
+                "target_terrain_mesh": str(
+                    Path(target_terrain_mesh).expanduser().resolve()
+                ),
+                "source_terrain_mesh": str(
+                    Path(source_terrain_mesh).expanduser().resolve()
+                ),
+                "collision_reference_motion": str(rollout_path),
+                "environment_collision_contract": (
+                    "source_rollout_soft_signed_distance_similarity"
+                ),
+            }
+        )
     taskspace = preview.replace(taskspace, metadata=taskspace_metadata)
     taskspace.validate()
 
@@ -296,17 +352,19 @@ def generate_contact_aware_pyroki_preview(
         semantic_task_proxy_path,
         **preview._task_visualization_proxy(
             proxy=proxy,
-            source_motion=rollout_motion,
+            source_motion=shape_motion,
         ),
     )
     preview.write_contact_aware_taskspace_motion(taskspace_path, taskspace)
     preview._run_pyroki_preview_subprocess(
         taskspace_path=taskspace_path,
-        source_motion_path=rollout_path,
+        source_motion_path=shape_path,
         ik_output_path=ik_output_path,
         ik_script=ik_script,
         ik_conda_env=ik_conda_env,
         ik_max_nfev=ik_max_nfev,
+        ik_collision_similarity_weight=ik_collision_similarity_weight,
+        ik_collision_max_refinements=ik_collision_max_refinements,
     )
     if not ik_output_path.is_file():
         raise FileNotFoundError(
@@ -314,7 +372,7 @@ def generate_contact_aware_pyroki_preview(
         )
     ik_motion = preview._load_motion_npz(ik_output_path)
     generated = preview.merge_pyroki_preview_motion(
-        source_motion=rollout_motion,
+        source_motion=shape_motion,
         ik_motion=ik_motion,
         plan=plan,
         proxy_metadata=proxy_metadata,
@@ -326,7 +384,7 @@ def generate_contact_aware_pyroki_preview(
     generated = _stamp_rollout_authority_metadata(
         generated,
         rollout_path=rollout_path,
-        original_plan_source_path=str(plan.source_motion_path),
+        shape_path=shape_path,
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(output, **preview._stamp_robot_asset(generated))
@@ -337,7 +395,7 @@ def generate_contact_aware_pyroki_preview(
             *variant.warnings,
             *proxy_warnings,
             *[str(item) for item in binding_summary.get("warnings", [])],
-            "all generation references use the force-bearing rollout; the plan source motion is provenance only",
+            "pose shape comes from the plan source; Newton contact timing and local patch geometry come from the force rollout",
             "output is PyRoki-FK-consistent preview only; direct Newton/MJWarp canonicalization is required",
         ]
     )

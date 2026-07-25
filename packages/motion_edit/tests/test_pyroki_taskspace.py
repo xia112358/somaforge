@@ -1,7 +1,16 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 
+from motion_edit.generation.pyroki_fullbody_ik import (
+    _contact_part_for_body_name,
+    _is_authoritative_collision_body,
+    _robot_min_geometry_distance_by_body,
+    _robot_min_geometry_distance_by_body_surface,
+    _robot_penetration_depth_by_body,
+)
 from motion_edit.generation.pyroki_taskspace import (
     compile_pyroki_taskspace,
     holosoma_joint_velocities,
@@ -11,6 +20,76 @@ from motion_edit.generation.pyroki_taskspace import (
 from motion_edit.generation.taskspace_spec import ContactAwareTaskspaceMotion, ContactPatchTarget
 
 
+def test_reference_penetration_uses_true_geometry_depth_per_body() -> None:
+    contacts = SimpleNamespace(
+        robot_body_indices=np.asarray([3, 7, 8], dtype=np.int32),
+        robot_body_names=(
+            "left_ankle_roll_link",
+            "left_ankle_roll_link",
+            "right_ankle_roll_link",
+        ),
+        geometry_distance_m=np.asarray(
+            [1.0, 1.0, 1.0, -0.002, 1.0, 1.0, 1.0, -0.004, 0.003],
+            dtype=np.float64,
+        ),
+    )
+
+    assert _robot_penetration_depth_by_body(contacts) == {
+        "left_ankle_roll_link": 0.004,
+        "right_ankle_roll_link": 0.0,
+    }
+    assert _robot_min_geometry_distance_by_body(contacts) == {
+        "left_ankle_roll_link": -0.004,
+        "right_ankle_roll_link": 0.003,
+    }
+
+
+def test_collision_body_names_resolve_to_force_weight_parts() -> None:
+    assert _contact_part_for_body_name("left_ankle_roll_link") == "LF"
+    assert _contact_part_for_body_name("right_sphere_hand_link") == "RH"
+    assert _contact_part_for_body_name("left_knee_link") == "LK"
+    assert _contact_part_for_body_name("right_hip_roll_link") == "RHIP"
+    assert _contact_part_for_body_name("pelvis") is None
+    assert _is_authoritative_collision_body("left_ankle_roll_link", "LF")
+    assert not _is_authoritative_collision_body(
+        "left_ankle_roll_sphere_1_link",
+        "LF",
+    )
+    assert _is_authoritative_collision_body("right_sphere_hand_link", "RH")
+
+
+def test_reference_distances_are_paired_by_body_and_surface() -> None:
+    contacts = SimpleNamespace(
+        robot_body_indices=np.asarray([0, 1, 2], dtype=np.int32),
+        robot_body_names=(
+            "right_ankle_roll_link",
+            "right_ankle_roll_link",
+            "right_ankle_roll_link",
+        ),
+        geometry_distance_m=np.asarray(
+            [-0.001, -0.002, -0.003],
+            dtype=np.float64,
+        ),
+        body0=np.asarray([-1, -1, -1], dtype=np.int32),
+        body1=np.asarray([4, 4, 4], dtype=np.int32),
+        shape0=np.asarray([0, 1, 1], dtype=np.int32),
+        shape1=np.asarray([8, 8, 8], dtype=np.int32),
+        shape_labels=("terrain_ground", "terrain_obstacle"),
+        outward_normals_w=np.asarray(
+            [
+                [0.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0],
+                [1.0, 0.0, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+    )
+
+    assert _robot_min_geometry_distance_by_body_surface(contacts) == {
+        ("right_ankle_roll_link", "terrain_ground:ground"): -0.001,
+        ("right_ankle_roll_link", "terrain_obstacle:top"): -0.002,
+        ("right_ankle_roll_link", "terrain_obstacle:side"): -0.003,
+    }
 def _spec() -> ContactAwareTaskspaceMotion:
     contact = ContactPatchTarget(
         anchor_id="left_foot_0",

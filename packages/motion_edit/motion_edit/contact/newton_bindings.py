@@ -99,9 +99,9 @@ def bind_newton_contact_patches(
     Persisted bindings use body/shape labels plus robot-local points so they remain
     valid when the scene is rebuilt with different runtime IDs.
 
-    The point/body pairing intentionally follows the repository's existing
-    rollout extraction convention: if ``body0`` is the robot body, ``point1_w``
-    is treated as the robot-side contact point, and vice versa.
+    Newton stores one surface point per contact body. ``point0_w`` belongs to
+    ``body0`` and ``point1_w`` belongs to ``body1``. Robot-local patches must
+    therefore use the point with the same index as the matched robot body.
     """
 
     arrays = _required_motion_arrays(motion)
@@ -144,7 +144,7 @@ def bind_newton_contact_patches(
 
     summary = {
         "backend": "newton_mjwarp",
-        "point_body_pairing": "body0->point1,body1->point0",
+        "point_body_pairing": "body0->point0,body1->point1",
         "selected_env_id": int(selected_env_id),
         "anchor_count": len(anchors),
         "bound_patch_count": int(bound_count),
@@ -190,13 +190,13 @@ def _bind_anchor(
             if match0:
                 robot_body_id = body0
                 robot_shape_id = int(arrays["raw_contact_shape0"][frame, contact_index])
-                robot_point_w = arrays["raw_contact_point1_w"][frame, contact_index]
+                robot_point_w = arrays["raw_contact_point0_w"][frame, contact_index]
                 robot_to_counterpart_normal_w = arrays["raw_contact_normal_w"][frame, contact_index]
                 robot_body_label = label0
             else:
                 robot_body_id = body1
                 robot_shape_id = int(arrays["raw_contact_shape1"][frame, contact_index])
-                robot_point_w = arrays["raw_contact_point0_w"][frame, contact_index]
+                robot_point_w = arrays["raw_contact_point1_w"][frame, contact_index]
                 robot_to_counterpart_normal_w = -arrays["raw_contact_normal_w"][frame, contact_index]
                 robot_body_label = label1
 
@@ -278,7 +278,7 @@ def _bind_anchor(
     metadata = dict(anchor.metadata)
     metadata["newton_robot_contact_binding"] = {
         "backend": "newton_mjwarp",
-        "point_body_pairing": "body0->point1,body1->point0",
+        "point_body_pairing": "body0->point0,body1->point1",
         "normal_convention": "robot_to_counterpart_from_newton_raw_normal",
         "sample_count": int(total_samples),
         "runtime_body_ids_source": sorted(runtime_body_ids),

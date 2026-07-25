@@ -36,7 +36,7 @@ def main() -> None:
     parser.add_argument("--source-reference-weight", type=float, default=0.01)
     parser.add_argument("--boundary-ramp-frames", type=int, default=10)
     parser.add_argument("--min-raw-contact-force-norm", type=float, default=0.0)
-    parser.add_argument("--ik-conda-env", default="env_pyroki_climb_projection")
+    parser.add_argument("--ik-conda-env", default="env_somaforge")
     parser.add_argument("--ik-script", type=Path, default=None)
     parser.add_argument("--ik-max-nfev", type=int, default=None)
     args = parser.parse_args()

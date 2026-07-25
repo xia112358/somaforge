@@ -36,11 +36,11 @@ def test_nested_split_foot_shape_ids_use_one_canonical_ankle_frame() -> None:
         "raw_contact_shape1": np.asarray([[2, 2]], dtype=np.int32),
         "raw_contact_body0": np.asarray([[0, 1]], dtype=np.int32),
         "raw_contact_body1": np.asarray([[2, 2]], dtype=np.int32),
-        "raw_contact_point0_w": np.zeros((frame_count, 2, 3), dtype=np.float64),
-        "raw_contact_point1_w": np.asarray(
+        "raw_contact_point0_w": np.asarray(
             [[[0.95, 0.0, -0.03], [1.14, 0.0, -0.03]]],
             dtype=np.float64,
         ),
+        "raw_contact_point1_w": np.zeros((frame_count, 2, 3), dtype=np.float64),
         "raw_contact_normal_w": np.asarray(
             [[[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]]],
             dtype=np.float64,

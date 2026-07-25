@@ -5,8 +5,16 @@ import json
 import numpy as np
 
 from motion_edit.contact.plans import ContactEditPlan, read_contact_edit_plan, validate_contact_edit_plan
-from motion_edit.contact.schema import ContactAnchorRecord, ContactSurfaceRecord
-from motion_edit.generation.task_variant_compat import apply_pose_edits_to_proxy, expand_task_variant_plan
+from motion_edit.contact.schema import (
+    ContactAnchorEditRecord,
+    ContactAnchorRecord,
+    ContactSurfaceRecord,
+)
+from motion_edit.generation.task_variant_compat import (
+    apply_pose_edits_to_proxy,
+    expand_task_variant_plan,
+    pose_edits_for_semantic_proxy,
+)
 
 
 def _surface(surface_id: str, z: float) -> dict:
@@ -101,6 +109,65 @@ def test_surface_follow_expands_anchor_with_preserved_uv() -> None:
     assert expanded.metadata["expanded_surface_follow_edit_count"] == 1
 
 
+def test_surface_follow_uses_one_translation_for_inconsistent_foot_anchors() -> None:
+    source_raw = _surface("box_1p0_top", 0.70)
+    target_raw = _surface("box_1p1_top", 0.77)
+    source = ContactSurfaceRecord(motion_id="climb_00", source="test", **source_raw)
+    anchors = [
+        ContactAnchorRecord(
+            motion_id="climb_00",
+            anchor_id="right_heel",
+            body="right_heel",
+            start_frame=10,
+            end_frame=20,
+            world_position=[0.48, -0.08, 0.70],
+            object_id="box_1p0",
+            surface_id="box_1p0_top",
+            surface_coordinates={"u": -0.10, "v": 0.22},
+        ),
+        ContactAnchorRecord(
+            motion_id="climb_00",
+            anchor_id="right_toe",
+            body="right_toe",
+            start_frame=15,
+            end_frame=25,
+            world_position=[0.42, -0.24, 0.70],
+            object_id="box_1p0",
+            surface_id="box_1p0_top",
+            surface_coordinates={"u": -0.16, "v": 0.06},
+        ),
+    ]
+    plan = ContactEditPlan(
+        plan_id="height_110",
+        source_motion_path="/tmp/source.npz",
+        source_motion_id="climb_00",
+        source_contact_layer="contact/source",
+        surface_transforms=[
+            {
+                "transform_id": "height_follow",
+                "kind": "surface_follow",
+                "translation_world": [0.0, 0.0, 0.07],
+                "source_surface": source_raw,
+                "target_surface": target_raw,
+            }
+        ],
+        status="validated",
+    )
+
+    expanded = expand_task_variant_plan(plan, anchors=anchors, surfaces=[source])
+
+    assert len(expanded.edits) == 2
+    for anchor, edit in zip(anchors, expanded.edits):
+        np.testing.assert_allclose(edit.delta_world, [0.0, 0.0, 0.07])
+        np.testing.assert_allclose(
+            np.asarray(edit.new_world_position)
+            - np.asarray(edit.old_world_position),
+            [0.0, 0.0, 0.07],
+        )
+        np.testing.assert_allclose(edit.old_world_position, anchor.world_position)
+        assert edit.metadata["uniform_surface_translation"] is True
+
+
 def test_translate_pose_updates_semantic_and_dense_targets() -> None:
     proxy = {
         "fps": np.asarray([50.0]),
@@ -127,3 +194,67 @@ def test_translate_pose_updates_semantic_and_dense_targets() -> None:
     np.testing.assert_allclose(edited["keypoint_right_foot"][1:, 2], 0.1)
     assert float(np.max(edited["body_pos_w"][1:, :, 2])) > 0.0
     assert metadata["applied_pose_edit_count"] == 1
+
+
+def test_approach_pose_edit_is_not_applied_twice_to_semantic_proxy() -> None:
+    approach = ContactAnchorEditRecord(
+        edit_id="approach:left_toe",
+        motion_id="climb_00",
+        anchor_id="left_toe",
+        body="left_toe",
+        delta_world=[0.0, 0.05, 0.0],
+        affected_frames=[139, 141],
+        metadata={
+            "task_variant": "approach_position",
+            "pose_interval": [139, 148],
+        },
+    )
+    ordinary = ContactAnchorEditRecord(
+        edit_id="manual:right_hand",
+        motion_id="climb_00",
+        anchor_id="right_hand",
+        body="right_hand",
+        delta_world=[0.0, 0.0, 0.02],
+        affected_frames=[200, 220],
+    )
+    pose_edits = [
+        {
+            "edit_type": "translate_pose",
+            "affected_frames": [139, 148],
+            "translation_world": [0.0, 0.05, 0.0],
+        }
+    ]
+
+    retained = pose_edits_for_semantic_proxy(
+        [approach, ordinary],
+        pose_edits,
+    )
+
+    assert retained == ()
+
+
+def test_unpaired_pose_edit_remains_in_semantic_proxy() -> None:
+    approach = ContactAnchorEditRecord(
+        edit_id="approach:left_toe",
+        motion_id="climb_00",
+        anchor_id="left_toe",
+        body="left_toe",
+        delta_world=[0.0, 0.05, 0.0],
+        affected_frames=[139, 141],
+        metadata={
+            "task_variant": "approach_position",
+            "pose_interval": [139, 148],
+        },
+    )
+
+    pose_edit = {
+        "edit_type": "translate_pose",
+        "affected_frames": [139, 148],
+        "translation_world": [0.0, 0.04, 0.0],
+    }
+    retained = pose_edits_for_semantic_proxy(
+        [approach],
+        [pose_edit],
+    )
+
+    assert retained == (pose_edit,)

@@ -32,8 +32,8 @@ class NewtonContactBindingTests(unittest.TestCase):
         body_quat = np.zeros((frame_count, 1, 4), dtype=np.float64)
         body_quat[..., 0] = 1.0
 
-        point1 = np.zeros((frame_count, 1, 3), dtype=np.float64)
-        point1[:, 0] = body_pos[:, 0] + np.asarray([0.0, 0.0, -0.1])
+        point0 = np.zeros((frame_count, 1, 3), dtype=np.float64)
+        point0[:, 0] = body_pos[:, 0] + np.asarray([0.0, 0.0, -0.1])
 
         motion = {
             "body_names": np.asarray(["left_ankle_roll_link"], dtype=object),
@@ -59,8 +59,8 @@ class NewtonContactBindingTests(unittest.TestCase):
             "raw_contact_shape1": np.ones((frame_count, 1), dtype=np.int32),
             "raw_contact_body0": np.zeros((frame_count, 1), dtype=np.int32),
             "raw_contact_body1": np.ones((frame_count, 1), dtype=np.int32),
-            "raw_contact_point0_w": np.zeros((frame_count, 1, 3), dtype=np.float64),
-            "raw_contact_point1_w": point1,
+            "raw_contact_point0_w": point0,
+            "raw_contact_point1_w": np.zeros((frame_count, 1, 3), dtype=np.float64),
             "raw_contact_normal_w": np.tile(
                 np.asarray([0.0, 0.0, -1.0]),
                 (frame_count, 1, 1),
@@ -146,6 +146,34 @@ class NewtonContactBindingTests(unittest.TestCase):
         self.assertEqual(patches[0].robot_binding_source, "legacy_center")
         self.assertIsNone(patches[0].robot_points_local)
 
+    def test_robot_body1_uses_robot_point1_not_environment_point0(self) -> None:
+        motion = {
+            "body_names": np.asarray(["left_ankle_roll_link"], dtype=object),
+            "body_pos_w": np.asarray([[[0.0, 0.0, 0.75]]], dtype=np.float64),
+            "body_quat_w": np.asarray([[[1.0, 0.0, 0.0, 0.0]]], dtype=np.float64),
+            "newton_body_labels": np.asarray(
+                ["/World/ground", "/World/envs/env_0/Robot/left_ankle_roll_link"],
+                dtype=object,
+            ),
+            "newton_shape_labels": np.asarray(["ground", "left_sole"], dtype=object),
+            "raw_contact_selected_env_id": np.asarray(0, dtype=np.int32),
+            "raw_contact_count": np.asarray([1], dtype=np.int32),
+            "raw_contact_shape0": np.asarray([[0]], dtype=np.int32),
+            "raw_contact_shape1": np.asarray([[1]], dtype=np.int32),
+            "raw_contact_body0": np.asarray([[-1]], dtype=np.int32),
+            "raw_contact_body1": np.asarray([[1]], dtype=np.int32),
+            "raw_contact_point0_w": np.asarray([[[0.1, 0.0, 0.70]]], dtype=np.float64),
+            "raw_contact_point1_w": np.asarray([[[0.1, 0.0, 0.72]]], dtype=np.float64),
+            "raw_contact_normal_w": np.asarray([[[0.0, 0.0, 1.0]]], dtype=np.float64),
+            "raw_contact_force_w": np.asarray([[[0.0, 0.0, 100.0]]], dtype=np.float64),
+        }
+        anchor = ContactAnchorRecord("motion_a", "left_foot", "left_foot", 0, 1)
+
+        patches, summary = bind_newton_contact_patches([anchor], motion)
+
+        np.testing.assert_allclose(patches[0].robot_points_local, [[0.1, 0.0, -0.03]])
+        self.assertEqual(summary["point_body_pairing"], "body0->point0,body1->point1")
+
     def test_heel_and_toe_bind_to_distinct_shapes_in_one_foot_frame(self) -> None:
         frame_count = 1
         motion = {
@@ -172,11 +200,11 @@ class NewtonContactBindingTests(unittest.TestCase):
             "raw_contact_shape1": np.asarray([[2, 2]], dtype=np.int32),
             "raw_contact_body0": np.asarray([[0, 1]], dtype=np.int32),
             "raw_contact_body1": np.asarray([[2, 2]], dtype=np.int32),
-            "raw_contact_point0_w": np.zeros((frame_count, 2, 3), dtype=np.float64),
-            "raw_contact_point1_w": np.asarray(
+            "raw_contact_point0_w": np.asarray(
                 [[[0.95, 0.0, -0.03], [1.14, 0.0, -0.03]]],
                 dtype=np.float64,
             ),
+            "raw_contact_point1_w": np.zeros((frame_count, 2, 3), dtype=np.float64),
             "raw_contact_normal_w": np.asarray(
                 [[[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]]],
                 dtype=np.float64,

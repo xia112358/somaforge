@@ -29,6 +29,7 @@ from motion_edit.generation.pyroki_taskspace import (
     resolve_link_index,
     world_body_poses_from_pyroki_fk,
 )
+from motion_edit.generation.newton_collision import DirectNewtonCollisionScene
 from motion_edit.generation.taskspace_spec import ContactAwareTaskspaceMotion
 
 
@@ -259,6 +260,135 @@ def _stats(values: np.ndarray) -> dict[str, float]:
     }
 
 
+def _robot_penetration_depth_by_body(contacts: Any) -> dict[str, float]:
+    """Return true geometry overlap depth for each robot body in one frame."""
+
+    return {
+        body_name: max(0.0, -signed_distance)
+        for body_name, signed_distance in (
+            _robot_min_geometry_distance_by_body(contacts).items()
+        )
+    }
+
+
+def _robot_min_geometry_distance_by_body(
+    contacts: Any,
+) -> dict[str, float]:
+    """Return the closest signed geometry distance for each robot body."""
+
+    closest: dict[str, float] = {}
+    for local_index, contact_index in enumerate(
+        np.asarray(contacts.robot_body_indices, dtype=np.int64).tolist()
+    ):
+        body_name = str(contacts.robot_body_names[local_index])
+        signed_distance = float(
+            contacts.geometry_distance_m[int(contact_index)]
+        )
+        closest[body_name] = min(
+            closest.get(body_name, np.inf),
+            signed_distance,
+        )
+    return closest
+
+
+def _terrain_surface_key(
+    contacts: Any,
+    *,
+    local_index: int,
+    contact_index: int,
+) -> str:
+    """Return a stable ground/top/side identity for one robot-terrain witness."""
+
+    index = int(contact_index)
+    body0 = int(contacts.body0[index])
+    body1 = int(contacts.body1[index])
+    if (body0 >= 0) == (body1 >= 0):
+        raise ValueError("surface identity requires exactly one terrain-side body")
+    terrain_shape = (
+        int(contacts.shape0[index])
+        if body0 < 0
+        else int(contacts.shape1[index])
+    )
+    shape_labels = tuple(str(item) for item in contacts.shape_labels)
+    shape_label = (
+        shape_labels[terrain_shape]
+        if 0 <= terrain_shape < len(shape_labels)
+        else f"shape:{terrain_shape}"
+    )
+    if "ground" in shape_label.lower():
+        return f"{shape_label}:ground"
+    outward = np.asarray(
+        contacts.outward_normals_w[int(local_index)],
+        dtype=np.float64,
+    )
+    if float(outward[2]) > np.sqrt(0.5):
+        orientation = "top"
+    elif float(outward[2]) < -np.sqrt(0.5):
+        orientation = "bottom"
+    else:
+        orientation = "side"
+    return f"{shape_label}:{orientation}"
+
+
+def _robot_min_geometry_distance_by_body_surface(
+    contacts: Any,
+) -> dict[tuple[str, str], float]:
+    """Return the closest signed distance for each robot body and surface."""
+
+    closest: dict[tuple[str, str], float] = {}
+    for local_index, contact_index in enumerate(
+        np.asarray(contacts.robot_body_indices, dtype=np.int64).tolist()
+    ):
+        body_name = str(contacts.robot_body_names[local_index])
+        surface_key = _terrain_surface_key(
+            contacts,
+            local_index=local_index,
+            contact_index=int(contact_index),
+        )
+        key = (body_name, surface_key)
+        signed_distance = float(
+            contacts.geometry_distance_m[int(contact_index)]
+        )
+        closest[key] = min(
+            closest.get(key, np.inf),
+            signed_distance,
+        )
+    return closest
+
+
+def _contact_part_for_body_name(body_name: str) -> str | None:
+    value = str(body_name).lower()
+    side = "L" if value.startswith("left_") else "R" if value.startswith("right_") else ""
+    if not side:
+        return None
+    if "ankle" in value or "foot" in value:
+        return f"{side}F"
+    if "wrist" in value or "hand" in value:
+        return f"{side}H"
+    if "knee" in value:
+        return f"{side}K"
+    if "hip" in value:
+        return f"{side}HIP"
+    return None
+
+
+def _is_authoritative_collision_body(
+    body_name: str,
+    part_name: str,
+) -> bool:
+    expected = {
+        "LF": "left_ankle_roll_link",
+        "RF": "right_ankle_roll_link",
+        "LH": "left_sphere_hand_link",
+        "RH": "right_sphere_hand_link",
+        "LK": "left_knee_link",
+        "RK": "right_knee_link",
+        "LHIP": "left_hip_roll_link",
+        "RHIP": "right_hip_roll_link",
+    }.get(str(part_name))
+    return expected == str(body_name)
+
+
 def solve_pyroki_fullbody_ik(
     *,
     lte_path: str | Path,
@@ -274,6 +404,8 @@ def solve_pyroki_fullbody_ik(
     foot_orientation_weight: float = 20.0,
     q_velocity_weight: float = 2.0,
     q_acceleration_weight: float = 1.0,
+    collision_similarity_weight: float = 25.0,
+    collision_max_refinements: int = 1,
 ) -> Path:
     import jax
     import jax.numpy as jnp
@@ -281,6 +413,33 @@ def solve_pyroki_fullbody_ik(
     import yourdfpy
 
     payload = _load_npz(lte_path)
+    collision_terrain_mesh: str | None = None
+    collision_source_terrain_mesh: str | None = None
+    collision_reference_motion_path: str | None = None
+    if "contact_aware_taskspace_json" in payload:
+        collision_spec = ContactAwareTaskspaceMotion.from_arrays(payload)
+        collision_metadata = dict(collision_spec.metadata)
+        raw_terrain_mesh = collision_metadata.get("target_terrain_mesh")
+        if raw_terrain_mesh:
+            collision_terrain_mesh = str(
+                Path(raw_terrain_mesh).expanduser().resolve()
+            )
+            raw_source_terrain = collision_metadata.get("source_terrain_mesh")
+            raw_reference_motion = collision_metadata.get(
+                "collision_reference_motion"
+            )
+            if not raw_source_terrain or not raw_reference_motion:
+                raise ValueError(
+                    "target-terrain collision IK requires source_terrain_mesh "
+                    "and collision_reference_motion; a fixed penetration "
+                    "allowance is not supported"
+                )
+            collision_source_terrain_mesh = str(
+                Path(raw_source_terrain).expanduser().resolve()
+            )
+            collision_reference_motion_path = str(
+                Path(raw_reference_motion).expanduser().resolve()
+            )
     robot_path = Path(robot_urdf).expanduser()
     if not robot_path.exists():
         raise FileNotFoundError(f"robot URDF not found for PyRoki IK: {robot_path}")
@@ -314,6 +473,89 @@ def solve_pyroki_fullbody_ik(
     cfg_source = cfg_source[:n_frames].copy()
     source_reference = source_reference[:n_frames]
     boundary_weights = boundary_weights[:n_frames]
+
+    collision_reference_qpos: np.ndarray | None = None
+    collision_reference_force_confidence: dict[str, np.ndarray] = {}
+    if collision_terrain_mesh is not None:
+        assert collision_reference_motion_path is not None
+        reference_motion = _load_npz(collision_reference_motion_path)
+        if "joint_pos" not in reference_motion:
+            raise ValueError(
+                "collision reference motion is missing joint_pos: "
+                f"{collision_reference_motion_path}"
+            )
+        reference_root, reference_cfg = _source_qpos_from_array(
+            reference_motion["joint_pos"],
+            n_frames,
+            actuated_count,
+        )
+        reference_joint_names = _motion_strings(
+            reference_motion,
+            ("joint_names", "dof_names", "joint_name", "dof_name"),
+        )
+        reference_cfg = _align_source_cfg(
+            reference_cfg,
+            reference_joint_names,
+            robot_joint_names,
+        )
+        if reference_root.shape[0] != n_frames:
+            raise ValueError(
+                "collision reference motion is shorter than the IK task: "
+                f"{reference_root.shape[0]} != {n_frames}"
+            )
+        reference_fps = _fps_from_motion(reference_motion)
+        if not np.isclose(reference_fps, fps, atol=1.0e-6, rtol=0.0):
+            raise ValueError(
+                "collision reference motion fps differs from the IK task: "
+                f"{reference_fps} != {fps}"
+            )
+        collision_reference_qpos = np.concatenate(
+            (reference_root, reference_cfg),
+            axis=1,
+        )
+        if (
+            "contact_force_part_w" in reference_motion
+            and "contact_force_part_order" in reference_motion
+        ):
+            force_w = np.asarray(
+                reference_motion["contact_force_part_w"],
+                dtype=np.float64,
+            )[:n_frames]
+            part_order = _motion_strings(
+                reference_motion,
+                ("contact_force_part_order",),
+            )
+            if force_w.ndim == 3 and force_w.shape[1] == len(part_order):
+                grouped_parts = {
+                    "LF": ("LHEE", "LTOE"),
+                    "RF": ("RHEE", "RTOE"),
+                    "LH": ("LH",),
+                    "RH": ("RH",),
+                    "LK": ("LK",),
+                    "RK": ("RK",),
+                }
+                for part_name, source_parts in grouped_parts.items():
+                    source_indices = [
+                        part_order.index(source_part)
+                        for source_part in source_parts
+                        if source_part in part_order
+                    ]
+                    if not source_indices:
+                        continue
+                    combined_force = np.sum(
+                        force_w[:, source_indices],
+                        axis=1,
+                    )
+                    values = np.linalg.norm(combined_force, axis=-1)
+                    positive = values[values > 0.0]
+                    scale = (
+                        float(np.median(positive))
+                        if positive.size
+                        else 1.0
+                    )
+                    collision_reference_force_confidence[part_name] = (
+                        values / (values + max(scale, np.finfo(np.float64).eps))
+                    )
 
     pelvis_column = compiled.semantic_names.index("pelvis") if "pelvis" in compiled.semantic_names else None
     if pelvis_column is not None:
@@ -357,6 +599,12 @@ def solve_pyroki_fullbody_ik(
         q_prior_previous_previous: Any,
         q_prior_scale: Any,
         source_foot_orientation: Any,
+        collision_link_indices: Any,
+        collision_points_local: Any,
+        collision_normals_base: Any,
+        collision_terrain_points_base: Any,
+        collision_similarity_weight: Any,
+        collision_deeper_weight: Any,
     ) -> Any:
         fk = robot.forward_kinematics(q_cfg)
         semantic_pos = fk[semantic_indices_jax, 4:7]
@@ -394,6 +642,29 @@ def solve_pyroki_fullbody_ik(
         foot_orientation_res = (
             2.0 * relative[:, 1:4] * jnp.sqrt(float(foot_orientation_weight))
         ).reshape(-1)
+        collision_pose = fk[collision_link_indices]
+        collision_point = (
+            collision_pose[:, 4:7]
+            + quat_apply_jax(
+                collision_pose[:, :4],
+                collision_points_local,
+            )
+        )
+        collision_signed_distance = jnp.sum(
+            (
+                collision_point
+                - collision_terrain_points_base
+            )
+            * collision_normals_base,
+            axis=-1,
+        )
+        collision_similarity_res = (
+            collision_signed_distance * collision_similarity_weight
+        )
+        collision_deeper_res = (
+            jnp.minimum(collision_signed_distance, 0.0)
+            * collision_deeper_weight
+        )
         return jnp.concatenate(
             [
                 semantic_res,
@@ -403,6 +674,8 @@ def solve_pyroki_fullbody_ik(
                 velocity_res,
                 acceleration_res,
                 foot_orientation_res,
+                collision_similarity_res,
+                collision_deeper_res,
             ],
             axis=0,
         )
@@ -416,6 +689,82 @@ def solve_pyroki_fullbody_ik(
     success: list[bool] = []
     nfev: list[int] = []
     costs: list[float] = []
+    collision_slots = len(link_names)
+    inactive_collision_args = (
+        np.zeros(collision_slots, dtype=np.int32),
+        np.zeros((collision_slots, 3), dtype=np.float64),
+        np.zeros((collision_slots, 3), dtype=np.float64),
+        np.zeros((collision_slots, 3), dtype=np.float64),
+        np.zeros(collision_slots, dtype=np.float64),
+        np.zeros(collision_slots, dtype=np.float64),
+    )
+    collision_similarity_weight_value = float(collision_similarity_weight)
+    collision_deeper_weight_value = 100.0
+    collision_max_refinements_value = int(collision_max_refinements)
+    if collision_similarity_weight_value < 0.0:
+        raise ValueError("collision_similarity_weight must be non-negative")
+    if collision_max_refinements_value < 0:
+        raise ValueError("collision_max_refinements must be non-negative")
+    collision_scene = (
+        DirectNewtonCollisionScene(collision_terrain_mesh, device="cpu")
+        if collision_terrain_mesh is not None
+        else None
+    )
+    collision_reference_scene = (
+        DirectNewtonCollisionScene(
+            collision_source_terrain_mesh,
+            device="cpu",
+        )
+        if collision_source_terrain_mesh is not None
+        else None
+    )
+    collision_reference_signed_distances: list[
+        dict[tuple[str, str], float]
+    ] = []
+    collision_reference_max_m = 0.0
+    collision_reference_proximity_frames = 0
+    if collision_reference_scene is not None:
+        assert collision_reference_qpos is not None
+        for frame in range(n_frames):
+            reference_contacts = collision_reference_scene.query_qpos(
+                collision_reference_qpos[frame]
+            )
+            signed_distances = _robot_min_geometry_distance_by_body_surface(
+                reference_contacts
+            )
+            collision_reference_signed_distances.append(signed_distances)
+            frame_max = max(
+                (
+                    max(0.0, -signed_distance)
+                    for signed_distance in signed_distances.values()
+                ),
+                default=0.0,
+            )
+            collision_reference_max_m = max(
+                collision_reference_max_m,
+                frame_max,
+            )
+            if signed_distances:
+                collision_reference_proximity_frames += 1
+    else:
+        collision_reference_signed_distances = [
+            {} for _ in range(n_frames)
+        ]
+    collision_initial_active_frames = 0
+    collision_final_active_frames = 0
+    collision_initial_raw_max_m = 0.0
+    collision_final_raw_max_m = 0.0
+    collision_initial_excess_max_m = 0.0
+    collision_final_excess_max_m = 0.0
+    collision_initial_similarity_error_max_m = 0.0
+    collision_final_similarity_error_max_m = 0.0
+    collision_initial_similarity_errors: list[float] = []
+    collision_final_similarity_errors: list[float] = []
+    collision_refinement_solve_count = 0
+    link_index_by_name = {
+        name: index for index, name in enumerate(link_names)
+    }
+
     for frame in range(n_frames):
         root = root_source[frame].copy()
         root_rotation = _quat_wxyz_to_rotation(root[3:7])
@@ -427,6 +776,21 @@ def solve_pyroki_fullbody_ik(
         )
         semantic_sqrt_weight = np.sqrt(np.maximum(compiled.semantic_weights[frame], 0.0))
         contact_sqrt_weight = np.sqrt(np.maximum(compiled.contact_weights[frame], 0.0))
+        active_part_weight: dict[str, float] = {}
+        for contact_link_index, contact_weight in zip(
+            compiled.contact_link_indices[frame].tolist(),
+            compiled.contact_weights[frame].tolist(),
+        ):
+            if float(contact_weight) <= 0.0:
+                continue
+            part_name = _contact_part_for_body_name(
+                link_names[int(contact_link_index)]
+            )
+            if part_name is not None:
+                active_part_weight[part_name] = max(
+                    active_part_weight.get(part_name, 0.0),
+                    float(contact_weight),
+                )
         prior_scale = (
             float(q_prior_weight) * np.maximum(source_reference[frame], 0.0)
             + float(boundary_pin_weight) * float(boundary_weights[frame])
@@ -450,6 +814,7 @@ def solve_pyroki_fullbody_ik(
             np.asarray(q_prior_previous_previous, dtype=np.float64),
             np.asarray(prior_scale, dtype=np.float64),
             np.asarray(source_foot_orientations[frame], dtype=np.float64),
+            *inactive_collision_args,
         )
 
         def fun(x: np.ndarray) -> np.ndarray:
@@ -468,11 +833,332 @@ def solve_pyroki_fullbody_ik(
             ftol=1.0e-5,
             gtol=1.0e-5,
         )
+        frame_nfev = int(result.nfev)
+        frame_success = bool(result.success)
+        candidate_cfg = np.clip(result.x, lower, upper)
+
+        def active_collision_contacts(
+            q_cfg: np.ndarray,
+        ) -> tuple[
+            Any | None,
+            list[
+                tuple[
+                    int,
+                    int,
+                    float,
+                    float,
+                    float,
+                    float,
+                    float,
+                    float,
+                ]
+            ],
+            float,
+            float,
+            list[float],
+        ]:
+            if collision_scene is None:
+                return None, [], 0.0, 0.0, []
+            qpos_query = np.concatenate([root, q_cfg], axis=0)
+            contacts = collision_scene.query_qpos(qpos_query)
+            reference_signed_by_body_surface = (
+                collision_reference_signed_distances[frame]
+            )
+            closest_target_by_body_surface: dict[
+                tuple[str, str],
+                tuple[int, int, float],
+            ] = {}
+            raw_max = 0.0
+            excess_max = 0.0
+            for local_index, contact_index in enumerate(
+                contacts.robot_body_indices.tolist()
+            ):
+                signed_distance = float(
+                    contacts.geometry_distance_m[int(contact_index)]
+                )
+                body_name = contacts.robot_body_names[local_index]
+                surface_key = _terrain_surface_key(
+                    contacts,
+                    local_index=local_index,
+                    contact_index=int(contact_index),
+                )
+                body_surface_key = (body_name, surface_key)
+                depth = max(0.0, -signed_distance)
+                raw_max = max(raw_max, depth)
+                previous_contact = closest_target_by_body_surface.get(
+                    body_surface_key
+                )
+                if (
+                    previous_contact is None
+                    or signed_distance < previous_contact[2]
+                ):
+                    closest_target_by_body_surface[body_surface_key] = (
+                        local_index,
+                        int(contact_index),
+                        signed_distance,
+                    )
+            selected: list[
+                tuple[
+                    int,
+                    int,
+                    float,
+                    float,
+                    float,
+                    float,
+                    float,
+                    float,
+                ]
+            ] = []
+            similarity_errors: list[float] = []
+            for (body_name, surface_key), (
+                local_index,
+                contact_index,
+                signed_distance,
+            ) in closest_target_by_body_surface.items():
+                if body_name not in link_index_by_name:
+                    continue
+                part_name = _contact_part_for_body_name(body_name)
+                reference_signed = reference_signed_by_body_surface.get(
+                    (body_name, surface_key)
+                )
+                is_active_contact = (
+                    part_name in active_part_weight
+                    and reference_signed is not None
+                    and part_name is not None
+                    and _is_authoritative_collision_body(
+                        body_name,
+                        part_name,
+                    )
+                )
+                similarity_weight = 0.0
+                target_signed = 0.0
+                if is_active_contact:
+                    assert reference_signed is not None
+                    assert part_name is not None
+                    target_signed = float(reference_signed)
+                    force_curve = collision_reference_force_confidence.get(
+                        part_name
+                    )
+                    force_confidence = (
+                        float(force_curve[frame])
+                        if force_curve is not None
+                        else 0.5
+                    )
+                    similarity_weight = (
+                        collision_similarity_weight_value
+                        * force_confidence
+                    )
+                    similarity_errors.append(
+                        abs(signed_distance - target_signed)
+                    )
+                depth = max(0.0, -signed_distance)
+                reference_depth = max(0.0, -target_signed)
+                excess_depth = max(0.0, depth - reference_depth)
+                excess_max = max(excess_max, excess_depth)
+                if not is_active_contact and depth <= 0.0:
+                    continue
+                selected.append(
+                    (
+                        local_index,
+                        contact_index,
+                        signed_distance,
+                        target_signed,
+                        similarity_weight,
+                        collision_deeper_weight_value,
+                        abs(signed_distance - target_signed),
+                        excess_depth,
+                    )
+                )
+            return (
+                contacts,
+                selected,
+                raw_max,
+                excess_max,
+                similarity_errors,
+            )
+
+        (
+            initial_contacts,
+            active_contacts,
+            initial_raw_max,
+            initial_excess_max,
+            initial_similarity_errors,
+        ) = active_collision_contacts(candidate_cfg)
+        collision_initial_raw_max_m = max(
+            collision_initial_raw_max_m,
+            initial_raw_max,
+        )
+        collision_initial_excess_max_m = max(
+            collision_initial_excess_max_m,
+            initial_excess_max,
+        )
+        collision_initial_similarity_errors.extend(
+            initial_similarity_errors
+        )
+        collision_initial_similarity_error_max_m = max(
+            collision_initial_similarity_error_max_m,
+            max(initial_similarity_errors, default=0.0),
+        )
+        final_raw_max = initial_raw_max
+        final_excess_max = initial_excess_max
+        final_similarity_errors = initial_similarity_errors
+        if active_contacts:
+            collision_initial_active_frames += 1
+
+        for _ in range(collision_max_refinements_value):
+            if initial_contacts is None or not active_contacts:
+                break
+            collision_link_indices = np.zeros(
+                collision_slots,
+                dtype=np.int32,
+            )
+            collision_points_local = np.zeros(
+                (collision_slots, 3),
+                dtype=np.float64,
+            )
+            collision_normals_base = np.zeros(
+                (collision_slots, 3),
+                dtype=np.float64,
+            )
+            collision_terrain_points_base = np.zeros(
+                (collision_slots, 3),
+                dtype=np.float64,
+            )
+            collision_similarity_weight = np.zeros(
+                collision_slots,
+                dtype=np.float64,
+            )
+            collision_deeper_weight = np.zeros(
+                collision_slots,
+                dtype=np.float64,
+            )
+
+            fk_frame = np.asarray(
+                robot.forward_kinematics(jnp.asarray(candidate_cfg)),
+                dtype=np.float64,
+            )
+            body_position_w, body_quaternion_w = (
+                world_body_poses_from_pyroki_fk(
+                    root[None, :],
+                    fk_frame[None, ...],
+                )
+            )
+            for slot, (
+                local_index,
+                _contact_index,
+                _signed_distance,
+                target_signed_distance,
+                similarity_weight,
+                deeper_weight,
+                _similarity_error,
+                _excess_depth,
+            ) in enumerate(active_contacts[:collision_slots]):
+                body_name = initial_contacts.robot_body_names[local_index]
+                link_index = link_index_by_name[body_name]
+                link_rotation = _quat_wxyz_to_rotation(
+                    body_quaternion_w[0, link_index]
+                )
+                point_local = link_rotation.inv().apply(
+                    initial_contacts.robot_points_w[local_index]
+                    - body_position_w[0, link_index]
+                )
+                normal_base = root_rotation.inv().apply(
+                    initial_contacts.outward_normals_w[local_index]
+                )
+                terrain_point_base = root_rotation.inv().apply(
+                    initial_contacts.terrain_points_w[local_index]
+                    - root[:3]
+                )
+                # The shifted witness plane makes zero residual correspond to
+                # the source rollout's signed geometry distance. A finite
+                # weight encourages similarity without imposing equality.
+                terrain_point_base = (
+                    terrain_point_base
+                    + target_signed_distance * normal_base
+                )
+                collision_link_indices[slot] = int(link_index)
+                collision_points_local[slot] = point_local
+                collision_normals_base[slot] = normal_base
+                collision_terrain_points_base[slot] = terrain_point_base
+                collision_similarity_weight[slot] = similarity_weight
+                collision_deeper_weight[slot] = deeper_weight
+
+            args = (
+                np.asarray(semantic_target_base, dtype=np.float64),
+                np.asarray(semantic_sqrt_weight, dtype=np.float64),
+                np.asarray(
+                    compiled.contact_link_indices[frame],
+                    dtype=np.int32,
+                ),
+                np.asarray(
+                    compiled.contact_points_local[frame],
+                    dtype=np.float64,
+                ),
+                np.asarray(contact_target_base, dtype=np.float64),
+                np.asarray(contact_sqrt_weight, dtype=np.float64),
+                np.asarray(q_prior, dtype=np.float64),
+                np.asarray(q_previous, dtype=np.float64),
+                np.asarray(q_previous_previous, dtype=np.float64),
+                np.asarray(q_prior_previous, dtype=np.float64),
+                np.asarray(
+                    q_prior_previous_previous,
+                    dtype=np.float64,
+                ),
+                np.asarray(prior_scale, dtype=np.float64),
+                np.asarray(
+                    source_foot_orientations[frame],
+                    dtype=np.float64,
+                ),
+                collision_link_indices,
+                collision_points_local,
+                collision_normals_base,
+                collision_terrain_points_base,
+                collision_similarity_weight,
+                collision_deeper_weight,
+            )
+            refined = least_squares(
+                fun,
+                candidate_cfg,
+                jac=jac,
+                bounds=(lower, upper),
+                max_nfev=int(max_nfev),
+                xtol=1.0e-5,
+                ftol=1.0e-5,
+                gtol=1.0e-5,
+            )
+            collision_refinement_solve_count += 1
+            frame_nfev += int(refined.nfev)
+            frame_success = frame_success and bool(refined.success)
+            candidate_cfg = np.clip(refined.x, lower, upper)
+            result = refined
+            (
+                initial_contacts,
+                active_contacts,
+                final_raw_max,
+                final_excess_max,
+                final_similarity_errors,
+            ) = active_collision_contacts(candidate_cfg)
+
+        collision_final_raw_max_m = max(
+            collision_final_raw_max_m,
+            final_raw_max,
+        )
+        collision_final_excess_max_m = max(
+            collision_final_excess_max_m,
+            final_excess_max,
+        )
+        collision_final_similarity_errors.extend(final_similarity_errors)
+        collision_final_similarity_error_max_m = max(
+            collision_final_similarity_error_max_m,
+            max(final_similarity_errors, default=0.0),
+        )
+        if active_contacts:
+            collision_final_active_frames += 1
         q_previous_previous = q_previous
-        q_previous = np.clip(result.x, lower, upper)
+        q_previous = candidate_cfg
         out_cfg[frame] = q_previous
-        success.append(bool(result.success))
-        nfev.append(int(result.nfev))
+        success.append(frame_success)
+        nfev.append(frame_nfev)
         costs.append(float(result.cost))
 
     qpos = np.concatenate([root_source[:n_frames], out_cfg], axis=1)
@@ -530,6 +1216,83 @@ def solve_pyroki_fullbody_ik(
         "source_foot_orientation_link_count": len(foot_orientation_indices),
         "source_velocity_weight": float(q_velocity_weight),
         "source_acceleration_weight": float(q_acceleration_weight),
+        "environment_collision_backend": (
+            "newton_soft_signed_distance_integrated_frame_ik"
+            if collision_terrain_mesh is not None
+            else "disabled"
+        ),
+        "environment_collision_contract": (
+            "source_rollout_soft_signed_distance_similarity"
+            if collision_terrain_mesh is not None
+            else "disabled"
+        ),
+        "environment_collision_reference_motion": (
+            collision_reference_motion_path or ""
+        ),
+        "environment_collision_source_terrain_mesh": (
+            collision_source_terrain_mesh or ""
+        ),
+        "environment_collision_target_terrain_mesh": (
+            collision_terrain_mesh or ""
+        ),
+        "environment_collision_reference_proximity_frame_count": int(
+            collision_reference_proximity_frames
+        ),
+        "environment_collision_reference_penetration_max_m": float(
+            collision_reference_max_m
+        ),
+        "environment_collision_initial_active_frame_count": int(
+            collision_initial_active_frames
+        ),
+        "environment_collision_final_active_frame_count": int(
+            collision_final_active_frames
+        ),
+        "environment_collision_initial_penetration_max_m": float(
+            collision_initial_raw_max_m
+        ),
+        "environment_collision_penetration_max_m": float(
+            collision_final_raw_max_m
+        ),
+        "environment_collision_initial_excess_penetration_max_m": float(
+            collision_initial_excess_max_m
+        ),
+        "environment_collision_excess_penetration_max_m": float(
+            collision_final_excess_max_m
+        ),
+        "environment_collision_initial_signed_distance_error_m": _stats(
+            np.asarray(
+                collision_initial_similarity_errors,
+                dtype=np.float64,
+            )
+        ),
+        "environment_collision_signed_distance_error_m": _stats(
+            np.asarray(
+                collision_final_similarity_errors,
+                dtype=np.float64,
+            )
+        ),
+        "environment_collision_initial_signed_distance_error_max_m": float(
+            collision_initial_similarity_error_max_m
+        ),
+        "environment_collision_signed_distance_error_max_m": float(
+            collision_final_similarity_error_max_m
+        ),
+        "environment_collision_refinement_solve_count": int(
+            collision_refinement_solve_count
+        ),
+        "environment_collision_similarity_base_weight": float(
+            collision_similarity_weight_value
+        ),
+        "environment_collision_max_refinements": int(
+            collision_max_refinements_value
+        ),
+        "environment_collision_deeper_weight": float(
+            collision_deeper_weight_value
+        ),
+        "environment_collision_similarity_force_weighting": (
+            "force_norm_over_force_norm_plus_positive_median"
+        ),
+        "environment_collision_fixed_distance_tolerance_m": None,
         "root_body_position_error_max_m": root_position_error,
         "root_body_quaternion_error_max": root_quaternion_error,
         "newton_canonicalization_required": True,
@@ -578,6 +1341,19 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--foot-orientation-weight", type=float, default=20.0)
     parser.add_argument("--q-velocity-weight", type=float, default=2.0)
     parser.add_argument("--q-acceleration-weight", type=float, default=1.0)
+    parser.add_argument(
+        "--collision-similarity-weight",
+        "--collision-penetration-depth-weight",
+        dest="collision_similarity_weight",
+        metavar="WEIGHT",
+        type=float,
+        default=25.0,
+    )
+    parser.add_argument(
+        "--collision-max-refinements",
+        type=int,
+        default=1,
+    )
     # Compatibility arguments retained for existing callers. Contact patch points
     # replace the old contact-only toe/orientation pseudo-targets.
     parser.add_argument("--contact-foot-orientation-weight", type=float, default=80.0)
@@ -601,6 +1377,8 @@ def main(argv: list[str] | None = None) -> None:
         foot_orientation_weight=args.foot_orientation_weight,
         q_velocity_weight=args.q_velocity_weight,
         q_acceleration_weight=args.q_acceleration_weight,
+        collision_similarity_weight=args.collision_similarity_weight,
+        collision_max_refinements=args.collision_max_refinements,
     )
 
 

@@ -43,7 +43,8 @@ def build_contact_aware_taskspace_motion(
 
     * semantic link centers are soft targets;
     * robot-local patch points remain rigid;
-    * edited contacts translate along the bound surface in UV;
+    * edited contacts use the same authoritative world displacement as the
+      semantic contact handle;
     * unedited contacts retain their original Newton-recorded world trajectory;
     * the source joint motion is an initializer and weak tie-breaker.
     """
@@ -134,19 +135,10 @@ def build_contact_aware_taskspace_motion(
         surface_id = (edit.surface_id if edit is not None else None) or anchor.surface_id
         surface = surfaces_by_id.get(surface_id or "")
         kwargs: dict[str, Any] = {}
-        if edit is not None and surface is not None:
-            delta_uv = _edit_delta_uv(edit, surface)
-            source_uv = _surface_uv(source_points_w, surface)
-            kwargs = {
-                "surface_id": surface.surface_id,
-                "surface_origin_w": np.asarray(surface.origin, dtype=np.float64),
-                "surface_normal_w": np.asarray(surface.normal, dtype=np.float64),
-                "surface_tangent_u_w": np.asarray(surface.tangent_u, dtype=np.float64),
-                "surface_tangent_v_w": np.asarray(surface.tangent_v, dtype=np.float64),
-                "target_uv": source_uv + delta_uv[None, None, :],
-            }
-        elif edit is not None:
+        authoritative_delta_world: np.ndarray | None = None
+        if edit is not None:
             delta_world = _edit_delta_world(edit)
+            authoritative_delta_world = delta_world
             kwargs = {"target_points_w": source_points_w + delta_world[None, None, :]}
         else:
             kwargs = {"target_points_w": source_points_w}
@@ -169,6 +161,19 @@ def build_contact_aware_taskspace_motion(
                 "robot_binding_source": patch.robot_binding_source,
                 "source_surface_coordinates": anchor.surface_coordinates,
                 "edit_id": edit.edit_id if edit is not None else None,
+                "target_surface_id": (
+                    surface.surface_id if surface is not None else surface_id
+                ),
+                "target_contract": (
+                    "source_patch_world_plus_edit_delta_world"
+                    if edit is not None
+                    else "source_patch_world_trajectory"
+                ),
+                "authoritative_delta_world": (
+                    authoritative_delta_world.tolist()
+                    if authoritative_delta_world is not None
+                    else None
+                ),
             },
             **kwargs,
         )
@@ -198,6 +203,7 @@ def build_contact_aware_taskspace_motion(
             "old_motion_role": "initializer_and_weak_tie_breaker",
             "contact_patch_role": "rigid_hard_constraint_target",
             "semantic_curve_role": "primary_soft_motion_target",
+            "semantic_patch_displacement_contract": "same_world_delta",
             "source_reference_weight": float(source_reference_weight),
             "skipped_patches": skipped,
         },

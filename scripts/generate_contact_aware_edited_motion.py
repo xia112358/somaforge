@@ -68,9 +68,18 @@ def main() -> None:
     parser.add_argument("--source-reference-weight", type=float, default=0.01)
     parser.add_argument("--boundary-ramp-frames", type=int, default=10)
     parser.add_argument("--min-raw-contact-force-norm", type=float, default=0.0)
-    parser.add_argument("--ik-conda-env", default="env_pyroki_climb_projection")
+    parser.add_argument("--ik-conda-env", default="env_somaforge")
     parser.add_argument("--ik-script", type=Path, default=None)
     parser.add_argument("--ik-max-nfev", type=int, default=None)
+    parser.add_argument(
+        "--ik-collision-similarity-weight",
+        "--ik-collision-penetration-depth-weight",
+        dest="ik_collision_similarity_weight",
+        metavar="WEIGHT",
+        type=float,
+        default=None,
+    )
+    parser.add_argument("--ik-collision-max-refinements", type=int, default=None)
     parser.add_argument("--newton-device", default="cpu")
     parser.add_argument("--robot-urdf", type=Path, default=None)
     args = parser.parse_args()
@@ -108,6 +117,8 @@ def main() -> None:
         ik_conda_env=args.ik_conda_env,
         ik_script=args.ik_script,
         ik_max_nfev=args.ik_max_nfev,
+        ik_collision_similarity_weight=args.ik_collision_similarity_weight,
+        ik_collision_max_refinements=args.ik_collision_max_refinements,
     )
     canonical = canonicalize_motion_with_direct_newton_fk(
         preview.output_motion_path,

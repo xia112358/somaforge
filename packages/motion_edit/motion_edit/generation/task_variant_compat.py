@@ -23,6 +23,65 @@ class ExpandedTaskVariant:
     warnings: tuple[str, ...] = ()
 
 
+def pose_edits_for_semantic_proxy(
+    edits: Iterable[ContactAnchorEditRecord],
+    pose_edits: Iterable[dict[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Return pose edits that are not already represented by contact edits.
+
+    Approach-position variants persist the same translation twice: once on the
+    overlapping ground-contact anchors and once as a ``translate_pose`` edit.
+    The edited contact points are the authority; the contact Laplacian should
+    propagate their displacement through the body and determine the resulting
+    root motion.  Applying the paired pose translation afterwards would move
+    the whole body a second time.  Suppress only that redundant pose edit.
+    """
+
+    approach_contacts: list[tuple[tuple[int, int], np.ndarray]] = []
+    for edit in edits:
+        metadata = dict(edit.metadata or {})
+        if metadata.get("task_variant") != "approach_position":
+            continue
+        pose_interval = metadata.get("pose_interval")
+        delta = np.asarray(edit.delta_world, dtype=np.float64) if edit.delta_world is not None else None
+        if (
+            isinstance(pose_interval, (list, tuple))
+            and len(pose_interval) == 2
+            and delta is not None
+            and delta.shape == (3,)
+        ):
+            approach_contacts.append(
+                (
+                    (int(pose_interval[0]), int(pose_interval[1])),
+                    delta,
+                )
+            )
+
+    retained: list[dict[str, Any]] = []
+    for raw in pose_edits:
+        frames = raw.get("affected_frames")
+        translation = raw.get("translation_world")
+        paired = (
+            str(raw.get("edit_type") or "") == "translate_pose"
+            and isinstance(frames, (list, tuple))
+            and len(frames) == 2
+            and translation is not None
+            and any(
+                (int(frames[0]), int(frames[1])) == interval
+                and np.allclose(
+                    np.asarray(translation, dtype=np.float64),
+                    delta,
+                    atol=1.0e-9,
+                    rtol=0.0,
+                )
+                for interval, delta in approach_contacts
+            )
+        )
+        if not paired:
+            retained.append(raw)
+    return tuple(retained)
+
+
 def expand_task_variant_plan(
     plan: ContactEditPlan,
     *,
@@ -50,6 +109,36 @@ def expand_task_variant_plan(
         _require_parallel_surface_basis(transform_id, source, target)
         surface_by_id[source.surface_id] = source
         surface_by_id[target.surface_id] = target
+        translation_world = np.asarray(
+            raw.get("translation_world")
+            if raw.get("translation_world") is not None
+            else np.asarray(target.origin, dtype=np.float64)
+            - np.asarray(source.origin, dtype=np.float64),
+            dtype=np.float64,
+        )
+        if translation_world.shape != (3,) or not np.all(
+            np.isfinite(translation_world)
+        ):
+            raise ValueError(
+                f"{transform_id}: translation_world must be one finite 3-vector"
+            )
+        tangent_delta = np.asarray(
+            [
+                float(
+                    np.dot(
+                        translation_world,
+                        np.asarray(target.tangent_u, dtype=np.float64),
+                    )
+                ),
+                float(
+                    np.dot(
+                        translation_world,
+                        np.asarray(target.tangent_v, dtype=np.float64),
+                    )
+                ),
+            ],
+            dtype=np.float64,
+        )
 
         matched = 0
         generated = 0
@@ -62,10 +151,7 @@ def expand_task_variant_plan(
                 continue
             uv = _anchor_uv(anchor, source)
             old_world = _anchor_world(anchor, source, uv)
-            new_world = _surface_point(target, uv)
-            delta_world = new_world - old_world
-            source_uv_in_target = _project_uv(old_world, target)
-            tangent_delta = uv - source_uv_in_target
+            new_world = old_world + translation_world
             expanded.append(
                 ContactAnchorEditRecord(
                     edit_id=f"{transform_id}:{anchor.anchor_id}",
@@ -75,8 +161,8 @@ def expand_task_variant_plan(
                     edit_type="move_contact_anchor",
                     old_world_position=old_world.tolist(),
                     new_world_position=new_world.tolist(),
-                    requested_delta_world=delta_world.tolist(),
-                    delta_world=delta_world.tolist(),
+                    requested_delta_world=translation_world.tolist(),
+                    delta_world=translation_world.tolist(),
                     tangent_delta=tangent_delta.tolist(),
                     affected_frames=[int(anchor.start_frame), int(anchor.end_frame)],
                     surface_id=target.surface_id,
@@ -90,6 +176,7 @@ def expand_task_variant_plan(
                         "surface_follow_source_surface_id": source.surface_id,
                         "surface_follow_target_surface_id": target.surface_id,
                         "surface_follow_preserve_uv": True,
+                        "uniform_surface_translation": True,
                         "height_scale": raw.get("height_scale"),
                     },
                 )
@@ -109,7 +196,7 @@ def expand_task_variant_plan(
                 "matched_anchor_count": matched,
                 "generated_edit_count": generated,
                 "height_scale": raw.get("height_scale"),
-                "translation_world": raw.get("translation_world"),
+                "translation_world": translation_world.tolist(),
             }
         )
 

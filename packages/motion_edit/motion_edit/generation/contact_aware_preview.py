@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from dataclasses import dataclass
+import sys
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,11 @@ from motion_edit.generation.lte_fullbody import (
     _load_motion_npz,
     _stamp_robot_asset,
 )
-from motion_edit.generation.task_variant_compat import apply_pose_edits_to_proxy, expand_task_variant_plan
+from motion_edit.generation.task_variant_compat import (
+    apply_pose_edits_to_proxy,
+    expand_task_variant_plan,
+    pose_edits_for_semantic_proxy,
+)
 from motion_edit.generation.taskspace_builder import build_contact_aware_taskspace_motion
 from motion_edit.generation.taskspace_spec import write_contact_aware_taskspace_motion
 from motion_edit.paths import LAYERS_ROOT
@@ -59,9 +64,11 @@ def generate_contact_aware_pyroki_preview(
     source_reference_weight: float = 0.01,
     boundary_ramp_frames: int = 10,
     min_raw_contact_force_norm: float = 0.0,
-    ik_conda_env: str = "env_pyroki_climb_projection",
+    ik_conda_env: str = "env_somaforge",
     ik_script: str | Path | None = None,
     ik_max_nfev: int | None = None,
+    ik_collision_similarity_weight: float | None = None,
+    ik_collision_max_refinements: int | None = None,
     layers_root: Path | None = None,
 ) -> ContactAwarePreviewResult:
     """Generate one PyRoki-FK-consistent edited motion without starting Isaac.
@@ -98,6 +105,10 @@ def generate_contact_aware_pyroki_preview(
     variant = expand_task_variant_plan(plan, anchors=graph.anchors, surfaces=source_surfaces)
     edits = list(variant.edits)
     surfaces = list(variant.surfaces)
+    semantic_proxy_pose_edits = pose_edits_for_semantic_proxy(
+        edits,
+        plan.pose_edits,
+    )
 
     config = BatchContactLaplacianConfig(
         num_iters=int(contact_laplacian_iters),
@@ -121,11 +132,17 @@ def generate_contact_aware_pyroki_preview(
         source_plan_path=plan_path,
         plan=plan,
     )
-    proxy, pose_metadata = apply_pose_edits_to_proxy(proxy, plan.pose_edits)
+    proxy, pose_metadata = apply_pose_edits_to_proxy(
+        proxy,
+        semantic_proxy_pose_edits,
+    )
     proxy_metadata = {
         **dict(proxy_metadata),
         "task_variant_expansion": variant.metadata,
         "pose_edit_application": pose_metadata,
+        "semantic_proxy_contact_edit_count": len(edits),
+        "semantic_proxy_pose_edit_count": len(semantic_proxy_pose_edits),
+        "rigid_patch_contact_edit_count": len(edits),
     }
 
     binding_motion, binding_motion_path = _contact_binding_motion(plan, source_motion=motion)
@@ -156,6 +173,31 @@ def generate_contact_aware_pyroki_preview(
         source_reference_weight=float(source_reference_weight),
         boundary_ramp_frames=int(boundary_ramp_frames),
     )
+    plan_metadata = dict(plan.metadata or {})
+    target_terrain_mesh = plan_metadata.get("target_terrain_mesh")
+    if target_terrain_mesh:
+        source_terrain_mesh = plan_metadata.get("source_terrain_mesh")
+        if not source_terrain_mesh:
+            raise ValueError(
+                "reference-depth collision IK requires plan.metadata.source_terrain_mesh"
+            )
+        taskspace = replace(
+            taskspace,
+            metadata={
+                **dict(taskspace.metadata),
+                "target_terrain_mesh": str(
+                    Path(target_terrain_mesh).expanduser().resolve()
+                ),
+                "source_terrain_mesh": str(
+                    Path(source_terrain_mesh).expanduser().resolve()
+                ),
+                "collision_reference_motion": str(binding_motion_path),
+                "environment_collision_contract": (
+                    "source_rollout_soft_signed_distance_similarity"
+                ),
+            },
+        )
+        taskspace.validate()
 
     work_dir = Path(intermediate_dir).expanduser() if intermediate_dir is not None else output.with_suffix("")
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -174,6 +216,8 @@ def generate_contact_aware_pyroki_preview(
         ik_script=ik_script,
         ik_conda_env=ik_conda_env,
         ik_max_nfev=ik_max_nfev,
+        ik_collision_similarity_weight=ik_collision_similarity_weight,
+        ik_collision_max_refinements=ik_collision_max_refinements,
     )
     if not ik_output_path.is_file():
         raise FileNotFoundError(f"PyRoki IK did not produce {ik_output_path}")
@@ -290,15 +334,21 @@ def _run_pyroki_preview_subprocess(
     ik_script: str | Path | None,
     ik_conda_env: str,
     ik_max_nfev: int | None,
+    ik_collision_similarity_weight: float | None = None,
+    ik_collision_max_refinements: int | None = None,
 ) -> None:
     script = Path(ik_script).expanduser() if ik_script is not None else Path(__file__).with_name("pyroki_fullbody_ik.py")
     package_root = Path(__file__).resolve().parents[2]
+    target_env = str(ik_conda_env)
+    current_env = os.environ.get("CONDA_DEFAULT_ENV", "")
+    current_env_name = Path(current_env).name if current_env else ""
+    interpreter = (
+        [sys.executable]
+        if target_env in {current_env, current_env_name}
+        else ["conda", "run", "-n", target_env, "python"]
+    )
     cmd = [
-        "conda",
-        "run",
-        "-n",
-        str(ik_conda_env),
-        "python",
+        *interpreter,
         str(script.resolve()),
         "--taskspace-spec",
         str(taskspace_path.resolve()),
@@ -309,7 +359,35 @@ def _run_pyroki_preview_subprocess(
     ]
     if ik_max_nfev is not None:
         cmd.extend(["--max-nfev", str(int(ik_max_nfev))])
-    subprocess.run(cmd, cwd=str(package_root), check=True)
+    if ik_collision_similarity_weight is not None:
+        cmd.extend(
+            [
+                "--collision-similarity-weight",
+                str(float(ik_collision_similarity_weight)),
+            ]
+        )
+    if ik_collision_max_refinements is not None:
+        cmd.extend(
+            [
+                "--collision-max-refinements",
+                str(int(ik_collision_max_refinements)),
+            ]
+        )
+    subprocess_env = dict(os.environ)
+    python_paths = [
+        str(package_root),
+        str(package_root.parent / "somaforge_core"),
+    ]
+    inherited_python_path = subprocess_env.get("PYTHONPATH")
+    if inherited_python_path:
+        python_paths.append(inherited_python_path)
+    subprocess_env["PYTHONPATH"] = os.pathsep.join(python_paths)
+    subprocess.run(
+        cmd,
+        cwd=str(package_root),
+        env=subprocess_env,
+        check=True,
+    )
 
 
 def _task_visualization_proxy(
