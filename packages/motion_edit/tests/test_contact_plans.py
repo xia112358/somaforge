@@ -658,10 +658,11 @@ class ContactEditPlanTests(unittest.TestCase):
             }
         )
 
-        np.testing.assert_allclose(keypoints["left_toe"][0], part_positions[0, 1])
-        self.assertTrue(np.isfinite(keypoints["left_toe"]).all())
-        self.assertFalse(np.allclose(keypoints["left_toe"][1], np.zeros(3)))
-        self.assertEqual(keypoints["right_toe"].shape, (frames, 3))
+        self.assertNotIn("left_toe", keypoints)
+        self.assertNotIn("right_toe", keypoints)
+        self.assertIn("left_ankle", keypoints)
+        self.assertIn("left_foot", keypoints)
+        self.assertEqual(keypoints["right_foot"].shape, (frames, 3))
 
     def test_real_newton_rollout_resolves_all_eight_contact_trajectories(self) -> None:
         repo_root = Path(__file__).resolve().parents[3]
@@ -909,7 +910,10 @@ class ContactEditPlanTests(unittest.TestCase):
         self.assertIn("experimental body_pos_w proxy", "\n".join(result.warnings or []))
         run_mock.assert_not_called()
         self.assertEqual(metadata["fullbody_solver"], "batch_contact_laplacian")
-        self.assertEqual(metadata["proxy_kinematics"], "body_pos_w_semantic_points")
+        self.assertEqual(
+            metadata["proxy_kinematics"],
+            "body_pos_w_omni_semantic_points",
+        )
         self.assertEqual(metadata["output_kind"], "bodyspace_proxy_only")
 
     def test_batch_contact_laplacian_writes_internal_generated_motion(self) -> None:
@@ -956,8 +960,12 @@ class ContactEditPlanTests(unittest.TestCase):
             self.assertTrue((intermediate / "out.contact_laplacian_taskspace_motion.npz").exists())
             self.assertTrue((intermediate / "out.contact_laplacian_fullbody_ik_motion.npz").exists())
             self.assertEqual(run_mock.call_args.kwargs["check"], True)
-            self.assertIn("-m", run_mock.call_args.args[0])
-            self.assertIn("motion_edit.generation.pyroki_fullbody_ik", run_mock.call_args.args[0])
+            self.assertTrue(
+                any(
+                    str(value).endswith("pyroki_fullbody_ik.py")
+                    for value in run_mock.call_args.args[0]
+                )
+            )
             self.assertIn("body_pos_w", generated.files)
             self.assertIn("joint_pos", generated.files)
             np.testing.assert_allclose(generated["joint_pos"], 7.0)
@@ -1000,8 +1008,12 @@ class ContactEditPlanTests(unittest.TestCase):
             self.assertEqual(result.output_motion_path, root / "out.npz")
             self.assertTrue((root / "out.npz").exists())
             cmd = run_mock.call_args.args[0]
-            self.assertIn("-m", cmd)
-            self.assertIn("motion_edit.generation.pyroki_fullbody_ik", cmd)
+            self.assertTrue(
+                any(
+                    str(value).endswith("pyroki_fullbody_ik.py")
+                    for value in cmd
+                )
+            )
             self.assertNotIn("/home/xiaz/lte/scripts/solve_lte_fullbody_ik.py", cmd)
 
     def test_generate_lte_augmentation_can_register_motion_version(self) -> None:

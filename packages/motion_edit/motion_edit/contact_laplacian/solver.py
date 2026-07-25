@@ -279,6 +279,43 @@ def _default_semantic_body_edges(semantic_points: Sequence[str]) -> tuple[tuple[
     for parent, child in _SEMANTIC_BODY_EDGE_CANDIDATES:
         if parent in available and child in available:
             edges.append((parent, child))
+    # The Omni graph uses explicit hip/knee/ankle and
+    # shoulder/elbow nodes. Legacy semantic providers expose only endpoints;
+    # keep those endpoints connected without adding shortcuts to a complete
+    # Omni skeleton.
+    fallback_edges = (
+        ("root", "left_foot"),
+        ("root", "right_foot"),
+        ("pelvis", "left_foot"),
+        ("pelvis", "right_foot"),
+        ("torso", "left_hand"),
+        ("torso", "right_hand"),
+    )
+
+    def connected(start: str, goal: str) -> bool:
+        adjacency: dict[str, set[str]] = {}
+        for first, second in edges:
+            adjacency.setdefault(first, set()).add(second)
+            adjacency.setdefault(second, set()).add(first)
+        pending = [start]
+        visited: set[str] = set()
+        while pending:
+            node = pending.pop()
+            if node == goal:
+                return True
+            if node in visited:
+                continue
+            visited.add(node)
+            pending.extend(adjacency.get(node, ()))
+        return False
+
+    for parent, child in fallback_edges:
+        if (
+            parent in available
+            and child in available
+            and not connected(parent, child)
+        ):
+            edges.append((parent, child))
     return tuple(edges)
 
 

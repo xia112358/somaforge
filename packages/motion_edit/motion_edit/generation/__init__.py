@@ -12,9 +12,74 @@ uses the external LTE/IK subprocess.
 
 from __future__ import annotations
 
+from dataclasses import replace as _dataclass_replace
 from typing import Any
 
+from motion_edit.generation.contact_semantic_aliases import install_lte_contact_semantic_aliases
+
+install_lte_contact_semantic_aliases()
+
+from motion_edit.generation.omni_contact_graph import install_omni_contact_graph
+
+install_omni_contact_graph()
+
+from motion_edit.generation.omni_contact_core import install_contact_core_nodes
+
+install_contact_core_nodes()
+
+from motion_edit.generation.foot_contact_handle_contract import (
+    install_foot_contact_handle_contract,
+)
+
+install_foot_contact_handle_contract()
+
+from motion_edit.generation.omni_delaunay_cache import install_delaunay_topology_cache
+
+install_delaunay_topology_cache()
+
+from motion_edit.generation.omni_legacy_fallback import install_legacy_foot_fallbacks
+
+install_legacy_foot_fallbacks()
+
+from motion_edit.generation.omni_surface_mapping import install_surface_specific_object_mapping
+
+install_surface_specific_object_mapping()
+
+from motion_edit.contact.newton_shape_filter import install_strict_newton_shape_filter
+
+install_strict_newton_shape_filter()
+
+from motion_edit.contact.foot_runtime_body_aliases import (
+    install_split_foot_runtime_body_aliases,
+)
+
+install_split_foot_runtime_body_aliases()
+
+from motion_edit.generation.contact_target_contract import (
+    install_authoritative_contact_target_contract,
+)
+
+install_authoritative_contact_target_contract()
+
 from motion_edit.generation.contact_aware import ContactAwareGenerationResult, apply_contact_aware_edit_plan_to_motion
+from motion_edit.generation import contact_aware_preview as _contact_aware_preview
+from motion_edit.generation.rollout_authority import install_rollout_authority
+
+# ``rollout_authority`` replaces immutable taskspace metadata without importing
+# another copy of the taskspace schema. Keep the dataclass operation explicit on
+# the already-loaded preview module.
+_contact_aware_preview.replace = _dataclass_replace
+install_rollout_authority()
+
+ContactAwarePreviewResult = _contact_aware_preview.ContactAwarePreviewResult
+generate_contact_aware_pyroki_preview = (
+    _contact_aware_preview.generate_contact_aware_pyroki_preview
+)
+
+from motion_edit.generation.omni_generation_defaults import install_generation_defaults
+
+install_generation_defaults(generate_contact_aware_pyroki_preview)
+
 from motion_edit.generation.contact_force_bake import (
     ContactForceBakeResult,
     bake_retargeted_contact_forces_for_motion,
@@ -23,6 +88,14 @@ from motion_edit.generation.lte_fullbody import (
     LteGenerationResult,
     apply_contact_edit_plan_to_motion as _apply_contact_edit_plan_to_motion,
     resolve_body_index,
+)
+from motion_edit.generation.taskspace_builder import build_contact_aware_taskspace_motion
+from motion_edit.generation.taskspace_spec import (
+    ContactAwareTaskspaceMotion,
+    ContactPatchTarget,
+    make_boundary_weights,
+    read_contact_aware_taskspace_motion,
+    write_contact_aware_taskspace_motion,
 )
 
 
@@ -38,10 +111,18 @@ def apply_contact_edit_plan_to_motion(*args: Any, **kwargs: Any) -> LteGeneratio
 
 __all__ = [
     "ContactAwareGenerationResult",
+    "ContactAwarePreviewResult",
+    "ContactAwareTaskspaceMotion",
     "ContactForceBakeResult",
+    "ContactPatchTarget",
     "LteGenerationResult",
     "apply_contact_aware_edit_plan_to_motion",
     "apply_contact_edit_plan_to_motion",
     "bake_retargeted_contact_forces_for_motion",
+    "build_contact_aware_taskspace_motion",
+    "generate_contact_aware_pyroki_preview",
+    "make_boundary_weights",
+    "read_contact_aware_taskspace_motion",
     "resolve_body_index",
+    "write_contact_aware_taskspace_motion",
 ]

@@ -357,25 +357,10 @@ def _semantic_keypoints_from_motion(motion: dict[str, Any]) -> dict[str, np.ndar
     names = _motion_strings(motion, ("body_names", "body_name", "body_pos_w_names", "body_pos_names"))
     if not names:
         raise ValueError("lte_fullbody requires body_names metadata")
-    keypoints = {name: body_pos[:, _index_by_alias(names, aliases), :3].copy() for name, aliases in LTE_FULLBODY_KEYPOINT_LINKS.items()}
-    for keypoint_name, part_name in (("left_hand", "left_hand"), ("right_hand", "right_hand")):
-        physical_indices = [
-            index
-            for body_name in CONTACT_BODY_NAMES_BY_PART[part_name]
-            if (index := _index_by_alias_or_none(names, (body_name,))) is not None
-        ]
-        if physical_indices:
-            keypoints[keypoint_name] = np.mean(body_pos[:, physical_indices, :3], axis=1)
-    for part_name in LTE_FULLBODY_CONTACT_NAMES:
-        keypoints[part_name] = _contact_part_kinematic_trajectory(
-            motion,
-            body_pos=body_pos,
-            body_names=names,
-            part_name=part_name,
-            existing=keypoints.get(part_name),
-        )
-    _overlay_recorded_contact_part_positions(motion, keypoints)
-    return keypoints
+    return {
+        name: body_pos[:, _index_by_alias(names, aliases), :3].copy()
+        for name, aliases in LTE_FULLBODY_KEYPOINT_LINKS.items()
+    }
 
 
 def _contact_part_kinematic_trajectory(
@@ -386,6 +371,8 @@ def _contact_part_kinematic_trajectory(
     part_name: str,
     existing: np.ndarray | None,
 ) -> np.ndarray:
+    if part_name not in CONTACT_BODY_NAMES_BY_PART and existing is not None:
+        return np.asarray(existing, dtype=np.float64).copy()
     physical_names = CONTACT_BODY_NAMES_BY_PART[part_name]
     physical_indices = [_index_by_alias_or_none(body_names, (name,)) for name in physical_names]
     if physical_indices and all(index is not None for index in physical_indices):
@@ -865,7 +852,11 @@ def _dense_taskspace_from_keypoints(motion: dict[str, Any], original: dict[str, 
     body_pos = raw_body_pos[:n_frames].copy()
     body_names_arr = np.asarray(motion["body_names"])
     body_names = [str(item) for item in body_names_arr.reshape(-1).tolist()]
-    keypoint_names = [*LTE_FULLBODY_KEYPOINT_LINKS, *LTE_FOOT_CONTACT_GROUP_LINKS]
+    keypoint_names = [
+        name
+        for name in (*LTE_FULLBODY_KEYPOINT_LINKS, *LTE_FOOT_CONTACT_GROUP_LINKS)
+        if name in original and name in edited
+    ]
     offsets = np.stack([edited[name] - original[name] for name in keypoint_names], axis=1)
     dense_offset = np.einsum("tsc,bs->tbc", offsets, _semantic_body_weights(body_names, keypoint_names))
     edited_body_pos = body_pos + dense_offset
@@ -1414,32 +1405,34 @@ def _run_fullbody_ik_subprocess(
         script = repo / "scripts" / "solve_lte_fullbody_ik.py"
         cwd = repo
     else:
-        script = None
+        script = Path(__file__).with_name("pyroki_fullbody_ik.py")
         cwd = Path(__file__).resolve().parents[2]
-    if script is None:
-        cmd = [
-            "conda",
-            "run",
-            "-n",
-            str(ik_conda_env),
-            "python",
-            "-m",
-            "motion_edit.generation.pyroki_fullbody_ik",
-        ]
-    else:
-        cmd = ["conda", "run", "-n", str(ik_conda_env), "python", str(script.resolve())]
-    cmd.extend(["--lte", str(lte_path.resolve()), "--out", str(ik_output_path.resolve())])
+    target_env = str(ik_conda_env)
+    current_env = os.environ.get("CONDA_DEFAULT_ENV", "")
+    current_env_name = Path(current_env).name if current_env else ""
+    interpreter = (
+        [sys.executable]
+        if target_env in {current_env, current_env_name}
+        else ["conda", "run", "-n", target_env, "python"]
+    )
+    cmd = [
+        *interpreter,
+        str(script.resolve()),
+        "--lte",
+        str(lte_path.resolve()),
+        "--out",
+        str(ik_output_path.resolve()),
+    ]
     if ik_max_nfev is not None:
         cmd.extend(["--max-nfev", str(int(ik_max_nfev))])
-    if script is None:
-        cmd.extend(
-            [
-                "--q-prior-weight",
-                str(float(ik_q_prior_weight)),
-                "--q-smooth-weight",
-                str(float(ik_q_smooth_weight)),
-            ]
-        )
+    cmd.extend(
+        [
+            "--q-prior-weight",
+            str(float(ik_q_prior_weight)),
+            "--q-smooth-weight",
+            str(float(ik_q_smooth_weight)),
+        ]
+    )
     cmd.extend(
         [
             "--foot-orientation-weight",
@@ -1692,7 +1685,11 @@ def apply_contact_edit_plan_to_motion(
                 proxy_metadata = json.loads(generated["motion_edit_generation_metadata"].item())
                 proxy_metadata["output_kind"] = "bodyspace_proxy_only"
                 proxy_metadata["joint_consistency"] = "not guaranteed"
-                proxy_warnings = list(proxy_metadata.get("warnings", []))
+                proxy_warnings = list(warnings)
+                proxy_warnings.append(
+                    "experimental body_pos_w proxy output; joint/orientation "
+                    "fields are not regenerated"
+                )
                 proxy_warnings.append("contact-Laplacian proxy-only output is not q/joint consistent")
                 proxy_metadata["warnings"] = proxy_warnings
                 generated["motion_edit_generation_metadata"] = _json_npz_value(proxy_metadata)

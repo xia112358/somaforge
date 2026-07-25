@@ -21,6 +21,20 @@ from .io import (
     write_contact_jsonl,
 )
 from .layers import read_contact_graph, write_contact_layer
+from .newton_bindings import (
+    bind_newton_contact_patches,
+    body_local_point_to_world,
+    world_point_to_body_local,
+    world_vector_to_body_local,
+)
+from .newton_shape_filter import install_strict_newton_shape_filter
+
+install_strict_newton_shape_filter()
+
+from .foot_runtime_body_aliases import install_split_foot_runtime_body_aliases
+
+install_split_foot_runtime_body_aliases()
+
 from .patches import patches_from_anchors
 from .phases import (
     ContactPhase,
@@ -80,6 +94,8 @@ __all__ = [
     "bind_anchor_to_plane",
     "bind_anchor_to_surface",
     "bind_anchors_to_surfaces",
+    "bind_newton_contact_patches",
+    "body_local_point_to_world",
     "bodies_from_mask",
     "body_names_for_mask",
     "contact_graph_from_masks",
@@ -121,6 +137,8 @@ __all__ = [
     "transitions_from_event_pairs",
     "transitions_from_proto_indices",
     "validate_contact_edit_plan",
+    "world_point_to_body_local",
+    "world_vector_to_body_local",
     "write_contact_jsonl",
     "write_contact_surfaces",
     "write_contact_edit_plan",

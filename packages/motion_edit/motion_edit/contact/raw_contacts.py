@@ -31,13 +31,15 @@ UP_DOT_THRESHOLD = 0.5
 EDGE_DISTANCE_THRESHOLD = 0.05
 FOOT_PARTS = {
     "left_foot",
-    "right_foot",
-    "lf",
-    "rf",
     "left_heel",
     "left_toe",
+    "left_sole",
+    "right_foot",
     "right_heel",
     "right_toe",
+    "right_sole",
+    "lf",
+    "rf",
     "lhee",
     "ltoe",
     "rhee",
@@ -137,6 +139,13 @@ def _drop_short_near_duplicate_subanchors(
 
 def _near_anchor(left: ContactAnchorRecord, right: ContactAnchorRecord | None, *, max_distance: float) -> bool:
     if right is None or left.body != right.body or left.surface_id != right.surface_id:
+        return False
+    if left.metadata.get("patch_role") != right.metadata.get("patch_role"):
+        return False
+    if not (
+        int(right.start_frame) <= int(left.start_frame)
+        and int(right.end_frame) >= int(left.end_frame)
+    ):
         return False
     if left.world_position is None or right.world_position is None:
         return False
@@ -895,9 +904,17 @@ def _smooth_foot_role_intervals(
             merged.append(dict(interval))
     compressed = _compress_sole_dominant_intervals(merged, min_keep_duration=min_keep_duration)
     if compressed is not None:
-        return compressed
+        return _cover_foot_contact_episode(
+            compressed,
+            anchor_start=anchor_start,
+            anchor_end=anchor_end,
+        )
     if len(merged) <= 1:
-        return merged
+        return _cover_foot_contact_episode(
+            merged,
+            anchor_start=anchor_start,
+            anchor_end=anchor_end,
+        )
     out: list[dict[str, Any]] = []
     for index, interval in enumerate(merged):
         duration = int(interval["frame_end"]) - int(interval["frame_start"])
@@ -920,7 +937,86 @@ def _smooth_foot_role_intervals(
             target["frame_end"] = max(int(target["frame_end"]), int(interval["frame_end"]))
         else:
             target["frame_start"] = min(int(target["frame_start"]), int(interval["frame_start"]))
-    return sorted(out, key=lambda item: (int(item["frame_start"]), int(item["frame_end"]), str(item["patch_role"])))
+    return _cover_foot_contact_episode(
+        out,
+        anchor_start=anchor_start,
+        anchor_end=anchor_end,
+    )
+
+
+def _cover_foot_contact_episode(
+    intervals: list[dict[str, Any]],
+    *,
+    anchor_start: int,
+    anchor_end: int,
+) -> list[dict[str, Any]]:
+    """Assign every parent contact frame a heel/toe/sole role.
+
+    The parent force/contact-mask episode is authoritative for whether contact
+    exists. Raw Newton shape observations only classify that contact. Missing
+    or rejected shape samples therefore inherit the nearest observed role
+    instead of creating a false release in the middle or at a boundary.
+    """
+
+    frame_count = max(0, int(anchor_end) - int(anchor_start))
+    if frame_count == 0 or not intervals:
+        return []
+    roles = np.full(frame_count, None, dtype=object)
+    priority = {"heel": 1, "toe": 1, "sole": 2}
+    role_priority = np.zeros(frame_count, dtype=np.int8)
+    for interval in intervals:
+        role = str(interval["patch_role"])
+        start = max(int(anchor_start), int(interval["frame_start"]))
+        end = min(int(anchor_end), int(interval["frame_end"]))
+        if end <= start:
+            continue
+        begin = start - int(anchor_start)
+        stop = end - int(anchor_start)
+        candidate_priority = int(priority.get(role, 0))
+        replace_mask = candidate_priority >= role_priority[begin:stop]
+        replace_indices = np.flatnonzero(replace_mask) + begin
+        roles[replace_indices] = role
+        role_priority[replace_indices] = candidate_priority
+
+    observed = np.flatnonzero(roles != None)  # noqa: E711
+    if observed.size == 0:
+        return []
+    for frame in np.flatnonzero(roles == None):  # noqa: E711
+        insertion = int(np.searchsorted(observed, frame))
+        if insertion == 0:
+            nearest = int(observed[0])
+        elif insertion == observed.size:
+            nearest = int(observed[-1])
+        else:
+            left = int(observed[insertion - 1])
+            right = int(observed[insertion])
+            nearest = left if frame - left <= right - frame else right
+        roles[frame] = roles[nearest]
+
+    output: list[dict[str, Any]] = []
+    active_role = str(roles[0])
+    active_start = int(anchor_start)
+    for offset in range(1, frame_count):
+        role = str(roles[offset])
+        if role == active_role:
+            continue
+        output.append(
+            {
+                "patch_role": active_role,
+                "frame_start": active_start,
+                "frame_end": int(anchor_start) + offset,
+            }
+        )
+        active_role = role
+        active_start = int(anchor_start) + offset
+    output.append(
+        {
+            "patch_role": active_role,
+            "frame_start": active_start,
+            "frame_end": int(anchor_end),
+        }
+    )
+    return output
 
 
 def _compress_sole_dominant_intervals(intervals: list[dict[str, Any]], *, min_keep_duration: int) -> list[dict[str, Any]] | None:

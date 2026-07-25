@@ -10,9 +10,13 @@ CANONICAL_MOTION_SCHEMA = "somaforge_canonical_motion_v1"
 NEWTON_KINEMATICS_BACKEND = "isaaclab3_newton_fk"
 NEWTON_ROLLOUT_KINEMATICS_BACKEND = "isaaclab3_newton_rollout"
 NEWTON_SIMULATION_STATE = "newton_simulation_state"
-NEWTON_KINEMATICS_BACKENDS = (
-    NEWTON_KINEMATICS_BACKEND,
-    NEWTON_ROLLOUT_KINEMATICS_BACKEND,
+DIRECT_NEWTON_KINEMATICS_BACKEND = "newton_direct_fk"
+NEWTON_KINEMATICS_BACKENDS = frozenset(
+    {
+        NEWTON_KINEMATICS_BACKEND,
+        NEWTON_ROLLOUT_KINEMATICS_BACKEND,
+        DIRECT_NEWTON_KINEMATICS_BACKEND,
+    }
 )
 
 G1_29DOF_JOINT_ORDER = (
@@ -49,11 +53,19 @@ G1_29DOF_JOINT_ORDER = (
 
 
 def newton_kinematics_provenance(
-    *, source_path: str, source_sha256: str, output_fps: float, body_names: list[str]
+    *,
+    source_path: str,
+    source_sha256: str,
+    output_fps: float,
+    body_names: list[str],
+    backend: str = NEWTON_KINEMATICS_BACKEND,
+    metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    if backend not in NEWTON_KINEMATICS_BACKENDS:
+        raise ValueError(f"unsupported Newton kinematics backend: {backend!r}")
+    value = {
         "schema": CANONICAL_MOTION_SCHEMA,
-        "kinematics_backend": NEWTON_KINEMATICS_BACKEND,
+        "kinematics_backend": str(backend),
         "source_path": str(source_path),
         "source_sha256": str(source_sha256),
         "output_fps": float(output_fps),
@@ -64,6 +76,22 @@ def newton_kinematics_provenance(
         "joint_order": list(G1_29DOF_JOINT_ORDER),
         "body_names": list(body_names),
     }
+    if metadata:
+        value["backend_metadata"] = dict(metadata)
+    return value
+
+
+def direct_newton_kinematics_provenance(
+    *, source_path: str, source_sha256: str, output_fps: float, body_names: list[str], metadata: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    return newton_kinematics_provenance(
+        source_path=source_path,
+        source_sha256=source_sha256,
+        output_fps=output_fps,
+        body_names=body_names,
+        backend=DIRECT_NEWTON_KINEMATICS_BACKEND,
+        metadata=metadata,
+    )
 
 
 def newton_rollout_kinematics_provenance(
@@ -105,7 +133,7 @@ def decode_kinematics_provenance(value: Any, *, context: str, require_newton: bo
         raise ValueError(f"{context} uses an unsupported canonical motion schema")
     backend = str(metadata.get("kinematics_backend", ""))
     if require_newton and backend not in NEWTON_KINEMATICS_BACKENDS:
-        raise ValueError(f"{context} was not produced by a supported Newton kinematics backend")
+        raise ValueError(f"{context} was not canonicalized with a supported Newton FK backend")
     if tuple(metadata.get("joint_order", ())) != G1_29DOF_JOINT_ORDER:
         raise ValueError(f"{context} uses an incompatible G1 joint order")
     expected_fields = {
@@ -119,6 +147,7 @@ def decode_kinematics_provenance(value: Any, *, context: str, require_newton: bo
     expected_velocity_derivation = {
         NEWTON_KINEMATICS_BACKEND: POSE_FINITE_DIFFERENCE,
         NEWTON_ROLLOUT_KINEMATICS_BACKEND: NEWTON_SIMULATION_STATE,
+        DIRECT_NEWTON_KINEMATICS_BACKEND: POSE_FINITE_DIFFERENCE,
     }.get(backend)
     if require_newton and metadata.get("velocity_derivation") != expected_velocity_derivation:
         raise ValueError(

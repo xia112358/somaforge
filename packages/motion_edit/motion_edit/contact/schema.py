@@ -149,6 +149,17 @@ class ContactPatchRecord:
     sphere_ids: list[str] | None = None
     anchor_id: str | None = None
     slip_score: float | None = None
+
+    # Stable Newton/MJWarp contact identity. Runtime body/shape integer IDs are
+    # intentionally not persisted because they can change when the scene is rebuilt.
+    newton_body_label: str | None = None
+    newton_shape_labels: list[str] | None = None
+    robot_points_local: list[list[float]] | None = None
+    robot_normals_local: list[list[float]] | None = None
+    robot_asset_fingerprint: str | None = None
+    robot_binding_backend: str | None = None
+    robot_binding_source: str | None = None
+
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
@@ -156,6 +167,27 @@ class ContactPatchRecord:
             raise ValueError(f"{self.patch_id}: start_frame must be >= 0")
         if self.end_frame <= self.start_frame:
             raise ValueError(f"{self.patch_id}: end_frame must be > start_frame")
+        if self.patch_center_world is not None and len(self.patch_center_world) != 3:
+            raise ValueError(f"{self.patch_id}: patch_center_world must have length 3")
+        if self.robot_points_local is not None:
+            for index, point in enumerate(self.robot_points_local):
+                if len(point) != 3:
+                    raise ValueError(f"{self.patch_id}: robot_points_local[{index}] must have length 3")
+        if self.robot_normals_local is not None:
+            if self.robot_points_local is None:
+                raise ValueError(f"{self.patch_id}: robot_normals_local requires robot_points_local")
+            if len(self.robot_normals_local) != len(self.robot_points_local):
+                raise ValueError(
+                    f"{self.patch_id}: robot_normals_local count must match robot_points_local count"
+                )
+            for index, normal in enumerate(self.robot_normals_local):
+                if len(normal) != 3:
+                    raise ValueError(f"{self.patch_id}: robot_normals_local[{index}] must have length 3")
+        if self.newton_shape_labels is not None and self.robot_points_local is not None:
+            if len(self.newton_shape_labels) != len(self.robot_points_local):
+                raise ValueError(
+                    f"{self.patch_id}: newton_shape_labels count must match robot_points_local count"
+                )
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()

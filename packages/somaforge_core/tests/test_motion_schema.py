@@ -9,10 +9,12 @@ from somaforge_core.kinematics import (
     validate_root_body_consistency,
 )
 from somaforge_core.motion_schema import (
+    DIRECT_NEWTON_KINEMATICS_BACKEND,
     G1_29DOF_JOINT_ORDER,
     NEWTON_ROLLOUT_KINEMATICS_BACKEND,
     NEWTON_SIMULATION_STATE,
     decode_kinematics_provenance,
+    direct_newton_kinematics_provenance,
     encode_kinematics_provenance,
     newton_kinematics_provenance,
     newton_rollout_kinematics_provenance,
@@ -43,6 +45,23 @@ def test_newton_rollout_kinematics_provenance_round_trip() -> None:
     assert decoded["kinematics_backend"] == NEWTON_ROLLOUT_KINEMATICS_BACKEND
     assert decoded["velocity_derivation"] == NEWTON_SIMULATION_STATE
     assert decoded["state_sampling"] == "control_step_post_physics"
+
+
+def test_direct_newton_kinematics_provenance_is_training_eligible() -> None:
+    metadata = direct_newton_kinematics_provenance(
+        source_path="edited-preview.npz",
+        source_sha256="b" * 64,
+        output_fps=50.0,
+        body_names=["pelvis", "torso_link"],
+        metadata={"asset_importer": "ModelBuilder.add_urdf(floating=True)"},
+    )
+    decoded = decode_kinematics_provenance(
+        encode_kinematics_provenance(metadata),
+        context="direct Newton motion",
+        require_newton=True,
+    )
+    assert decoded["kinematics_backend"] == DIRECT_NEWTON_KINEMATICS_BACKEND
+    assert decoded["backend_metadata"]["asset_importer"].startswith("ModelBuilder.add_urdf")
 
 
 def test_body_velocities_are_derived_from_pose() -> None:
