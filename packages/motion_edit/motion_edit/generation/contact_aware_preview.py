@@ -260,8 +260,6 @@ def _resolve_layers_root(layers_root: Path | None, *, contact_layer: str) -> Pat
 
     if layers_root is not None:
         return Path(layers_root).expanduser().resolve()
-    if (LAYERS_ROOT / contact_layer).is_dir():
-        return LAYERS_ROOT
     configured_root = os.environ.get("SOMAFORGE_ROOT")
     if configured_root:
         runtime_layers = (
@@ -274,6 +272,8 @@ def _resolve_layers_root(layers_root: Path | None, *, contact_layer: str) -> Pat
         )
         if (runtime_layers / contact_layer).is_dir():
             return runtime_layers
+    if (LAYERS_ROOT / contact_layer).is_dir():
+        return LAYERS_ROOT
     return LAYERS_ROOT
 
 

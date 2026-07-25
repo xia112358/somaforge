@@ -672,18 +672,18 @@ class ContactEditPlanTests(unittest.TestCase):
         with np.load(motion_path, allow_pickle=True) as source:
             motion = {key: source[key] for key in source.files}
         keypoints = _semantic_keypoints_from_motion(motion)
-        for part_name in (
-            "left_heel",
-            "left_toe",
-            "right_heel",
-            "right_toe",
+        for semantic_name in (
+            "left_ankle",
+            "left_foot",
+            "right_ankle",
+            "right_foot",
             "left_hand",
             "right_hand",
             "left_knee",
             "right_knee",
         ):
-            self.assertEqual(keypoints[part_name].shape, (870, 3))
-            self.assertTrue(np.isfinite(keypoints[part_name]).all())
+            self.assertEqual(keypoints[semantic_name].shape, (870, 3))
+            self.assertTrue(np.isfinite(keypoints[semantic_name]).all())
 
     def test_generate_lte_augmentation_accepts_semantic_contact_body_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
