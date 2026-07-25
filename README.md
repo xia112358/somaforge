@@ -78,12 +78,22 @@ OmniRetarget/PyRoki qpos
 -> Newton canonical FK conversion
 -> initial WBT baseline policy
 -> Newton rollout/contact-force manifest
--> Motion Edit ContactEditPlan and generate-ref
--> force-retarget (PyRoki three-cost graph + repeated Newton force rollout)
+-> validated Motion Edit ContactEditPlan
+-> low-jitter rollout pose authority (6 Hz zero-phase cleanup)
+-> contact-Laplacian whole-body semantic curves
+-> Newton robot-local rigid contact patches
+-> PyRoki trajectory IK + Newton soft signed-distance similarity
+-> direct Newton FK canonical edited motion
+-> frame-boundary Newton force replay
 -> accepted canonical 8-part Newton force reference/manifest
 -> GMVQ segment pack and checkpoint
 -> WBT training from scratch
 ```
+
+The retained reference implementation is
+[`height110_soft_signed_distance_v2`](packages/motion_edit/docs/height110_production_pipeline.md).
+It is the authority for edited-motion generation and force extraction. The old
+force-retarget/projector loops are not production paths.
 
 ### 1. Bootstrap and validate assets
 
@@ -127,10 +137,9 @@ python src/holosoma/holosoma/train_agent.py \
 
 ### 3. Create the Motion Edit reference
 
-Use the Newton rollout contact manifest as the Motion Edit source. Import it to
-register immutable `MotionAsset` records, open one registered asset in the
-Contact Editor, validate its `ContactEditPlan`, then write an edited kinematic
-reference into `runtime/current/motions/`:
+Use the Newton rollout contact manifest as the Motion Edit source. Import it,
+open a registered asset in the unified Contact Editor, and validate its
+surface-constrained `ContactEditPlan`:
 
 ```bash
 source scripts/source_somaforge.sh
@@ -139,20 +148,33 @@ packages/motion_edit/motion-edit import-asset-manifest \
 packages/motion_edit/motion-edit contact-editor \
   --motion-asset-id climb_01_newton_8part
 packages/motion_edit/motion-edit validate-contact-edit-plan --plan /path/to/plan.json
-packages/motion_edit/motion-edit generate-ref --plan /path/to/plan.json \
-  --output-motion runtime/current/motions/example.policy_ref_v1.npz \
-  --output-contact-layer /path/to/contact_layer.json \
-  --output-motion-version-id example_v1
 ```
 
-`generate-ref` does not solve contact forces. Replay the edited reference with
-the baseline policy and extract canonical Newton forces:
+The production generator consumes one pose authority and one force rollout
+authority. It writes canonical kinematics only; stale source-force and
+`raw_contact_*` fields are not copied:
 
 ```bash
-python scripts/extract_all_rollout_ref_contact_force_demos.py \
-  --base-manifest runtime/current/manifests/example_motion_edit.json \
-  --checkpoint runtime/current/models/baseline/model.pt
+conda run --no-capture-output -n env_somaforge python \
+  scripts/generate_contact_aware_edited_motion.py \
+  --plan /path/to/validated_plan.json \
+  --output "$PWD/tmp/motion_edit_run/final_motion.npz" \
+  --intermediate-dir "$PWD/tmp/motion_edit_run/work" \
+  --ik-conda-env env_somaforge \
+  --newton-device cpu
 ```
+
+The generated motion must contain `joint_pos [T,36]`, `joint_vel [T,35]`,
+complete body pose/velocity arrays, canonical joint/body names,
+`robot_asset_json`, and direct-Newton kinematics provenance. Body poses are
+exactly direct Newton FK of `joint_pos`.
+
+Contact force is calculated afterward with frame-boundary Newton replay. At
+each 20 ms control boundary the edited state is authoritative, Newton advances
+four continuous 5 ms substeps, and the fourth substep supplies the force
+sample. Source forces are references only and are never migrated into the
+edited file. See the retained height110 pipeline for the replay, policy
+reference build, fine-tune, and acceptance commands.
 
 The resulting force files carry `contact_force_provenance_json` with the
 Newton solver configuration. MuJoCo diagnostic forces are rejected by WBT.

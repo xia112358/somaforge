@@ -2,10 +2,12 @@
 
 Contact-centered motion editing workbench for surface-bound contact-anchor editing, explicit ContactEditPlan generation, and Newton-validated policy-reference trajectories.
 
-`generate-ref` writes an edited kinematic reference. Production force fields are
-added only by a successful Isaac Lab 3/Newton policy rollout and must carry
-`contact_force_provenance_json`. Existing Newton force references may be
-retargeted onto edited kinematics; no alternative dynamics backend is supported.
+Motion Edit writes an edited kinematic reference through contact-Laplacian,
+PyRoki trajectory IK, and direct Newton FK. Production force fields are
+calculated afterward by frame-boundary Newton replay and must carry
+`contact_force_provenance_json`. Source forces may be optimization or
+acceptance references, but are never copied or migrated onto edited kinematics.
+No alternative dynamics backend is supported.
 The package stores local runtime metadata and
 segment layers under `data/`; large runtime artifacts remain untracked.
 
@@ -59,12 +61,14 @@ The main user-facing path starts from the canonical asset manifest:
 Somaforge Newton 8-part asset manifest
   -> verified force trajectory + canonical source motion + terrain OBJ
   -> MotionAsset / ContactGraph / surface catalog
-  -> ContactGraph / surface binding
-  -> contact-editor
-  -> ContactEditPlan
-  -> generate-ref
-  -> edited kinematic trajectory / generated MotionVersion
-  -> Newton policy rollout
+  -> unified contact-editor + recent motion list
+  -> validated surface-constrained ContactEditPlan
+  -> optional 6 Hz rollout pose cleanup
+  -> contact-Laplacian semantic curves
+  -> Newton robot-local contact patches
+  -> PyRoki trajectory IK + Newton soft signed-distance similarity
+  -> direct Newton FK canonical edited trajectory
+  -> frame-boundary Newton replay
   -> WBT-ready 8-part force trajectory
 ```
 
@@ -112,21 +116,24 @@ at their session-start position for exact episode restore. The Output tab
 validates the plan and runs the same formal `generate-ref` implementation as a
 background job; the CLI remains available for batch and scripted runs.
 
-`generate-ref` is the formal edited-kinematics path. It runs contact-aware
-geometry generation and full-body IK, but deliberately does not solve contact
-forces. Run the result through the Holosoma Newton rollout recorder and
-`scripts/extract_rollout_ref_contact_force_demo.py` before force-aware training.
+The Contact Editor Generate action and `generate-ref` remain supported
+orchestration surfaces. The retained production command for reproducible
+contact-aware kinematics is:
 
 ```bash
-./motion-edit generate-ref \
+conda run --no-capture-output -n env_somaforge python \
+  ../../scripts/generate_contact_aware_edited_motion.py \
   --plan data/workbench/climb00_surface_edits.json \
-  --output-motion data/motions/generated/climb00_farther.policy_ref_v1.npz \
-  --output-contact-layer contact/climb00_farther \
-  --output-segment-layer candidates/climb00_farther \
-  --output-motion-version-id climb00_farther \
-  --register-motion-version \
+  --output ../../tmp/motion_edit_run/final_motion.npz \
+  --intermediate-dir ../../tmp/motion_edit_run/work \
+  --ik-conda-env env_somaforge \
+  --newton-device cpu \
   --overwrite
 ```
+
+It deliberately does not invent contact forces. Run the canonical result
+through `scripts/replay_motion_newton_frame_boundary.py`, then build the WBT
+policy reference with `scripts/build_newton_force_policy_reference.py`.
 
 `generate-lte-augmentation` remains available only as a hidden/internal
 geometry diagnostic. Its output is not a standard generated trajectory because
@@ -144,8 +151,9 @@ it does not write the WBT contact-force contract:
 ```
 
 The former viewer, iframe timeline, surface-editor bridge, and interactive
-cutter commands were removed. New work enters through `contact-editor` and
-`generate-ref`.
+cutter commands were removed. New work enters through the unified
+`contact-editor`; its recent list loads registered and newly generated motions
+through the same backend.
 
 ## Component Boundaries
 
@@ -274,67 +282,62 @@ Split `.npz` files are export caches only. `export-split-npz` reads canonical se
 
 ## Edited Reference Generation
 
-The standard generation entry is `generate-ref`. It writes edited kinematics
-that must subsequently pass a Newton policy rollout:
+The production generator compiles one validated plan into a final canonical
+motion:
 
-```bash
-./motion-edit generate-ref \
-  --plan data/workbench/climb00_edits.json \
-  --output-motion data/motions/generated/climb00.policy_ref_v1.npz \
-  --output-contact-layer contact/climb00_policy_ref \
-  --output-segment-layer candidates/climb00_policy_ref \
-  --output-motion-version-id climb00_policy_ref \
-  --register-motion-version
+```text
+ContactEditPlan
+  -> contact-Laplacian whole-body semantic curves
+  -> Newton raw contacts reconstructed as rigid robot-local patches
+  -> ContactAwareTaskspaceMotion
+  -> PyRoki trajectory IK
+  -> Newton soft signed-distance similarity to the source rollout
+  -> direct Newton FK canonicalization
+  -> final_motion.npz
 ```
 
-The production projection backend is one whole-trajectory PyRoki/JAXLS graph.
-All frames, floating-base poses, and joint configurations are optimized
-together. The graph has exactly three objective families:
-
-1. `contact_interaction_laplacian`
-2. `temporal_laplacian`
-3. `contact_force`
-
-Joint limits, foot orientation, contact sticking, and nonpenetration are soft
-residuals inside the contact/interaction family, not separate hard constraints.
-The force family linearizes force response from the latest Newton rollout.
-Newton evaluates each candidate and returns the next real 8-part force tensor;
-contact points, penetration depth, and overlap distance are not extracted as
-optimization targets. The temporary correction direction comes from the target
-force vector itself. There is no per-frame SciPy/SQP production path.
-
-Run the complete black-box Newton force loop from the PyRoki environment:
+The full-body semantic curves are soft shape targets. Contact patches are
+actual multi-point rigid patches in canonical robot-local link frames. Edited
+patches and their semantic handles receive the same world displacement; fixed
+patches retain the source rollout world trajectory. Foot pose, joint velocity,
+and acceleration priors come from the cleaned pose authority. Newton collision
+queries preserve the source rollout's signed-distance relationship and penalize
+only excess penetration more strongly.
 
 ```bash
-./motion-edit force-retarget \
-  --initial-motion data/motions/generated/climb00.policy_ref_v1.npz \
-  --lte data/motions/generated/climb00.policy_ref_v1/climb00.policy_ref_v1.contact_laplacian_keypoints.npz \
-  --target-force-motion runtime/current/motions/newton_contact_force/climb_00_rollout_ref_contact_force.npz \
-  --manifest runtime/current/manifests/newton_contact_force_8part.json \
-  --motion-id 00 \
-  --checkpoint /path/to/wbt_model.pt \
-  --newton-python /home/xiaz/miniforge3/envs/env_somaforge/bin/python \
-  --output-motion data/motions/generated/climb00.force_ref_v1.npz \
-  --work-dir ../../tmp/motion_edit/climb00_force_retarget
+conda run --no-capture-output -n env_somaforge python \
+  ../../scripts/generate_contact_aware_edited_motion.py \
+  --plan /path/to/validated_plan.json \
+  --output ../../tmp/motion_edit_run/final_motion.npz \
+  --intermediate-dir ../../tmp/motion_edit_run/work \
+  --ik-conda-env env_somaforge \
+  --newton-device cpu
 ```
 
-Before every rollout, the command canonicalizes the PyRoki candidate with the
-same sphere-hand URDF and Newton FK used by training, then writes a fully hashed
-single-motion manifest. The final output is the accepted Newton rollout, not a
-kinematically fabricated force field.
+The intermediate directory contains:
 
-The geometry-only command is hidden and should be treated as a diagnostic
-intermediate producer:
-
-```bash
-./motion-edit generate-lte-augmentation \
-  --mode lte_fullbody \
-  --plan data/workbench/climb00_edits.json \
-  --output-motion ../../tmp/motion_edit/climb00.geometry_debug.npz
+```text
+*.semantic_task_proxy.npz
+*.contact_aware_taskspace.npz
+*.pyroki_preview.npz
+*.pyroki_fk_preview.npz
 ```
 
-Do not use the edited output directly for force-aware WBT. First collect a
-successful Newton rollout and extract the canonical 8-part reference.
+These are diagnostics, not substitutes for `final_motion.npz`. The final file
+must have `joint_pos [T,36]`, `joint_vel [T,35]`, complete finite body
+pose/velocity arrays, canonical names, `robot_asset_json`, and direct Newton
+kinematics provenance. It must not contain stale source `contact_force_part_w`,
+`contact_force_provenance_json`, or `raw_contact_*`.
+
+Force extraction is a separate dynamics stage. Frame-boundary replay makes the
+edited state authoritative once per 20 ms control interval, advances four
+continuous 5 ms Newton substeps, and records the fourth substep. The source
+rollout's forces and torques are references for comparison/control only.
+Production code must never migrate source forces into the edited trajectory.
+
+See
+[`docs/height110_production_pipeline.md`](docs/height110_production_pipeline.md)
+for the retained end-to-end command sequence and measured acceptance values.
 
 ## Legacy Layer Policy
 
@@ -596,13 +599,15 @@ Use `generate-lte-augmentation` only when debugging the geometry stage:
   --mode lte_fullbody
 ```
 
-Generation requires a `validated` or `locked` plan by default. `generate-ref`
-extracts semantic `body_pos_w` keypoints, applies ContactEditPlan handles through
-the whole-trajectory three-family graph. A geometry-only run has a zero force
-mask; a physics-guided run supplies target force plus the latest real Newton
-force to the same graph. Motion Edit never fabricates the
-force field written to a training reference: the final force-bearing trajectory
-still comes from the accepted Newton rollout.
+Generation requires a `validated` or `locked` plan by default. The production
+facade extracts semantic `body_pos_w` keypoints, solves the whole-trajectory
+contact-Laplacian curves, binds Newton contact patches in canonical robot-local
+frames, and runs PyRoki IK with direct Newton collision/FK evaluation. The
+source rollout supplies contact timing, patch geometry, pose/collision
+references, and diagnostics; it does not supply force fields for the edited
+file. Motion Edit never fabricates or migrates the force field written to a
+training reference: force-bearing output comes only from the subsequent
+frame-boundary Newton replay.
 
 The archived source `.npz`, source ContactLayer, and source canonical segmentation are not modified. `--output-contact-layer` writes a graph derived from the source ContactGraph with edited anchor positions. `--output-segment-layer` writes candidate segments for the edited reference. `--register-motion-version` registers that edited trajectory. Canonical segmentation for the new version is only built when `--build-canonical` is passed explicitly.
 

@@ -29,8 +29,10 @@ deeper-than-reference   100
 maximum refinements       1
 ```
 
-The recorded successful run solved all 1005 frames, had no unresolved semantic
-or contact targets, and reduced excess penetration to 0.049 mm.
+The current `main` reproduction solved all 1005 frames, had no unresolved
+semantic or contact targets, and reduced excess penetration to 0.0489 mm.
+Contact target error was 0.599 mm mean / 22.870 mm max; semantic target error
+was 7.435 mm mean / 52.415 mm max.
 
 ## 1. Prepare the low-jitter pose authority
 
@@ -40,9 +42,12 @@ the pose/IK authority. Contact timing, local patches, collision depth, and
 recorded actuator torques continue to come from the unfiltered force rollout.
 
 ```bash
+cd /home/xiaz/somaforge
+
 ROLL_OUT=/home/xiaz/somaforge/runtime/current/motions/newton_contact_force/climb_00_rollout_ref_contact_force.npz
 PLAN_TEMPLATE=/home/xiaz/somaforge/tmp/climb00_augmentation_matrix/height_110/plans/climb_00_height_1p100.json
-POSE_DIR="$PWD/tmp/climb00_rollout_cleanup_trial"
+RUN_DIR="$PWD/tmp/height110_soft_signed_distance_v2"
+POSE_DIR="$RUN_DIR/reference"
 POSE_SEED="$POSE_DIR/cutoff_6hz_qseed.npz"
 POSE_MOTION="$POSE_DIR/climb_00_rollout_clean_6hz_newton.npz"
 DERIVED_PLAN="$POSE_DIR/climb_00_height_1p100_clean6hz.json"
@@ -68,11 +73,12 @@ continues to point at `ROLL_OUT`.
 ## 2. Generate edited kinematics
 
 ```bash
-cd /home/xiaz/somaforge/tmp/pr1-newton-contact-taskspace-spec
+cd /home/xiaz/somaforge
 export SOMAFORGE_ROOT=/home/xiaz/somaforge
 export PYTHONPATH="$PWD/packages/motion_edit:$PWD/packages/somaforge_core:$PYTHONPATH"
 
 RUN_DIR="$PWD/tmp/height110_soft_signed_distance_v2"
+DERIVED_PLAN="$RUN_DIR/reference/climb_00_height_1p100_clean6hz.json"
 
 conda run --no-capture-output -n env_somaforge python \
   scripts/generate_contact_aware_edited_motion.py \
@@ -87,8 +93,7 @@ conda run --no-capture-output -n env_somaforge python \
 The default collision settings with the derived clean6hz plan reproduce the
 retained v2 configuration. Running the unmodified template plan directly uses
 the older motion asset as pose authority and is not the v2 production route.
-The
-final motion must report:
+The final motion must report:
 
 ```text
 environment_collision_backend = newton_soft_signed_distance_integrated_frame_ik
@@ -97,6 +102,25 @@ least_squares_failure_count = 0
 unresolved_semantics = []
 unresolved_contacts = []
 ```
+
+The canonical output contract is:
+
+```text
+joint_pos        [1005, 36]
+joint_vel        [1005, 35]
+body_pos_w       [1005, 53, 3]
+body_quat_w      [1005, 53, 4]
+body_lin_vel_w   [1005, 53, 3]
+body_ang_vel_w   [1005, 53, 3]
+joint_names      [29]
+body_names       [53]
+```
+
+All numeric arrays must be finite. The body poses must equal direct Newton FK
+of `joint_pos`. The file must carry the canonical `robot_asset_json` and
+direct-Newton kinematics provenance, and must not carry stale source
+`contact_force_part_w`, `contact_force_provenance_json`, or `raw_contact_*`.
+Files in `work/` are diagnostic intermediates; they are not the final motion.
 
 ## 3. Calculate force with frame-boundary replay
 
@@ -135,7 +159,7 @@ Self-collision force and raw contacts are not written into the policy motion.
 ## 4. Build the policy reference
 
 ```bash
-POLICY_DIR="$PWD/tmp/height110_policy_finetune"
+POLICY_DIR="$RUN_DIR/policy_finetune"
 
 python scripts/build_newton_force_policy_reference.py \
   --kinematics "$RUN_DIR/isaaclab_canonical/newton_replay_input.npz" \
@@ -171,3 +195,31 @@ Run `scripts/eval_motion_edit_acceptance.py` from frame zero against the
 resulting checkpoint. File-level acceptance is not sufficient: also inspect
 the policy execution's phase-specific root height, knee flexion, contact masks,
 force timing, and force magnitude.
+
+## 6. Regression and UI checks
+
+Run the source regression in `env_somaforge`:
+
+```bash
+PYTHONPATH=packages/motion_edit:packages/somaforge_core:src/holosoma \
+SOMAFORGE_ROOT=/home/xiaz/somaforge \
+conda run --no-capture-output -n env_somaforge pytest -q \
+  packages/motion_edit/tests \
+  packages/somaforge_core/tests \
+  src/holosoma/holosoma/agents/modules/tests/test_censored_normal.py \
+  src/holosoma/holosoma/agents/ppo/tests/test_kl_early_stop_ppo.py
+```
+
+The retained main reproduction passes 355 tests plus 3 subtests. Launch the
+current single-port editor and use its recent list for registered motions:
+
+```bash
+PYTHONPATH=packages/motion_edit:packages/somaforge_core \
+conda run --no-capture-output -n env_somaforge \
+  python -m motion_edit.cli contact-editor --port 8094
+```
+
+Before admitting a generated reference, inspect the complete motion in the
+editor/player: the root and joint order must be correct, the timeline must
+advance through all frames, and no quaternion-order, body-mapping, foot-pose,
+or contact-phase discontinuity may be visible.
