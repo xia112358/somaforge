@@ -165,8 +165,8 @@ python scripts/train_motion_edit_force_sharded.py \
   --name motion_edit_raw29_force_ref_sharded_env4096_ft2000_from19999
 ```
 
-The sharded wrapper now keeps the successful hotspot settings by default:
-`reset_sampler=hotspot_failure_window`, `start_at_timestep_zero_prob=0.2`,
+The sharded wrapper now keeps the successful completion-EMA reset settings by default:
+`reset_sampler=completion_ema_failure_window`, `start_at_timestep_zero_prob=0.2`,
 optimizer state loading, random episode length initialization, and group probes
 with 8 probe envs per terrain group. This replaces the expensive per-motion
 probe20 setup for motion-edit variants while keeping the change scoped to this

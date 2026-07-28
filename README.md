@@ -53,9 +53,9 @@ The CLI exposes only the three stages used by the canonical pipeline:
 
 | Preset | Purpose | Default manifest | Reset sampler | Horizon |
 | --- | --- | --- | --- | --- |
-| `exp:g1-29dof-wbt-baseline-single` | Single-motion diagnosis | `omniretarget_baseline.json` | `hotspot_failure_window` | 22 s |
-| `exp:g1-29dof-wbt-baseline-29` | Initial 29-motion policy | `omniretarget_baseline_29.json` | `hotspot_failure_window` | 10 s |
-| `exp:g1-29dof-wbt-contact-force` | Newton 8-part force tracking | `newton_contact_force_8part.json` | `hotspot_failure_window` | 20 s |
+| `exp:g1-29dof-wbt-baseline-single` | Single-motion diagnosis | `omniretarget_baseline.json` | `completion_ema_failure_window` | 22 s |
+| `exp:g1-29dof-wbt-baseline-29` | Initial 29-motion policy | `omniretarget_baseline_29.json` | `completion_ema_failure_window` | 10 s |
+| `exp:g1-29dof-wbt-contact-force` | Newton 8-part force tracking | `newton_contact_force_8part.json` | `completion_ema_failure_window` | 20 s |
 
 All three presets use the spherehand robot and Isaac Lab 3/Newton. Baseline
 presets train from scratch; old checkpoints and manifests are incompatible.

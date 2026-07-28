@@ -40,7 +40,7 @@ def _replace_motion_config(command, manifest: Path):
         motion_dir="",
         motion_manifest=str(manifest),
         canonicalize_motion_order_on_load=True,
-        reset_sampler="hotspot_failure_window",
+        reset_sampler="completion_ema_failure_window",
         start_at_timestep_zero_prob=0.2,
         freeze_at_timestep_zero_prob=0.0,
         use_start_probe_envs=True,

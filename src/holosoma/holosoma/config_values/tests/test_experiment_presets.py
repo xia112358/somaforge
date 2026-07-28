@@ -49,7 +49,7 @@ def test_experiments_use_canonical_robot_newton_and_compact_outputs() -> None:
 def test_experiment_sampler_roles_are_explicit() -> None:
     for experiment in DEFAULTS.values():
         motion = _motion_config(experiment)
-        assert motion.reset_sampler == "hotspot_failure_window"
+        assert motion.reset_sampler == "completion_ema_failure_window"
         assert motion.start_at_timestep_zero_prob == 0.0
     single_motion = _motion_config(DEFAULTS["g1_29dof_wbt_baseline_single"])
     assert single_motion.use_start_probe_envs is True

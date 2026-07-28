@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import traceback
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +20,7 @@ from holosoma.config_values.experiment import AnnotatedExperimentConfig
 from holosoma.utils.eval_utils import init_sim_imports
 from holosoma.utils.helpers import get_class
 from holosoma.utils.motion_matched_config import normalize_motion_matched_config
+from holosoma.utils.self_contact_diagnostics import SelfContactDiagnostics
 from holosoma.utils.sim_utils import (
     close_simulation_app,
     parse_isaaclab_launcher_args,
@@ -217,7 +219,7 @@ def record_frame_boundary_replay(
         ).unsqueeze(0)
         sim.robot_root_states[env_ids, :13] = torch.as_tensor(
             boundary_root[frame],
-            dtype=sim.robot_root_states.dtype,
+            dtype=sim.dof_pos.dtype,
             device=env.device,
         ).unsqueeze(0)
         sim.set_actor_root_state_tensor_robots(env_ids, sim.robot_root_states)
@@ -227,7 +229,8 @@ def record_frame_boundary_replay(
         sim.refresh_sim_tensors()
 
     decimation = 4
-    sim.enable_raw_rigid_contact_history(decimation)
+    if hasattr(sim, "enable_raw_rigid_contact_history"):
+        sim.enable_raw_rigid_contact_history(decimation)
     force = np.zeros(
         (frame_count, len(CONTACT_FORCE_PART_ORDER), 3),
         dtype=np.float32,
@@ -254,6 +257,15 @@ def record_frame_boundary_replay(
     ).copy()
     frame_valid = np.ones(frame_count, dtype=bool)
     frame_valid[0] = False
+    self_contact_diagnostics = SelfContactDiagnostics(
+        output.with_name(f"{output.stem}_self_contacts.json")
+    )
+    from isaaclab_newton.physics.newton_manager import NewtonManager
+
+    newton_model = getattr(NewtonManager, "_model", None)
+    if newton_model is None:
+        raise RuntimeError("Newton model is unavailable for self-contact diagnostics")
+    newton_body_labels = list(newton_model.body_label)
 
     write_boundary_state(0)
     replay_joint_pos[0] = boundary_joint_pos[0]
@@ -284,6 +296,10 @@ def record_frame_boundary_replay(
             sim.apply_torques_at_dof(torque)
             sim.simulate_at_each_physics_step()
             sim.refresh_sim_tensors()
+            raw_contacts = sim.get_raw_rigid_contacts()
+            if raw_contacts is None:
+                raise RuntimeError("Newton raw contacts are unavailable during replay")
+            self_contact_diagnostics.update(raw_contacts, newton_body_labels)
             sensor_value = sensor.data.net_forces_w[0].detach().cpu().numpy()
             substep_force[frame, substep] = reduce_sensor_force_parts(
                 sensor_value,
@@ -317,6 +333,9 @@ def record_frame_boundary_replay(
                         "root_position_error_m": float(frame_error[frame, 2]),
                         "force_max_n": float(
                             np.linalg.norm(force[frame], axis=-1).max(initial=0.0)
+                        ),
+                        "self_contact_samples": (
+                            self_contact_diagnostics.frames_with_self_contact
                         ),
                     },
                     sort_keys=True,
@@ -374,7 +393,9 @@ def record_frame_boundary_replay(
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(output, **payload)
+    self_contact_diagnostics.write()
     print(f"Wrote {output}", flush=True)
+    print(f"Wrote {self_contact_diagnostics.output_path}", flush=True)
     return output
 
 
@@ -404,6 +425,7 @@ def main() -> None:
         del env
     except BaseException as exc:
         failure = exc
+        traceback.print_exc()
     finally:
         close_simulation_app(simulation_app)
     if failure is not None:

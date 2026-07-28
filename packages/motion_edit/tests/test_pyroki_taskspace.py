@@ -5,11 +5,17 @@ from types import SimpleNamespace
 import numpy as np
 
 from motion_edit.generation.pyroki_fullbody_ik import (
+    CONTACT_REFERENCE_BODY_BY_PART,
     _contact_part_for_body_name,
-    _is_authoritative_collision_body,
+    _contact_target_surface_class,
+    _environment_deeper_weight_for_body,
+    _is_contact_reference_body,
+    _least_squares_sqrt_weight,
     _robot_min_geometry_distance_by_body,
     _robot_min_geometry_distance_by_body_surface,
     _robot_penetration_depth_by_body,
+    _surface_class,
+    self_collision_barrier_residual,
 )
 from motion_edit.generation.pyroki_taskspace import (
     compile_pyroki_taskspace,
@@ -18,6 +24,25 @@ from motion_edit.generation.pyroki_taskspace import (
     world_body_poses_from_pyroki_fk,
 )
 from motion_edit.generation.taskspace_spec import ContactAwareTaskspaceMotion, ContactPatchTarget
+
+
+def test_contact_capable_bodies_receive_priority_environment_barrier() -> None:
+    assert _environment_deeper_weight_for_body("left_ankle_roll_link", 100.0) == 1600.0
+    assert _environment_deeper_weight_for_body("right_sphere_hand_link", 100.0) == 1600.0
+    assert _environment_deeper_weight_for_body("left_knee_link", 100.0) == 1600.0
+    assert _environment_deeper_weight_for_body("left_hip_pitch_link", 100.0) == 400.0
+    assert (
+        _environment_deeper_weight_for_body(
+            "left_ankle_roll_link",
+            100.0,
+            is_active_contact=True,
+        )
+        == 100.0
+    )
+    assert _is_contact_reference_body("left_ankle_roll_link", "LF")
+    assert not _is_contact_reference_body("left_ankle_roll_sphere_1_link", "LF")
+    assert _is_contact_reference_body("right_sphere_hand_link", "RH")
+    assert set(CONTACT_REFERENCE_BODY_BY_PART) == {"LF", "RF", "LH", "RH", "LK", "RK"}
 
 
 def test_reference_penetration_uses_true_geometry_depth_per_body() -> None:
@@ -44,18 +69,25 @@ def test_reference_penetration_uses_true_geometry_depth_per_body() -> None:
     }
 
 
+def test_self_collision_barrier_only_penalizes_geometry_penetration() -> None:
+    residual = self_collision_barrier_residual(
+        np.asarray([-0.01, 0.0, 0.02]),
+        np.asarray([10.0, 10.0, 10.0]),
+    )
+    np.testing.assert_allclose(residual, [-0.1, 0.0, 0.0])
+
+
+def test_environment_objective_weights_use_residual_space_square_root() -> None:
+    assert _least_squares_sqrt_weight(100.0) == 10.0
+    assert _least_squares_sqrt_weight(0.0) == 0.0
+
+
 def test_collision_body_names_resolve_to_force_weight_parts() -> None:
     assert _contact_part_for_body_name("left_ankle_roll_link") == "LF"
     assert _contact_part_for_body_name("right_sphere_hand_link") == "RH"
     assert _contact_part_for_body_name("left_knee_link") == "LK"
     assert _contact_part_for_body_name("right_hip_roll_link") == "RHIP"
     assert _contact_part_for_body_name("pelvis") is None
-    assert _is_authoritative_collision_body("left_ankle_roll_link", "LF")
-    assert not _is_authoritative_collision_body(
-        "left_ankle_roll_sphere_1_link",
-        "LF",
-    )
-    assert _is_authoritative_collision_body("right_sphere_hand_link", "RH")
 
 
 def test_reference_distances_are_paired_by_body_and_surface() -> None:
@@ -90,6 +122,37 @@ def test_reference_distances_are_paired_by_body_and_surface() -> None:
         ("right_ankle_roll_link", "terrain_obstacle:top"): -0.002,
         ("right_ankle_roll_link", "terrain_obstacle:side"): -0.003,
     }
+
+
+def test_contact_similarity_is_scoped_to_explicit_target_surface() -> None:
+    top = ContactPatchTarget(
+        anchor_id="left_foot_top",
+        kind="edited_contact",
+        body_label="left_ankle_roll_link",
+        shape_labels=("sole",),
+        points_local=np.zeros((1, 3), dtype=np.float64),
+        frames=np.asarray([0], dtype=np.int64),
+        surface_id="multi_boxes_z_scale_1.100_top",
+        target_points_w=np.zeros((1, 1, 3), dtype=np.float64),
+    )
+    ground = ContactPatchTarget(
+        anchor_id="left_foot_ground",
+        kind="fixed_contact",
+        body_label="left_ankle_roll_link",
+        shape_labels=("sole",),
+        points_local=np.zeros((1, 3), dtype=np.float64),
+        frames=np.asarray([0], dtype=np.int64),
+        target_points_w=np.zeros((1, 1, 3), dtype=np.float64),
+        metadata={"target_surface_id": "terrain_ground_z0"},
+    )
+
+    assert _contact_target_surface_class(top) == "top"
+    assert _contact_target_surface_class(ground) == "ground"
+    assert _surface_class("terrain_obstacle:side") == "side"
+    assert _surface_class("terrain_ground:ground") == "ground"
+    assert _surface_class("unclassified_surface") is None
+
+
 def _spec() -> ContactAwareTaskspaceMotion:
     contact = ContactPatchTarget(
         anchor_id="left_foot_0",

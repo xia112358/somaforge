@@ -1196,9 +1196,18 @@ class MotionCommand(CommandTermBase):
         self._reset_sampler = str(self.motion_cfg.reset_sampler)
         self._uses_failure_window_sampler = self._reset_sampler in (
             "failure_window",
+            "completion_ema_failure_window",
             "hotspot_failure_window",
         )
-        self._uses_hotspot_failure_sampler = self._reset_sampler == "hotspot_failure_window"
+        self._uses_completion_ema_failure_window_sampler = (
+            self._reset_sampler
+            in ("completion_ema_failure_window", "hotspot_failure_window")
+        )
+        if self._reset_sampler == "hotspot_failure_window":
+            logger.warning(
+                "reset_sampler='hotspot_failure_window' is deprecated; use "
+                "'completion_ema_failure_window'"
+            )
         self._use_completion_learning_sampler = bool(
             self.motion_cfg.use_completion_learning_sampler and int(self.motion.num_motions) > 1
         )
@@ -1211,12 +1220,11 @@ class MotionCommand(CommandTermBase):
                 f"before_prob={float(self.motion_cfg.failure_window_before_prob):.3f}, "
                 f"success_horizon_frames={int(self.motion_cfg.failure_window_success_horizon_frames)}"
             )
-        if self._uses_hotspot_failure_sampler:
+        if self._uses_completion_ema_failure_window_sampler:
             logger.info(
-                "Hotspot failure replay enabled: "
+                "Completion-EMA failure-window replay enabled: "
                 f"uniform_mix={float(self.motion_cfg.hotspot_failure_uniform_mix):.3f}, "
-                f"decay={float(self.motion_cfg.hotspot_failure_decay):.5f}, "
-                f"min_count={float(self.motion_cfg.hotspot_failure_min_count):.3f}"
+                "center=completion_ema_mean"
             )
         if self._use_completion_learning_sampler:
             logger.info(
@@ -1347,10 +1355,14 @@ class MotionCommand(CommandTermBase):
                 phase[self._probe_env_mask[env_ids]] = 0.0
             motion_len = end_idx - start_idx
             self.time_steps[env_ids] = start_idx + (phase * (motion_len - 1).float()).long()
-            if self._uses_hotspot_failure_sampler:
-                hotspot_env_ids = normal_env_ids
-                if hotspot_env_ids.numel() > 0:
-                    self.time_steps[hotspot_env_ids] = self._sample_hotspot_failure_time_steps(hotspot_env_ids)
+            if self._uses_completion_ema_failure_window_sampler:
+                completion_window_env_ids = normal_env_ids
+                if completion_window_env_ids.numel() > 0:
+                    self.time_steps[completion_window_env_ids] = (
+                        self._sample_completion_ema_failure_window_time_steps(
+                            completion_window_env_ids
+                        )
+                    )
             if failure_window_env_ids.numel() > 0:
                 self.time_steps[failure_window_env_ids] = self._sample_failure_window_time_steps(
                     failure_window_env_ids,
@@ -2416,10 +2428,6 @@ class MotionCommand(CommandTermBase):
         self._failure_window_failure_hist = torch.zeros(
             num_motions, self._failure_window_log_bin_count, dtype=torch.float32, device=self.device
         )
-        self._hotspot_failure_weights = torch.zeros(
-            num_motions, int(motion_lengths.max().item()), dtype=torch.float32, device=self.device
-        )
-        self._hotspot_failure_last_sample_count = torch.zeros((), dtype=torch.float32, device=self.device)
         self._pending_chain_check = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._pending_chain_from_motion_ids = torch.full((self.num_envs,), -1, dtype=torch.long, device=self.device)
         self._pending_chain_to_motion_ids = torch.full((self.num_envs,), -1, dtype=torch.long, device=self.device)
@@ -2821,24 +2829,6 @@ class MotionCommand(CommandTermBase):
             self.metrics["motion/failure_window_top_failure_frame"] = top_frame
             self.metrics["motion/failure_window_top_failure_prob"] = top_prob
             self.metrics["motion/failure_window_failure_hist_entropy"] = hist_entropy
-        if self._uses_hotspot_failure_sampler:
-            weights = self._hotspot_failure_weights
-            total_weight = weights.sum().clamp(min=1e-8)
-            prob = weights / total_weight
-            flat_top = torch.argmax(prob)
-            top_motion = torch.div(flat_top, weights.shape[1], rounding_mode="floor")
-            top_local_frame = flat_top - top_motion * weights.shape[1]
-            top_prob = prob.flatten()[flat_top]
-            entropy = -(prob * (prob + 1e-12).log()).sum()
-            valid_frames = (self.motion.motion_end_idx - self.motion.motion_start_idx).sum().to(torch.float32)
-            entropy = entropy / torch.log(valid_frames.clamp(min=2.0)).clamp(min=1e-8)
-            self.metrics["motion/hotspot_failure_total_weight"] = weights.sum()
-            if self.motion.num_motions > 1:
-                self.metrics["motion/hotspot_failure_top_motion"] = top_motion.to(torch.float32)
-            self.metrics["motion/hotspot_failure_top_frame"] = top_local_frame.to(torch.float32)
-            self.metrics["motion/hotspot_failure_top_prob"] = top_prob
-            self.metrics["motion/hotspot_failure_entropy"] = entropy
-            self.metrics["motion/hotspot_failure_last_sample_count"] = self._hotspot_failure_last_sample_count
         for key, value in list(self.metrics.items()):
             if torch.is_tensor(value):
                 self.metrics[key] = torch.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0)
@@ -3368,11 +3358,11 @@ class MotionCommand(CommandTermBase):
         self._failure_window_failure_hist += counts.view(
             int(self.motion.num_motions), self._failure_window_log_bin_count
         )
-        self._update_hotspot_failure_weights(motion_ids, local_failed_idx)
         return sampled
 
-    def _sample_hotspot_failure_time_steps(self, env_ids: torch.Tensor) -> torch.Tensor:
-        self._hotspot_failure_last_sample_count.zero_()
+    def _sample_completion_ema_failure_window_time_steps(
+        self, env_ids: torch.Tensor
+    ) -> torch.Tensor:
         motion_ids = self.motion_ids[env_ids]
         start_idx = self.motion.motion_start_idx[motion_ids]
         end_idx = self.motion.motion_end_idx[motion_ids]
@@ -3386,41 +3376,41 @@ class MotionCommand(CommandTermBase):
         )
 
         uniform_mix = min(max(float(self.motion_cfg.hotspot_failure_uniform_mix), 0.0), 1.0)
-        min_count = max(float(self.motion_cfg.hotspot_failure_min_count), 0.0)
-        use_hotspot = torch.rand(env_ids.numel(), device=self.device) >= uniform_mix
-        actual_hotspot_count = 0
-
-        hotspot_candidate_indices = torch.where(use_hotspot)[0]
-        if hotspot_candidate_indices.numel() == 0:
+        use_completion_window = (
+            torch.rand(env_ids.numel(), device=self.device) >= uniform_mix
+        )
+        completion_mean = self._completion_ema_reset_center()
+        completion_candidate_indices = torch.where(use_completion_window)[0]
+        if completion_candidate_indices.numel() == 0 or completion_mean is None:
             return sampled
 
-        hotspot_motion_ids = motion_ids[hotspot_candidate_indices]
-        candidate_weights = self._hotspot_failure_weights[hotspot_motion_ids].clamp(min=0.0)
-        candidate_lengths = (
-            self.motion.motion_end_idx[hotspot_motion_ids] - self.motion.motion_start_idx[hotspot_motion_ids]
-        ).clamp(min=1)
-        local_frames = torch.arange(candidate_weights.shape[1], device=self.device)
-        candidate_weights = candidate_weights * (local_frames.unsqueeze(0) < candidate_lengths.unsqueeze(1))
-        candidate_totals = candidate_weights.sum(dim=1)
-        eligible = (candidate_lengths > 1) & (candidate_totals >= min_count) & (candidate_totals > 0.0)
-        eligible_indices = hotspot_candidate_indices[eligible]
-        if eligible_indices.numel() > 0:
-            eligible_weights = candidate_weights[eligible]
-            target_local = torch.multinomial(
-                eligible_weights / eligible_weights.sum(dim=1, keepdim=True).clamp(min=1e-8),
-                1,
-            ).squeeze(1)
-            eligible_motion_ids = motion_ids[eligible_indices]
-            target_global = self.motion.motion_start_idx[eligible_motion_ids] + target_local
-            sampled[eligible_indices] = self._sample_around_failure_frames(
-                eligible_motion_ids,
-                target_global,
-            )
-            actual_hotspot_count = eligible_indices.numel()
+        candidate_motion_ids = motion_ids[completion_candidate_indices]
+        candidate_start_idx = self.motion.motion_start_idx[candidate_motion_ids]
+        candidate_end_idx = self.motion.motion_end_idx[candidate_motion_ids]
+        candidate_lengths = (candidate_end_idx - candidate_start_idx - 1).clamp(min=1)
+        target_local = torch.round(completion_mean * candidate_lengths.to(torch.float32)).long()
+        target_global = candidate_start_idx + target_local
+        sampled[completion_candidate_indices] = self._sample_around_failure_frames(
+            candidate_motion_ids,
+            target_global,
+        )
+        completion_env_ids = env_ids[completion_candidate_indices]
+        self._failure_window_retry_active[completion_env_ids] = True
+        self._failure_window_retry_motion_ids[completion_env_ids] = candidate_motion_ids
+        self._failure_window_retry_target_steps[completion_env_ids] = target_global
 
         sampled = torch.minimum(torch.maximum(sampled, start_idx), last_idx)
-        self._hotspot_failure_last_sample_count.fill_(actual_hotspot_count)
         return sampled
+
+    def _completion_ema_reset_center(self) -> torch.Tensor | None:
+        """Return the current probe completion mean used by the replay reset branch."""
+        if getattr(self, "_use_group_probe_envs", False):
+            if not torch.any(self._group_probe_count > 0):
+                return None
+            return self._group_probe_completion_ema.mean().clamp(0.0, 1.0)
+        if not getattr(self, "_use_start_probe_envs", False) or not torch.any(self._probe_count > 0):
+            return None
+        return self._probe_completion_ema.mean().clamp(0.0, 1.0)
 
     def _sample_around_failure_frames(self, motion_ids: torch.Tensor, failed_time_steps: torch.Tensor) -> torch.Tensor:
         start_idx = self.motion.motion_start_idx[motion_ids]
@@ -3440,19 +3430,6 @@ class MotionCommand(CommandTermBase):
         span = (sample_end - sample_start + 1).clamp(min=1)
         offsets = torch.floor(torch.rand(motion_ids.numel(), device=self.device) * span.to(torch.float32)).long()
         return sample_start + offsets
-
-    def _update_hotspot_failure_weights(self, motion_ids: torch.Tensor, local_failed_idx: torch.Tensor) -> None:
-        if not self._uses_hotspot_failure_sampler or motion_ids.numel() == 0:
-            return
-        decay = min(max(float(self.motion_cfg.hotspot_failure_decay), 0.0), 1.0)
-        self._hotspot_failure_weights.mul_(decay)
-        local_failed_idx = local_failed_idx.clamp(min=0, max=self._hotspot_failure_weights.shape[1] - 1)
-        flat_idx = motion_ids * self._hotspot_failure_weights.shape[1] + local_failed_idx
-        counts = torch.bincount(
-            flat_idx,
-            minlength=int(self.motion.num_motions) * self._hotspot_failure_weights.shape[1],
-        ).to(torch.float32)
-        self._hotspot_failure_weights += counts.view_as(self._hotspot_failure_weights)
 
     def _maybe_add_default_pose_transition(self, *, prepend: bool) -> None:
         """Shared path for optionally inserting default-pose interpolation before/after the clip."""

@@ -8,6 +8,9 @@ from typing import Any, Sequence
 
 import numpy as np
 from somaforge_core import G1_29DOF_JOINT_ORDER, canonical_g1_urdf_path
+from motion_edit.generation.newton_collision_filter import (
+    apply_self_collision_filters_to_builder,
+)
 
 
 NEWTON_SHAPE_MARGIN_M = 0.01
@@ -65,7 +68,7 @@ class DirectNewtonCollisionScene:
 
     def __init__(
         self,
-        terrain_mesh: str | Path,
+        terrain_mesh: str | Path | None,
         *,
         device: str = "cpu",
     ) -> None:
@@ -76,42 +79,48 @@ class DirectNewtonCollisionScene:
         self.newton = newton
         self.wp = wp
         self.device = str(device)
-        terrain_path = Path(terrain_mesh).expanduser().resolve()
-        if not terrain_path.is_file():
-            raise FileNotFoundError(terrain_path)
-
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.default_shape_cfg.margin = NEWTON_SHAPE_MARGIN_M
         builder.default_shape_cfg.gap = NEWTON_SHAPE_MARGIN_M
         builder.add_urdf(
             str(canonical_g1_urdf_path()),
             floating=True,
-            enable_self_collisions=False,
+            enable_self_collisions=True,
             joint_ordering=None,
             bodies_follow_joint_ordering=False,
             collapse_fixed_joints=False,
             hide_visuals=True,
         )
         builder.approximate_meshes("convex_hull")
+        apply_self_collision_filters_to_builder(
+            builder,
+            exclude_kinematic_distance=3,
+        )
 
-        loaded = trimesh.load(str(terrain_path), process=False)
-        if isinstance(loaded, trimesh.Scene):
-            loaded = loaded.dump(concatenate=True)
-        if not isinstance(loaded, trimesh.Trimesh):
-            raise ValueError(f"target terrain is not a triangle mesh: {terrain_path}")
-        mesh = newton.Mesh(
-            np.asarray(loaded.vertices, dtype=np.float32),
-            np.asarray(loaded.faces, dtype=np.int32).reshape(-1),
-            compute_inertia=False,
-            is_solid=True,
-        )
-        builder.add_shape_mesh(
-            -1,
-            mesh=mesh,
-            scale=(1.0, 1.0, 1.0),
-            label="terrain_obstacle",
-        )
-        builder.add_ground_plane(height=0.0, label="terrain_ground")
+        if terrain_mesh is not None:
+            terrain_path = Path(terrain_mesh).expanduser().resolve()
+            if not terrain_path.is_file():
+                raise FileNotFoundError(terrain_path)
+            loaded = trimesh.load(str(terrain_path), process=False)
+            if isinstance(loaded, trimesh.Scene):
+                loaded = loaded.dump(concatenate=True)
+            if not isinstance(loaded, trimesh.Trimesh):
+                raise ValueError(
+                    f"target terrain is not a triangle mesh: {terrain_path}"
+                )
+            mesh = newton.Mesh(
+                np.asarray(loaded.vertices, dtype=np.float32),
+                np.asarray(loaded.faces, dtype=np.int32).reshape(-1),
+                compute_inertia=False,
+                is_solid=True,
+            )
+            builder.add_shape_mesh(
+                -1,
+                mesh=mesh,
+                scale=(1.0, 1.0, 1.0),
+                label="terrain_obstacle",
+            )
+            builder.add_ground_plane(height=0.0, label="terrain_ground")
 
         self.model = builder.finalize(device=self.device, requires_grad=True)
         self.state = self.model.state()

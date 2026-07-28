@@ -116,7 +116,7 @@ def main() -> None:
     parser.add_argument("--iterations", type=int, default=2000)
     parser.add_argument("--learning-rate", type=float, default=1.0e-4)
     parser.add_argument("--save-interval", type=int, default=100)
-    parser.add_argument("--reset-sampler", default="hotspot_failure_window")
+    parser.add_argument("--reset-sampler", default="completion_ema_failure_window")
     parser.add_argument("--start-at-timestep-zero-prob", type=float, default=0.2)
     parser.add_argument("--load-optimizer", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(

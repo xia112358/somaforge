@@ -10,7 +10,8 @@ validated ContactEditPlan
 → task-variant surface translation
 → contact-Laplacian semantic curves
 → Newton local contact patches
-→ PyRoki trajectory IK with Newton soft signed-distance similarity
+→ PyRoki trajectory IK with Newton full-body penetration barriers
+  and active foot/hand/knee signed-distance similarity
 → direct Newton FK canonical motion
 → frame-boundary Newton force replay
 → clean WBT policy reference
@@ -29,10 +30,30 @@ deeper-than-reference   100
 maximum refinements       1
 ```
 
-The current `main` reproduction solved all 1005 frames, had no unresolved
-semantic or contact targets, and reduced excess penetration to 0.0489 mm.
-Contact target error was 0.599 mm mean / 22.870 mm max; semantic target error
-was 7.435 mm mean / 52.415 mm max.
+The current reproduction solved all 1005 frames and had no unresolved semantic
+or contact targets. Maximum environment penetration was 1.122 mm, of which
+0.453 mm was deeper than the source reference. Contact target error was
+0.545 mm mean / 23.019 mm max; semantic target error was 9.311 mm mean /
+90.952 mm max. Maximum filtered self-collision penetration was 0.988 mm.
+
+The collision objective is layered. Newton checks every unfiltered robot
+collision body, including all hip-pitch/roll/yaw geometry. Every body receives
+a one-sided no-new-penetration barrier. Physical foot, hand, and knee bodies
+receive an additional priority multiplier when they are not the active
+reference body. Active contact tracking remains restricted to the mature
+six-part contract:
+
+```text
+LF / RF  -> left/right ankle_roll_link
+LH / RH  -> left/right sphere_hand_link
+LK / RK  -> left/right knee_link
+```
+
+For those six active reference bodies, the contact patch target, signed-depth
+similarity, and deeper-than-reference weight are unchanged. Other bodies never
+become contact targets: they are only prevented from penetrating. No separate
+hip-protrusion Laplacian node or IK target is used because the full
+`hip_pitch_link` collision mesh is already covered by Newton.
 
 ## 1. Prepare the low-jitter pose authority
 
@@ -98,6 +119,9 @@ The final motion must report:
 ```text
 environment_collision_backend = newton_soft_signed_distance_integrated_frame_ik
 environment_collision_contract = source_rollout_soft_signed_distance_similarity
+environment_collision_fullbody_deeper_weight_multiplier = 4
+environment_collision_contact_capable_deeper_weight_multiplier = 4
+environment_collision_active_contact_deeper_weight_multiplier = 1
 least_squares_failure_count = 0
 unresolved_semantics = []
 unresolved_contacts = []
@@ -210,7 +234,7 @@ conda run --no-capture-output -n env_somaforge pytest -q \
   src/holosoma/holosoma/agents/ppo/tests/test_kl_early_stop_ppo.py
 ```
 
-The retained main reproduction passes 355 tests plus 3 subtests. Launch the
+The retained main reproduction passes 357 tests plus 3 subtests. Launch the
 current single-port editor and use its recent list for registered motions:
 
 ```bash

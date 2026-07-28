@@ -97,6 +97,20 @@ TARGET_WEIGHTS: dict[str, float] = {
 }
 
 
+def self_collision_barrier_residual(
+    signed_distance: Any,
+    sqrt_weight: Any,
+    *,
+    array_module: Any = np,
+) -> Any:
+    """One-sided zero-clearance residual for unfiltered robot body pairs."""
+
+    return (
+        array_module.minimum(signed_distance, 0.0)
+        * sqrt_weight
+    )
+
+
 def _load_npz(path: str | Path) -> dict[str, Any]:
     with np.load(Path(path).expanduser(), allow_pickle=True) as data:
         return {key: data[key] for key in data.files}
@@ -686,6 +700,53 @@ def _stats(values: np.ndarray) -> dict[str, float]:
     }
 
 
+def _least_squares_sqrt_weight(weight: float) -> float:
+    """Convert an objective weight to its residual-space coefficient."""
+
+    value = float(weight)
+    if value < 0.0:
+        raise ValueError("least-squares weight must be non-negative")
+    return float(np.sqrt(value))
+
+
+CONTACT_CAPABLE_COLLISION_PARTS = frozenset(
+    {"LF", "RF", "LH", "RH", "LK", "RK"}
+)
+FULLBODY_DEEPER_WEIGHT_MULTIPLIER = 4.0
+CONTACT_CAPABLE_DEEPER_WEIGHT_MULTIPLIER = 4.0
+CONTACT_REFERENCE_BODY_BY_PART = {
+    "LF": "left_ankle_roll_link",
+    "RF": "right_ankle_roll_link",
+    "LH": "left_sphere_hand_link",
+    "RH": "right_sphere_hand_link",
+    "LK": "left_knee_link",
+    "RK": "right_knee_link",
+}
+
+
+def _environment_deeper_weight_for_body(
+    body_name: str,
+    base_weight: float,
+    *,
+    is_active_contact: bool = False,
+) -> float:
+    """Prioritize physical contact-capable bodies while protecting all bodies."""
+
+    if is_active_contact:
+        return float(base_weight)
+    part_name = _contact_part_for_body_name(body_name)
+    multiplier = (
+        CONTACT_CAPABLE_DEEPER_WEIGHT_MULTIPLIER
+        if part_name in CONTACT_CAPABLE_COLLISION_PARTS
+        else 1.0
+    )
+    return (
+        float(base_weight)
+        * FULLBODY_DEEPER_WEIGHT_MULTIPLIER
+        * float(multiplier)
+    )
+
+
 def _robot_penetration_depth_by_body(contacts: Any) -> dict[str, float]:
     """Return true geometry overlap depth for each robot body in one frame."""
 
@@ -756,6 +817,34 @@ def _terrain_surface_key(
     return f"{shape_label}:{orientation}"
 
 
+def _surface_class(value: str | None) -> str | None:
+    """Reduce an anchor/simulator surface identity to ground/top/side/bottom."""
+
+    if value is None:
+        return None
+    lowered = str(value).lower()
+    if "ground" in lowered:
+        return "ground"
+    for surface_class in ("top", "side", "bottom"):
+        if (
+            f":{surface_class}" in lowered
+            or f"_{surface_class}" in lowered
+            or f"-{surface_class}" in lowered
+        ):
+            return surface_class
+    return None
+
+
+def _contact_target_surface_class(contact: Any) -> str | None:
+    """Return the environment surface class explicitly bound to one patch."""
+
+    metadata = dict(getattr(contact, "metadata", {}) or {})
+    return _surface_class(
+        getattr(contact, "surface_id", None)
+        or metadata.get("target_surface_id")
+    )
+
+
 def _robot_min_geometry_distance_by_body_surface(
     contacts: Any,
 ) -> dict[tuple[str, str], float]:
@@ -798,20 +887,13 @@ def _contact_part_for_body_name(body_name: str) -> str | None:
     return None
 
 
-def _is_authoritative_collision_body(
+def _is_contact_reference_body(
     body_name: str,
     part_name: str,
 ) -> bool:
-    expected = {
-        "LF": "left_ankle_roll_link",
-        "RF": "right_ankle_roll_link",
-        "LH": "left_sphere_hand_link",
-        "RH": "right_sphere_hand_link",
-        "LK": "left_knee_link",
-        "RK": "right_knee_link",
-        "LHIP": "left_hip_roll_link",
-        "RHIP": "right_hip_roll_link",
-    }.get(str(part_name))
+    """Keep the mature six-part depth tracking contract unchanged."""
+
+    expected = CONTACT_REFERENCE_BODY_BY_PART.get(str(part_name))
     return expected == str(body_name)
 
 
@@ -832,6 +914,7 @@ def solve_pyroki_fullbody_ik(
     q_acceleration_weight: float = 1.0,
     collision_similarity_weight: float = 25.0,
     collision_max_refinements: int = 1,
+    self_collision_weight: float = 20_000.0,
 ) -> Path:
     import jax
     import jax.numpy as jnp
@@ -839,6 +922,7 @@ def solve_pyroki_fullbody_ik(
     import yourdfpy
 
     payload = _load_npz(lte_path)
+    collision_spec: ContactAwareTaskspaceMotion | None = None
     collision_terrain_mesh: str | None = None
     collision_source_terrain_mesh: str | None = None
     collision_reference_motion_path: str | None = None
@@ -1011,7 +1095,7 @@ def solve_pyroki_fullbody_ik(
         return vector + 2.0 * (quat[..., :1] * uv + uuv)
 
     def residual_jax(
-        q_cfg: Any,
+        solve_state: Any,
         semantic_target_base: Any,
         semantic_sqrt_weight: Any,
         contact_link_indices: Any,
@@ -1031,13 +1115,27 @@ def solve_pyroki_fullbody_ik(
         collision_terrain_points_base: Any,
         collision_similarity_weight: Any,
         collision_deeper_weight: Any,
+        self_collision_link_a: Any,
+        self_collision_point_a_local: Any,
+        self_collision_link_b: Any,
+        self_collision_point_b_local: Any,
+        self_collision_normals_base: Any,
+        self_collision_sqrt_weight: Any,
+        root_delta_previous: Any,
+        root_delta_previous_previous: Any,
     ) -> Any:
+        root_delta = solve_state[:3]
+        q_cfg = solve_state[3:]
         fk = robot.forward_kinematics(q_cfg)
-        semantic_pos = fk[semantic_indices_jax, 4:7]
+        semantic_pos = fk[semantic_indices_jax, 4:7] + root_delta
         semantic_res = ((semantic_pos - semantic_target_base) * semantic_sqrt_weight[:, None]).reshape(-1)
 
         contact_pose = fk[contact_link_indices]
-        contact_pred = contact_pose[:, 4:7] + quat_apply_jax(contact_pose[:, :4], contact_points_local)
+        contact_pred = (
+            contact_pose[:, 4:7]
+            + quat_apply_jax(contact_pose[:, :4], contact_points_local)
+            + root_delta
+        )
         contact_res = ((contact_pred - contact_target_base) * contact_sqrt_weight[:, None]).reshape(-1)
 
         prior_res = (q_cfg - q_prior) * q_prior_scale
@@ -1075,6 +1173,7 @@ def solve_pyroki_fullbody_ik(
                 collision_pose[:, :4],
                 collision_points_local,
             )
+            + root_delta
         )
         collision_signed_distance = jnp.sum(
             (
@@ -1091,6 +1190,41 @@ def solve_pyroki_fullbody_ik(
             jnp.minimum(collision_signed_distance, 0.0)
             * collision_deeper_weight
         )
+        self_pose_a = fk[self_collision_link_a]
+        self_pose_b = fk[self_collision_link_b]
+        self_point_a = (
+            self_pose_a[:, 4:7]
+            + quat_apply_jax(
+                self_pose_a[:, :4],
+                self_collision_point_a_local,
+            )
+        )
+        self_point_b = (
+            self_pose_b[:, 4:7]
+            + quat_apply_jax(
+                self_pose_b[:, :4],
+                self_collision_point_b_local,
+            )
+        )
+        self_signed_distance = jnp.sum(
+            (self_point_b - self_point_a)
+            * self_collision_normals_base,
+            axis=-1,
+        )
+        self_collision_res = self_collision_barrier_residual(
+            self_signed_distance,
+            self_collision_sqrt_weight,
+            array_module=jnp,
+        )
+        root_delta_prior_res = root_delta * np.sqrt(25.0)
+        root_delta_velocity_res = (
+            root_delta - root_delta_previous
+        ) * np.sqrt(100.0)
+        root_delta_acceleration_res = (
+            root_delta
+            - 2.0 * root_delta_previous
+            + root_delta_previous_previous
+        ) * np.sqrt(400.0)
         return jnp.concatenate(
             [
                 semantic_res,
@@ -1102,6 +1236,10 @@ def solve_pyroki_fullbody_ik(
                 foot_orientation_res,
                 collision_similarity_res,
                 collision_deeper_res,
+                self_collision_res,
+                root_delta_prior_res,
+                root_delta_velocity_res,
+                root_delta_acceleration_res,
             ],
             axis=0,
         )
@@ -1110,8 +1248,11 @@ def solve_pyroki_fullbody_ik(
     jac_compiled = jax.jit(jax.jacfwd(residual_jax, argnums=0))
 
     out_cfg = np.zeros((n_frames, actuated_count), dtype=np.float64)
+    out_root_delta_base = np.zeros((n_frames, 3), dtype=np.float64)
     q_previous = cfg_source[0]
     q_previous_previous = cfg_source[0]
+    root_delta_previous = np.zeros(3, dtype=np.float64)
+    root_delta_previous_previous = np.zeros(3, dtype=np.float64)
     success: list[bool] = []
     nfev: list[int] = []
     costs: list[float] = []
@@ -1123,14 +1264,23 @@ def solve_pyroki_fullbody_ik(
         np.zeros((collision_slots, 3), dtype=np.float64),
         np.zeros(collision_slots, dtype=np.float64),
         np.zeros(collision_slots, dtype=np.float64),
+        np.zeros(collision_slots, dtype=np.int32),
+        np.zeros((collision_slots, 3), dtype=np.float64),
+        np.zeros(collision_slots, dtype=np.int32),
+        np.zeros((collision_slots, 3), dtype=np.float64),
+        np.zeros((collision_slots, 3), dtype=np.float64),
+        np.zeros(collision_slots, dtype=np.float64),
     )
     collision_similarity_weight_value = float(collision_similarity_weight)
     collision_deeper_weight_value = 100.0
     collision_max_refinements_value = int(collision_max_refinements)
+    self_collision_weight_value = float(self_collision_weight)
     if collision_similarity_weight_value < 0.0:
         raise ValueError("collision_similarity_weight must be non-negative")
     if collision_max_refinements_value < 0:
         raise ValueError("collision_max_refinements must be non-negative")
+    if self_collision_weight_value < 0.0:
+        raise ValueError("self_collision_weight must be non-negative")
     collision_scene = (
         DirectNewtonCollisionScene(collision_terrain_mesh, device="cpu")
         if collision_terrain_mesh is not None
@@ -1187,9 +1337,48 @@ def solve_pyroki_fullbody_ik(
     collision_initial_similarity_errors: list[float] = []
     collision_final_similarity_errors: list[float] = []
     collision_refinement_solve_count = 0
+    self_collision_initial_active_frames = 0
+    self_collision_final_active_frames = 0
+    self_collision_initial_max_m = 0.0
+    self_collision_final_max_m = 0.0
+    self_collision_initial_pairs: set[tuple[str, str]] = set()
+    self_collision_final_pairs: set[tuple[str, str]] = set()
     link_index_by_name = {
         name: index for index, name in enumerate(link_names)
     }
+    root_delta_limit_m = 0.04
+    solve_lower = np.concatenate(
+        (np.full(3, -root_delta_limit_m), lower)
+    )
+    solve_upper = np.concatenate(
+        (np.full(3, root_delta_limit_m), upper)
+    )
+    active_contact_surface_weight: list[
+        dict[tuple[str, str], float]
+    ] = [dict() for _ in range(n_frames)]
+    if collision_spec is not None:
+        for contact in collision_spec.contacts:
+            part_name = _contact_part_for_body_name(contact.body_label)
+            surface_class = _contact_target_surface_class(contact)
+            if part_name is None or surface_class is None:
+                continue
+            weight = float(
+                edited_contact_weight
+                if contact.kind == "edited_contact"
+                else fixed_contact_weight
+            )
+            for absolute_frame in np.asarray(
+                contact.frames,
+                dtype=np.int64,
+            ).tolist():
+                frame = int(absolute_frame) - int(collision_spec.frame_start)
+                if not 0 <= frame < n_frames:
+                    continue
+                key = (part_name, surface_class)
+                active_contact_surface_weight[frame][key] = max(
+                    active_contact_surface_weight[frame].get(key, 0.0),
+                    weight,
+                )
 
     for frame in range(n_frames):
         root = root_source[frame].copy()
@@ -1202,21 +1391,7 @@ def solve_pyroki_fullbody_ik(
         )
         semantic_sqrt_weight = np.sqrt(np.maximum(compiled.semantic_weights[frame], 0.0))
         contact_sqrt_weight = np.sqrt(np.maximum(compiled.contact_weights[frame], 0.0))
-        active_part_weight: dict[str, float] = {}
-        for contact_link_index, contact_weight in zip(
-            compiled.contact_link_indices[frame].tolist(),
-            compiled.contact_weights[frame].tolist(),
-        ):
-            if float(contact_weight) <= 0.0:
-                continue
-            part_name = _contact_part_for_body_name(
-                link_names[int(contact_link_index)]
-            )
-            if part_name is not None:
-                active_part_weight[part_name] = max(
-                    active_part_weight.get(part_name, 0.0),
-                    float(contact_weight),
-                )
+        active_surface_weight = active_contact_surface_weight[frame]
         prior_scale = (
             float(q_prior_weight) * np.maximum(source_reference[frame], 0.0)
             + float(boundary_pin_weight) * float(boundary_weights[frame])
@@ -1224,7 +1399,16 @@ def solve_pyroki_fullbody_ik(
         q_prior = cfg_source[frame]
         q_prior_previous = cfg_source[max(frame - 1, 0)]
         q_prior_previous_previous = cfg_source[max(frame - 2, 0)]
-        x0 = np.clip(q_previous if frame > 0 else q_prior, lower, upper)
+        x0 = np.clip(
+            np.concatenate(
+                (
+                    root_delta_previous,
+                    q_previous if frame > 0 else q_prior,
+                )
+            ),
+            solve_lower,
+            solve_upper,
+        )
 
         args = (
             np.asarray(semantic_target_base, dtype=np.float64),
@@ -1241,6 +1425,11 @@ def solve_pyroki_fullbody_ik(
             np.asarray(prior_scale, dtype=np.float64),
             np.asarray(source_foot_orientations[frame], dtype=np.float64),
             *inactive_collision_args,
+            np.asarray(root_delta_previous, dtype=np.float64),
+            np.asarray(
+                root_delta_previous_previous,
+                dtype=np.float64,
+            ),
         )
 
         def fun(x: np.ndarray) -> np.ndarray:
@@ -1253,7 +1442,7 @@ def solve_pyroki_fullbody_ik(
             fun,
             x0,
             jac=jac,
-            bounds=(lower, upper),
+            bounds=(solve_lower, solve_upper),
             max_nfev=int(max_nfev),
             xtol=1.0e-5,
             ftol=1.0e-5,
@@ -1261,10 +1450,16 @@ def solve_pyroki_fullbody_ik(
         )
         frame_nfev = int(result.nfev)
         frame_success = bool(result.success)
-        candidate_cfg = np.clip(result.x, lower, upper)
+        candidate_root_delta = np.clip(
+            result.x[:3],
+            solve_lower[:3],
+            solve_upper[:3],
+        )
+        candidate_cfg = np.clip(result.x[3:], lower, upper)
 
         def active_collision_contacts(
             q_cfg: np.ndarray,
+            root_delta_base: np.ndarray,
         ) -> tuple[
             Any | None,
             list[
@@ -1285,7 +1480,9 @@ def solve_pyroki_fullbody_ik(
         ]:
             if collision_scene is None:
                 return None, [], 0.0, 0.0, []
-            qpos_query = np.concatenate([root, q_cfg], axis=0)
+            query_root = root.copy()
+            query_root[:3] += root_rotation.apply(root_delta_base)
+            qpos_query = np.concatenate([query_root, q_cfg], axis=0)
             contacts = collision_scene.query_qpos(qpos_query)
             reference_signed_by_body_surface = (
                 collision_reference_signed_distances[frame]
@@ -1309,6 +1506,7 @@ def solve_pyroki_fullbody_ik(
                     contact_index=int(contact_index),
                 )
                 body_surface_key = (body_name, surface_key)
+                surface_class = _surface_class(surface_key)
                 depth = max(0.0, -signed_distance)
                 raw_max = max(raw_max, depth)
                 previous_contact = closest_target_by_body_surface.get(
@@ -1348,10 +1546,12 @@ def solve_pyroki_fullbody_ik(
                     (body_name, surface_key)
                 )
                 is_active_contact = (
-                    part_name in active_part_weight
+                    surface_class is not None
+                    and (part_name, surface_class)
+                    in active_surface_weight
                     and reference_signed is not None
                     and part_name is not None
-                    and _is_authoritative_collision_body(
+                    and _is_contact_reference_body(
                         body_name,
                         part_name,
                     )
@@ -1390,7 +1590,11 @@ def solve_pyroki_fullbody_ik(
                         signed_distance,
                         target_signed,
                         similarity_weight,
-                        collision_deeper_weight_value,
+                        _environment_deeper_weight_for_body(
+                            body_name,
+                            collision_deeper_weight_value,
+                            is_active_contact=is_active_contact,
+                        ),
                         abs(signed_distance - target_signed),
                         excess_depth,
                     )
@@ -1403,13 +1607,74 @@ def solve_pyroki_fullbody_ik(
                 similarity_errors,
             )
 
+        def active_self_collision_contacts(
+            contacts: Any | None,
+        ) -> tuple[list[tuple[int, str, str, float]], float]:
+            if contacts is None:
+                return [], 0.0
+            closest_by_pair: dict[
+                tuple[str, str],
+                tuple[int, str, str, float],
+            ] = {}
+            for contact_index in range(len(contacts.geometry_distance_m)):
+                body_a = int(contacts.body0[contact_index])
+                body_b = int(contacts.body1[contact_index])
+                if body_a < 0 or body_b < 0 or body_a == body_b:
+                    continue
+                name_a = collision_scene.body_names[body_a]
+                name_b = collision_scene.body_names[body_b]
+                if (
+                    name_a not in link_index_by_name
+                    or name_b not in link_index_by_name
+                ):
+                    continue
+                signed_distance = float(
+                    contacts.geometry_distance_m[contact_index]
+                )
+                if signed_distance >= 0.0:
+                    continue
+                key = tuple(sorted((name_a, name_b)))
+                previous = closest_by_pair.get(key)
+                if previous is None or signed_distance < previous[3]:
+                    closest_by_pair[key] = (
+                        contact_index,
+                        name_a,
+                        name_b,
+                        signed_distance,
+                    )
+            selected = sorted(
+                closest_by_pair.values(),
+                key=lambda item: item[3],
+            )
+            maximum = max(
+                (-item[3] for item in selected),
+                default=0.0,
+            )
+            return selected, maximum
+
         (
             initial_contacts,
             active_contacts,
             initial_raw_max,
             initial_excess_max,
             initial_similarity_errors,
-        ) = active_collision_contacts(candidate_cfg)
+        ) = active_collision_contacts(
+            candidate_cfg,
+            candidate_root_delta,
+        )
+        active_self_contacts, initial_self_max = (
+            active_self_collision_contacts(initial_contacts)
+        )
+        self_collision_initial_max_m = max(
+            self_collision_initial_max_m,
+            initial_self_max,
+        )
+        if active_self_contacts:
+            self_collision_initial_active_frames += 1
+            self_collision_initial_pairs.update(
+                tuple(sorted((item[1], item[2])))
+                for item in active_self_contacts
+            )
         collision_initial_raw_max_m = max(
             collision_initial_raw_max_m,
             initial_raw_max,
@@ -1428,11 +1693,14 @@ def solve_pyroki_fullbody_ik(
         final_raw_max = initial_raw_max
         final_excess_max = initial_excess_max
         final_similarity_errors = initial_similarity_errors
+        final_self_max = initial_self_max
         if active_contacts:
             collision_initial_active_frames += 1
 
         for _ in range(collision_max_refinements_value):
-            if initial_contacts is None or not active_contacts:
+            if initial_contacts is None or (
+                not active_contacts and not active_self_contacts
+            ):
                 break
             collision_link_indices = np.zeros(
                 collision_slots,
@@ -1458,14 +1726,42 @@ def solve_pyroki_fullbody_ik(
                 collision_slots,
                 dtype=np.float64,
             )
+            self_collision_link_a = np.zeros(
+                collision_slots,
+                dtype=np.int32,
+            )
+            self_collision_point_a_local = np.zeros(
+                (collision_slots, 3),
+                dtype=np.float64,
+            )
+            self_collision_link_b = np.zeros(
+                collision_slots,
+                dtype=np.int32,
+            )
+            self_collision_point_b_local = np.zeros(
+                (collision_slots, 3),
+                dtype=np.float64,
+            )
+            self_collision_normals_base = np.zeros(
+                (collision_slots, 3),
+                dtype=np.float64,
+            )
+            self_collision_sqrt_weight = np.zeros(
+                collision_slots,
+                dtype=np.float64,
+            )
 
             fk_frame = np.asarray(
                 robot.forward_kinematics(jnp.asarray(candidate_cfg)),
                 dtype=np.float64,
             )
+            candidate_root = root.copy()
+            candidate_root[:3] += root_rotation.apply(
+                candidate_root_delta
+            )
             body_position_w, body_quaternion_w = (
                 world_body_poses_from_pyroki_fk(
-                    root[None, :],
+                    candidate_root[None, :],
                     fk_frame[None, ...],
                 )
             )
@@ -1506,8 +1802,45 @@ def solve_pyroki_fullbody_ik(
                 collision_points_local[slot] = point_local
                 collision_normals_base[slot] = normal_base
                 collision_terrain_points_base[slot] = terrain_point_base
-                collision_similarity_weight[slot] = similarity_weight
-                collision_deeper_weight[slot] = deeper_weight
+                collision_similarity_weight[slot] = _least_squares_sqrt_weight(
+                    similarity_weight
+                )
+                collision_deeper_weight[slot] = _least_squares_sqrt_weight(
+                    deeper_weight
+                )
+
+            for slot, (
+                contact_index,
+                body_a_name,
+                body_b_name,
+                _signed_distance,
+            ) in enumerate(active_self_contacts[:collision_slots]):
+                link_a = link_index_by_name[body_a_name]
+                link_b = link_index_by_name[body_b_name]
+                rotation_a = _quat_wxyz_to_rotation(
+                    body_quaternion_w[0, link_a]
+                )
+                rotation_b = _quat_wxyz_to_rotation(
+                    body_quaternion_w[0, link_b]
+                )
+                self_collision_link_a[slot] = int(link_a)
+                self_collision_link_b[slot] = int(link_b)
+                self_collision_point_a_local[slot] = rotation_a.inv().apply(
+                    initial_contacts.point0_w[contact_index]
+                    - body_position_w[0, link_a]
+                )
+                self_collision_point_b_local[slot] = rotation_b.inv().apply(
+                    initial_contacts.point1_w[contact_index]
+                    - body_position_w[0, link_b]
+                )
+                self_collision_normals_base[slot] = (
+                    root_rotation.inv().apply(
+                        initial_contacts.normal_a_to_b_w[contact_index]
+                    )
+                )
+                self_collision_sqrt_weight[slot] = np.sqrt(
+                    self_collision_weight_value
+                )
 
             args = (
                 np.asarray(semantic_target_base, dtype=np.float64),
@@ -1541,12 +1874,26 @@ def solve_pyroki_fullbody_ik(
                 collision_terrain_points_base,
                 collision_similarity_weight,
                 collision_deeper_weight,
+                self_collision_link_a,
+                self_collision_point_a_local,
+                self_collision_link_b,
+                self_collision_point_b_local,
+                self_collision_normals_base,
+                self_collision_sqrt_weight,
+                np.asarray(root_delta_previous, dtype=np.float64),
+                np.asarray(
+                    root_delta_previous_previous,
+                    dtype=np.float64,
+                ),
+            )
+            candidate_state = np.concatenate(
+                (candidate_root_delta, candidate_cfg)
             )
             refined = least_squares(
                 fun,
-                candidate_cfg,
+                candidate_state,
                 jac=jac,
-                bounds=(lower, upper),
+                bounds=(solve_lower, solve_upper),
                 max_nfev=int(max_nfev),
                 xtol=1.0e-5,
                 ftol=1.0e-5,
@@ -1555,7 +1902,12 @@ def solve_pyroki_fullbody_ik(
             collision_refinement_solve_count += 1
             frame_nfev += int(refined.nfev)
             frame_success = frame_success and bool(refined.success)
-            candidate_cfg = np.clip(refined.x, lower, upper)
+            candidate_root_delta = np.clip(
+                refined.x[:3],
+                solve_lower[:3],
+                solve_upper[:3],
+            )
+            candidate_cfg = np.clip(refined.x[3:], lower, upper)
             result = refined
             (
                 initial_contacts,
@@ -1563,7 +1915,13 @@ def solve_pyroki_fullbody_ik(
                 final_raw_max,
                 final_excess_max,
                 final_similarity_errors,
-            ) = active_collision_contacts(candidate_cfg)
+            ) = active_collision_contacts(
+                candidate_cfg,
+                candidate_root_delta,
+            )
+            active_self_contacts, final_self_max = (
+                active_self_collision_contacts(initial_contacts)
+            )
 
         collision_final_raw_max_m = max(
             collision_final_raw_max_m,
@@ -1580,19 +1938,46 @@ def solve_pyroki_fullbody_ik(
         )
         if active_contacts:
             collision_final_active_frames += 1
+        self_collision_final_max_m = max(
+            self_collision_final_max_m,
+            final_self_max,
+        )
+        if active_self_contacts:
+            self_collision_final_active_frames += 1
+            self_collision_final_pairs.update(
+                tuple(sorted((item[1], item[2])))
+                for item in active_self_contacts
+            )
         q_previous_previous = q_previous
         q_previous = candidate_cfg
+        root_delta_previous_previous = root_delta_previous
+        root_delta_previous = candidate_root_delta
         out_cfg[frame] = q_previous
+        out_root_delta_base[frame] = root_delta_previous
         success.append(frame_success)
         nfev.append(frame_nfev)
         costs.append(float(result.cost))
 
-    qpos = np.concatenate([root_source[:n_frames], out_cfg], axis=1)
+    solved_root = root_source[:n_frames].copy()
+    solved_root[:, :3] += np.stack(
+        [
+            _quat_wxyz_to_rotation(root[3:7]).apply(delta)
+            for root, delta in zip(
+                solved_root,
+                out_root_delta_base,
+            )
+        ],
+        axis=0,
+    )
+    qpos = np.concatenate([solved_root, out_cfg], axis=1)
     qpos[:, 3:7] = normalize_quat_wxyz(qpos[:, 3:7])
     qvel = holosoma_joint_velocities(qpos, fps)
 
     fk_base = np.asarray(robot.forward_kinematics(jnp.asarray(out_cfg)), dtype=np.float64)
-    body_pos_w, body_quat_w = world_body_poses_from_pyroki_fk(root_source[:n_frames], fk_base)
+    body_pos_w, body_quat_w = world_body_poses_from_pyroki_fk(
+        solved_root,
+        fk_base,
+    )
     body_lin_vel_w, body_ang_vel_w = holosoma_body_velocities(body_pos_w, body_quat_w, fps)
 
     semantic_pred = body_pos_w[:, compiled.semantic_link_indices]
@@ -1642,6 +2027,17 @@ def solve_pyroki_fullbody_ik(
         "source_foot_orientation_link_count": len(foot_orientation_indices),
         "source_velocity_weight": float(q_velocity_weight),
         "source_acceleration_weight": float(q_acceleration_weight),
+        "root_translation_limit_m": float(root_delta_limit_m),
+        "root_translation_delta_m": _stats(
+            np.linalg.norm(out_root_delta_base, axis=-1)
+        ),
+        "root_translation_velocity_mps": _stats(
+            np.diff(out_root_delta_base, axis=0) * float(fps)
+        ),
+        "root_translation_acceleration_mps2": _stats(
+            np.diff(out_root_delta_base, n=2, axis=0)
+            * float(fps) ** 2
+        ),
         "environment_collision_backend": (
             "newton_soft_signed_distance_integrated_frame_ik"
             if collision_terrain_mesh is not None
@@ -1715,10 +2111,52 @@ def solve_pyroki_fullbody_ik(
         "environment_collision_deeper_weight": float(
             collision_deeper_weight_value
         ),
+        "environment_collision_fullbody_deeper_weight_multiplier": float(
+            FULLBODY_DEEPER_WEIGHT_MULTIPLIER
+        ),
+        "environment_collision_contact_capable_deeper_weight_multiplier": float(
+            CONTACT_CAPABLE_DEEPER_WEIGHT_MULTIPLIER
+        ),
+        "environment_collision_active_contact_deeper_weight_multiplier": 1.0,
+        "environment_collision_active_contact_parts": sorted(
+            CONTACT_CAPABLE_COLLISION_PARTS
+        ),
+        "environment_collision_contact_reference_body_by_part": dict(
+            CONTACT_REFERENCE_BODY_BY_PART
+        ),
         "environment_collision_similarity_force_weighting": (
             "force_norm_over_force_norm_plus_positive_median"
         ),
         "environment_collision_fixed_distance_tolerance_m": None,
+        "self_collision_backend": (
+            "newton_filtered_geometry_soft_barrier"
+            if collision_scene is not None
+            else "disabled"
+        ),
+        "self_collision_contract": (
+            "zero_geometry_clearance_one_sided_barrier"
+            if collision_scene is not None
+            else "disabled"
+        ),
+        "self_collision_weight": float(self_collision_weight_value),
+        "self_collision_initial_active_frame_count": int(
+            self_collision_initial_active_frames
+        ),
+        "self_collision_active_frame_count": int(
+            self_collision_final_active_frames
+        ),
+        "self_collision_initial_penetration_max_m": float(
+            self_collision_initial_max_m
+        ),
+        "self_collision_penetration_max_m": float(
+            self_collision_final_max_m
+        ),
+        "self_collision_initial_pairs": [
+            list(pair) for pair in sorted(self_collision_initial_pairs)
+        ],
+        "self_collision_unresolved_pairs": [
+            list(pair) for pair in sorted(self_collision_final_pairs)
+        ],
         "root_body_position_error_max_m": root_position_error,
         "root_body_quaternion_error_max": root_quaternion_error,
         "newton_canonicalization_required": True,
@@ -1780,6 +2218,11 @@ def main(argv: list[str] | None = None) -> None:
         type=int,
         default=1,
     )
+    parser.add_argument(
+        "--self-collision-weight",
+        type=float,
+        default=20_000.0,
+    )
     # Compatibility arguments retained for existing callers. Contact patch points
     # replace the old contact-only toe/orientation pseudo-targets.
     parser.add_argument("--contact-foot-orientation-weight", type=float, default=80.0)
@@ -1805,6 +2248,7 @@ def main(argv: list[str] | None = None) -> None:
         q_acceleration_weight=args.q_acceleration_weight,
         collision_similarity_weight=args.collision_similarity_weight,
         collision_max_refinements=args.collision_max_refinements,
+        self_collision_weight=args.self_collision_weight,
     )
 
 

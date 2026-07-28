@@ -74,6 +74,7 @@ def test_motion_reset_sampler_modes_are_current() -> None:
         "uniform",
         "adaptive",
         "failure_window",
+        "completion_ema_failure_window",
         "hotspot_failure_window",
     }
 

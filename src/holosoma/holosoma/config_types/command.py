@@ -108,6 +108,7 @@ class MotionConfig:
         "uniform",
         "adaptive",
         "failure_window",
+        "completion_ema_failure_window",
         "hotspot_failure_window",
     ] = "uniform"
     """Reset timestep sampler: uniform RSI, adaptive bins, or failure-window variants."""
@@ -134,13 +135,13 @@ class MotionConfig:
     """Internal-reset a failure-window retry after it runs this many frames past the original failure frame."""
 
     hotspot_failure_uniform_mix: float = 0.3
-    """Probability of using ordinary uniform RSI instead of hotspot replay for hotspot_failure_window normal resets."""
+    """Uniform-RSI mixture for completion-EMA failure-window resets."""
 
     hotspot_failure_decay: float = 0.995
-    """EMA decay applied when converting recent hotspot failure counts into replay weights."""
+    """Deprecated compatibility field; completion-EMA replay does not accumulate hotspot weights."""
 
     hotspot_failure_min_count: float = 1.0
-    """Minimum total hotspot weight before hotspot replay is used."""
+    """Deprecated compatibility field; completion-EMA replay starts after probe statistics exist."""
 
     start_at_timestep_zero_prob: float = 0.0
     """Probability of starting at timestep zero."""
