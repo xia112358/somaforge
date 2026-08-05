@@ -11,10 +11,12 @@ from motion_edit.generation.pyroki_fullbody_ik import (
     _environment_deeper_weight_for_body,
     _is_contact_reference_body,
     _least_squares_sqrt_weight,
+    _load_collision_reference_cache,
     _robot_min_geometry_distance_by_body,
     _robot_min_geometry_distance_by_body_surface,
     _robot_penetration_depth_by_body,
     _surface_class,
+    _write_collision_reference_cache,
     self_collision_barrier_residual,
 )
 from motion_edit.generation.pyroki_taskspace import (
@@ -24,6 +26,44 @@ from motion_edit.generation.pyroki_taskspace import (
     world_body_poses_from_pyroki_fk,
 )
 from motion_edit.generation.taskspace_spec import ContactAwareTaskspaceMotion, ContactPatchTarget
+
+
+def test_collision_reference_cache_roundtrip_and_identity_guard(
+    tmp_path,
+) -> None:
+    cache_path = tmp_path / "reference_cache.npz"
+    metadata = {
+        "schema": "newton_collision_reference_v1",
+        "source_terrain_sha256": "terrain",
+        "reference_qpos_sha256": "motion",
+        "robot_urdf_sha256": "robot",
+        "frame_count": 2,
+    }
+    frames = [
+        {
+            ("left_ankle_roll_link", "terrain_ground:ground"): -0.001,
+            ("left_knee_link", "terrain_obstacle:top"): 0.002,
+        },
+        {},
+    ]
+
+    _write_collision_reference_cache(
+        cache_path,
+        metadata=metadata,
+        frames=frames,
+    )
+
+    assert _load_collision_reference_cache(
+        cache_path,
+        expected_metadata=metadata,
+    ) == frames
+    assert (
+        _load_collision_reference_cache(
+            cache_path,
+            expected_metadata={**metadata, "reference_qpos_sha256": "other"},
+        )
+        is None
+    )
 
 
 def test_contact_capable_bodies_receive_priority_environment_barrier() -> None:
@@ -193,6 +233,30 @@ def test_compile_pyroki_taskspace_resolves_semantics_and_global_contact_frames()
     np.testing.assert_allclose(compiled.contact_targets_w[2, 0], [1.1, 2.0, 0.0])
     assert compiled.unresolved_semantics == ()
     assert compiled.unresolved_contacts == ()
+
+
+def test_compile_pyroki_taskspace_uses_rolling_local_points_by_frame() -> None:
+    spec = _spec()
+    rolling = ContactPatchTarget(
+        **{
+            **spec.contacts[0].__dict__,
+            "points_local_by_frame": np.asarray(
+                [[[0.2, 0.0, -0.05]], [[0.3, 0.0, -0.05]]],
+                dtype=np.float64,
+            ),
+        }
+    )
+    rolling_spec = ContactAwareTaskspaceMotion(
+        **{**spec.__dict__, "contacts": (rolling,)}
+    )
+
+    compiled = compile_pyroki_taskspace(
+        rolling_spec,
+        ("pelvis", "left_ankle_roll_link", "left_elbow_link"),
+    )
+
+    np.testing.assert_allclose(compiled.contact_points_local[1, 0], [0.2, 0.0, -0.05])
+    np.testing.assert_allclose(compiled.contact_points_local[2, 0], [0.3, 0.0, -0.05])
 
 
 def test_compile_pyroki_taskspace_keeps_full_contact_weight_at_boundaries() -> None:

@@ -108,6 +108,9 @@ def test_merge_pyroki_preview_overwrites_kinematics_and_drops_stale_provenance()
         "contact_force_provenance_json": np.asarray("stale"),
         "raw_contact_count": np.asarray([1, 1]),
         "contact_force_part_w": np.ones((2, 1, 3), dtype=np.float32),
+        "contact_force_part_mask": np.ones((2, 1), dtype=bool),
+        "contact_force_part_order": np.asarray(["LF"], dtype=object),
+        "contact_force_demo_threshold": np.asarray(10.0),
     }
     ik = {
         "fps": np.asarray(50.0),
@@ -135,6 +138,9 @@ def test_merge_pyroki_preview_overwrites_kinematics_and_drops_stale_provenance()
     assert "contact_force_provenance_json" not in generated
     assert "raw_contact_count" not in generated
     assert "contact_force_part_w" not in generated
+    assert "contact_force_part_mask" not in generated
+    assert "contact_force_part_order" not in generated
+    assert "contact_force_demo_threshold" not in generated
     assert generated["joint_vel"].shape == (2, 8)
     assert generated["body_pos_w"].shape == (2, 2, 3)
     assert bool(generated["newton_canonicalization_required"].item())

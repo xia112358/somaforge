@@ -106,14 +106,77 @@ def _cmd_import_force_proto(args: argparse.Namespace) -> None:
             str(Path(record.motion_path).expanduser().resolve()): record
             for record in list_motion_assets()
         }
+    motion_paths = sorted(motion_dir.glob(args.pattern))
+    explicit_motion_id = getattr(args, "motion_id", None)
+    if explicit_motion_id and len(motion_paths) != 1:
+        raise ValueError("--motion-id requires --pattern to match exactly one motion")
     total = 0
-    for motion_path in sorted(motion_dir.glob(args.pattern)):
+    for motion_path in motion_paths:
         registered = registered_by_path.get(str(motion_path.resolve()))
-        motion_id = registered.motion_id if registered is not None and registered.motion_id else None
+        motion_id = explicit_motion_id or (
+            registered.motion_id
+            if registered is not None and registered.motion_id
+            else None
+        )
         segments = segments_from_masked_motion(motion_path, source=args.source, status="candidate", motion_id=motion_id)
         write_layer(out_dir / f"{motion_path.stem}.jsonl", segments)
         graph = contact_graph_from_masked_motion(motion_path, source=args.source, motion_id=motion_id)
+        surfaces = None
+        surface_catalog = getattr(args, "surface_catalog", None)
+        max_surface_distance = float(
+            getattr(args, "max_surface_distance", 0.08)
+        )
+        if surface_catalog:
+            surfaces = read_contact_surfaces(Path(surface_catalog).expanduser())
+            graph = refine_contact_graph_anchor_positions_from_raw_contacts(
+                graph,
+                motion_path,
+                surfaces=surfaces,
+                max_surface_distance=max_surface_distance,
+            )
+            graph = split_foot_contact_anchors(graph)
+            graph, _filter_events = filter_short_raw_missing_anchors(
+                graph,
+                drop_classes={
+                    "raw_missing",
+                    "edge_candidate",
+                    "outside_known_surfaces",
+                },
+                source="import_force_proto_surface_filter",
+            )
+            bound_anchors = bind_anchors_to_surfaces(
+                graph.anchors,
+                surfaces,
+                max_distance=max_surface_distance,
+                mode="reject",
+            )
+            graph = ContactGraph(
+                motion_id=graph.motion_id,
+                events=graph.events,
+                anchors=bound_anchors,
+                patches=patches_from_anchors(bound_anchors),
+                transitions=graph.transitions,
+            )
+            counts = _surface_binding_counts(graph)
+            if counts["unbound_count"] or counts["failed_count"]:
+                raise ValueError(
+                    "surface-aware force proto import requires every retained "
+                    "contact anchor to be bound: "
+                    f"anchors={counts['anchor_count']} "
+                    f"bound={counts['bound_count']} "
+                    f"unbound={counts['unbound_count']} "
+                    f"failed={counts['failed_count']}"
+                )
         write_contact_layer(LAYERS_ROOT / "contact" / args.layer_name, graph)
+        if surfaces is not None:
+            write_contact_surfaces(
+                LAYERS_ROOT
+                / "contact"
+                / args.layer_name
+                / "surfaces"
+                / f"{graph.motion_id}.jsonl",
+                surfaces,
+            )
         if registered is not None and getattr(args, "update_motions", False):
             derived = dict(registered.derived or {})
             derived["contact_layer"] = f"contact/{args.layer_name}"
@@ -1496,6 +1559,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pattern", default="*.npz")
     p.add_argument("--layer-name", default="force_contact")
     p.add_argument("--source", default="force_contact")
+    p.add_argument("--motion-id", default=None)
+    p.add_argument("--surface-catalog", default=None)
+    p.add_argument("--max-surface-distance", type=float, default=0.08)
     p.add_argument("--use-registered-motion-ids", action="store_true")
     p.add_argument("--update-motions", action="store_true")
     p.set_defaults(func=_cmd_import_force_proto)
@@ -2043,3 +2109,7 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     args.func(args)
+
+
+if __name__ == "__main__":
+    main()

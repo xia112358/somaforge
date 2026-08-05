@@ -36,7 +36,10 @@ def test_sole_anchor_reads_nested_heel_and_toe_shape_ids_only() -> None:
             [[[-0.05, 0.0, -0.03], [0.14, 0.0, -0.03], [0.04, 0.0, -0.03]]],
             dtype=np.float64,
         ),
-        "raw_contact_point1_w": np.zeros((1, 3, 3), dtype=np.float64),
+        "raw_contact_point1_w": np.asarray(
+            [[[-0.04, 0.0, -0.04], [0.13, 0.0, -0.04], [0.03, 0.0, -0.04]]],
+            dtype=np.float64,
+        ),
         "raw_contact_normal_w": np.asarray(
             [[[0.0, 0.0, -1.0]] * 3],
             dtype=np.float64,

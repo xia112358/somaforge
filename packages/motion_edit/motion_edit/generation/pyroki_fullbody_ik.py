@@ -8,7 +8,12 @@ trajectory that must be Newton-canonicalized before training use.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import socket
+import sys
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -43,8 +48,17 @@ from motion_edit.generation.taskspace_spec import ContactAwareTaskspaceMotion
 
 
 DEFAULT_ROBOT_URDF = canonical_g1_urdf_path()
+COLLISION_REFERENCE_CACHE_SCHEMA = "newton_collision_reference_v1"
 TARGET_LINK_ALIASES = SEMANTIC_LINK_ALIASES
 TARGET_WEIGHTS = SEMANTIC_DEFAULT_WEIGHTS
+_PYROKI_ROBOT_CACHE: dict[
+    tuple[str, int, int],
+    tuple[Any, tuple[str, ...], tuple[str, ...], int],
+] = {}
+_NEWTON_COLLISION_SCENE_CACHE: dict[
+    tuple[str | None, str],
+    DirectNewtonCollisionScene,
+] = {}
 SOURCE_FOOT_ORIENTATION_LINKS = (
     ("left_ankle_roll_link", "left_ankle_roll_sphere_1_link"),
     ("right_ankle_roll_link", "right_ankle_roll_sphere_1_link"),
@@ -871,6 +885,155 @@ def _robot_min_geometry_distance_by_body_surface(
     return closest
 
 
+def _sha256_file(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).expanduser().resolve().open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _cached_pyroki_robot(
+    robot_path: Path,
+    *,
+    pyroki: Any,
+    yourdfpy: Any,
+) -> tuple[Any, tuple[str, ...], tuple[str, ...], int]:
+    resolved = robot_path.expanduser().resolve()
+    stat = resolved.stat()
+    key = (str(resolved), int(stat.st_mtime_ns), int(stat.st_size))
+    cached = _PYROKI_ROBOT_CACHE.get(key)
+    if cached is not None:
+        return cached
+    urdf = yourdfpy.URDF.load(str(resolved), load_meshes=False)
+    robot = pyroki.Robot.from_urdf(urdf)
+    value = (
+        robot,
+        tuple(str(name) for name in robot.joints.actuated_names),
+        tuple(str(name) for name in robot.links.names),
+        int(robot.joints.num_actuated_joints),
+    )
+    _PYROKI_ROBOT_CACHE.clear()
+    _PYROKI_ROBOT_CACHE[key] = value
+    return value
+
+
+def _cached_newton_collision_scene(
+    terrain_mesh: str | Path | None,
+    *,
+    device: str = "cpu",
+) -> DirectNewtonCollisionScene:
+    resolved = (
+        None
+        if terrain_mesh is None
+        else str(Path(terrain_mesh).expanduser().resolve())
+    )
+    key = (resolved, str(device))
+    cached = _NEWTON_COLLISION_SCENE_CACHE.get(key)
+    if cached is None:
+        cached = DirectNewtonCollisionScene(resolved, device=device)
+        _NEWTON_COLLISION_SCENE_CACHE[key] = cached
+    return cached
+
+
+def _collision_reference_cache_metadata(
+    *,
+    source_terrain_mesh: str | Path,
+    reference_qpos: np.ndarray,
+    robot_urdf: str | Path,
+) -> dict[str, Any]:
+    qpos = np.ascontiguousarray(reference_qpos, dtype=np.float64)
+    return {
+        "schema": COLLISION_REFERENCE_CACHE_SCHEMA,
+        "source_terrain_mesh": str(
+            Path(source_terrain_mesh).expanduser().resolve()
+        ),
+        "source_terrain_sha256": _sha256_file(source_terrain_mesh),
+        "reference_qpos_sha256": hashlib.sha256(qpos.tobytes()).hexdigest(),
+        "robot_urdf": str(Path(robot_urdf).expanduser().resolve()),
+        "robot_urdf_sha256": _sha256_file(robot_urdf),
+        "frame_count": int(qpos.shape[0]),
+    }
+
+
+def _load_collision_reference_cache(
+    path: str | Path,
+    *,
+    expected_metadata: dict[str, Any],
+) -> list[dict[tuple[str, str], float]] | None:
+    cache_path = Path(path).expanduser()
+    if not cache_path.is_file():
+        return None
+    try:
+        with np.load(cache_path, allow_pickle=False) as payload:
+            metadata = json.loads(str(payload["metadata_json"].item()))
+            if metadata != expected_metadata:
+                return None
+            offsets = np.asarray(payload["frame_offsets"], dtype=np.int64)
+            body_names = np.asarray(payload["body_names"], dtype=np.str_)
+            surface_keys = np.asarray(payload["surface_keys"], dtype=np.str_)
+            distances = np.asarray(payload["signed_distances_m"], dtype=np.float64)
+    except (KeyError, OSError, ValueError, json.JSONDecodeError):
+        return None
+    frame_count = int(expected_metadata["frame_count"])
+    if (
+        offsets.shape != (frame_count + 1,)
+        or offsets[0] != 0
+        or offsets[-1] != len(distances)
+        or body_names.shape != distances.shape
+        or surface_keys.shape != distances.shape
+        or np.any(np.diff(offsets) < 0)
+        or not np.isfinite(distances).all()
+    ):
+        return None
+    result: list[dict[tuple[str, str], float]] = []
+    for frame in range(frame_count):
+        start = int(offsets[frame])
+        end = int(offsets[frame + 1])
+        result.append(
+            {
+                (str(body_names[index]), str(surface_keys[index])): float(
+                    distances[index]
+                )
+                for index in range(start, end)
+            }
+        )
+    return result
+
+
+def _write_collision_reference_cache(
+    path: str | Path,
+    *,
+    metadata: dict[str, Any],
+    frames: list[dict[tuple[str, str], float]],
+) -> None:
+    cache_path = Path(path).expanduser()
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    offsets = [0]
+    body_names: list[str] = []
+    surface_keys: list[str] = []
+    distances: list[float] = []
+    for frame in frames:
+        for (body_name, surface_key), distance in sorted(frame.items()):
+            body_names.append(body_name)
+            surface_keys.append(surface_key)
+            distances.append(float(distance))
+        offsets.append(len(distances))
+    temporary = cache_path.with_name(
+        f".{cache_path.name}.{os.getpid()}.tmp"
+    )
+    with temporary.open("wb") as stream:
+        np.savez_compressed(
+            stream,
+            metadata_json=np.asarray(json.dumps(metadata, sort_keys=True)),
+            frame_offsets=np.asarray(offsets, dtype=np.int64),
+            body_names=np.asarray(body_names, dtype=np.str_),
+            surface_keys=np.asarray(surface_keys, dtype=np.str_),
+            signed_distances_m=np.asarray(distances, dtype=np.float64),
+        )
+    temporary.replace(cache_path)
+
+
 def _contact_part_for_body_name(body_name: str) -> str | None:
     value = str(body_name).lower()
     side = "L" if value.startswith("left_") else "R" if value.startswith("right_") else ""
@@ -915,6 +1078,7 @@ def solve_pyroki_fullbody_ik(
     collision_similarity_weight: float = 25.0,
     collision_max_refinements: int = 1,
     self_collision_weight: float = 20_000.0,
+    collision_reference_cache_path: str | Path | None = None,
 ) -> Path:
     import jax
     import jax.numpy as jnp
@@ -953,11 +1117,16 @@ def solve_pyroki_fullbody_ik(
     robot_path = Path(robot_urdf).expanduser()
     if not robot_path.exists():
         raise FileNotFoundError(f"robot URDF not found for PyRoki IK: {robot_path}")
-    urdf = yourdfpy.URDF.load(str(robot_path), load_meshes=False)
-    robot = pyroki.Robot.from_urdf(urdf)
-    robot_joint_names = tuple(str(name) for name in robot.joints.actuated_names)
-    link_names = tuple(str(name) for name in robot.links.names)
-    actuated_count = int(robot.joints.num_actuated_joints)
+    (
+        robot,
+        robot_joint_names,
+        link_names,
+        actuated_count,
+    ) = _cached_pyroki_robot(
+        robot_path,
+        pyroki=pyroki,
+        yourdfpy=yourdfpy,
+    )
 
     (
         compiled,
@@ -1077,7 +1246,6 @@ def solve_pyroki_fullbody_ik(
     lower = np.where(finite, lower, -np.pi)
     upper = np.where(finite, upper, np.pi)
     cfg_source = np.clip(cfg_source, lower, upper)
-
     semantic_indices_jax = jnp.asarray(compiled.semantic_link_indices, dtype=jnp.int32)
     source_fk = np.asarray(robot.forward_kinematics(jnp.asarray(cfg_source)), dtype=np.float64)
     foot_orientation_indices = tuple(
@@ -1281,34 +1449,67 @@ def solve_pyroki_fullbody_ik(
         raise ValueError("collision_max_refinements must be non-negative")
     if self_collision_weight_value < 0.0:
         raise ValueError("self_collision_weight must be non-negative")
+    root_delta_limit_m = 0.04
+    solve_lower = np.concatenate(
+        (np.full(3, -root_delta_limit_m), lower)
+    )
+    solve_upper = np.concatenate(
+        (np.full(3, root_delta_limit_m), upper)
+    )
     collision_scene = (
-        DirectNewtonCollisionScene(collision_terrain_mesh, device="cpu")
+        _cached_newton_collision_scene(
+            collision_terrain_mesh,
+            device="cpu",
+        )
         if collision_terrain_mesh is not None
         else None
     )
-    collision_reference_scene = (
-        DirectNewtonCollisionScene(
-            collision_source_terrain_mesh,
-            device="cpu",
-        )
-        if collision_source_terrain_mesh is not None
-        else None
-    )
+    collision_reference_scene = None
     collision_reference_signed_distances: list[
         dict[tuple[str, str], float]
     ] = []
+    collision_reference_cache_hit = False
     collision_reference_max_m = 0.0
     collision_reference_proximity_frames = 0
-    if collision_reference_scene is not None:
+    if collision_source_terrain_mesh is not None:
         assert collision_reference_qpos is not None
-        for frame in range(n_frames):
-            reference_contacts = collision_reference_scene.query_qpos(
-                collision_reference_qpos[frame]
+        cache_metadata = _collision_reference_cache_metadata(
+            source_terrain_mesh=collision_source_terrain_mesh,
+            reference_qpos=collision_reference_qpos,
+            robot_urdf=robot_path,
+        )
+        cached = (
+            _load_collision_reference_cache(
+                collision_reference_cache_path,
+                expected_metadata=cache_metadata,
             )
-            signed_distances = _robot_min_geometry_distance_by_body_surface(
-                reference_contacts
+            if collision_reference_cache_path is not None
+            else None
+        )
+        if cached is not None:
+            collision_reference_signed_distances = cached
+            collision_reference_cache_hit = True
+        else:
+            collision_reference_scene = _cached_newton_collision_scene(
+                collision_source_terrain_mesh,
+                device="cpu",
             )
-            collision_reference_signed_distances.append(signed_distances)
+            for frame in range(n_frames):
+                reference_contacts = collision_reference_scene.query_qpos(
+                    collision_reference_qpos[frame]
+                )
+                collision_reference_signed_distances.append(
+                    _robot_min_geometry_distance_by_body_surface(
+                        reference_contacts
+                    )
+                )
+            if collision_reference_cache_path is not None:
+                _write_collision_reference_cache(
+                    collision_reference_cache_path,
+                    metadata=cache_metadata,
+                    frames=collision_reference_signed_distances,
+                )
+        for signed_distances in collision_reference_signed_distances:
             frame_max = max(
                 (
                     max(0.0, -signed_distance)
@@ -1346,13 +1547,6 @@ def solve_pyroki_fullbody_ik(
     link_index_by_name = {
         name: index for index, name in enumerate(link_names)
     }
-    root_delta_limit_m = 0.04
-    solve_lower = np.concatenate(
-        (np.full(3, -root_delta_limit_m), lower)
-    )
-    solve_upper = np.concatenate(
-        (np.full(3, root_delta_limit_m), upper)
-    )
     active_contact_surface_weight: list[
         dict[tuple[str, str], float]
     ] = [dict() for _ in range(n_frames)]
@@ -1432,11 +1626,13 @@ def solve_pyroki_fullbody_ik(
             ),
         )
 
+        args_jax = tuple(jnp.asarray(value) for value in args)
+
         def fun(x: np.ndarray) -> np.ndarray:
-            return np.asarray(residual_compiled(jnp.asarray(x), *(jnp.asarray(value) for value in args)))
+            return np.asarray(residual_compiled(jnp.asarray(x), *args_jax))
 
         def jac(x: np.ndarray) -> np.ndarray:
-            return np.asarray(jac_compiled(jnp.asarray(x), *(jnp.asarray(value) for value in args)))
+            return np.asarray(jac_compiled(jnp.asarray(x), *args_jax))
 
         result = least_squares(
             fun,
@@ -1886,6 +2082,7 @@ def solve_pyroki_fullbody_ik(
                     dtype=np.float64,
                 ),
             )
+            args_jax = tuple(jnp.asarray(value) for value in args)
             candidate_state = np.concatenate(
                 (candidate_root_delta, candidate_cfg)
             )
@@ -2060,6 +2257,14 @@ def solve_pyroki_fullbody_ik(
         "environment_collision_reference_proximity_frame_count": int(
             collision_reference_proximity_frames
         ),
+        "environment_collision_reference_cache_path": (
+            str(Path(collision_reference_cache_path).expanduser().resolve())
+            if collision_reference_cache_path is not None
+            else None
+        ),
+        "environment_collision_reference_cache_hit": bool(
+            collision_reference_cache_hit
+        ),
         "environment_collision_reference_penetration_max_m": float(
             collision_reference_max_m
         ),
@@ -2190,6 +2395,76 @@ def solve_pyroki_fullbody_ik(
 
 
 def main(argv: list[str] | None = None) -> None:
+    effective_argv = list(argv) if argv is not None else list(sys.argv[1:])
+    if "--worker-socket" in effective_argv:
+        index = effective_argv.index("--worker-socket")
+        try:
+            worker_name = effective_argv[index + 1]
+        except IndexError as exc:
+            raise ValueError("--worker-socket requires a name") from exc
+        address = (
+            "\0" + worker_name[1:]
+            if worker_name.startswith("@")
+            else worker_name
+        )
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(address)
+            server.listen(1)
+            while True:
+                connection, _ = server.accept()
+                with connection:
+                    request_stream = connection.makefile("r", encoding="utf-8")
+                    response_stream = connection.makefile("w", encoding="utf-8")
+                    request = json.loads(request_stream.readline())
+                    if request.get("ping"):
+                        response_stream.write(
+                            json.dumps({"ok": True, "pong": True}) + "\n"
+                        )
+                        response_stream.flush()
+                        continue
+                    if request.get("shutdown"):
+                        response_stream.write(
+                            json.dumps({"ok": True, "shutdown": True}) + "\n"
+                        )
+                        response_stream.flush()
+                        return
+                    try:
+                        if request.get("op") == "canonicalize":
+                            from motion_edit.generation.newton_direct_fk import (
+                                canonicalize_motion_with_direct_newton_fk,
+                            )
+
+                            canonical = canonicalize_motion_with_direct_newton_fk(
+                                **dict(request["kwargs"])
+                            )
+                            response = {
+                                "ok": True,
+                                "canonical": {
+                                    "output_path": str(canonical.output_path),
+                                    "body_names": list(canonical.body_names),
+                                    "joint_names": list(canonical.joint_names),
+                                    "frame_count": canonical.frame_count,
+                                    "backend_metadata": canonical.backend_metadata,
+                                },
+                            }
+                            response_stream.write(
+                                json.dumps(response) + "\n"
+                            )
+                            response_stream.flush()
+                            continue
+                        output = solve_pyroki_fullbody_ik(
+                            **dict(request["kwargs"])
+                        )
+                    except Exception:
+                        response = {
+                            "ok": False,
+                            "traceback": traceback.format_exc(),
+                        }
+                    else:
+                        response = {"ok": True, "output": str(output)}
+                    response_stream.write(json.dumps(response) + "\n")
+                    response_stream.flush()
+        return
     parser = argparse.ArgumentParser(description="Solve contact-aware fullbody trajectory IK with PyRoki.")
     parser.add_argument("--lte", default=None, help="Legacy LTE keypoints or ContactAwareTaskspaceMotion NPZ.")
     parser.add_argument("--taskspace-spec", default=None, help="Explicit ContactAwareTaskspaceMotion NPZ.")
@@ -2223,6 +2498,14 @@ def main(argv: list[str] | None = None) -> None:
         type=float,
         default=20_000.0,
     )
+    parser.add_argument(
+        "--collision-reference-cache",
+        default=None,
+        help=(
+            "Reusable fail-closed cache for source-rollout Newton signed "
+            "distances. Share this path across variants of one source."
+        ),
+    )
     # Compatibility arguments retained for existing callers. Contact patch points
     # replace the old contact-only toe/orientation pseudo-targets.
     parser.add_argument("--contact-foot-orientation-weight", type=float, default=80.0)
@@ -2249,6 +2532,7 @@ def main(argv: list[str] | None = None) -> None:
         collision_similarity_weight=args.collision_similarity_weight,
         collision_max_refinements=args.collision_max_refinements,
         self_collision_weight=args.self_collision_weight,
+        collision_reference_cache_path=args.collision_reference_cache,
     )
 
 

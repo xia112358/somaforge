@@ -99,9 +99,9 @@ def bind_newton_contact_patches(
     Persisted bindings use body/shape labels plus robot-local points so they remain
     valid when the scene is rebuilt with different runtime IDs.
 
-    Newton stores one surface point per contact body. ``point0_w`` belongs to
-    ``body0`` and ``point1_w`` belongs to ``body1``. Robot-local patches must
-    therefore use the point with the same index as the matched robot body.
+    The persisted robot-local patch uses the point owned by the matched robot
+    body. The paired counterpart point is retained only as a world-space surface
+    target: ``body0 -> point0_w`` and ``body1 -> point1_w``.
     """
 
     arrays = _required_motion_arrays(motion)
@@ -191,12 +191,14 @@ def _bind_anchor(
                 robot_body_id = body0
                 robot_shape_id = int(arrays["raw_contact_shape0"][frame, contact_index])
                 robot_point_w = arrays["raw_contact_point0_w"][frame, contact_index]
+                counterpart_point_w = arrays["raw_contact_point1_w"][frame, contact_index]
                 robot_to_counterpart_normal_w = arrays["raw_contact_normal_w"][frame, contact_index]
                 robot_body_label = label0
             else:
                 robot_body_id = body1
                 robot_shape_id = int(arrays["raw_contact_shape1"][frame, contact_index])
                 robot_point_w = arrays["raw_contact_point1_w"][frame, contact_index]
+                counterpart_point_w = arrays["raw_contact_point0_w"][frame, contact_index]
                 robot_to_counterpart_normal_w = -arrays["raw_contact_normal_w"][frame, contact_index]
                 robot_body_label = label1
 
@@ -223,6 +225,9 @@ def _bind_anchor(
                     "point_local": point_local,
                     "normal_local": normal_local,
                     "point_world": np.asarray(robot_point_w, dtype=np.float64),
+                    "target_point_world": np.asarray(
+                        counterpart_point_w, dtype=np.float64
+                    ),
                 }
             )
 
@@ -267,10 +272,41 @@ def _bind_anchor(
         if body_leaf and body_leaf not in link_names:
             link_names.append(body_leaf)
 
+    target_frames = np.arange(start, end, dtype=np.int64)
+    source_target_points = np.empty(
+        (len(target_frames), len(shape_names), 3),
+        dtype=np.float64,
+    )
+    for shape_index, shape_label in enumerate(sorted(groups)):
+        samples_by_frame: dict[int, list[np.ndarray]] = {}
+        for item in groups[shape_label]:
+            samples_by_frame.setdefault(int(item["frame"]), []).append(
+                np.asarray(item["target_point_world"], dtype=np.float64)
+            )
+        known_frames = np.asarray(sorted(samples_by_frame), dtype=np.int64)
+        known_points = np.stack(
+            [
+                np.median(np.stack(samples_by_frame[int(frame)]), axis=0)
+                for frame in known_frames
+            ],
+            axis=0,
+        )
+        for axis in range(3):
+            source_target_points[:, shape_index, axis] = np.interp(
+                target_frames,
+                known_frames,
+                known_points[:, axis],
+            )
+
     center_world = anchor.world_position
     if center_world is None:
         all_world_points = np.concatenate(
-            [np.stack([item["point_world"] for item in samples], axis=0) for samples in groups.values()],
+            [
+                np.stack(
+                    [item["target_point_world"] for item in samples], axis=0
+                )
+                for samples in groups.values()
+            ],
             axis=0,
         )
         center_world = np.median(all_world_points, axis=0).astype(float).tolist()
@@ -303,6 +339,8 @@ def _bind_anchor(
         newton_shape_labels=shape_names,
         robot_points_local=local_points,
         robot_normals_local=local_normals,
+        source_target_frames=target_frames.astype(int).tolist(),
+        source_target_points_w=source_target_points.astype(float).tolist(),
         robot_binding_backend="newton_mjwarp",
         robot_binding_source="newton_raw_contact",
         metadata=metadata,

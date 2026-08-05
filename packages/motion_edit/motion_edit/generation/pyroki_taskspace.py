@@ -139,6 +139,11 @@ def compile_pyroki_taskspace(
             continue
         targets_w = contact.resolved_target_points_w()
         points_local = np.asarray(contact.points_local, dtype=np.float64)
+        points_local_by_frame = (
+            np.asarray(contact.points_local_by_frame, dtype=np.float64)
+            if contact.points_local_by_frame is not None
+            else None
+        )
         local_frames = np.asarray(contact.frames, dtype=np.int64) - int(spec.frame_start)
         weight = float(edited_contact_weight if contact.kind == "edited_contact" else fixed_contact_weight)
         for contact_frame_index, local_frame in enumerate(local_frames.tolist()):
@@ -148,7 +153,11 @@ def compile_pyroki_taskspace(
                 per_frame[local_frame].append(
                     (
                         link_index,
-                        points_local[point_index],
+                        (
+                            points_local_by_frame[contact_frame_index, point_index]
+                            if points_local_by_frame is not None
+                            else points_local[point_index]
+                        ),
                         targets_w[contact_frame_index, point_index],
                         weight,
                     )

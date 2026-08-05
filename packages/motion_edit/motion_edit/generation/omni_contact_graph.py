@@ -107,6 +107,7 @@ OMNI_SEMANTIC_WEIGHTS: dict[str, float] = {
 }
 
 _ORIGINAL_ADD_INTERACTION_MESH: Any | None = None
+_ORIGINAL_PREPARE_INTERACTION_MESH: Any | None = None
 _INSTALLED = False
 
 
@@ -416,26 +417,31 @@ def _add_omni_interaction_mesh_laplacian_residuals(
     )
     robot_count = len(robot_points)
     vertex_count = robot_count + object_points.shape[0]
-    reference_robot = _reference_robot_points(mesh, q_ref, kinematics, robot_points)
+    prepared = prepared_mesh or _prepare_omni_interaction_mesh_laplacian(
+        mesh=mesh,
+        q_reference=q_ref,
+        kinematics=kinematics,
+    )
+    reference_robot = np.asarray(
+        prepared["reference_robot_points"], dtype=np.float64
+    )
+    laplacian_matrices = np.asarray(
+        prepared["laplacian_matrices"], dtype=np.float64
+    )
+    prepared_edge_counts = np.asarray(
+        prepared["edge_counts"], dtype=np.int32
+    )
     anatomical_edges = _anatomical_index_edges(robot_points)
 
     row_count = 0
     edge_counts: list[int] = []
     active_counts: list[int] = []
-    failed_frames: list[int] = []
+    failed_frames = [
+        int(frame) for frame in prepared.get("delaunay_failed_frames", [])
+    ]
     for frame in range(n_frames):
         reference_vertices = np.vstack([reference_robot[frame], reference_object_points])
-        edges, succeeded = _delaunay_edges(reference_vertices)
-        if not succeeded:
-            failed_frames.append(frame)
-        edges.update(anatomical_edges)
-        if not edges:
-            continue
-
-        laplacian = residuals.build_uniform_laplacian_matrix(
-            vertex_count,
-            tuple(sorted(edges)),
-        )
+        laplacian = laplacian_matrices[frame]
         active_rows = tuple(
             row
             for row in range(vertex_count)
@@ -472,7 +478,7 @@ def _add_omni_interaction_mesh_laplacian_residuals(
                         row_weight,
                     )
                     row_count += 1
-        edge_counts.append(len(edges))
+        edge_counts.append(int(prepared_edge_counts[frame]))
         active_counts.append(len(active_rows))
 
     if row_count == 0:
@@ -500,7 +506,95 @@ def _add_omni_interaction_mesh_laplacian_residuals(
         "delaunay_failed_frame_count": len(failed_frames),
         "delaunay_failed_frames": failed_frames,
         "anatomical_edge_count": len(anatomical_edges),
+        "topology_precomputed": prepared_mesh is not None,
+        "topology_cache_hit": bool(prepared.get("cache_hit", False)),
+        "topology_cache_path": prepared.get("cache_path"),
     }
+
+
+def _prepare_omni_interaction_mesh_laplacian(
+    *,
+    mesh: InteractionMeshSpec,
+    q_reference: np.ndarray,
+    kinematics: Any,
+) -> dict[str, Any]:
+    topology = str(mesh.metadata.get("topology", ""))
+    if topology != "omniretarget_delaunay_per_frame":
+        if _ORIGINAL_PREPARE_INTERACTION_MESH is None:
+            raise RuntimeError("original interaction-mesh preparation is not installed")
+        return _ORIGINAL_PREPARE_INTERACTION_MESH(
+            mesh=mesh,
+            q_reference=q_reference,
+            kinematics=kinematics,
+        )
+
+    residuals = importlib.import_module("motion_edit.contact_laplacian.residuals")
+    mesh.validate()
+    q_ref = np.asarray(q_reference, dtype=np.float64)
+    robot_points = tuple(str(point) for point in mesh.robot_points)
+    object_points = np.asarray(mesh.object_points, dtype=np.float64)
+    reference_object_points = (
+        np.asarray(mesh.reference_object_points, dtype=np.float64)
+        if mesh.reference_object_points is not None
+        else object_points
+    )
+    reference_robot = _reference_robot_points(
+        mesh, q_ref, kinematics, robot_points
+    )
+    frame_count = q_ref.shape[0]
+    vertex_count = len(robot_points) + object_points.shape[0]
+    cache_path = residuals._interaction_topology_cache_path()
+    cache_key = residuals._interaction_topology_cache_key(
+        mesh=mesh,
+        q_reference=q_ref,
+        robot_points=robot_points,
+        object_points=object_points,
+        reference_robot_points=reference_robot,
+        reference_object_points=reference_object_points,
+    )
+    cached = residuals._load_interaction_topology_cache(
+        cache_path,
+        expected_key=cache_key,
+        expected_frames=frame_count,
+        expected_vertices=vertex_count,
+    )
+    if cached is not None:
+        return cached
+
+    anatomical_edges = _anatomical_index_edges(robot_points)
+    laplacians = np.zeros(
+        (frame_count, vertex_count, vertex_count), dtype=np.float64
+    )
+    edge_counts = np.zeros((frame_count,), dtype=np.int32)
+    failed_frames: list[int] = []
+    for frame in range(frame_count):
+        reference_vertices = np.vstack(
+            [reference_robot[frame], reference_object_points]
+        )
+        edges, succeeded = _delaunay_edges(reference_vertices)
+        if not succeeded:
+            failed_frames.append(frame)
+        edges.update(anatomical_edges)
+        if edges:
+            laplacians[frame] = residuals.build_uniform_laplacian_matrix(
+                vertex_count,
+                tuple(sorted(edges)),
+            )
+        edge_counts[frame] = len(edges)
+    result = {
+        "reference_robot_points": reference_robot,
+        "laplacian_matrices": laplacians,
+        "edge_counts": edge_counts,
+        "delaunay_failed_frames": failed_frames,
+        "cache_hit": False,
+        "cache_path": str(cache_path) if cache_path is not None else None,
+    }
+    residuals._write_interaction_topology_cache(
+        cache_path,
+        cache_key=cache_key,
+        prepared=result,
+    )
+    return result
 
 
 def _batch_contact_laplacian_proxy_motion(
@@ -640,6 +734,7 @@ def install_omni_contact_graph() -> None:
     """Install OmniRetarget-compatible semantic points and interaction graph."""
 
     global _INSTALLED, _ORIGINAL_ADD_INTERACTION_MESH
+    global _ORIGINAL_PREPARE_INTERACTION_MESH
     if _INSTALLED:
         return
 
@@ -676,8 +771,14 @@ def install_omni_contact_graph() -> None:
 
     solver._SEMANTIC_BODY_EDGE_CANDIDATES = OMNI_BODY_EDGES
     _ORIGINAL_ADD_INTERACTION_MESH = solver.add_interaction_mesh_laplacian_residuals
+    _ORIGINAL_PREPARE_INTERACTION_MESH = (
+        solver.prepare_interaction_mesh_laplacian
+    )
     solver.add_interaction_mesh_laplacian_residuals = (
         _add_omni_interaction_mesh_laplacian_residuals
+    )
+    solver.prepare_interaction_mesh_laplacian = (
+        _prepare_omni_interaction_mesh_laplacian
     )
 
     pyroki.SEMANTIC_LINK_ALIASES.clear()

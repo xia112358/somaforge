@@ -4,7 +4,8 @@ from typing import Any, Callable
 
 
 OMNI_GENERATION_DEFAULTS: dict[str, float | int] = {
-    "contact_laplacian_iters": 8,
+    "contact_laplacian_iters": 3,
+    "contact_laplacian_trust": 0.0,
     "temporal_laplacian_weight": 40.0,
     "body_relative_weight": 10.0,
     "q_prior_weight": 0.02,

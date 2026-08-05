@@ -76,6 +76,12 @@ export type Generation = {
 
 export type Session = {
   motion_id: string;
+  read_only: boolean;
+  capabilities: {
+    playback: boolean;
+    edit_contacts: boolean;
+    generate: boolean;
+  };
   provenance: string;
   source_motion_id: string;
   fps: number;

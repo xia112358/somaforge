@@ -109,6 +109,136 @@ def test_surface_follow_expands_anchor_with_preserved_uv() -> None:
     assert expanded.metadata["expanded_surface_follow_edit_count"] == 1
 
 
+def test_surface_follow_composes_explicit_uv_edit_on_target_surface() -> None:
+    source_raw = _surface("box_1p0_top", 0.70)
+    target_raw = _surface("box_1p1_top", 0.77)
+    source = ContactSurfaceRecord(motion_id="climb_00", source="test", **source_raw)
+    anchor = ContactAnchorRecord(
+        motion_id="climb_00",
+        anchor_id="right_toe_anchor",
+        body="right_toe",
+        start_frame=10,
+        end_frame=20,
+        world_position=[0.7, -0.4, 0.70],
+        object_id="box_1p0",
+        surface_id="box_1p0_top",
+        surface_type="plane",
+        surface_normal=[0.0, 0.0, 1.0],
+        surface_coordinates={"u": 0.2, "v": -0.1},
+    )
+    uv_edit = ContactAnchorEditRecord(
+        edit_id="right_toe_u_plus",
+        motion_id="climb_00",
+        anchor_id=anchor.anchor_id,
+        body=anchor.body,
+        old_world_position=[0.7, -0.4, 0.70],
+        new_world_position=[0.8, -0.4, 0.70],
+        requested_delta_world=[0.1, 0.0, 0.0],
+        delta_world=[0.1, 0.0, 0.0],
+        tangent_delta=[0.1, 0.0],
+        affected_frames=[10, 20],
+        surface_id="box_1p0_top",
+        surface_normal=[0.0, 0.0, 1.0],
+        surface_coordinates_before={"u": 0.2, "v": -0.1},
+        surface_coordinates_after={"u": 0.3, "v": -0.1},
+        constraint_mode="reject",
+        metadata={
+            "compose_with_surface_transform": True,
+            "surface_uv_delta": [0.1, 0.0],
+        },
+    )
+    plan = ContactEditPlan(
+        plan_id="height_and_uv",
+        source_motion_path="/tmp/source.npz",
+        source_motion_id="climb_00",
+        source_contact_layer="contact/source",
+        edits=[uv_edit.to_dict()],
+        surface_transforms=[
+            {
+                "transform_id": "height_follow",
+                "kind": "surface_follow",
+                "height_scale": 1.1,
+                "translation_world": [0.0, 0.0, 0.07],
+                "source_surface": source_raw,
+                "target_surface": target_raw,
+            }
+        ],
+        status="validated",
+    )
+
+    expanded = expand_task_variant_plan(plan, anchors=[anchor], surfaces=[source])
+
+    assert len(expanded.edits) == 1
+    edit = expanded.edits[0]
+    np.testing.assert_allclose(edit.new_world_position, [0.8, -0.4, 0.77], atol=1.0e-9)
+    np.testing.assert_allclose(edit.delta_world, [0.1, 0.0, 0.07], atol=1.0e-9)
+    assert edit.surface_id == "box_1p1_top"
+    np.testing.assert_allclose(
+        [edit.surface_coordinates_after["u"], edit.surface_coordinates_after["v"]],
+        [0.3, -0.1],
+        atol=1.0e-9,
+    )
+    assert edit.metadata["surface_transform_then_uv"] is True
+    assert expanded.metadata["composed_surface_uv_edit_count"] == 1
+
+
+def test_surface_follow_rejects_failed_binding_instead_of_fixed_world_target() -> None:
+    source_raw = _surface("box_1p0_top", 0.70)
+    target_raw = _surface("box_1p1_top", 0.77)
+    source = ContactSurfaceRecord(motion_id="climb_00", source="test", **source_raw)
+    failed_hand = ContactAnchorRecord(
+        motion_id="climb_00",
+        anchor_id="left_hand_failed",
+        body="left_hand",
+        start_frame=10,
+        end_frame=20,
+        world_position=[0.7, -0.4, 0.75],
+        metadata={
+            "surface_binding_failed": True,
+            "surface_binding_failure_reason": (
+                "left_hand_failed: surface box_1p0_top is farther than max_distance"
+            ),
+        },
+    )
+    bound_foot = ContactAnchorRecord(
+        motion_id="climb_00",
+        anchor_id="right_toe",
+        body="right_toe",
+        start_frame=10,
+        end_frame=20,
+        world_position=[0.7, -0.4, 0.70],
+        object_id="box_1p0",
+        surface_id="box_1p0_top",
+        surface_coordinates={"u": 0.2, "v": -0.1},
+    )
+    plan = ContactEditPlan(
+        plan_id="height_110",
+        source_motion_path="/tmp/source.npz",
+        source_motion_id="climb_00",
+        source_contact_layer="contact/source",
+        surface_transforms=[
+            {
+                "transform_id": "height_follow",
+                "kind": "surface_follow",
+                "translation_world": [0.0, 0.0, 0.07],
+                "source_surface": source_raw,
+                "target_surface": target_raw,
+            }
+        ],
+        status="validated",
+    )
+
+    with np.testing.assert_raises_regex(
+        ValueError,
+        "rebuild it with raw-contact surface refinement",
+    ):
+        expand_task_variant_plan(
+            plan,
+            anchors=[bound_foot, failed_hand],
+            surfaces=[source],
+        )
+
+
 def test_surface_follow_uses_one_translation_for_inconsistent_foot_anchors() -> None:
     source_raw = _surface("box_1p0_top", 0.70)
     target_raw = _surface("box_1p1_top", 0.77)
@@ -166,6 +296,49 @@ def test_surface_follow_uses_one_translation_for_inconsistent_foot_anchors() -> 
         )
         np.testing.assert_allclose(edit.old_world_position, anchor.world_position)
         assert edit.metadata["uniform_surface_translation"] is True
+
+
+def test_surface_follow_rotates_anchor_while_preserving_uv() -> None:
+    source_raw = _surface("box_source_top", 0.70)
+    target_raw = _surface("box_rotated_top", 0.70)
+    target_raw["tangent_u"] = [0.0, 1.0, 0.0]
+    target_raw["tangent_v"] = [-1.0, 0.0, 0.0]
+    source = ContactSurfaceRecord(motion_id="climb_00", source="test", **source_raw)
+    anchor = ContactAnchorRecord(
+        motion_id="climb_00",
+        anchor_id="left_hand",
+        body="left_hand",
+        start_frame=10,
+        end_frame=20,
+        world_position=[0.7, -0.4, 0.70],
+        object_id="box_source",
+        surface_id="box_source_top",
+        surface_coordinates={"u": 0.2, "v": -0.1},
+    )
+    plan = ContactEditPlan(
+        plan_id="yaw_90",
+        source_motion_path="/tmp/source.npz",
+        source_motion_id="climb_00",
+        source_contact_layer="contact/source",
+        surface_transforms=[
+            {
+                "transform_id": "yaw_follow",
+                "kind": "surface_follow",
+                "translation_world": [0.0, 0.0, 0.0],
+                "source_surface": source_raw,
+                "target_surface": target_raw,
+            }
+        ],
+        status="validated",
+    )
+
+    expanded = expand_task_variant_plan(plan, anchors=[anchor], surfaces=[source])
+
+    edit = expanded.edits[0]
+    np.testing.assert_allclose(edit.new_world_position, [0.6, -0.1, 0.70])
+    np.testing.assert_allclose(edit.delta_world, [-0.1, 0.3, 0.0])
+    assert edit.surface_coordinates_before == edit.surface_coordinates_after
+    assert edit.metadata["uniform_surface_translation"] is False
 
 
 def test_translate_pose_updates_semantic_and_dense_targets() -> None:

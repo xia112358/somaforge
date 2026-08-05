@@ -146,6 +146,31 @@ def prepare_surface_editor_session(
     return session
 
 
+def prepare_playback_surface_editor_session(
+    *,
+    motion_path: str,
+    motion_id: str,
+    surface_catalog: str | None,
+    session_name: str,
+    workbench_root: Path = WORKBENCH_ROOT,
+) -> SurfaceEditorSession:
+    """Prepare an ephemeral empty-contact session for read-only motion playback."""
+    surfaces = read_contact_surfaces(Path(surface_catalog).expanduser()) if surface_catalog else []
+    session = _session_paths(
+        motion_path=motion_path,
+        motion_id=motion_id,
+        contact_layer="",
+        surface_catalog=surface_catalog,
+        session_name=session_name,
+        edit_plan_path=None,
+        output_contact_layer=None,
+        workbench_root=workbench_root,
+        contact_force_path=None,
+    )
+    _write_session_files(session, ContactGraph(motion_id=motion_id), surfaces)
+    return session
+
+
 def read_surface_editor_session(path: str | Path) -> SurfaceEditorSession:
     data = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
     path_fields = {

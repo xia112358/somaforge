@@ -80,7 +80,7 @@ export class ContactDragController {
   private readonly onPointerDown = (event: PointerEvent): void => {
     const { canvas, layer } = this.options;
     const session = this.options.getSession();
-    if (!event.isPrimary || event.button !== 0 || session?.generation.status === 'running') return;
+    if (!event.isPrimary || event.button !== 0 || session?.read_only || session?.generation.status === 'running') return;
 
     const selectedHandle = this.options.getSelectedHandle();
     const restoreHandle = layer.pickRestoreGhost(event, selectedHandle);

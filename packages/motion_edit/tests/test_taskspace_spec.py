@@ -37,6 +37,13 @@ class ContactAwareTaskspaceMotionTests(unittest.TestCase):
                 ],
                 dtype=np.float64,
             ),
+            points_local_by_frame=np.asarray(
+                [
+                    [[0.00, 0.0, -0.10], [0.10, 0.0, -0.10]],
+                    [[0.01, 0.0, -0.10], [0.11, 0.0, -0.10]],
+                ],
+                dtype=np.float64,
+            ),
         )
         return ContactAwareTaskspaceMotion(
             motion_id="motion_a",
@@ -81,6 +88,10 @@ class ContactAwareTaskspaceMotionTests(unittest.TestCase):
         self.assertEqual(loaded.contacts[0].shape_labels, ("heel", "toe"))
         np.testing.assert_allclose(loaded.semantic_targets_w, motion.semantic_targets_w)
         np.testing.assert_allclose(loaded.contacts[0].points_local, motion.contacts[0].points_local)
+        np.testing.assert_allclose(
+            loaded.contacts[0].points_local_by_frame,
+            motion.contacts[0].points_local_by_frame,
+        )
         np.testing.assert_allclose(loaded.contacts[0].resolved_target_points_w(), motion.contacts[0].resolved_target_points_w())
 
     def test_source_reference_weights_are_explicit_and_weak(self) -> None:

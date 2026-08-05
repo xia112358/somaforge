@@ -40,6 +40,7 @@ from motion_edit.contact import (
     write_contact_layer,
 )
 from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord, ContactSurfaceRecord
+from motion_edit.contact.raw_contacts import RawContactMotion
 from motion_edit.schema import SegmentRecord
 
 
@@ -660,6 +661,80 @@ class ContactEventTests(unittest.TestCase):
             2,
         )
         self.assertEqual(refined.anchors[0].metadata["raw_contact_position_refinement"]["binding_candidate_class"], "top")
+
+    def test_refine_anchor_derives_part_positions_from_canonical_body_fk(self) -> None:
+        graph = contact_graph_from_masks(
+            motion_id="motion_a",
+            contact_mask=np.asarray([[True], [True], [False]]),
+            body_pos_w=np.asarray(
+                [[[0.2, 0.2, 0.02]], [[0.4, 0.2, 0.02]], [[0.0, 0.0, 0.0]]]
+            ),
+            body_names=["left_hand"],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            motion = Path(tmp) / "motion.npz"
+            np.savez(
+                motion,
+                raw_contact_count=np.asarray([1, 1, 0], dtype=np.int32),
+                raw_contact_point0_w=np.asarray(
+                    [[[0.2, 0.2, 0.0]], [[0.4, 0.2, 0.0]], [[0.0, 0.0, 0.0]]],
+                    dtype=np.float32,
+                ),
+                raw_contact_point1_w=np.asarray(
+                    [[[0.2, 0.2, 0.02]], [[0.4, 0.2, 0.02]], [[0.0, 0.0, 0.0]]],
+                    dtype=np.float32,
+                ),
+                contact_force_part_order=np.asarray(["LH"]),
+                body_pos_w=np.asarray(
+                    [
+                        [[0.2, 0.2, 0.02], [0.2, 0.2, 0.03]],
+                        [[0.4, 0.2, 0.02], [0.4, 0.2, 0.03]],
+                        [[0.0, 0.0, 0.0], [0.0, 0.0, 0.01]],
+                    ],
+                    dtype=np.float32,
+                ),
+                body_names=np.asarray(
+                    ["left_sphere_hand_link", "left_sphere_hand_tip_link"]
+                ),
+            )
+            refined = refine_contact_graph_anchor_positions_from_raw_contacts(
+                graph,
+                motion,
+            )
+
+        self.assertFalse(
+            refined.anchors[0].metadata["raw_contact_position_refinement_failed"]
+        )
+        self.assertEqual(
+            refined.anchors[0].metadata["raw_contact_position_refinement"][
+                "accepted_raw_contact_sample_count"
+            ],
+            2,
+        )
+
+    def test_multi_rollout_raw_contact_uses_body0_point0_shape0_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            motion = Path(tmp) / "motion.npz"
+            np.savez(
+                motion,
+                raw_contact_count=np.asarray([1], dtype=np.int32),
+                raw_contact_point0_w=np.asarray([[[1.0, 2.0, 3.0]]]),
+                raw_contact_point1_w=np.asarray([[[4.0, 5.0, 6.0]]]),
+                raw_contact_shape0=np.asarray([[51]], dtype=np.int32),
+                raw_contact_shape1=np.asarray([[0]], dtype=np.int32),
+                raw_contact_source=np.asarray(
+                    "multi_rollout_stable_label_median_external_contacts"
+                ),
+                contact_force_part_position_w=np.asarray(
+                    [[[1.0, 2.0, 3.0]]]
+                ),
+                contact_force_part_order=np.asarray(["LHEE"]),
+            )
+            raw = RawContactMotion(motion)
+
+        np.testing.assert_allclose(raw.robot_contact_point_w[0, 0], [1.0, 2.0, 3.0])
+        np.testing.assert_allclose(raw.surface_contact_point_w[0, 0], [4.0, 5.0, 6.0])
+        assert int(raw.robot_contact_shape[0, 0]) == 51
 
     def test_raw_contact_position_refinement_summarizes_foot_as_heel_toe(self) -> None:
         graph = contact_graph_from_masks(

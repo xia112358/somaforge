@@ -32,6 +32,7 @@ from motion_edit.contact.layers import read_contact_graph, write_contact_layer
 from motion_edit.contact.patches import patches_from_anchors
 from motion_edit.contact.plans import ContactEditPlan, validate_contact_edit_plan
 from motion_edit.contact.schema import ContactAnchorEditRecord, PoseEditRecord
+from motion_edit.contact.surface_frame import map_points_between_surface_frames
 from motion_edit.contact_laplacian.kinematics import BodyPositionTrajectoryKinematicsProvider
 from motion_edit.contact_laplacian.omniretarget_mesh import sample_terrain_mesh_points
 from motion_edit.contact_laplacian.schema import BatchContactLaplacianConfig, ContactHandleSpec, InteractionMeshSpec
@@ -256,19 +257,30 @@ def _edit_delta(edit: ContactAnchorEditRecord) -> np.ndarray:
 
 def _surface_transform_anchor_edits(plan: ContactEditPlan, graph: Any) -> list[ContactAnchorEditRecord]:
     edits: list[ContactAnchorEditRecord] = []
+    explicit_anchor_ids = {
+        str(raw.get("anchor_id"))
+        for raw in plan.edits
+        if raw.get("anchor_id") is not None
+    }
     for transform in plan.surface_transforms:
         source_surface = dict(transform["source_surface"])
         target_surface = dict(transform["target_surface"])
         source_surface_id = str(source_surface["surface_id"])
         target_surface_id = str(target_surface["surface_id"])
-        translation = np.asarray(transform["translation_world"], dtype=np.float64)
         for anchor in graph.anchors:
             if anchor.surface_id != source_surface_id:
+                continue
+            if anchor.anchor_id in explicit_anchor_ids:
                 continue
             if anchor.world_position is None or anchor.surface_coordinates is None:
                 raise ValueError(f"{anchor.anchor_id}: surface-follow anchor must be fully bound")
             old_position = np.asarray(anchor.world_position, dtype=np.float64)
-            new_position = old_position + translation
+            new_position = map_points_between_surface_frames(
+                old_position,
+                source_surface,
+                target_surface,
+            )
+            delta = new_position - old_position
             edits.append(
                 ContactAnchorEditRecord(
                     edit_id=f"{transform['transform_id']}::{anchor.anchor_id}",
@@ -277,8 +289,8 @@ def _surface_transform_anchor_edits(plan: ContactEditPlan, graph: Any) -> list[C
                     body=anchor.body,
                     old_world_position=old_position.tolist(),
                     new_world_position=new_position.tolist(),
-                    requested_delta_world=translation.tolist(),
-                    delta_world=translation.tolist(),
+                    requested_delta_world=delta.tolist(),
+                    delta_world=delta.tolist(),
                     affected_frames=[int(anchor.start_frame), int(anchor.end_frame)],
                     surface_id=target_surface_id,
                     surface_normal=list(target_surface["normal"]),

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Iterable, Sequence
+from dataclasses import dataclass, replace
+from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
 from motion_edit.contact.plans import ContactEditPlan
 from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord, ContactSurfaceRecord
+from motion_edit.contact.surface_frame import map_points_between_surface_frames
 from motion_edit.generation.lte_fullbody import (
     LTE_FULLBODY_KEYPOINT_LINKS,
     _motion_strings,
@@ -97,6 +98,8 @@ def expand_task_variant_plan(
 
     explicit = [ContactAnchorEditRecord(**raw) for raw in plan.edits]
     explicit_anchor_ids = {edit.anchor_id for edit in explicit}
+    explicit_by_anchor = {edit.anchor_id: edit for edit in explicit}
+    consumed_explicit_edit_ids: set[str] = set()
     surface_by_id = {surface.surface_id: surface for surface in surfaces}
     expanded: list[ContactAnchorEditRecord] = []
     warnings: list[str] = []
@@ -106,7 +109,6 @@ def expand_task_variant_plan(
         transform_id = str(raw["transform_id"])
         source = _surface_from_dict(raw["source_surface"], motion_id=plan.source_motion_id, source="task_variant_source")
         target = _surface_from_dict(raw["target_surface"], motion_id=plan.source_motion_id, source="task_variant_target")
-        _require_parallel_surface_basis(transform_id, source, target)
         surface_by_id[source.surface_id] = source
         surface_by_id[target.surface_id] = target
         translation_world = np.asarray(
@@ -139,6 +141,20 @@ def expand_task_variant_plan(
             ],
             dtype=np.float64,
         )
+        failed_candidates = [
+            anchor.anchor_id
+            for anchor in anchors
+            if not _anchor_matches_source_surface(anchor, source)
+            and _anchor_failed_source_surface_binding(anchor, source)
+        ]
+        if failed_candidates:
+            raise ValueError(
+                f"{transform_id}: source contact layer contains anchors that "
+                f"failed binding to transformed surface {source.surface_id!r}; "
+                "rebuild it with raw-contact surface refinement instead of "
+                "keeping fixed world targets: "
+                + ", ".join(failed_candidates)
+            )
 
         matched = 0
         generated = 0
@@ -147,11 +163,84 @@ def expand_task_variant_plan(
                 continue
             matched += 1
             if anchor.anchor_id in explicit_anchor_ids:
+                explicit_edit = explicit_by_anchor[anchor.anchor_id]
+                explicit_metadata = dict(explicit_edit.metadata or {})
+                if explicit_metadata.get("compose_with_surface_transform"):
+                    uv_delta = np.asarray(
+                        explicit_metadata.get("surface_uv_delta"),
+                        dtype=np.float64,
+                    )
+                    if uv_delta.shape != (2,) or not np.all(np.isfinite(uv_delta)):
+                        raise ValueError(
+                            f"{explicit_edit.edit_id}: composed surface edit requires "
+                            "one finite metadata.surface_uv_delta"
+                        )
+                    uv_before = _anchor_uv(anchor, source)
+                    uv_after = uv_before + uv_delta
+                    if target.bounds is not None and not (
+                        float(target.bounds["u"][0])
+                        <= float(uv_after[0])
+                        <= float(target.bounds["u"][1])
+                        and float(target.bounds["v"][0])
+                        <= float(uv_after[1])
+                        <= float(target.bounds["v"][1])
+                    ):
+                        raise ValueError(
+                            f"{explicit_edit.edit_id}: composed target UV "
+                            f"{uv_after.tolist()} leaves {target.surface_id!r}"
+                        )
+                    old_world = _anchor_world(anchor, source, uv_before)
+                    new_world = (
+                        np.asarray(target.origin, dtype=np.float64)
+                        + float(uv_after[0])
+                        * np.asarray(target.tangent_u, dtype=np.float64)
+                        + float(uv_after[1])
+                        * np.asarray(target.tangent_v, dtype=np.float64)
+                    )
+                    delta_world = new_world - old_world
+                    expanded.append(
+                        replace(
+                            explicit_edit,
+                            old_world_position=old_world.tolist(),
+                            new_world_position=new_world.tolist(),
+                            requested_delta_world=delta_world.tolist(),
+                            delta_world=delta_world.tolist(),
+                            tangent_delta=uv_delta.tolist(),
+                            surface_id=target.surface_id,
+                            surface_normal=list(target.normal),
+                            surface_coordinates_before={
+                                "u": float(uv_before[0]),
+                                "v": float(uv_before[1]),
+                            },
+                            surface_coordinates_after={
+                                "u": float(uv_after[0]),
+                                "v": float(uv_after[1]),
+                            },
+                            constraint_mode="reject",
+                            metadata={
+                                **explicit_metadata,
+                                "composed_surface_transform_id": transform_id,
+                                "source_surface": raw["source_surface"],
+                                "target_surface": raw["target_surface"],
+                                "surface_transform_then_uv": True,
+                            },
+                        )
+                    )
+                    consumed_explicit_edit_ids.add(explicit_edit.edit_id)
+                    generated += 1
+                    continue
                 warnings.append(f"{transform_id}: explicit edit overrides surface-follow for {anchor.anchor_id}")
                 continue
             uv = _anchor_uv(anchor, source)
             old_world = _anchor_world(anchor, source, uv)
-            new_world = old_world + translation_world
+            source_payload = raw["source_surface"]
+            target_payload = raw["target_surface"]
+            new_world = map_points_between_surface_frames(
+                old_world,
+                source_payload,
+                target_payload,
+            )
+            anchor_delta = new_world - old_world
             expanded.append(
                 ContactAnchorEditRecord(
                     edit_id=f"{transform_id}:{anchor.anchor_id}",
@@ -161,9 +250,9 @@ def expand_task_variant_plan(
                     edit_type="move_contact_anchor",
                     old_world_position=old_world.tolist(),
                     new_world_position=new_world.tolist(),
-                    requested_delta_world=translation_world.tolist(),
-                    delta_world=translation_world.tolist(),
-                    tangent_delta=tangent_delta.tolist(),
+                    requested_delta_world=anchor_delta.tolist(),
+                    delta_world=anchor_delta.tolist(),
+                    tangent_delta=[0.0, 0.0],
                     affected_frames=[int(anchor.start_frame), int(anchor.end_frame)],
                     surface_id=target.surface_id,
                     surface_normal=list(target.normal),
@@ -176,7 +265,11 @@ def expand_task_variant_plan(
                         "surface_follow_source_surface_id": source.surface_id,
                         "surface_follow_target_surface_id": target.surface_id,
                         "surface_follow_preserve_uv": True,
-                        "uniform_surface_translation": True,
+                        "uniform_surface_translation": bool(
+                            np.allclose(anchor_delta, translation_world, atol=1.0e-9)
+                        ),
+                        "source_surface": source_payload,
+                        "target_surface": target_payload,
                         "height_scale": raw.get("height_scale"),
                     },
                 )
@@ -201,15 +294,43 @@ def expand_task_variant_plan(
         )
 
     return ExpandedTaskVariant(
-        edits=tuple([*explicit, *expanded]),
+        edits=tuple(
+            [
+                *(
+                    edit
+                    for edit in explicit
+                    if edit.edit_id not in consumed_explicit_edit_ids
+                ),
+                *expanded,
+            ]
+        ),
         surfaces=tuple(surface_by_id.values()),
         metadata={
             "pose_edit_count": len(plan.pose_edits),
             "surface_transform_count": len(plan.surface_transforms),
             "expanded_surface_follow_edit_count": len(expanded),
+            "composed_surface_uv_edit_count": len(consumed_explicit_edit_ids),
             "surface_transforms": transform_summaries,
         },
         warnings=tuple(warnings),
+    )
+
+
+def _anchor_failed_source_surface_binding(
+    anchor: ContactAnchorRecord,
+    source: ContactSurfaceRecord,
+) -> bool:
+    metadata = dict(anchor.metadata or {})
+    refinement = metadata.get("raw_contact_position_refinement")
+    if isinstance(refinement, Mapping):
+        selected = str(refinement.get("selected_surface_id") or "")
+        if selected == source.surface_id:
+            return True
+    if not metadata.get("surface_binding_failed"):
+        return False
+    reason = str(metadata.get("surface_binding_failure_reason") or "")
+    return source.surface_id in reason or (
+        bool(source.object_id) and str(source.object_id) in reason
     )
 
 

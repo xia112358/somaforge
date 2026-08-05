@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -15,6 +16,7 @@ from motion_edit.generation.newton_collision_filter import (
 
 NEWTON_SHAPE_MARGIN_M = 0.01
 NEWTON_MAX_TRIANGLE_PAIRS = 2_500_000
+_BASE_G1_BUILDERS: dict[str, Any] = {}
 
 
 def _leaf(value: object) -> str:
@@ -79,23 +81,28 @@ class DirectNewtonCollisionScene:
         self.newton = newton
         self.wp = wp
         self.device = str(device)
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        builder.default_shape_cfg.margin = NEWTON_SHAPE_MARGIN_M
-        builder.default_shape_cfg.gap = NEWTON_SHAPE_MARGIN_M
-        builder.add_urdf(
-            str(canonical_g1_urdf_path()),
-            floating=True,
-            enable_self_collisions=True,
-            joint_ordering=None,
-            bodies_follow_joint_ordering=False,
-            collapse_fixed_joints=False,
-            hide_visuals=True,
-        )
-        builder.approximate_meshes("convex_hull")
-        apply_self_collision_filters_to_builder(
-            builder,
-            exclude_kinematic_distance=3,
-        )
+        builder_key = str(canonical_g1_urdf_path().resolve())
+        base_builder = _BASE_G1_BUILDERS.get(builder_key)
+        if base_builder is None:
+            base_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+            base_builder.default_shape_cfg.margin = NEWTON_SHAPE_MARGIN_M
+            base_builder.default_shape_cfg.gap = NEWTON_SHAPE_MARGIN_M
+            base_builder.add_urdf(
+                builder_key,
+                floating=True,
+                enable_self_collisions=True,
+                joint_ordering=None,
+                bodies_follow_joint_ordering=False,
+                collapse_fixed_joints=False,
+                hide_visuals=True,
+            )
+            base_builder.approximate_meshes("convex_hull")
+            apply_self_collision_filters_to_builder(
+                base_builder,
+                exclude_kinematic_distance=3,
+            )
+            _BASE_G1_BUILDERS[builder_key] = base_builder
+        builder = copy.deepcopy(base_builder)
 
         if terrain_mesh is not None:
             terrain_path = Path(terrain_mesh).expanduser().resolve()

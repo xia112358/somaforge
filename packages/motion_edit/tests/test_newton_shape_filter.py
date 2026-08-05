@@ -40,7 +40,10 @@ def test_nested_split_foot_shape_ids_use_one_canonical_ankle_frame() -> None:
             [[[0.95, 0.0, -0.03], [1.14, 0.0, -0.03]]],
             dtype=np.float64,
         ),
-        "raw_contact_point1_w": np.zeros((frame_count, 2, 3), dtype=np.float64),
+        "raw_contact_point1_w": np.asarray(
+            [[[0.94, 0.0, -0.04], [1.13, 0.0, -0.04]]],
+            dtype=np.float64,
+        ),
         "raw_contact_normal_w": np.asarray(
             [[[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]]],
             dtype=np.float64,
@@ -112,3 +115,79 @@ def test_nested_split_foot_shape_ids_use_one_canonical_ankle_frame() -> None:
         "right_heel_anchor": "right_ankle_roll_link",
         "right_toe_anchor": "right_ankle_roll_link",
     }
+
+
+def test_pca_heel_region_keeps_recorded_sphere_and_drops_generic_ankle_shape() -> None:
+    motion = {
+        "body_names": np.asarray(["left_ankle_roll_link"], dtype=object),
+        "body_pos_w": np.zeros((1, 1, 3), dtype=np.float64),
+        "body_quat_w": np.asarray([[[1.0, 0.0, 0.0, 0.0]]]),
+        "newton_body_labels": np.asarray(
+            ["/World/envs/env_0/Robot/left_ankle_roll_link", "/World/ground"],
+            dtype=object,
+        ),
+        "newton_shape_labels": np.asarray(
+            ["left_ankle_roll_link", "left_ankle_roll_sphere_4", "ground"],
+            dtype=object,
+        ),
+        "raw_contact_selected_env_id": np.asarray(0, dtype=np.int32),
+        "raw_contact_count": np.asarray([2], dtype=np.int32),
+        "raw_contact_shape0": np.asarray([[0, 1]], dtype=np.int32),
+        "raw_contact_shape1": np.asarray([[2, 2]], dtype=np.int32),
+        "raw_contact_body0": np.asarray([[0, 0]], dtype=np.int32),
+        "raw_contact_body1": np.asarray([[1, 1]], dtype=np.int32),
+        "raw_contact_point0_w": np.zeros((1, 2, 3), dtype=np.float64),
+        "raw_contact_point1_w": np.zeros((1, 2, 3), dtype=np.float64),
+        "raw_contact_normal_w": np.asarray([[[0.0, 0.0, -1.0]] * 2]),
+        "raw_contact_force_w": np.zeros((1, 2, 3), dtype=np.float64),
+    }
+    anchor = ContactAnchorRecord(
+        "motion_a",
+        "left_toe_heel_region",
+        "left_toe",
+        0,
+        1,
+        metadata={
+            "patch_role": "heel",
+            "foot_subcontact": {"raw_shape_ids": [0, 1]},
+        },
+    )
+
+    patches, summary = bind_newton_contact_patches([anchor], motion)
+
+    assert patches[0].newton_shape_labels == ["left_ankle_roll_sphere_4"]
+    assert summary["raw_shape_ids_by_anchor"] == {"left_toe_heel_region": [1]}
+
+
+def test_foot_anchor_without_shape_metadata_rejects_generic_ankle_shape() -> None:
+    motion = {
+        "body_names": np.asarray(["right_ankle_roll_link"], dtype=object),
+        "body_pos_w": np.zeros((1, 1, 3), dtype=np.float64),
+        "body_quat_w": np.asarray([[[1.0, 0.0, 0.0, 0.0]]]),
+        "newton_body_labels": np.asarray(
+            ["/World/envs/env_0/Robot/right_ankle_roll_link", "/World/ground"],
+            dtype=object,
+        ),
+        "newton_shape_labels": np.asarray(
+            ["right_ankle_roll_link", "right_ankle_roll_sphere_1", "ground"],
+            dtype=object,
+        ),
+        "raw_contact_selected_env_id": np.asarray(0, dtype=np.int32),
+        "raw_contact_count": np.asarray([2], dtype=np.int32),
+        "raw_contact_shape0": np.asarray([[0, 1]], dtype=np.int32),
+        "raw_contact_shape1": np.asarray([[2, 2]], dtype=np.int32),
+        "raw_contact_body0": np.asarray([[0, 0]], dtype=np.int32),
+        "raw_contact_body1": np.asarray([[1, 1]], dtype=np.int32),
+        "raw_contact_point0_w": np.zeros((1, 2, 3), dtype=np.float64),
+        "raw_contact_point1_w": np.zeros((1, 2, 3), dtype=np.float64),
+        "raw_contact_normal_w": np.asarray([[[0.0, 0.0, -1.0]] * 2]),
+        "raw_contact_force_w": np.zeros((1, 2, 3), dtype=np.float64),
+    }
+    anchor = ContactAnchorRecord(
+        "motion_a", "right_heel_without_ids", "right_heel", 0, 1
+    )
+
+    patches, summary = bind_newton_contact_patches([anchor], motion)
+
+    assert patches[0].newton_shape_labels == ["right_ankle_roll_sphere_1"]
+    assert summary["filtered_raw_contact_count"] == 1

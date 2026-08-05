@@ -39,6 +39,11 @@ def main() -> None:
     parser.add_argument("--ik-conda-env", default="env_somaforge")
     parser.add_argument("--ik-script", type=Path, default=None)
     parser.add_argument("--ik-max-nfev", type=int, default=None)
+    parser.add_argument(
+        "--ik-collision-reference-cache",
+        type=Path,
+        default=None,
+    )
     args = parser.parse_args()
 
     result = generate_contact_aware_pyroki_preview(
@@ -65,6 +70,7 @@ def main() -> None:
         ik_conda_env=args.ik_conda_env,
         ik_script=args.ik_script,
         ik_max_nfev=args.ik_max_nfev,
+        ik_collision_reference_cache=args.ik_collision_reference_cache,
     )
     print(
         json.dumps(

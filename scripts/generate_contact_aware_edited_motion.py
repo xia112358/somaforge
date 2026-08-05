@@ -37,7 +37,11 @@ def main() -> None:
         default=int(OMNI_GENERATION_DEFAULTS["contact_laplacian_iters"]),
     )
     parser.add_argument("--contact-laplacian-damping", type=float, default=1.0e-4)
-    parser.add_argument("--contact-laplacian-trust", type=float, default=0.05)
+    parser.add_argument(
+        "--contact-laplacian-trust",
+        type=float,
+        default=float(OMNI_GENERATION_DEFAULTS["contact_laplacian_trust"]),
+    )
     parser.add_argument("--edit-contact-weight", type=float, default=1000.0)
     parser.add_argument("--fixed-contact-weight", type=float, default=1000.0)
     parser.add_argument(
@@ -66,6 +70,15 @@ def main() -> None:
         default=float(OMNI_GENERATION_DEFAULTS["mesh_laplacian_weight"]),
     )
     parser.add_argument("--source-reference-weight", type=float, default=0.01)
+    parser.add_argument(
+        "--semantic-proxy-basis",
+        type=Path,
+        default=None,
+        help=(
+            "Reuse a converged semantic proxy when current edit displacements "
+            "are proportional to that basis."
+        ),
+    )
     parser.add_argument("--boundary-ramp-frames", type=int, default=10)
     parser.add_argument("--min-raw-contact-force-norm", type=float, default=0.0)
     parser.add_argument("--ik-conda-env", default="env_somaforge")
@@ -80,6 +93,15 @@ def main() -> None:
         default=None,
     )
     parser.add_argument("--ik-collision-max-refinements", type=int, default=None)
+    parser.add_argument(
+        "--ik-collision-reference-cache",
+        type=Path,
+        default=None,
+        help=(
+            "Share one fail-closed Newton source-distance cache across "
+            "variants of the same rollout."
+        ),
+    )
     parser.add_argument("--newton-device", default="cpu")
     parser.add_argument("--robot-urdf", type=Path, default=None)
     args = parser.parse_args()
@@ -119,6 +141,8 @@ def main() -> None:
         ik_max_nfev=args.ik_max_nfev,
         ik_collision_similarity_weight=args.ik_collision_similarity_weight,
         ik_collision_max_refinements=args.ik_collision_max_refinements,
+        ik_collision_reference_cache=args.ik_collision_reference_cache,
+        semantic_proxy_basis=args.semantic_proxy_basis,
     )
     canonical = canonicalize_motion_with_direct_newton_fk(
         preview.output_motion_path,

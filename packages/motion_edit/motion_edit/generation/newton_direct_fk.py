@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -32,6 +34,12 @@ class DirectNewtonFkResult:
     backend_metadata: dict[str, Any]
 
 
+_DIRECT_FK_MODEL_CACHE: dict[
+    tuple[str, int, int, str],
+    tuple[Any, Any, Any],
+] = {}
+
+
 def canonicalize_motion_with_direct_newton_fk(
     input_path: str | Path,
     output_path: str | Path,
@@ -45,6 +53,47 @@ def canonicalize_motion_with_direct_newton_fk(
     This function imports Newton and Warp only. It never imports Isaac Lab,
     launches Kit, creates a SimulationContext, or steps a physics solver.
     """
+
+    worker_name = os.environ.get("SOMAFORGE_IK_WORKER_SOCKET")
+    if worker_name:
+        address = (
+            "\0" + worker_name[1:]
+            if worker_name.startswith("@")
+            else worker_name
+        )
+        request = {
+            "op": "canonicalize",
+            "kwargs": {
+                "input_path": str(Path(input_path).expanduser().resolve()),
+                "output_path": str(Path(output_path).expanduser().resolve()),
+                "robot_urdf": (
+                    None
+                    if robot_urdf is None
+                    else str(Path(robot_urdf).expanduser().resolve())
+                ),
+                "device": str(device),
+                "overwrite": bool(overwrite),
+            },
+        }
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.connect(address)
+            stream = client.makefile("rw", encoding="utf-8")
+            stream.write(json.dumps(request) + "\n")
+            stream.flush()
+            response = json.loads(stream.readline())
+        if not response.get("ok"):
+            raise RuntimeError(
+                "persistent Newton FK worker failed:\n"
+                + str(response.get("traceback", response))
+            )
+        value = dict(response["canonical"])
+        return DirectNewtonFkResult(
+            output_path=Path(value["output_path"]),
+            body_names=tuple(value["body_names"]),
+            joint_names=tuple(value["joint_names"]),
+            frame_count=int(value["frame_count"]),
+            backend_metadata=dict(value["backend_metadata"]),
+        )
 
     import newton
     import warp as wp
@@ -82,13 +131,30 @@ def canonicalize_motion_with_direct_newton_fk(
     if not urdf_path.is_file():
         raise FileNotFoundError(f"Newton robot URDF does not exist: {urdf_path}")
 
-    builder = newton.ModelBuilder(up_axis="Z")
-    import_result = builder.add_urdf(
+    urdf_stat = urdf_path.stat()
+    model_key = (
         str(urdf_path),
-        floating=True,
+        int(urdf_stat.st_mtime_ns),
+        int(urdf_stat.st_size),
+        str(device),
     )
-    model = builder.finalize(device=device)
-    state = model.state()
+    cached_model = _DIRECT_FK_MODEL_CACHE.get(model_key)
+    if cached_model is None:
+        builder = newton.ModelBuilder(up_axis="Z")
+        import_result = builder.add_urdf(
+            str(urdf_path),
+            floating=True,
+        )
+        model = builder.finalize(device=device)
+        state = model.state()
+        _DIRECT_FK_MODEL_CACHE.clear()
+        _DIRECT_FK_MODEL_CACHE[model_key] = (
+            model,
+            state,
+            import_result,
+        )
+    else:
+        model, state, import_result = cached_model
 
     joint_labels = tuple(str(value) for value in model.joint_label)
     body_labels = tuple(str(value) for value in model.body_label)

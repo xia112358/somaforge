@@ -14,11 +14,16 @@ but is disabled by the default dual-Laplacian profile.
 
 from __future__ import annotations
 
+from collections import OrderedDict
+import hashlib
 from typing import Sequence
 
 import numpy as np
 
-from .kinematics import KinematicsProvider
+from .kinematics import (
+    BodyPositionTrajectoryKinematicsProvider,
+    KinematicsProvider,
+)
 from .residuals import (
     LeastSquaresSystem,
     add_body_relative_residuals,
@@ -50,6 +55,9 @@ _SEMANTIC_BODY_EDGE_CANDIDATES = (
     ("torso", "left_hand"),
     ("torso", "right_hand"),
 )
+
+_SPARSE_NORMAL_FACTOR_CACHE: OrderedDict[str, object] = OrderedDict()
+_SPARSE_NORMAL_FACTOR_CACHE_LIMIT = 4
 
 
 def solve_batch_contact_laplacian(
@@ -118,6 +126,10 @@ def solve_batch_contact_laplacian(
             q_reference=prior,
             kinematics=kinematics,
         )
+    exact_linear_solve = (
+        isinstance(kinematics, BodyPositionTrajectoryKinematicsProvider)
+        and float(cfg.trust_region) <= 0.0
+    )
 
     for iteration in range(max(0, int(cfg.num_iters))):
         system, current_mesh_meta = _build_system(
@@ -146,12 +158,61 @@ def solve_batch_contact_laplacian(
         rhs = np.asarray(system.rhs, dtype=np.float64)
         current_cost = float(np.dot(rhs, rhs))
         matrix, rhs, is_sparse = system_to_sparse_or_dense(system, var_count)
-        lhs, full_rhs = _add_damping(matrix, rhs, var_count, float(cfg.damping), is_sparse)
+        lhs, full_rhs = (
+            (matrix, rhs)
+            if exact_linear_solve
+            else _add_damping(
+                matrix,
+                rhs,
+                var_count,
+                float(cfg.damping),
+                is_sparse,
+            )
+        )
         solution = _solve_least_squares(lhs, full_rhs, is_sparse)
         raw_step = np.asarray(solution, dtype=np.float64).reshape(n_frames, nq)
         trust_step = _clip_trust_region(raw_step, float(cfg.trust_region))
 
         predicted_residual = _matrix_vector_product(matrix, trust_step.reshape(-1), is_sparse) - rhs
+        if exact_linear_solve:
+            q = q + trust_step
+            mesh_meta = current_mesh_meta
+            accepted_cost = float(np.dot(predicted_residual, predicted_residual))
+            relative_improvement = (
+                current_cost - accepted_cost
+            ) / max(current_cost, 1.0e-24)
+            iteration_meta.append(
+                {
+                    "iteration": iteration,
+                    "rows": len(system.rows),
+                    "variables": int(var_count),
+                    "sparse": bool(is_sparse),
+                    "accepted": True,
+                    "line_search_trials": 0,
+                    "accepted_step_scale": 1.0,
+                    "raw_step_norm": float(np.linalg.norm(raw_step)),
+                    "trust_step_norm": float(np.linalg.norm(trust_step)),
+                    "step_norm": float(np.linalg.norm(trust_step)),
+                    "max_frame_step": (
+                        float(np.max(np.linalg.norm(trust_step, axis=1)))
+                        if len(trust_step)
+                        else 0.0
+                    ),
+                    "objective_before": current_cost,
+                    "objective_after": accepted_cost,
+                    "relative_improvement": float(relative_improvement),
+                    "predicted_residual_norm": float(
+                        np.linalg.norm(predicted_residual)
+                    ),
+                    "residual_norm": float(np.linalg.norm(predicted_residual)),
+                    "residual_norms_by_label": label_norms(
+                        system.labels,
+                        predicted_residual,
+                    ),
+                    "linear_exact_solve": True,
+                }
+            )
+            break
         accepted = False
         accepted_scale = 0.0
         accepted_step = np.zeros_like(trust_step)
@@ -264,6 +325,7 @@ def solve_batch_contact_laplacian(
             "mesh_laplacian_weight": float(cfg.mesh_laplacian_weight),
         },
         "damping": float(cfg.damping),
+        "linear_exact_solve": bool(exact_linear_solve),
         "trust_region": float(cfg.trust_region),
         "line_search_max_steps": int(cfg.line_search_max_steps),
         "relative_cost_tolerance": float(cfg.relative_cost_tolerance),
@@ -401,10 +463,40 @@ def _solve_least_squares(matrix, rhs: np.ndarray, is_sparse: bool) -> np.ndarray
         try:
             from scipy.sparse import linalg as splinalg  # type: ignore
 
-            return np.asarray(splinalg.lsqr(matrix, rhs, atol=1.0e-10, btol=1.0e-10)[0], dtype=np.float64)
+            normal = (matrix.T @ matrix).tocsc()
+            projected = np.asarray(matrix.T @ rhs, dtype=np.float64).reshape(-1)
+            key = _sparse_matrix_key(normal)
+            factor = _SPARSE_NORMAL_FACTOR_CACHE.get(key)
+            if factor is None:
+                factor = splinalg.factorized(normal)
+                _SPARSE_NORMAL_FACTOR_CACHE[key] = factor
+                while len(_SPARSE_NORMAL_FACTOR_CACHE) > _SPARSE_NORMAL_FACTOR_CACHE_LIMIT:
+                    _SPARSE_NORMAL_FACTOR_CACHE.popitem(last=False)
+            else:
+                _SPARSE_NORMAL_FACTOR_CACHE.move_to_end(key)
+            return np.asarray(factor(projected), dtype=np.float64)
         except Exception:
-            matrix = matrix.toarray()
+            try:
+                from scipy.sparse import linalg as splinalg  # type: ignore
+
+                return np.asarray(
+                    splinalg.lsqr(matrix, rhs, atol=1.0e-10, btol=1.0e-10)[0],
+                    dtype=np.float64,
+                )
+            except Exception:
+                matrix = matrix.toarray()
     return np.linalg.lstsq(np.asarray(matrix, dtype=np.float64), np.asarray(rhs, dtype=np.float64), rcond=None)[0]
+
+
+def _sparse_matrix_key(matrix) -> str:
+    digest = hashlib.sha256()
+    digest.update(b"somaforge_sparse_normal_v1\0")
+    digest.update(str(matrix.shape).encode("ascii"))
+    for value in (matrix.indptr, matrix.indices, matrix.data):
+        array = np.ascontiguousarray(value)
+        digest.update(array.dtype.str.encode("ascii"))
+        digest.update(memoryview(array).cast("B"))
+    return digest.hexdigest()
 
 
 def _clip_trust_region(step: np.ndarray, trust_region: float) -> np.ndarray:

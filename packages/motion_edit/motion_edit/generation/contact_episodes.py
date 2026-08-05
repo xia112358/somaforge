@@ -120,7 +120,21 @@ def _phase_delta(
     deltas = np.stack([_edit_delta(edit) for edit in member_edits])
     delta = np.median(deltas, axis=0)
     disagreement = float(np.max(np.linalg.norm(deltas - delta[None, :], axis=1)))
-    if disagreement > 1.0e-4:
+    surface_transforms = [
+        edit.metadata.get("surface_transform")
+        for edit in member_edits
+        if isinstance(edit.metadata, dict)
+    ]
+    one_rigid_surface_transform = (
+        len(surface_transforms) == len(member_edits)
+        and bool(surface_transforms)
+        and isinstance(surface_transforms[0], dict)
+        and all(
+            transform == surface_transforms[0]
+            for transform in surface_transforms[1:]
+        )
+    )
+    if disagreement > 1.0e-4 and not one_rigid_surface_transform:
         raise ValueError(
             "contact episode contains divergent fragment edits; move the episode handle as one unit "
             f"instead (max delta disagreement {disagreement:.6g} m)"

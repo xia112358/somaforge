@@ -23,9 +23,9 @@ class FinetuneOptions:
     output_dir: Path
     project: str = "MotionEditPolicyFinetune"
     name: str = "motion_edit_single"
-    num_envs: int = 1024
-    iterations: int = 500
-    save_interval: int = 100
+    num_envs: int = 4096
+    iterations: int = 10000
+    save_interval: int = 500
     max_episode_length_s: float = 22.0
 
 
@@ -40,11 +40,20 @@ def _replace_motion_config(command, manifest: Path):
         motion_dir="",
         motion_manifest=str(manifest),
         canonicalize_motion_order_on_load=True,
-        reset_sampler="completion_ema_failure_window",
-        start_at_timestep_zero_prob=0.2,
+        reset_sampler="hotspot_failure_window",
+        start_at_timestep_zero_prob=0.0,
         freeze_at_timestep_zero_prob=0.0,
         use_start_probe_envs=True,
-        probe_env_per_motion=32,
+        probe_env_per_motion=10,
+        probe_completion_alpha=0.02,
+        probe_uniform_mix=0.4,
+        failure_window_pre_frames=50,
+        failure_window_post_frames=20,
+        failure_window_before_prob=0.7,
+        failure_window_success_horizon_frames=50,
+        hotspot_failure_uniform_mix=0.3,
+        hotspot_failure_decay=0.995,
+        hotspot_failure_min_count=1.0,
         use_group_probe_envs=False,
         chain_motion_segments=False,
         hold_at_motion_end_in_eval=False,
@@ -77,6 +86,20 @@ def main() -> None:
     config, _ = load_saved_experiment_config(
         CheckpointConfig(checkpoint=str(checkpoint))
     )
+    if not bool(config.robot.asset.enable_self_collisions):
+        raise ValueError(
+            "Motion Edit fine-tuning requires a checkpoint trained with "
+            "robot.asset.enable_self_collisions=True"
+        )
+    mujoco_warp = config.simulator.config.mujoco_warp
+    if (
+        int(mujoco_warp.nconmax_per_env) < 160
+        or int(mujoco_warp.njmax_per_env) < 1024
+    ):
+        raise ValueError(
+            "Motion Edit fine-tuning requires the retained self-collision "
+            "capacity: nconmax_per_env>=160 and njmax_per_env>=1024"
+        )
     config = dataclasses.replace(
         config,
         training=dataclasses.replace(

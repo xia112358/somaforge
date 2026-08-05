@@ -42,6 +42,7 @@ from motion_edit.workbench.surface_editor_session import (
     SurfaceEditorSession,
     move_surface_editor_anchor,
     move_surface_editor_handle,
+    prepare_playback_surface_editor_session,
     read_pending_surface_edits,
     read_surface_editor_graph,
     restore_surface_editor_handle,
@@ -136,6 +137,7 @@ class EditorState:
     # Compatibility lineage used by generation and context resolution only.
     motion_asset_id: str | None = None
     motion_version_id: str | None = None
+    read_only: bool = False
     fps: float = 50.0
     undo_stack: list[tuple[Any, list[Any]]] = field(default_factory=list)
     redo_stack: list[tuple[Any, list[Any]]] = field(default_factory=list)
@@ -180,6 +182,14 @@ class EditorState:
 def _require_generation_idle(state: EditorState) -> None:
     if state.generation_payload()["status"] == "running":
         raise HTTPException(status_code=409, detail="the ContactEditPlan is locked while generation is running")
+
+
+def _require_editable(state: EditorState) -> None:
+    if state.read_only:
+        raise HTTPException(
+            status_code=409,
+            detail="motion is loaded in playback-only mode because it has no contact layer",
+        )
 
 
 def _repo_url(path: str | Path) -> str:
@@ -402,12 +412,26 @@ def _recent_payload(state: EditorState) -> dict[str, Any]:
 
 def _open_motion(state: EditorState, motion_id: str) -> dict[str, Any]:
     motion = _resolve_motion(motion_id)
-    prepared = prepare_contact_editor_session(
-        _motion_config(motion.motion_id),
-        layers_root=LAYERS_ROOT,
-        workbench_root=WORKBENCH_ROOT,
-    )
-    state.session = prepared.session
+    record = read_motion_asset(motion.motion_asset_id)
+    version = read_motion_version(motion.motion_version_id) if motion.motion_version_id else None
+    source_contact_layer = version.contact_layer if version is not None else record.source_contact_layer
+    if source_contact_layer:
+        prepared = prepare_contact_editor_session(
+            _motion_config(motion.motion_id),
+            layers_root=LAYERS_ROOT,
+            workbench_root=WORKBENCH_ROOT,
+        )
+        state.session = prepared.session
+        state.read_only = False
+    else:
+        state.session = prepare_playback_surface_editor_session(
+            motion_path=_repo_path(motion.motion_path) or motion.motion_path,
+            motion_id=record.motion_id or record.motion_asset_id,
+            surface_catalog=_repo_path(record.surface_catalog_path),
+            session_name=f"{motion.motion_id}_web_playback",
+            workbench_root=WORKBENCH_ROOT,
+        )
+        state.read_only = True
     state.motion_id = motion.motion_id
     state.motion_provenance = motion.provenance
     state.motion_asset_id = motion.motion_asset_id
@@ -438,6 +462,12 @@ def _session_payload(state: EditorState) -> dict[str, Any]:
     force = load_contact_force_payload(session.contact_force_path or session.motion_path, frame_count=qpos.shape[0])
     return {
         "motion_id": state.motion_id,
+        "read_only": state.read_only,
+        "capabilities": {
+            "playback": True,
+            "edit_contacts": not state.read_only,
+            "generate": not state.read_only,
+        },
         "provenance": state.motion_provenance,
         "source_motion_id": session.motion_id,
         "fps": fps,
@@ -682,6 +712,7 @@ def create_app(
     def move(request: MoveRequest) -> dict:
         if state.session is None:
             raise HTTPException(status_code=409, detail="no motion is loaded")
+        _require_editable(state)
         _require_generation_idle(state)
         try:
             before = state.snapshot()
@@ -716,6 +747,7 @@ def create_app(
     def move_handle(request: HandleMoveRequest) -> dict:
         if state.session is None:
             raise HTTPException(status_code=409, detail="no motion is loaded")
+        _require_editable(state)
         _require_generation_idle(state)
         try:
             graph = read_surface_editor_graph(state.session)
@@ -753,6 +785,7 @@ def create_app(
 
     @app.post("/api/session/undo")
     def undo() -> dict:
+        _require_editable(state)
         _require_generation_idle(state)
         if state.session is None or not state.undo_stack:
             raise HTTPException(status_code=409, detail="nothing to undo")
@@ -762,6 +795,7 @@ def create_app(
 
     @app.post("/api/session/redo")
     def redo() -> dict:
+        _require_editable(state)
         _require_generation_idle(state)
         if state.session is None or not state.redo_stack:
             raise HTTPException(status_code=409, detail="nothing to redo")
@@ -771,6 +805,7 @@ def create_app(
 
     @app.post("/api/session/save")
     def save() -> dict:
+        _require_editable(state)
         _require_generation_idle(state)
         if state.session is None:
             raise HTTPException(status_code=409, detail="no motion is loaded")
@@ -781,6 +816,7 @@ def create_app(
 
     @app.post("/api/session/validate")
     def validate() -> dict:
+        _require_editable(state)
         _require_generation_idle(state)
         try:
             return _save_session(state, validate=True)
@@ -789,6 +825,7 @@ def create_app(
 
     @app.post("/api/session/restore-anchor")
     def restore_anchor(request: MoveRequest) -> dict:
+        _require_editable(state)
         _require_generation_idle(state)
         if state.session is None or state.initial_snapshot is None:
             raise HTTPException(status_code=409, detail="no motion is loaded")
@@ -812,6 +849,7 @@ def create_app(
 
     @app.post("/api/session/restore-handle")
     def restore_handle(request: HandleMoveRequest) -> dict:
+        _require_editable(state)
         _require_generation_idle(state)
         if state.session is None or state.initial_snapshot is None:
             raise HTTPException(status_code=409, detail="no motion is loaded")
@@ -834,6 +872,7 @@ def create_app(
 
     @app.post("/api/session/reset")
     def reset() -> dict:
+        _require_editable(state)
         _require_generation_idle(state)
         if state.session is None or state.initial_snapshot is None:
             raise HTTPException(status_code=409, detail="no motion is loaded")
@@ -852,21 +891,13 @@ def create_app(
         if state.motion_id is None:
             raise HTTPException(status_code=409, detail="no motion is loaded")
         try:
-            prepared = prepare_contact_editor_session(
-                _motion_config(state.motion_id),
-                layers_root=LAYERS_ROOT,
-                workbench_root=WORKBENCH_ROOT,
-            )
-            state.session = prepared.session
-            state.undo_stack.clear()
-            state.redo_stack.clear()
-            state.initial_snapshot = state.snapshot()
-            return _session_payload(state)
+            return _open_motion(state, state.motion_id)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.put("/api/session/settings")
     def settings(request: SettingsRequest) -> dict:
+        _require_editable(state)
         _require_generation_idle(state)
         if state.session is None:
             raise HTTPException(status_code=409, detail="no motion is loaded")
@@ -886,6 +917,7 @@ def create_app(
     def generate(request: GenerateRequest) -> dict:
         if state.session is None:
             raise HTTPException(status_code=409, detail="no motion is loaded")
+        _require_editable(state)
         with state.generation_lock:
             if state.generation.status == "running":
                 raise HTTPException(status_code=409, detail="a generation job is already running")

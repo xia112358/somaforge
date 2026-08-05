@@ -4,10 +4,10 @@ Contact-centered motion editing workbench for surface-bound contact-anchor editi
 
 Motion Edit writes an edited kinematic reference through contact-Laplacian,
 PyRoki trajectory IK, and direct Newton FK. Production force fields are
-calculated afterward by frame-boundary Newton replay and must carry
-`contact_force_provenance_json`. Source forces may be optimization or
-acceptance references, but are never copied or migrated onto edited kinematics.
-No alternative dynamics backend is supported.
+measured when the fine-tuned self-collision policy executes the edited
+reference in Newton. Source forces may be optimization or acceptance
+references, but are never copied, migrated, or replay-baked onto edited
+kinematics. No alternative dynamics backend is supported.
 The package stores local runtime metadata and
 segment layers under `data/`; large runtime artifacts remain untracked.
 
@@ -59,17 +59,17 @@ The main user-facing path starts from the canonical asset manifest:
 
 ```text
 Somaforge Newton 8-part asset manifest
-  -> verified force trajectory + canonical source motion + terrain OBJ
+  -> self-collision base policy rollout
+  -> one fused source motion with measured force/raw contacts + terrain OBJ
   -> MotionAsset / ContactGraph / surface catalog
   -> unified contact-editor + recent motion list
   -> validated surface-constrained ContactEditPlan
-  -> optional 6 Hz rollout pose cleanup
   -> contact-Laplacian semantic curves
   -> Newton robot-local contact patches
   -> PyRoki trajectory IK + Newton soft signed-distance similarity
   -> direct Newton FK canonical edited trajectory
-  -> frame-boundary Newton replay
-  -> WBT-ready 8-part force trajectory
+  -> fine-tune the accepted self-collision policy on the edited trajectory
+  -> Newton policy execution records the edited trajectory's real force
 ```
 
 ```bash
@@ -131,9 +131,9 @@ conda run --no-capture-output -n env_somaforge python \
   --overwrite
 ```
 
-It deliberately does not invent contact forces. Run the canonical result
-through `scripts/replay_motion_newton_frame_boundary.py`, then build the WBT
-policy reference with `scripts/build_newton_force_policy_reference.py`.
+It deliberately does not invent or migrate edited contact forces. Policy
+training consumes the canonical kinematic result; measured force and raw
+contacts remain source-rollout evidence rather than generated output fields.
 
 `generate-lte-augmentation` remains available only as a hidden/internal
 geometry diagnostic. Its output is not a standard generated trajectory because
@@ -329,11 +329,13 @@ pose/velocity arrays, canonical names, `robot_asset_json`, and direct Newton
 kinematics provenance. It must not contain stale source `contact_force_part_w`,
 `contact_force_provenance_json`, or `raw_contact_*`.
 
-Force extraction is a separate dynamics stage. Frame-boundary replay makes the
-edited state authoritative once per 20 ms control interval, advances four
-continuous 5 ms Newton substeps, and records the fourth substep. The source
-rollout's forces and torques are references for comparison/control only.
-Production code must never migrate source forces into the edited trajectory.
+Force creation is a separate policy-execution stage. The accepted
+self-collision checkpoint and the edited canonical motion are the two
+fine-tuning inputs. Newton execution of the fine-tuned policy records the new
+motion's real force and raw contacts. The source rollout's forces and torques
+are references for comparison and acceptance only. Production code must never
+migrate source forces into the edited trajectory or synthesize them by
+frame-wise state replay.
 
 See
 [`docs/height110_production_pipeline.md`](docs/height110_production_pipeline.md)
@@ -606,8 +608,8 @@ frames, and runs PyRoki IK with direct Newton collision/FK evaluation. The
 source rollout supplies contact timing, patch geometry, pose/collision
 references, and diagnostics; it does not supply force fields for the edited
 file. Motion Edit never fabricates or migrates the force field written to a
-training reference: force-bearing output comes only from the subsequent
-frame-boundary Newton replay.
+training reference: force-bearing output comes only from execution of the
+fine-tuned policy in Newton.
 
 The archived source `.npz`, source ContactLayer, and source canonical segmentation are not modified. `--output-contact-layer` writes a graph derived from the source ContactGraph with edited anchor positions. `--output-segment-layer` writes candidate segments for the edited reference. `--register-motion-version` registers that edited trajectory. Canonical segmentation for the new version is only built when `--build-canonical` is passed explicitly.
 

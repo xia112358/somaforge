@@ -6,6 +6,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from motion_edit.contact.surface_geometry import point_in_polygon_uv
 from . import newton_bindings as _legacy
 from .schema import ContactAnchorRecord, ContactPatchRecord
 
@@ -70,7 +71,13 @@ _STRICT_BODY_ALIAS_GROUPS: tuple[tuple[str, ...], ...] = (
 )
 
 
-def _subcontact_kind(body: str) -> str | None:
+def _subcontact_kind(
+    body: str,
+    metadata: Mapping[str, Any] | None = None,
+) -> str | None:
+    role = (metadata or {}).get("patch_role")
+    if str(role).lower() in {"heel", "toe", "sole"}:
+        return str(role).lower()
     value = str(body).lower()
     if "heel" in value or value in {"lhee", "rhee"}:
         return "heel"
@@ -106,12 +113,12 @@ def _anchor_raw_shape_ids(anchor: ContactAnchorRecord) -> tuple[int, ...]:
         return ()
 
     resolved = _shape_ids(subcontact.get("raw_shape_ids"))
-    kind = _subcontact_kind(anchor.body)
-    if kind is not None:
+    kind = _subcontact_kind(anchor.body, metadata)
+    if kind in {"heel", "toe"}:
         nested = subcontact.get(kind)
         if isinstance(nested, Mapping):
             resolved.update(_shape_ids(nested.get("raw_shape_ids")))
-    elif not resolved:
+    elif kind == "sole" or not resolved:
         # Unsplit/legacy foot anchors may intentionally represent the whole sole.
         for name in ("heel", "toe"):
             nested = subcontact.get(name)
@@ -119,6 +126,56 @@ def _anchor_raw_shape_ids(anchor: ContactAnchorRecord) -> tuple[int, ...]:
                 resolved.update(_shape_ids(nested.get("raw_shape_ids")))
 
     return tuple(sorted(resolved))
+
+
+def _foot_shape_role(label: str) -> str | None:
+    value = str(label).lower()
+    if "heel" in value or any(
+        token in value for token in ("sphere_1", "sphere_2")
+    ):
+        return "heel"
+    if "toe" in value or any(
+        token in value for token in ("sphere_3", "sphere_4", "sphere_5")
+    ):
+        return "toe"
+    return None
+
+
+def _physical_foot_shape_ids(
+    anchor: ContactAnchorRecord,
+    shape_ids: Sequence[int],
+    shape_labels: Sequence[str],
+) -> tuple[int, ...]:
+    """Drop generic ankle collision shapes from heel/toe patch identity."""
+
+    metadata = anchor.metadata if isinstance(anchor.metadata, Mapping) else {}
+    role = _subcontact_kind(anchor.body, metadata)
+    if role not in {"heel", "toe", "sole"}:
+        return tuple(sorted(int(value) for value in shape_ids))
+    accepted_roles = {"heel", "toe"} if role == "sole" else {role}
+    physical = tuple(
+        sorted(
+            int(shape_id)
+            for shape_id in shape_ids
+            if 0 <= int(shape_id) < len(shape_labels)
+            and _foot_shape_role(shape_labels[int(shape_id)]) in accepted_roles
+        )
+    )
+    if physical:
+        return physical
+    any_foot_sphere = tuple(
+        sorted(
+            int(shape_id)
+            for shape_id in shape_ids
+            if 0 <= int(shape_id) < len(shape_labels)
+            and _foot_shape_role(shape_labels[int(shape_id)]) is not None
+        )
+    )
+    if any_foot_sphere:
+        return any_foot_sphere
+    # Old recordings can use semantic labels without sphere/heel/toe identity.
+    # Preserve their explicit IDs only when no physical role can be resolved.
+    return tuple(sorted(int(value) for value in shape_ids))
 
 
 def _frame_candidates(body: str) -> tuple[str, ...]:
@@ -163,10 +220,77 @@ def _resolve_canonical_frame(body_names: Sequence[str], anchor_body: str) -> tup
     return None
 
 
+def _uses_rolling_local_contact_point(anchor_body: str) -> bool:
+    """Allow contact material points to migrate only on round hand/knee geometry."""
+
+    value = str(anchor_body).lower()
+    return any(token in value for token in ("hand", "wrist", "knee"))
+
+
 def _shape_label(shape_labels: Sequence[str], shape_id: int) -> str:
     if 0 <= int(shape_id) < len(shape_labels):
         return str(shape_labels[int(shape_id)])
     return f"shape:{int(shape_id)}"
+
+
+def _anchor_surface_polygon(anchor: ContactAnchorRecord) -> list[tuple[float, float]]:
+    bindings = anchor.metadata.get("surface_bindings")
+    if not isinstance(bindings, list) or not bindings:
+        return []
+    latest = bindings[-1]
+    raw = (
+        latest.get("polygon_surface_coordinates")
+        if isinstance(latest, dict)
+        else None
+    )
+    if not isinstance(raw, list) or len(raw) < 3:
+        return []
+    try:
+        return [(float(item["u"]), float(item["v"])) for item in raw]
+    except (KeyError, TypeError, ValueError):
+        return []
+
+
+def _counterpart_matches_anchor_surface(
+    anchor: ContactAnchorRecord,
+    point_w: np.ndarray,
+    *,
+    plane_tolerance_m: float = 2.0e-3,
+) -> bool:
+    if (
+        anchor.surface_origin is None
+        or anchor.surface_normal is None
+        or anchor.surface_tangent_u is None
+        or anchor.surface_tangent_v is None
+    ):
+        return True
+    point = np.asarray(point_w, dtype=np.float64)
+    origin = np.asarray(anchor.surface_origin, dtype=np.float64)
+    normal = np.asarray(anchor.surface_normal, dtype=np.float64)
+    tangent_u = np.asarray(anchor.surface_tangent_u, dtype=np.float64)
+    tangent_v = np.asarray(anchor.surface_tangent_v, dtype=np.float64)
+    normal /= max(float(np.linalg.norm(normal)), 1.0e-12)
+    tangent_u /= max(float(np.linalg.norm(tangent_u)), 1.0e-12)
+    tangent_v /= max(float(np.linalg.norm(tangent_v)), 1.0e-12)
+    relative = point - origin
+    if abs(float(np.dot(relative, normal))) > float(plane_tolerance_m):
+        return False
+    uv = (float(np.dot(relative, tangent_u)), float(np.dot(relative, tangent_v)))
+    polygon = _anchor_surface_polygon(anchor)
+    if polygon:
+        return bool(point_in_polygon_uv(uv, polygon))
+    bounds = anchor.surface_bounds
+    if not isinstance(bounds, dict):
+        return True
+    for axis, value in (("u", uv[0]), ("v", uv[1])):
+        interval = bounds.get(axis)
+        if (
+            isinstance(interval, (list, tuple))
+            and len(interval) == 2
+            and not float(interval[0]) <= value <= float(interval[1])
+        ):
+            return False
+    return True
 
 
 def _bind_anchor_canonical(
@@ -178,17 +302,39 @@ def _bind_anchor_canonical(
     body_names: list[str],
     selected_env_id: int,
     min_force_norm: float,
-) -> tuple[ContactPatchRecord, list[str], int, int, tuple[int, ...]]:
+) -> tuple[
+    ContactPatchRecord,
+    list[str],
+    int,
+    int,
+    int,
+    tuple[int, ...],
+]:
     warnings: list[str] = []
-    allowed_shape_ids = _anchor_raw_shape_ids(anchor)
+    allowed_shape_ids = _physical_foot_shape_ids(
+        anchor,
+        _anchor_raw_shape_ids(anchor),
+        shape_labels,
+    )
     allowed = set(allowed_shape_ids)
+    anchor_metadata = (
+        anchor.metadata if isinstance(anchor.metadata, Mapping) else {}
+    )
+    fallback_foot_role = _subcontact_kind(anchor.body, anchor_metadata)
 
     frame_resolution = _resolve_canonical_frame(body_names, anchor.body)
     if frame_resolution is None:
         warnings.append(
             f"{anchor.anchor_id}: no canonical motion body frame resolves for {anchor.body!r}"
         )
-        return _legacy._fallback_patch(anchor), warnings, 0, 0, allowed_shape_ids
+        return (
+            _legacy._fallback_patch(anchor),
+            warnings,
+            0,
+            0,
+            0,
+            allowed_shape_ids,
+        )
     canonical_body_index, canonical_frame_label = frame_resolution
 
     n_frames = arrays["body_pos_w"].shape[0]
@@ -196,6 +342,7 @@ def _bind_anchor_canonical(
     end = max(start, min(n_frames, int(anchor.end_frame)))
     groups: dict[str, list[dict[str, Any]]] = {}
     filtered_sample_count = 0
+    surface_filtered_sample_count = 0
     matched_unfiltered_count = 0
 
     for frame in range(start, end):
@@ -225,18 +372,32 @@ def _bind_anchor_canonical(
                 runtime_shape_id = int(arrays["raw_contact_shape0"][frame, contact_index])
                 runtime_body_label = label0
                 robot_point_w = arrays["raw_contact_point0_w"][frame, contact_index]
+                counterpart_point_w = arrays["raw_contact_point1_w"][frame, contact_index]
                 robot_normal_w = arrays["raw_contact_normal_w"][frame, contact_index]
             else:
                 runtime_body_id = body1
                 runtime_shape_id = int(arrays["raw_contact_shape1"][frame, contact_index])
                 runtime_body_label = label1
                 robot_point_w = arrays["raw_contact_point1_w"][frame, contact_index]
+                counterpart_point_w = arrays["raw_contact_point0_w"][frame, contact_index]
                 robot_normal_w = -arrays["raw_contact_normal_w"][frame, contact_index]
 
             matched_unfiltered_count += 1
+            if not _counterpart_matches_anchor_surface(
+                anchor,
+                counterpart_point_w,
+            ):
+                surface_filtered_sample_count += 1
+                continue
             if allowed and runtime_shape_id not in allowed:
                 filtered_sample_count += 1
                 continue
+
+            label = _shape_label(shape_labels, runtime_shape_id)
+            if not allowed and fallback_foot_role in {"heel", "toe"}:
+                if _foot_shape_role(label) != fallback_foot_role:
+                    filtered_sample_count += 1
+                    continue
 
             body_pos_w = arrays["body_pos_w"][frame, canonical_body_index]
             body_quat_w = arrays["body_quat_w"][frame, canonical_body_index]
@@ -253,7 +414,6 @@ def _bind_anchor_canonical(
             if normal_norm > 1.0e-12:
                 normal_local = normal_local / normal_norm
 
-            label = _shape_label(shape_labels, runtime_shape_id)
             groups.setdefault(label, []).append(
                 {
                     "frame": int(frame),
@@ -262,7 +422,12 @@ def _bind_anchor_canonical(
                     "runtime_body_label": str(runtime_body_label),
                     "point_local": np.asarray(point_local, dtype=np.float64),
                     "normal_local": np.asarray(normal_local, dtype=np.float64),
-                    "point_world": np.asarray(robot_point_w, dtype=np.float64),
+                    "robot_point_world": np.asarray(
+                        robot_point_w, dtype=np.float64
+                    ),
+                    "target_point_world": np.asarray(
+                        counterpart_point_w, dtype=np.float64
+                    ),
                 }
             )
 
@@ -280,6 +445,7 @@ def _bind_anchor_canonical(
             warnings,
             0,
             filtered_sample_count,
+            surface_filtered_sample_count,
             allowed_shape_ids,
         )
 
@@ -316,16 +482,71 @@ def _bind_anchor_canonical(
                 arrays["body_quat_w"][frame, canonical_body_index],
             )
             reconstruction_errors.append(
-                float(np.linalg.norm(reconstructed - item["point_world"]))
+                float(
+                    np.linalg.norm(
+                        reconstructed - item["robot_point_world"]
+                    )
+                )
             )
             runtime_body_ids.add(int(item["runtime_body_id"]))
             runtime_shape_ids.add(int(item["runtime_shape_id"]))
             runtime_body_labels.add(str(item["runtime_body_label"]))
-            source_world_points.append(np.asarray(item["point_world"], dtype=np.float64))
+            source_world_points.append(
+                np.asarray(item["target_point_world"], dtype=np.float64)
+            )
 
         shape_names.append(label)
         local_points.append(np.asarray(point_local, dtype=float).tolist())
         local_normals.append(np.asarray(normal_local, dtype=float).tolist())
+
+    target_frames = np.arange(start, end, dtype=np.int64)
+    source_target_points = np.empty(
+        (len(target_frames), len(shape_names), 3),
+        dtype=np.float64,
+    )
+    source_local_points = np.empty_like(source_target_points)
+    for shape_index, label in enumerate(sorted(groups)):
+        samples = groups[label]
+        samples_by_frame: dict[int, list[np.ndarray]] = {}
+        for item in samples:
+            samples_by_frame.setdefault(int(item["frame"]), []).append(
+                np.asarray(item["target_point_world"], dtype=np.float64)
+            )
+        known_frames = np.asarray(sorted(samples_by_frame), dtype=np.int64)
+        known_points = np.stack(
+            [
+                np.median(np.stack(samples_by_frame[int(frame)]), axis=0)
+                for frame in known_frames
+            ],
+            axis=0,
+        )
+        known_local_points = np.stack(
+            [
+                np.median(
+                    np.stack(
+                        [
+                            np.asarray(item["point_local"], dtype=np.float64)
+                            for item in samples
+                            if int(item["frame"]) == int(frame)
+                        ]
+                    ),
+                    axis=0,
+                )
+                for frame in known_frames
+            ],
+            axis=0,
+        )
+        for axis in range(3):
+            source_target_points[:, shape_index, axis] = np.interp(
+                target_frames,
+                known_frames,
+                known_points[:, axis],
+            )
+            source_local_points[:, shape_index, axis] = np.interp(
+                target_frames,
+                known_frames,
+                known_local_points[:, axis],
+            )
 
     center_world = anchor.world_position
     if center_world is None:
@@ -342,6 +563,9 @@ def _bind_anchor_canonical(
         "sample_count": int(total_samples),
         "matched_sample_count_before_shape_filter": int(matched_unfiltered_count),
         "filtered_raw_contact_count": int(filtered_sample_count),
+        "surface_filtered_raw_contact_count": int(
+            surface_filtered_sample_count
+        ),
         "raw_shape_ids_filter": list(allowed_shape_ids),
         "runtime_body_ids_source": sorted(runtime_body_ids),
         "runtime_shape_ids_source": sorted(runtime_shape_ids),
@@ -349,6 +573,11 @@ def _bind_anchor_canonical(
         "local_point_frame_label": canonical_frame_label,
         "local_point_frame_body_index": int(canonical_body_index),
         "frame_contract": "newton_body_label_equals_robot_points_local_frame",
+        "local_point_time_contract": (
+            "rolling_per_frame"
+            if _uses_rolling_local_contact_point(anchor.body)
+            else "fixed_rigid_patch"
+        ),
         "reconstruction_error_mean_m": (
             float(np.mean(reconstruction_errors)) if reconstruction_errors else 0.0
         ),
@@ -375,12 +604,26 @@ def _bind_anchor_canonical(
         newton_shape_labels=shape_names,
         robot_points_local=local_points,
         robot_normals_local=local_normals,
+        source_target_frames=target_frames.astype(int).tolist(),
+        source_target_points_w=source_target_points.astype(float).tolist(),
+        source_points_local_by_frame=(
+            source_local_points.astype(float).tolist()
+            if _uses_rolling_local_contact_point(anchor.body)
+            else None
+        ),
         robot_binding_backend="newton_mjwarp",
         robot_binding_source="newton_raw_contact",
         metadata=metadata,
     )
     patch.validate()
-    return patch, warnings, total_samples, filtered_sample_count, allowed_shape_ids
+    return (
+        patch,
+        warnings,
+        total_samples,
+        filtered_sample_count,
+        surface_filtered_sample_count,
+        allowed_shape_ids,
+    )
 
 
 def bind_newton_contact_patches(
@@ -434,12 +677,20 @@ def bind_newton_contact_patches(
     bound_count = 0
     raw_sample_count = 0
     filtered_sample_count = 0
+    surface_filtered_sample_count = 0
     strict_anchor_count = 0
     shape_filters: dict[str, list[int]] = {}
     frame_labels: dict[str, str] = {}
 
     for anchor in anchors:
-        patch, patch_warnings, used, filtered, allowed = _bind_anchor_canonical(
+        (
+            patch,
+            patch_warnings,
+            used,
+            filtered,
+            surface_filtered,
+            allowed,
+        ) = _bind_anchor_canonical(
             anchor,
             arrays=arrays,
             body_labels=body_labels,
@@ -452,6 +703,7 @@ def bind_newton_contact_patches(
         warnings.extend(patch_warnings)
         raw_sample_count += int(used)
         filtered_sample_count += int(filtered)
+        surface_filtered_sample_count += int(surface_filtered)
         if patch.robot_points_local:
             bound_count += 1
         if allowed:
@@ -471,6 +723,9 @@ def bind_newton_contact_patches(
         "raw_sample_count": int(raw_sample_count),
         "strict_shape_filter_anchor_count": int(strict_anchor_count),
         "filtered_raw_contact_count": int(filtered_sample_count),
+        "surface_filtered_raw_contact_count": int(
+            surface_filtered_sample_count
+        ),
         "raw_shape_ids_by_anchor": shape_filters,
         "local_point_frame_by_anchor": frame_labels,
         "warnings": warnings,

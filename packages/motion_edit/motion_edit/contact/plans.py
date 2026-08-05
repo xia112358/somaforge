@@ -6,7 +6,10 @@ from math import isfinite
 from pathlib import Path
 from typing import Any, Literal
 
+import numpy as np
+
 from motion_edit.contact.schema import ContactAnchorEditRecord, PoseEditRecord
+from motion_edit.contact.surface_frame import map_points_between_surface_frames
 
 ContactEditPlanStatus = Literal["draft", "validated", "locked", "generated"]
 
@@ -144,7 +147,24 @@ def validate_contact_edit_plan(plan: ContactEditPlan, *, allow_free: bool = Fals
                 raise ValueError(f"{edit.edit_id}: surface_transform requires xyz translation_world")
             if edit.delta_world is None:
                 raise ValueError(f"{edit.edit_id}: surface_transform requires delta_world")
-            residual = sum((float(edit.delta_world[i]) - float(translation[i])) ** 2 for i in range(3)) ** 0.5
+            source_surface = transform.get("source_surface")
+            target_surface = transform.get("target_surface")
+            if (
+                isinstance(source_surface, dict)
+                and isinstance(target_surface, dict)
+                and edit.old_world_position is not None
+            ):
+                expected_new = map_points_between_surface_frames(
+                    edit.old_world_position,
+                    source_surface,
+                    target_surface,
+                )
+                expected_delta = expected_new - np.asarray(
+                    edit.old_world_position, dtype=np.float64
+                )
+            else:
+                expected_delta = np.asarray(translation, dtype=np.float64)
+            residual = sum((float(edit.delta_world[i]) - float(expected_delta[i])) ** 2 for i in range(3)) ** 0.5
             if residual > 1.0e-6:
                 raise ValueError(f"{edit.edit_id}: contact must follow the transformed surface exactly")
             if edit.surface_coordinates_before != edit.surface_coordinates_after:

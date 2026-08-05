@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
+import os
+from pathlib import Path
 from typing import Any, Sequence
 
 import numpy as np
@@ -341,6 +344,8 @@ def add_interaction_mesh_laplacian_residuals(
         "per_vertex_weight_max": float(np.max(per_vertex_weights)),
         "normalization": "mean_over_robot_coupled_laplacian_vertices",
         "topology_precomputed": prepared_mesh is not None,
+        "topology_cache_hit": bool(prepared.get("cache_hit", False)),
+        "topology_cache_path": prepared.get("cache_path"),
     }
 
 
@@ -366,6 +371,23 @@ def prepare_interaction_mesh_laplacian(
     ref_robot_all = _reference_robot_points(mesh, q_ref, kinematics, robot_points)
     n_frames = q_ref.shape[0]
     vertex_count = len(robot_points) + object_points.shape[0]
+    cache_path = _interaction_topology_cache_path()
+    cache_key = _interaction_topology_cache_key(
+        mesh=mesh,
+        q_reference=q_ref,
+        robot_points=robot_points,
+        object_points=object_points,
+        reference_robot_points=ref_robot_all,
+        reference_object_points=ref_object_points,
+    )
+    cached = _load_interaction_topology_cache(
+        cache_path,
+        expected_key=cache_key,
+        expected_frames=n_frames,
+        expected_vertices=vertex_count,
+    )
+    if cached is not None:
+        return cached
     if mesh.topology == "omniretarget_delaunay":
         aligned_mesh = build_omniretarget_interaction_mesh(ref_robot_all, ref_object_points)
         laplacians = aligned_mesh.laplacian_matrices
@@ -378,11 +400,118 @@ def prepare_interaction_mesh_laplacian(
         laplacian = build_uniform_laplacian_matrix(vertex_count, edges)
         laplacians = np.broadcast_to(laplacian[None], (n_frames, vertex_count, vertex_count))
         edge_counts = np.full((n_frames,), len(edges), dtype=np.int32)
-    return {
+    result = {
         "reference_robot_points": ref_robot_all,
         "laplacian_matrices": laplacians,
         "edge_counts": edge_counts,
+        "cache_hit": False,
+        "cache_path": str(cache_path) if cache_path is not None else None,
     }
+    _write_interaction_topology_cache(cache_path, cache_key=cache_key, prepared=result)
+    return result
+
+
+def _interaction_topology_cache_path() -> Path | None:
+    raw = os.environ.get("SOMAFORGE_LAPLACIAN_TOPOLOGY_CACHE")
+    return Path(raw).expanduser().resolve() if raw else None
+
+
+def _interaction_topology_cache_key(
+    *,
+    mesh: InteractionMeshSpec,
+    q_reference: np.ndarray,
+    robot_points: Sequence[str],
+    object_points: np.ndarray,
+    reference_robot_points: np.ndarray,
+    reference_object_points: np.ndarray,
+) -> str:
+    digest = hashlib.sha256()
+    digest.update(b"somaforge_laplacian_topology_v2\0")
+    digest.update(str(mesh.topology).encode("utf-8"))
+    for name in robot_points:
+        digest.update(b"\0")
+        digest.update(str(name).encode("utf-8"))
+    for value in (
+        q_reference,
+        reference_robot_points,
+        reference_object_points,
+    ):
+        array = np.ascontiguousarray(value)
+        digest.update(str(array.shape).encode("ascii"))
+        digest.update(array.dtype.str.encode("ascii"))
+        digest.update(memoryview(array).cast("B"))
+    return digest.hexdigest()
+
+
+def _load_interaction_topology_cache(
+    path: Path | None,
+    *,
+    expected_key: str,
+    expected_frames: int,
+    expected_vertices: int,
+) -> dict[str, Any] | None:
+    if path is None or not path.is_file():
+        return None
+    with np.load(path, allow_pickle=False) as data:
+        cached_key = str(np.asarray(data["cache_key"]).item())
+        if cached_key != expected_key:
+            raise ValueError(
+                "Laplacian topology cache belongs to a different source reference: "
+                f"{path}"
+            )
+        reference_robot_points = np.asarray(data["reference_robot_points"], dtype=np.float64)
+        laplacian_matrices = np.asarray(data["laplacian_matrices"], dtype=np.float64)
+        edge_counts = np.asarray(data["edge_counts"], dtype=np.int32)
+        failed_frames = (
+            np.asarray(data["delaunay_failed_frames"], dtype=np.int32).tolist()
+            if "delaunay_failed_frames" in data.files
+            else []
+        )
+    if laplacian_matrices.shape != (
+        int(expected_frames),
+        int(expected_vertices),
+        int(expected_vertices),
+    ):
+        raise ValueError(
+            "Laplacian topology cache has an invalid matrix shape: "
+            f"{laplacian_matrices.shape}"
+        )
+    return {
+        "reference_robot_points": reference_robot_points,
+        "laplacian_matrices": laplacian_matrices,
+        "edge_counts": edge_counts,
+        "cache_hit": True,
+        "cache_path": str(path),
+        "delaunay_failed_frames": failed_frames,
+    }
+
+
+def _write_interaction_topology_cache(
+    path: Path | None,
+    *,
+    cache_key: str,
+    prepared: dict[str, Any],
+) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp.npz")
+    payload = {
+        "cache_key": np.asarray(cache_key),
+        "reference_robot_points": np.asarray(
+            prepared["reference_robot_points"], dtype=np.float64
+        ),
+        "laplacian_matrices": np.asarray(
+            prepared["laplacian_matrices"], dtype=np.float64
+        ),
+        "edge_counts": np.asarray(prepared["edge_counts"], dtype=np.int32),
+    }
+    if "delaunay_failed_frames" in prepared:
+        payload["delaunay_failed_frames"] = np.asarray(
+            prepared["delaunay_failed_frames"], dtype=np.int32
+        )
+    np.savez(temporary, **payload)
+    temporary.replace(path)
 
 
 def _reference_robot_points(

@@ -51,7 +51,7 @@ class TestAugmentationAcceptance:
         np.savez(
             candidate,
             joint_pos=np.zeros((3, 36), dtype=np.float64),
-            joint_vel=np.zeros((3, 36), dtype=np.float64),
+            joint_vel=np.zeros((3, 35), dtype=np.float64),
             joint_names=np.asarray([f"joint_{index}" for index in range(29)]),
             body_pos_w=np.zeros((3, 2, 3), dtype=np.float64),
             body_quat_w=body_quat,

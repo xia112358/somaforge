@@ -17,10 +17,13 @@ from motion_edit.web.motion_data import load_contact_force_payload, load_motion_
 from motion_edit.web.server import (
     WEB_DIST,
     EditorState,
+    EditorMotion,
     GenerateRequest,
     GenerationJob,
     _apply_generation_settings,
     _motion_config,
+    _open_motion,
+    _require_editable,
     _edit_handle_payloads,
     _reset_generation_settings,
     _recent_payload,
@@ -57,6 +60,55 @@ def _generate_endpoint(app):
 
 
 class WebMotionDataTests(unittest.TestCase):
+    def test_playback_only_state_rejects_contact_edits(self) -> None:
+        with self.assertRaises(HTTPException) as caught:
+            _require_editable(EditorState(read_only=True))
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertIn("playback-only", str(caught.exception.detail))
+
+    @patch("motion_edit.web.server._session_payload", return_value={"read_only": True})
+    @patch("motion_edit.web.server._recent_entry")
+    @patch("motion_edit.web.server.upsert_recent_motion")
+    @patch("motion_edit.web.server._reset_generation_settings")
+    @patch("motion_edit.web.server.prepare_playback_surface_editor_session")
+    @patch("motion_edit.web.server.read_motion_asset")
+    @patch("motion_edit.web.server._resolve_motion")
+    def test_open_motion_without_contact_layer_uses_read_only_playback(
+        self,
+        resolve_motion_mock,
+        read_motion_asset_mock,
+        prepare_playback_mock,
+        reset_generation_mock,
+        upsert_recent_mock,
+        recent_entry_mock,
+        session_payload_mock,
+    ) -> None:
+        resolve_motion_mock.return_value = EditorMotion(
+            motion_id="gmvq-ref",
+            motion_asset_id="gmvq-ref",
+            motion_version_id=None,
+            motion_path="tmp/gmvq-ref.npz",
+            provenance="source",
+        )
+        read_motion_asset_mock.return_value = MotionAssetRecord(
+            motion_asset_id="gmvq-ref",
+            motion_path="tmp/gmvq-ref.npz",
+            motion_id="gmvq-ref",
+            surface_catalog_path="tmp/surfaces.jsonl",
+        )
+        prepare_playback_mock.return_value = SimpleNamespace()
+        recent_entry_mock.return_value = SimpleNamespace()
+        state = EditorState()
+
+        with patch.object(EditorState, "snapshot", return_value=(SimpleNamespace(anchors=[]), [])):
+            payload = _open_motion(state, "gmvq-ref")
+
+        self.assertEqual(payload, {"read_only": True})
+        self.assertTrue(state.read_only)
+        prepare_playback_mock.assert_called_once()
+        reset_generation_mock.assert_called_once_with(state, "gmvq-ref")
+        upsert_recent_mock.assert_called_once()
+
     def test_edit_handle_payload_includes_read_only_offset_from_initial_position(self) -> None:
         initial = SimpleNamespace(
             handle_id="episode-1",

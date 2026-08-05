@@ -3,26 +3,28 @@
 This is the retained production route for the first height-edited policy:
 
 ```text
-validated ContactEditPlan
-→ 6 Hz zero-phase rollout pose cleanup
-→ direct Newton FK pose canonicalization
-→ derived plan with separate pose/contact authorities
+original force-free canonical motion
+→ self-collision-enabled base WBT policy
+→ parallel Newton policy rollout recording
+→ one rollout source (median pose, measured force, raw contacts)
+→ contact layer extracted from that same source
+→ validated ContactEditPlan
 → task-variant surface translation
 → contact-Laplacian semantic curves
 → Newton local contact patches
 → PyRoki trajectory IK with Newton full-body penetration barriers
   and active foot/hand/knee signed-distance similarity
 → direct Newton FK canonical motion
-→ frame-boundary Newton force replay
-→ clean WBT policy reference
-→ single-motion policy fine-tune
+→ fine-tune the same self-collision policy on the augmented motion
+→ Newton execution produces the augmented motion's real force
 → full-start acceptance evaluation
 ```
 
-The reference implementation is the run named
-`height110_soft_signed_distance_v2`. Its collision contract preserves the
-source rollout's per-body/per-surface soft signed distance instead of enforcing
-an arbitrary penetration depth:
+Self-collision is enabled in the base policy, rollout collection, augmentation
+IK, fine-tuning, and acceptance evaluation. It is never introduced as a later
+repair stage. The collision contract preserves the source rollout's
+per-body/per-surface soft signed distance instead of enforcing an arbitrary
+penetration depth:
 
 ```text
 similarity weight       25
@@ -31,10 +33,11 @@ maximum refinements       1
 ```
 
 The current reproduction solved all 1005 frames and had no unresolved semantic
-or contact targets. Maximum environment penetration was 1.122 mm, of which
-0.453 mm was deeper than the source reference. Contact target error was
-0.545 mm mean / 23.019 mm max; semantic target error was 9.311 mm mean /
-90.952 mm max. Maximum filtered self-collision penetration was 0.988 mm.
+or contact targets. All 75 rigid patches were bound from Newton raw contacts,
+with no fallback patches. Maximum environment penetration was 1.371 mm, of
+which 0.165 mm was deeper than the source reference. Contact target error was
+0.389 mm mean / 17.712 mm max; semantic target error was 6.891 mm mean /
+61.337 mm max. Filtered self-collision penetration was zero.
 
 The collision objective is layered. Newton checks every unfiltered robot
 collision body, including all hip-pitch/roll/yaw geometry. Every body receives
@@ -55,41 +58,49 @@ become contact targets: they are only prevented from penetrating. No separate
 hip-protrusion Laplacian node or IK target is used because the full
 `hip_pitch_link` collision mesh is already covered by Newton.
 
-## 1. Prepare the low-jitter pose authority
+## 1. Build the rollout source
 
-The task keeps the learned rollout's full-body pose shape, but removes the
-high-frequency kinematic jitter before editing. This filtered motion is only
-the pose/IK authority. Contact timing, local patches, collision depth, and
-recorded actuator torques continue to come from the unfiltered force rollout.
+Record several complete executions of the same motion with the accepted
+self-collision-aware policy. Merge them once into `source_motion.npz`.
+Kinematics use the timestep-aligned median, force uses the measured world-vector
+median, and external raw contacts are grouped by stable Newton labels. No
+dynamic replay or selected environment becomes an authority.
 
 ```bash
 cd /home/xiaz/somaforge
 
-ROLL_OUT=/home/xiaz/somaforge/runtime/current/motions/newton_contact_force/climb_00_rollout_ref_contact_force.npz
-PLAN_TEMPLATE=/home/xiaz/somaforge/tmp/climb00_augmentation_matrix/height_110/plans/climb_00_height_1p100.json
-RUN_DIR="$PWD/tmp/height110_soft_signed_distance_v2"
-POSE_DIR="$RUN_DIR/reference"
-POSE_SEED="$POSE_DIR/cutoff_6hz_qseed.npz"
-POSE_MOTION="$POSE_DIR/climb_00_rollout_clean_6hz_newton.npz"
-DERIVED_PLAN="$POSE_DIR/climb_00_height_1p100_clean6hz.json"
+RUN_DIR="$PWD/tmp/climb00"
+SOURCE="$RUN_DIR/source_motion.npz"
 
-python scripts/prepare_motion_edit_pose_shape.py \
-  --rollout "$ROLL_OUT" \
-  --output-seed "$POSE_SEED" \
-  --plan-template "$PLAN_TEMPLATE" \
-  --output-plan "$DERIVED_PLAN" \
-  --canonical-motion "$POSE_MOTION" \
-  --cutoff-hz 6
-
-python scripts/canonicalize_motion_newton_direct.py \
-  --input "$POSE_SEED" \
-  --output "$POSE_MOTION" \
+python scripts/build_rollout_source.py \
+  --recording "$RUN_DIR/rollouts.npz" \
+  --reference-motion runtime/current/motions/climb_00_z_scale_1.0.npz \
+  --checkpoint runtime/current/holosoma/logs/WholeBodyTracking/<run>/model_06000.pt \
+  --output "$SOURCE" \
+  --work-dir "$RUN_DIR/work" \
   --device cpu
+
+python -m motion_edit.cli import-force-proto \
+  --motion-dir "$RUN_DIR" \
+  --pattern source_motion.npz \
+  --motion-id climb_00 \
+  --layer-name climb00_source \
+  --source rollout_source \
+  --surface-catalog \
+    packages/motion_edit/data/layers/contact/climb00_source/surfaces/climb_00.jsonl \
+  --max-surface-distance 0.08
 ```
 
-The derived plan changes only `source_motion_path` and records the
-`kinematic_cleanup` provenance. Its `metadata.contact_force_source_path`
-continues to point at `ROLL_OUT`.
+The plan's `source_motion_path` must point to `SOURCE`. The legacy
+`metadata.contact_force_source_path` may be omitted; when present it must point
+to exactly the same file. Every augmentation starts from this source, never
+from another generated variant. The contact layer must also be extracted from
+this file so its phases and stable Newton shape IDs remain aligned.
+Surface-aware import is mandatory for a surface-follow task. It assigns anchors
+from raw Newton contact points, filters edge/outside fragments, and fails unless
+every retained anchor is bound. An unbound hand contact is never kept as a
+fixed world target, because raising the obstacle would turn that stale target
+into a side/interior contact.
 
 ## 2. Generate edited kinematics
 
@@ -98,22 +109,81 @@ cd /home/xiaz/somaforge
 export SOMAFORGE_ROOT=/home/xiaz/somaforge
 export PYTHONPATH="$PWD/packages/motion_edit:$PWD/packages/somaforge_core:$PYTHONPATH"
 
-RUN_DIR="$PWD/tmp/height110_soft_signed_distance_v2"
-DERIVED_PLAN="$RUN_DIR/reference/climb_00_height_1p100_clean6hz.json"
+RUN_DIR="$PWD/tmp/climb00"
+PLAN="$RUN_DIR/height110.json"
 
 conda run --no-capture-output -n env_somaforge python \
   scripts/generate_contact_aware_edited_motion.py \
-  --plan "$DERIVED_PLAN" \
+  --plan "$PLAN" \
   --output "$RUN_DIR/final_motion.npz" \
   --intermediate-dir "$RUN_DIR/work" \
+  --ik-collision-reference-cache \
+    "$RUN_DIR/source_collision_reference.npz" \
   --ik-conda-env env_somaforge \
   --newton-device cpu \
   --overwrite
 ```
 
-The default collision settings with the derived clean6hz plan reproduce the
-retained v2 configuration. Running the unmodified template plan directly uses
-the older motion asset as pose authority and is not the v2 production route.
+The generator fails closed if pose, force, or raw contacts do not come from the
+same source file.
+
+For the first variant of one source motion, the linear semantic proxy now uses
+three unconstrained convergence iterations. This produces the same converged
+dual-Laplacian solution as the former eight-iteration, 5 cm trust-step
+configuration while avoiding repeated solves that only advanced toward the
+same linear optimum.
+
+Subsequent variants with the same source motion, anchor set, contact frames,
+objective weights, and proportional edit displacement can reuse that solved
+deformation:
+
+```bash
+python scripts/generate_contact_aware_edited_motion.py \
+  --plan "$NEXT_DERIVED_PLAN" \
+  --output "$NEXT_RUN_DIR/final_motion.npz" \
+  --intermediate-dir "$NEXT_RUN_DIR/work" \
+  --semantic-proxy-basis \
+  "$RUN_DIR/work/final_motion.pyroki_fk_preview.semantic_task_proxy.npz" \
+  --ik-collision-reference-cache \
+  "$RUN_DIR/source_collision_reference.npz" \
+  --ik-conda-env env_somaforge \
+  --newton-device cpu \
+  --overwrite
+```
+
+Reuse is fail-closed: a different source, objective, anchor set, frame range,
+non-proportional displacement, unconverged basis, or non-empty pose edit raises
+an error instead of silently approximating the result. In the measured
+climb00 height pair, height110 served as the basis for height090 with scale
+`-1`. The shared collision cache is separately guarded by the source-terrain,
+source-qpos, and canonical-URDF hashes. On the current 1005-frame acceptance
+run, basis reuse plus a warm collision cache took 21.69 seconds; cache miss and
+hit final joint/body arrays were identical.
+
+For multiple independent variants, use the bounded batch wrapper rather than
+raising the inner solver's thread count:
+
+```bash
+python scripts/generate_contact_aware_batch.py \
+  --plan-manifest "$RUN_DIR/plans.json" \
+  --output-dir "$RUN_DIR/motions" \
+  --work-dir "$RUN_DIR/batch_work" \
+  --semantic-proxy-basis \
+    "$RUN_DIR/work/final_motion.pyroki_fk_preview.semantic_task_proxy.npz" \
+  --collision-reference-cache \
+    "$RUN_DIR/source_collision_reference.npz" \
+  --workers 2 \
+  --overwrite
+```
+
+The manifest is a JSON list of plan paths or objects with `plan_path`,
+optional `output`, and optional per-plan `semantic_proxy_basis`. Two workers
+are the measured default for the 16-core workstation: two identical
+1005-frame jobs completed in 27.86 seconds and matched the serial result
+exactly. Four workers caused severe JAX/Newton thread oversubscription and are
+not the production default. When the shared collision cache is absent, the
+wrapper completes one job first to populate it before starting parallel jobs.
+
 The final motion must report:
 
 ```text
@@ -146,81 +216,64 @@ direct-Newton kinematics provenance, and must not carry stale source
 `contact_force_part_w`, `contact_force_provenance_json`, or `raw_contact_*`.
 Files in `work/` are diagnostic intermediates; they are not the final motion.
 
-## 3. Calculate force with frame-boundary replay
+## 3. Fine-tune and evaluate
 
-Force is never copied or migrated from the source motion. The source rollout
-supplies recorded actuator torques as a dynamic reference. At every 20 ms
-control boundary the edited trajectory state is made authoritative, Newton
-advances four continuous 5 ms substeps, and the fourth substep supplies the
-force sample.
+Fine-tuning has two authorities:
 
-Set the replay output and the rollout recording before invoking the normal
-IsaacLab3-Newton experiment configuration:
-
-```bash
-export SOMAFORGE_FRAME_BOUNDARY_REPLAY_OUTPUT="$RUN_DIR/frame_state_playback_edited_newton.npz"
-export SOMAFORGE_FORCE_ROLLOUT_RECORDING=/home/xiaz/somaforge/runtime/current/rollout/newton_contact_force/recordings/climb_00_attempt_01_eval_recording.npz
-export SOMAFORGE_FORCE_ROLLOUT_ENV_ID=0
-
-source /home/xiaz/somaforge/scripts/source_isaaclab3_newton_setup.sh
-
-python scripts/replay_motion_newton_frame_boundary.py \
-  exp:g1-29dof-wbt-contact-force \
-  --headless \
-  --device cuda:0 \
-  --training.num-envs 1 \
-  --command.setup-terms.motion-command.params.motion-config.motion-manifest \
-  "$RUN_DIR/isaaclab_replay_manifest.json" \
-  --terrain.terrain-term.motion-matched-manifest \
-  "$RUN_DIR/isaaclab_replay_manifest.json" \
-  --terrain.terrain-term.spawn.randomize-tiles False \
-  --terrain.terrain-term.spawn.xy-offset-range 0.0
+```text
+canonical augmented motion manifest ─┐
+                                     ├→ self-collision policy fine-tune
+accepted self-collision checkpoint ──┘
 ```
 
-Frame zero is marked invalid because no preceding 20 ms interval exists.
-Self-collision force and raw contacts are not written into the policy motion.
-
-## 4. Build the policy reference
-
-```bash
-POLICY_DIR="$RUN_DIR/policy_finetune"
-
-python scripts/build_newton_force_policy_reference.py \
-  --kinematics "$RUN_DIR/isaaclab_canonical/newton_replay_input.npz" \
-  --replay-force "$RUN_DIR/frame_state_playback_edited_newton.npz" \
-  --rollout-recording "$SOMAFORGE_FORCE_ROLLOUT_RECORDING" \
-  --terrain /home/xiaz/somaforge/tmp/climb00_augmentation_matrix/height_110/terrain/multi_boxes_z_scale_1.100.obj \
-  --output-motion "$POLICY_DIR/climb00_height110_frame_state_force_policy_ref.npz" \
-  --output-manifest "$POLICY_DIR/manifest.json" \
-  --motion-id climb00_height110
-```
-
-The output includes canonical kinematics and calculated eight-part Newton
-force. It intentionally excludes `raw_contact_*`, stale force provenance, and
-object arrays.
-
-## 5. Fine-tune and evaluate
+The checkpoint is already capable of producing contact force in Newton. The
+augmented NPZ does not contain copied or replay-generated force. Its new force
+is produced by the fine-tuned policy during Newton execution.
 
 ```bash
 python scripts/train_motion_edit_policy_finetune.py \
   --headless \
   --device cuda:0 \
-  --checkpoint /path/to/source/model_08000.pt \
+  --checkpoint \
+    runtime/current/holosoma/logs/WholeBodyTracking/\
+20260727_085520-g1_29dof_wbt_single_climb00_completionema_horizon50_ncon160_from4k_to10k-locomotion/\
+model_06000.pt \
   --motion-manifest "$POLICY_DIR/manifest.json" \
   --output-dir "$POLICY_DIR/train_logs" \
   --project Height110PolicyFinetune \
-  --name climb00_height110_model08000_single_500iter \
-  --num-envs 1024 \
-  --iterations 500 \
-  --save-interval 100
+  --name climb00_height110_selfcollision_completionema \
+  --num-envs 4096 \
+  --iterations 10000 \
+  --save-interval 500
 ```
+
+The retained sampler parameters are:
+
+```text
+reset_sampler                          hotspot_failure_window
+failure_window_pre_frames              50
+failure_window_post_frames             20
+failure_window_before_prob             0.7
+failure_window_success_horizon_frames  50
+hotspot_failure_uniform_mix            0.3
+hotspot_failure_decay                  0.995
+probe_completion_alpha                 0.02
+probe_env_per_motion                   10
+probe_uniform_mix                      0.4
+nconmax_per_env                        >= 160
+njmax_per_env                          >= 1024
+```
+
+The training entry point fails closed if the checkpoint does not have
+`robot.asset.enable_self_collisions=True` or lacks the retained Newton contact
+capacity.
 
 Run `scripts/eval_motion_edit_acceptance.py` from frame zero against the
 resulting checkpoint. File-level acceptance is not sufficient: also inspect
 the policy execution's phase-specific root height, knee flexion, contact masks,
 force timing, and force magnitude.
 
-## 6. Regression and UI checks
+## 4. Regression and UI checks
 
 Run the source regression in `env_somaforge`:
 
@@ -234,7 +287,7 @@ conda run --no-capture-output -n env_somaforge pytest -q \
   src/holosoma/holosoma/agents/ppo/tests/test_kl_early_stop_ppo.py
 ```
 
-The retained main reproduction passes 357 tests plus 3 subtests. Launch the
+The complete command above must pass before the route is admitted. Launch the
 current single-port editor and use its recent list for registered motions:
 
 ```bash

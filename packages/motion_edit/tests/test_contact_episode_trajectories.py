@@ -89,6 +89,32 @@ def test_divergent_fragment_deltas_are_rejected_at_episode_boundary() -> None:
         )
 
 
+def test_one_rigid_surface_transform_allows_position_dependent_yaw_deltas() -> None:
+    first = _anchor("a", "left_hand", 0, 15, 0.0)
+    second = _anchor("b", "left_hand", 15, 30, 0.1)
+    edits = [_edit(first, [0.0, 0.001, 0.0]), _edit(second, [0.0, 0.002, 0.0])]
+    transform = {
+        "source_surface": {"surface_id": "platform_top"},
+        "target_surface": {"surface_id": "platform_top_yaw"},
+    }
+    edits = [
+        ContactAnchorEditRecord(
+            **{**edit.__dict__, "metadata": {"surface_transform": transform}}
+        )
+        for edit in edits
+    ]
+
+    episodes = build_contact_episode_trajectories(
+        anchors=[first, second],
+        edits=edits,
+        keypoints={"left_hand": np.zeros((30, 3), dtype=np.float64)},
+        n_frames=30,
+    )
+
+    assert len(episodes) == 1
+    np.testing.assert_allclose(episodes[0].delta_world, [0.0, 0.0015, 0.0])
+
+
 def test_already_edited_semantic_trajectory_is_not_translated_twice() -> None:
     anchor = _anchor("hand", "left_hand", 1, 5, 0.0)
     target = np.zeros((6, 3), dtype=np.float64)

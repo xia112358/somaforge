@@ -65,7 +65,6 @@ class RawContactMotion:
             "raw_contact_count",
             "raw_contact_point0_w",
             "raw_contact_point1_w",
-            "contact_force_part_position_w",
             "contact_force_part_order",
         ]
         missing = [name for name in required if name not in self.data]
@@ -84,25 +83,121 @@ class RawContactMotion:
             if "raw_contact_shape1" in self.data
             else None
         )
-        self.part_position_w = np.asarray(self.data["contact_force_part_position_w"], dtype=np.float64)
+        self.raw_contact_shape0 = (
+            np.asarray(self.data["raw_contact_shape0"], dtype=np.int64)
+            if "raw_contact_shape0" in self.data
+            else None
+        )
+        pairing = (
+            str(self.data["raw_contact_point_pairing"].item())
+            if "raw_contact_point_pairing" in self.data
+            else ""
+        )
+        source = (
+            str(self.data["raw_contact_source"].item())
+            if "raw_contact_source" in self.data
+            else ""
+        )
+        robot_is_zero = pairing == "body0_point0_body1_point1" or (
+            not pairing
+            and source == "multi_rollout_stable_label_median_external_contacts"
+        )
+        if robot_is_zero:
+            self.robot_contact_point_w = self.raw_contact_point0_w
+            self.surface_contact_point_w = self.raw_contact_point1_w
+            self.robot_contact_shape = self.raw_contact_shape0
+        else:
+            self.robot_contact_point_w = self.raw_contact_point1_w
+            self.surface_contact_point_w = self.raw_contact_point0_w
+            self.robot_contact_shape = self.raw_contact_shape1
         self.part_order = [str(item).lower() for item in np.asarray(self.data["contact_force_part_order"]).tolist()]
+        self.part_position_w = (
+            np.asarray(self.data["contact_force_part_position_w"], dtype=np.float64)
+            if "contact_force_part_position_w" in self.data
+            else _part_positions_from_body_fk(self.data, self.part_order)
+        )
         self.part_index_by_alias = _part_index_by_alias(self.part_order)
         self.nearest_part_index, self.nearest_part_distance = self._compute_nearest_parts()
 
     def _compute_nearest_parts(self) -> tuple[np.ndarray, np.ndarray]:
-        nearest = np.full(self.raw_contact_point1_w.shape[:2], -1, dtype=np.int16)
-        nearest_distance = np.full(self.raw_contact_point1_w.shape[:2], np.inf, dtype=np.float32)
+        nearest = np.full(self.robot_contact_point_w.shape[:2], -1, dtype=np.int16)
+        nearest_distance = np.full(self.robot_contact_point_w.shape[:2], np.inf, dtype=np.float32)
         for frame, raw_count in enumerate(self.raw_contact_count):
             count = min(int(raw_count), self.raw_contact_point1_w.shape[1])
             if count <= 0:
                 continue
-            robot_points = self.raw_contact_point1_w[frame, :count]
+            robot_points = self.robot_contact_point_w[frame, :count]
             part_positions = self.part_position_w[frame]
             distances = np.linalg.norm(robot_points[:, None, :] - part_positions[None, :, :], axis=-1)
             frame_nearest = np.argmin(distances, axis=-1)
             nearest[frame, :count] = frame_nearest.astype(np.int16)
             nearest_distance[frame, :count] = distances[np.arange(count), frame_nearest].astype(np.float32)
         return nearest, nearest_distance
+
+
+def _part_positions_from_body_fk(
+    motion: Any,
+    part_order: list[str],
+) -> np.ndarray:
+    required = ("body_pos_w", "body_names")
+    missing = [name for name in required if name not in motion]
+    if missing:
+        raise ValueError(
+            "raw contact refinement requires contact_force_part_position_w or "
+            f"canonical body FK fields: {', '.join(missing)}"
+        )
+    body_pos = np.asarray(motion["body_pos_w"], dtype=np.float64)
+    body_names = [str(value) for value in np.asarray(motion["body_names"]).tolist()]
+    if body_pos.ndim != 3 or body_pos.shape[-1] != 3:
+        raise ValueError(
+            f"body_pos_w must have shape [T,B,3], got {body_pos.shape}"
+        )
+    if body_pos.shape[1] != len(body_names):
+        raise ValueError(
+            "body_pos_w/body_names length mismatch: "
+            f"{body_pos.shape[1]} != {len(body_names)}"
+        )
+    index_by_name = {name.lower(): index for index, name in enumerate(body_names)}
+    trajectories: list[np.ndarray] = []
+    for raw_part in part_order:
+        part = str(raw_part).lower()
+        aliases = PART_ALIASES.get(part, (part,))
+        canonical_part = next(
+            (
+                candidate
+                for candidate in (
+                    "left_heel",
+                    "left_toe",
+                    "right_heel",
+                    "right_toe",
+                    "left_hand",
+                    "right_hand",
+                    "left_knee",
+                    "right_knee",
+                )
+                if candidate in aliases
+            ),
+            part,
+        )
+        physical_names = CONTACT_BODY_NAMES_BY_PART.get(canonical_part, ())
+        indices = [
+            index_by_name[name.lower()]
+            for name in physical_names
+            if name.lower() in index_by_name
+        ]
+        if not indices:
+            indices = [
+                index_by_name[alias.lower()]
+                for alias in aliases
+                if alias.lower() in index_by_name
+            ]
+        if not indices:
+            raise ValueError(
+                f"cannot derive raw-contact assignment position for {raw_part!r} "
+                "from canonical body_names"
+            )
+        trajectories.append(np.mean(body_pos[:, indices, :], axis=1))
+    return np.stack(trajectories, axis=1)
 
 
 def _part_index_by_alias(part_order: list[str]) -> dict[str, int]:
@@ -481,14 +576,14 @@ def estimate_anchor_position_from_raw_contacts(
         part_positions = raw.part_position_w[frame]
         for contact_index in range(count):
             raw_samples += 1
-            robot_point = raw.raw_contact_point1_w[frame, contact_index]
+            robot_point = raw.robot_contact_point_w[frame, contact_index]
             nearest = int(raw.nearest_part_index[frame, contact_index])
             nearest_distance = float(raw.nearest_part_distance[frame, contact_index])
             if nearest != part_index or nearest_distance > max_part_distance:
                 continue
             assigned_samples += 1
             nearest_distances.append(nearest_distance)
-            surface_point = raw.raw_contact_point0_w[frame, contact_index]
+            surface_point = raw.surface_contact_point_w[frame, contact_index]
             assigned_surface_points.append(surface_point)
             if prepared_surfaces:
                 projected_candidates = [
@@ -522,7 +617,11 @@ def estimate_anchor_position_from_raw_contacts(
                 if raw.raw_contact_force_w is not None
                 else np.zeros(3, dtype=np.float64)
             )
-            accepted_shapes.append(int(raw.raw_contact_shape1[frame, contact_index]) if raw.raw_contact_shape1 is not None else -1)
+            accepted_shapes.append(
+                int(raw.robot_contact_shape[frame, contact_index])
+                if raw.robot_contact_shape is not None
+                else -1
+            )
             accepted_frames.append(frame)
 
     metadata.update(

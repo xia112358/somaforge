@@ -331,8 +331,12 @@ def validate_generated_augmentation(
 
         if joint_pos.ndim != 2 or joint_pos.shape[1] != 36:
             raise ValueError(f"joint_pos must be canonical G1 qpos [T,36], got {joint_pos.shape}")
-        if joint_vel.shape != joint_pos.shape:
-            raise ValueError(f"joint_vel must match joint_pos {joint_pos.shape}, got {joint_vel.shape}")
+        expected_joint_vel_shape = (joint_pos.shape[0], 35)
+        if joint_vel.shape != expected_joint_vel_shape:
+            raise ValueError(
+                "joint_vel must be canonical G1 qvel "
+                f"{expected_joint_vel_shape}, got {joint_vel.shape}"
+            )
         if joint_names.shape != (29,):
             raise ValueError(f"joint_names must contain 29 actuated joints, got {joint_names.shape}")
         if body_pos.ndim != 3 or body_pos.shape[0] != joint_pos.shape[0] or body_pos.shape[2] != 3:

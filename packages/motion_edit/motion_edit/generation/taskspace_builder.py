@@ -11,6 +11,7 @@ from motion_edit.contact.schema import (
     ContactPatchRecord,
     ContactSurfaceRecord,
 )
+from motion_edit.contact.surface_frame import map_points_between_surface_frames
 from motion_edit.generation.taskspace_spec import (
     ContactAwareTaskspaceMotion,
     ContactPatchTarget,
@@ -131,6 +132,49 @@ def build_contact_aware_taskspace_motion(
             ],
             dtype=np.float64,
         )
+        source_target_points_w = source_points_w
+        points_local_by_frame: np.ndarray | None = None
+        source_target_contract = "body_pose_times_robot_local_patch"
+        if (
+            patch.source_target_frames is not None
+            and patch.source_target_points_w is not None
+            and patch.source_points_local_by_frame is not None
+        ):
+            recorded_frames = np.asarray(
+                patch.source_target_frames, dtype=np.int64
+            )
+            recorded_targets = np.asarray(
+                patch.source_target_points_w, dtype=np.float64
+            )
+            frame_indices = np.searchsorted(recorded_frames, frames)
+            if (
+                np.any(frame_indices >= len(recorded_frames))
+                or np.any(recorded_frames[frame_indices] != frames)
+            ):
+                raise ValueError(
+                    f"{patch.patch_id}: source target trajectory does not cover "
+                    "the requested contact frames"
+                )
+            source_target_points_w = recorded_targets[frame_indices]
+            if source_target_points_w.shape != source_points_w.shape:
+                raise ValueError(
+                    f"{patch.patch_id}: source target trajectory shape "
+                    f"{source_target_points_w.shape} does not match "
+                    f"{source_points_w.shape}"
+                )
+            source_target_contract = (
+                "newton_counterpart_world_trajectory"
+            )
+            recorded_local_points = np.asarray(
+                patch.source_points_local_by_frame, dtype=np.float64
+            )
+            points_local_by_frame = recorded_local_points[frame_indices]
+            if points_local_by_frame.shape != source_points_w.shape:
+                raise ValueError(
+                    f"{patch.patch_id}: source local point trajectory shape "
+                    f"{points_local_by_frame.shape} does not match "
+                    f"{source_points_w.shape}"
+                )
 
         surface_id = (edit.surface_id if edit is not None else None) or anchor.surface_id
         surface = surfaces_by_id.get(surface_id or "")
@@ -139,9 +183,50 @@ def build_contact_aware_taskspace_motion(
         if edit is not None:
             delta_world = _edit_delta_world(edit)
             authoritative_delta_world = delta_world
-            kwargs = {"target_points_w": source_points_w + delta_world[None, None, :]}
+            transform = (
+                edit.metadata.get("surface_transform")
+                if isinstance(edit.metadata, dict)
+                else None
+            )
+            source_surface = (
+                transform.get("source_surface")
+                if isinstance(transform, dict)
+                else edit.metadata.get("source_surface")
+                if isinstance(edit.metadata, dict)
+                else None
+            )
+            target_surface = (
+                transform.get("target_surface")
+                if isinstance(transform, dict)
+                else edit.metadata.get("target_surface")
+                if isinstance(edit.metadata, dict)
+                else None
+            )
+            if isinstance(source_surface, dict) and isinstance(target_surface, dict):
+                target_points_w = map_points_between_surface_frames(
+                    source_target_points_w,
+                    source_surface,
+                    target_surface,
+                )
+                uv_delta = edit.metadata.get("surface_uv_delta")
+                if isinstance(uv_delta, (list, tuple)) and len(uv_delta) == 2:
+                    target_points_w = (
+                        target_points_w
+                        + float(uv_delta[0])
+                        * np.asarray(target_surface["tangent_u"], dtype=np.float64)
+                        + float(uv_delta[1])
+                        * np.asarray(target_surface["tangent_v"], dtype=np.float64)
+                    )
+                target_contract = "source_patch_world_rigid_surface_frame_map"
+            else:
+                target_points_w = (
+                    source_target_points_w + delta_world[None, None, :]
+                )
+                target_contract = "source_patch_world_plus_edit_delta_world"
+            kwargs = {"target_points_w": target_points_w}
         else:
-            kwargs = {"target_points_w": source_points_w}
+            kwargs = {"target_points_w": source_target_points_w}
+            target_contract = source_target_contract
 
         contact = ContactPatchTarget(
             anchor_id=anchor.anchor_id,
@@ -149,6 +234,7 @@ def build_contact_aware_taskspace_motion(
             body_label=patch.newton_body_label or (patch.link_names or [patch.body])[0],
             shape_labels=tuple(patch.newton_shape_labels or patch.sphere_ids or ()),
             points_local=points_local,
+            points_local_by_frame=points_local_by_frame,
             frames=frames,
             normals_local=(
                 np.asarray(patch.robot_normals_local, dtype=np.float64)
@@ -164,16 +250,13 @@ def build_contact_aware_taskspace_motion(
                 "target_surface_id": (
                     surface.surface_id if surface is not None else surface_id
                 ),
-                "target_contract": (
-                    "source_patch_world_plus_edit_delta_world"
-                    if edit is not None
-                    else "source_patch_world_trajectory"
-                ),
+                "target_contract": target_contract,
                 "authoritative_delta_world": (
                     authoritative_delta_world.tolist()
                     if authoritative_delta_world is not None
                     else None
                 ),
+                "source_target_contract": source_target_contract,
             },
             **kwargs,
         )
@@ -203,7 +286,9 @@ def build_contact_aware_taskspace_motion(
             "old_motion_role": "initializer_and_weak_tie_breaker",
             "contact_patch_role": "rigid_hard_constraint_target",
             "semantic_curve_role": "primary_soft_motion_target",
-            "semantic_patch_displacement_contract": "same_world_delta",
+            "semantic_patch_displacement_contract": (
+                "rigid_surface_frame_map_or_same_world_delta"
+            ),
             "source_reference_weight": float(source_reference_weight),
             "skipped_patches": skipped,
         },

@@ -156,6 +156,9 @@ class ContactPatchRecord:
     newton_shape_labels: list[str] | None = None
     robot_points_local: list[list[float]] | None = None
     robot_normals_local: list[list[float]] | None = None
+    source_target_frames: list[int] | None = None
+    source_target_points_w: list[list[list[float]]] | None = None
+    source_points_local_by_frame: list[list[list[float]]] | None = None
     robot_asset_fingerprint: str | None = None
     robot_binding_backend: str | None = None
     robot_binding_source: str | None = None
@@ -187,6 +190,56 @@ class ContactPatchRecord:
             if len(self.newton_shape_labels) != len(self.robot_points_local):
                 raise ValueError(
                     f"{self.patch_id}: newton_shape_labels count must match robot_points_local count"
+                )
+        if self.source_target_points_w is not None:
+            if self.source_target_frames is None:
+                raise ValueError(
+                    f"{self.patch_id}: source_target_points_w requires source_target_frames"
+                )
+            if self.robot_points_local is None:
+                raise ValueError(
+                    f"{self.patch_id}: source_target_points_w requires robot_points_local"
+                )
+            if len(self.source_target_points_w) != len(self.source_target_frames):
+                raise ValueError(
+                    f"{self.patch_id}: source target frame/trajectory counts must match"
+                )
+            if any(
+                len(points) != len(self.robot_points_local)
+                or any(len(point) != 3 for point in points)
+                for points in self.source_target_points_w
+            ):
+                raise ValueError(
+                    f"{self.patch_id}: source_target_points_w must have shape [F,P,3]"
+                )
+            if any(
+                int(self.source_target_frames[index + 1])
+                <= int(self.source_target_frames[index])
+                for index in range(len(self.source_target_frames) - 1)
+            ):
+                raise ValueError(
+                    f"{self.patch_id}: source_target_frames must be strictly increasing"
+                )
+        if self.source_points_local_by_frame is not None:
+            if self.source_target_frames is None:
+                raise ValueError(
+                    f"{self.patch_id}: source_points_local_by_frame requires source_target_frames"
+                )
+            if self.robot_points_local is None:
+                raise ValueError(
+                    f"{self.patch_id}: source_points_local_by_frame requires robot_points_local"
+                )
+            if len(self.source_points_local_by_frame) != len(self.source_target_frames):
+                raise ValueError(
+                    f"{self.patch_id}: local point frame/trajectory counts must match"
+                )
+            if any(
+                len(points) != len(self.robot_points_local)
+                or any(len(point) != 3 for point in points)
+                for points in self.source_points_local_by_frame
+            ):
+                raise ValueError(
+                    f"{self.patch_id}: source_points_local_by_frame must have shape [F,P,3]"
                 )
 
     def to_dict(self) -> dict[str, Any]:

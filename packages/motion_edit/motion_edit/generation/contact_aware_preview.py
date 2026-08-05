@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import sys
 from dataclasses import dataclass, replace
@@ -69,6 +70,7 @@ def generate_contact_aware_pyroki_preview(
     ik_max_nfev: int | None = None,
     ik_collision_similarity_weight: float | None = None,
     ik_collision_max_refinements: int | None = None,
+    ik_collision_reference_cache: str | Path | None = None,
     layers_root: Path | None = None,
 ) -> ContactAwarePreviewResult:
     """Generate one PyRoki-FK-consistent edited motion without starting Isaac.
@@ -218,6 +220,7 @@ def generate_contact_aware_pyroki_preview(
         ik_max_nfev=ik_max_nfev,
         ik_collision_similarity_weight=ik_collision_similarity_weight,
         ik_collision_max_refinements=ik_collision_max_refinements,
+        ik_collision_reference_cache=ik_collision_reference_cache,
     )
     if not ik_output_path.is_file():
         raise FileNotFoundError(f"PyRoki IK did not produce {ik_output_path}")
@@ -336,7 +339,48 @@ def _run_pyroki_preview_subprocess(
     ik_max_nfev: int | None,
     ik_collision_similarity_weight: float | None = None,
     ik_collision_max_refinements: int | None = None,
+    ik_collision_reference_cache: str | Path | None = None,
 ) -> None:
+    worker_name = os.environ.get("SOMAFORGE_IK_WORKER_SOCKET")
+    if worker_name:
+        kwargs: dict[str, Any] = {
+            "lte_path": str(taskspace_path.resolve()),
+            "source_motion_path": str(source_motion_path.resolve()),
+            "output_path": str(ik_output_path.resolve()),
+        }
+        if ik_max_nfev is not None:
+            kwargs["max_nfev"] = int(ik_max_nfev)
+        if ik_collision_similarity_weight is not None:
+            kwargs["collision_similarity_weight"] = float(
+                ik_collision_similarity_weight
+            )
+        if ik_collision_max_refinements is not None:
+            kwargs["collision_max_refinements"] = int(
+                ik_collision_max_refinements
+            )
+        if ik_collision_reference_cache is not None:
+            kwargs["collision_reference_cache_path"] = str(
+                Path(ik_collision_reference_cache).expanduser().resolve()
+            )
+        address = (
+            "\0" + worker_name[1:]
+            if worker_name.startswith("@")
+            else worker_name
+        )
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.connect(address)
+            stream = client.makefile("rw", encoding="utf-8")
+            stream.write(json.dumps({"kwargs": kwargs}) + "\n")
+            stream.flush()
+            response = json.loads(stream.readline())
+        if not response.get("ok"):
+            raise RuntimeError(
+                "persistent PyRoki worker failed:\n"
+                + str(response.get("traceback", response))
+            )
+        if not ik_output_path.is_file():
+            raise FileNotFoundError(ik_output_path)
+        return
     script = Path(ik_script).expanduser() if ik_script is not None else Path(__file__).with_name("pyroki_fullbody_ik.py")
     package_root = Path(__file__).resolve().parents[2]
     target_env = str(ik_conda_env)
@@ -371,6 +415,13 @@ def _run_pyroki_preview_subprocess(
             [
                 "--collision-max-refinements",
                 str(int(ik_collision_max_refinements)),
+            ]
+        )
+    if ik_collision_reference_cache is not None:
+        cmd.extend(
+            [
+                "--collision-reference-cache",
+                str(Path(ik_collision_reference_cache).expanduser().resolve()),
             ]
         )
     subprocess_env = dict(os.environ)
@@ -461,9 +512,11 @@ def merge_pyroki_preview_motion(
         "contact_force_part_position_source",
     }
     for key in list(generated):
-        if key in stale_exact or key.startswith("raw_contact_"):
-            generated.pop(key, None)
-        elif key.startswith("contact_force_part_w") or key.startswith("contact_force_part_position"):
+        if (
+            key in stale_exact
+            or key.startswith("raw_contact_")
+            or key.startswith("contact_force_")
+        ):
             generated.pop(key, None)
     for key in required:
         generated[key] = np.asarray(ik_motion[key])

@@ -15,9 +15,10 @@ ContactTargetKind = Literal["edited_contact", "fixed_contact"]
 class ContactPatchTarget:
     """Rigid robot-local contact patch target for trajectory IK/projection.
 
-    ``points_local`` are never optimized independently. A downstream kinematic
-    solver must transform all points through one body pose so the contact patch
-    remains rigid.
+    ``points_local`` define a rigid planted patch. ``points_local_by_frame`` is
+    reserved for rolling hand/knee contacts whose material contact point moves
+    over a round collision shape; every frame is still transformed through one
+    body pose.
     """
 
     anchor_id: str
@@ -34,6 +35,7 @@ class ContactPatchTarget:
     surface_tangent_v_w: np.ndarray | None = None
     target_uv: np.ndarray | None = None
     target_points_w: np.ndarray | None = None
+    points_local_by_frame: np.ndarray | None = None
     normals_local: np.ndarray | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -63,6 +65,13 @@ class ContactPatchTarget:
             expected = (frames.size, points.shape[0], 3)
             if target_points.shape != expected:
                 raise ValueError(f"{self.anchor_id}: target_points_w must have shape {expected}, got {target_points.shape}")
+        if self.points_local_by_frame is not None:
+            local_points = np.asarray(self.points_local_by_frame, dtype=np.float64)
+            expected = (frames.size, points.shape[0], 3)
+            if local_points.shape != expected:
+                raise ValueError(
+                    f"{self.anchor_id}: points_local_by_frame must have shape {expected}, got {local_points.shape}"
+                )
         if self.target_uv is not None:
             target_uv = np.asarray(self.target_uv, dtype=np.float64)
             expected = (frames.size, points.shape[0], 2)
@@ -103,6 +112,7 @@ class ContactPatchTarget:
             "surface_tangent_v_w": _optional_array_list(self.surface_tangent_v_w),
             "target_uv": _optional_array_list(self.target_uv),
             "target_points_w": _optional_array_list(self.target_points_w),
+            "points_local_by_frame": _optional_array_list(self.points_local_by_frame),
             "normals_local": _optional_array_list(self.normals_local),
             "metadata": self.metadata,
         }
@@ -123,6 +133,7 @@ class ContactPatchTarget:
             surface_tangent_v_w=_optional_array(raw.get("surface_tangent_v_w")),
             target_uv=_optional_array(raw.get("target_uv")),
             target_points_w=_optional_array(raw.get("target_points_w")),
+            points_local_by_frame=_optional_array(raw.get("points_local_by_frame")),
             normals_local=_optional_array(raw.get("normals_local")),
             metadata=dict(raw.get("metadata") or {}),
         )

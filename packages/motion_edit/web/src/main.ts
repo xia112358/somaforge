@@ -146,8 +146,8 @@ async function applySession(next: Session, rebuildScene = false) {
   byId('motionLabel').textContent = motionLabel;
   byId('viewportMotion').textContent = motionLabel;
   byId<HTMLInputElement>('fpsInput').value = String(next.fps);
-  byId('anchorCount').textContent = `${next.edit_handles.length} handles`;
-  byId('editCount').textContent = `${next.pending_edit_count} edits`;
+  byId('anchorCount').textContent = next.read_only ? 'Playback only' : `${next.edit_handles.length} handles`;
+  byId('editCount').textContent = next.read_only ? 'No contact layer' : `${next.pending_edit_count} edits`;
   byId<HTMLButtonElement>('undoBtn').disabled = !next.can_undo;
   byId<HTMLButtonElement>('redoBtn').disabled = !next.can_redo;
   byId<HTMLInputElement>('planPath').value = next.settings.edit_plan_path || '';
@@ -158,7 +158,9 @@ async function applySession(next: Session, rebuildScene = false) {
   byId<HTMLInputElement>('registerMotion').checked = next.settings.register_motion;
   byId<HTMLInputElement>('overwriteOutput').checked = next.settings.overwrite;
   byId('sourceLayer').textContent = next.settings.source_contact_layer || 'None';
-  byId('planStatus').textContent = next.plan ? `${next.plan.status} · ${next.plan.edit_count} edits` : 'No plan saved';
+  byId('planStatus').textContent = next.read_only
+    ? 'Read-only kinematic reference'
+    : next.plan ? `${next.plan.status} · ${next.plan.edit_count} edits` : 'No plan saved';
   renderGeneration(next.generation);
   renderLegend(); drawTimeline();
   if (rebuildScene) await rebuild(next);
@@ -402,7 +404,7 @@ async function syncOutputSettings(){const next=await api<Session>('/api/session/
 function stopGenerationPoll(){if(generationPoll!==null){window.clearInterval(generationPoll);generationPoll=null;}}
 function pollGeneration(){if(generationPoll!==null)return;generationPoll=window.setInterval(async()=>{try{const next=await api<Generation>('/api/session/generation');renderGeneration(next);if(next.status!=='running'){stopGenerationPoll();if(next.status==='succeeded'){byId('planStatus').textContent='generated';if(next.output_motion_id)await openMotion(next.output_motion_id,true);else await refreshRecentMotions();}}}catch(e){stopGenerationPoll();showStatus(String(e),true);}},900);}
 function renderGeneration(job:Generation){
-  const running=job.status==='running',button=byId<HTMLButtonElement>('generateBtn'),status=byId('generationStatus');button.disabled=running||!session;
+  const running=job.status==='running',readOnly=Boolean(session?.read_only),button=byId<HTMLButtonElement>('generateBtn'),status=byId('generationStatus');button.disabled=running||!session||readOnly;
   button.innerHTML=running?'<i data-lucide="loader-circle" class="spin"></i><span>Generating</span>':'<i data-lucide="wand-sparkles"></i><span>Generate</span>';refreshIcons();
   status.className=`generation-status ${job.status}`;
   if(job.status==='running'){
@@ -412,14 +414,28 @@ function renderGeneration(job:Generation){
   }
   else if(job.status==='succeeded'){byId<HTMLInputElement>('overwriteOutput').checked=true;status.innerHTML=`<strong>Generated${job.warnings.length?` · ${job.warnings.length} warnings`:''}</strong><span></span>`;status.querySelector('span')!.textContent=job.output_motion_path||'Output written';status.setAttribute('title',job.output_motion_path||'');}
   else if(job.status==='failed'){status.innerHTML='<strong>Generation failed</strong><span></span>';status.querySelector('span')!.textContent=job.error||'Unknown error';status.setAttribute('title',job.error||'');}
+  else if(readOnly)status.innerHTML='<strong>Playback only</strong><span>Kinematic reference · no contact layer</span>';
   else status.innerHTML='<strong>Ready</strong><span>Formal edited reference</span>';
   document.querySelectorAll<HTMLInputElement|HTMLSelectElement|HTMLButtonElement>('.tab-page input,.tab-page select,.tab-page button').forEach(control=>control.disabled=running);
-  document.querySelectorAll<HTMLButtonElement>('.recent-motion-item').forEach(control=>control.disabled=running||openingMotion);byId<HTMLButtonElement>('undoBtn').disabled=running||!(session?.can_undo);byId<HTMLButtonElement>('redoBtn').disabled=running||!(session?.can_redo);byId<HTMLButtonElement>('saveBtn').disabled=running;
-  byId<HTMLInputElement>('outputMotionId').disabled=running||!byId<HTMLInputElement>('registerMotion').checked;
+  document.querySelectorAll<HTMLButtonElement>('.recent-motion-item').forEach(control=>control.disabled=running||openingMotion);
+  byId<HTMLButtonElement>('undoBtn').disabled=running||readOnly||!(session?.can_undo);
+  byId<HTMLButtonElement>('redoBtn').disabled=running||readOnly||!(session?.can_redo);
+  byId<HTMLButtonElement>('saveBtn').disabled=running||readOnly;
+  byId<HTMLButtonElement>('validateBtn').disabled=running||readOnly;
+  byId<HTMLButtonElement>('generateBtn').disabled=running||readOnly||!session;
+  byId<HTMLButtonElement>('discardBtn').disabled=running||readOnly;
+  document.querySelectorAll<HTMLInputElement>('[data-generation-setting]').forEach(control=>control.disabled=running||readOnly);
+  byId<HTMLInputElement>('outputMotionId').disabled=running||readOnly||!byId<HTMLInputElement>('registerMotion').checked;
   if(running)pollGeneration();else stopGenerationPoll();
 }
 
-byId('playBtn').onclick=()=>{playing=!playing;byId('playBtn').innerHTML=`<i data-lucide="${playing?'pause':'play'}"></i>`;refreshIcons();};
+function setPlaying(next:boolean){
+  playing=next;
+  if(!playing)frameAccumulator=0;
+  byId('playBtn').innerHTML=`<i data-lucide="${playing?'pause':'play'}"></i>`;
+  refreshIcons();
+}
+byId('playBtn').onclick=()=>setPlaying(!playing);
 byId('prevBtn').onclick=()=>setFrame(frame-1);byId('nextBtn').onclick=()=>setFrame(frame+1);
 byId<HTMLInputElement>('frameInput').onchange=e=>setFrame(Number((e.target as HTMLInputElement).value));
 async function runSessionAction(path:string, body?:unknown){try{const next=await api<Session>(path,{method:'POST',body:body===undefined?undefined:JSON.stringify(body)});await applySession(next);return next;}catch(e){showStatus(String(e),true);return null;}}
@@ -444,7 +460,7 @@ function timelinePointer(event:PointerEvent,updateFrame=false,selectLane=false){
   if(selectLane&&lane>=0&&lane<session.contact_force.part_order.length){const body=partParent[session.contact_force.part_order[lane]],candidates=session.edit_handles.filter(handle=>handle.body===body&&activeAt(handle));if(candidates.length)selectHandle(candidates[0]);}
   const hover=byId('timelineHover'),part=lane>=0&&lane<session.contact_force.part_order.length?session.contact_force.part_order[lane]:'Timeline';hover.textContent=`${part} · ${formatTimelineTime(next/session.fps)} · frame ${next}`;hover.style.left=`${Math.max(m.labelW+44,Math.min(rect.width-72,localX))}px`;hover.classList.remove('hidden');
 }
-timeline.addEventListener('pointerdown',event=>{if(!session)return;scrubbingTimeline=true;timeline.setPointerCapture(event.pointerId);timeline.classList.add('scrubbing');timelinePointer(event,true,true);});
+timeline.addEventListener('pointerdown',event=>{if(!session)return;setPlaying(false);scrubbingTimeline=true;timeline.setPointerCapture(event.pointerId);timeline.classList.add('scrubbing');timelinePointer(event,true,true);});
 timeline.addEventListener('pointermove',event=>timelinePointer(event,scrubbingTimeline,false));
 timeline.addEventListener('pointerup',event=>{if(!scrubbingTimeline)return;scrubbingTimeline=false;timeline.releasePointerCapture(event.pointerId);timeline.classList.remove('scrubbing');});
 timeline.addEventListener('pointercancel',()=>{scrubbingTimeline=false;timeline.classList.remove('scrubbing');});

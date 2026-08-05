@@ -34,22 +34,20 @@ def _rollout_motion() -> dict[str, np.ndarray]:
     }
 
 
-def test_force_rollout_path_is_required_and_original_motion_is_not_fallback(
+def test_plan_source_is_the_only_rollout_authority(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original = tmp_path / "original.npz"
-    rollout = tmp_path / "force_rollout.npz"
-    original.touch()
-    rollout.touch()
+    source = tmp_path / "source_motion.npz"
+    source.touch()
     plan = ContactEditPlan(
         plan_id="plan",
         source_motion_id="motion",
-        source_motion_path=str(original),
+        source_motion_path=str(source),
         source_contact_layer="contact/source",
         status="validated",
         edits=[],
-        metadata={"contact_force_source_path": str(rollout)},
+        metadata={"contact_force_source_path": str(source)},
     )
     loaded: list[Path] = []
 
@@ -61,36 +59,28 @@ def test_force_rollout_path_is_required_and_original_motion_is_not_fallback(
     motion, path = _load_force_rollout(plan, preview)
 
     assert motion["joint_pos"].shape == (1, 8)
-    assert path == rollout.resolve()
-    assert loaded == [rollout.resolve()]
-    assert original.resolve() not in loaded
+    assert path == source.resolve()
+    assert loaded == [source.resolve()]
 
 
-def test_generation_separates_pose_shape_from_force_rollout_contacts(
+def test_generation_uses_one_rollout_source_everywhere(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original = tmp_path / "original_reference.npz"
-    rollout_path = tmp_path / "force_rollout.npz"
+    source_path = tmp_path / "source_motion.npz"
     source_terrain = tmp_path / "source_terrain.obj"
     target_terrain = tmp_path / "target_terrain.obj"
-    original.touch()
-    rollout_path.touch()
-    rollout = _rollout_motion()
-    shape = {
-        key: value
-        for key, value in _rollout_motion().items()
-        if not key.startswith("raw_contact_")
-    }
+    source_path.touch()
+    source = _rollout_motion()
     plan = ContactEditPlan(
         plan_id="plan",
         source_motion_id="motion",
-        source_motion_path=str(original),
+        source_motion_path=str(source_path),
         source_contact_layer="contact/source",
         status="validated",
         edits=[],
         metadata={
-            "contact_force_source_path": str(rollout_path),
+            "contact_force_source_path": str(source_path),
             "source_terrain_mesh": str(source_terrain),
             "target_terrain_mesh": str(target_terrain),
         },
@@ -101,10 +91,8 @@ def test_generation_separates_pose_shape_from_force_rollout_contacts(
 
     def fake_load(path: str | Path):
         resolved = Path(path).resolve()
-        if resolved == rollout_path.resolve():
-            return rollout
-        if resolved == original.resolve():
-            return shape
+        if resolved == source_path.resolve():
+            return source
         if resolved.name.endswith("pyroki_preview.npz"):
             return {}
         raise AssertionError(f"unexpected motion load: {resolved}")
@@ -204,37 +192,32 @@ def test_generation_separates_pose_shape_from_force_rollout_contacts(
         overwrite=True,
     )
 
-    assert captured["proxy_motion"] is shape
-    assert captured["binding_motion"] is rollout
-    assert captured["taskspace_source"] is shape
-    assert captured["taskspace_contact_pose"] is shape
-    assert captured["merge_source"] is shape
-    assert captured["proxy_path"] == original.resolve()
-    assert captured["pyroki_source_path"] == original.resolve()
+    assert captured["proxy_motion"] is source
+    assert captured["binding_motion"] is source
+    assert captured["taskspace_source"] is source
+    assert captured["taskspace_contact_pose"] is source
+    assert captured["merge_source"] is source
+    assert captured["proxy_path"] == source_path.resolve()
+    assert captured["pyroki_source_path"] == source_path.resolve()
     assert captured["taskspace_metadata"] == {
-        "collision_reference_motion": str(rollout_path.resolve()),
-        "contact_patch_source_motion": str(rollout_path.resolve()),
-        "contact_target_pose_source_motion": str(original.resolve()),
-        "cross_reference_mixing": True,
+        "collision_reference_motion": str(source_path.resolve()),
+        "contact_patch_source_motion": str(source_path.resolve()),
+        "contact_target_pose_source_motion": str(source_path.resolve()),
+        "cross_reference_mixing": False,
         "environment_collision_contract": (
             "source_rollout_soft_signed_distance_similarity"
         ),
-        "joint_initializer_source_motion": str(original.resolve()),
-        "reference_authority": "pose_shape_plus_force_rollout_contacts",
-        "reference_role_contract": (
-            "shape_from_plan_source_contacts_from_force_rollout"
-        ),
-        "semantic_source_motion": str(original.resolve()),
+        "joint_initializer_source_motion": str(source_path.resolve()),
+        "reference_authority": "rollout_source_only",
+        "reference_role_contract": "single_rollout_source",
+        "semantic_source_motion": str(source_path.resolve()),
         "source_terrain_mesh": str(source_terrain.resolve()),
         "target_terrain_mesh": str(target_terrain.resolve()),
     }
     assert output.is_file()
 
     with np.load(output, allow_pickle=True) as data:
-        assert str(np.asarray(data["source_motion_path"]).item()) == str(original.resolve())
-        assert str(np.asarray(data["force_rollout_source_path"]).item()) == str(
-            rollout_path.resolve()
+        assert str(np.asarray(data["source_motion_path"]).item()) == str(
+            source_path.resolve()
         )
-        assert str(np.asarray(data["original_plan_source_motion_path"]).item()) == str(
-            original
-        )
+        assert "force_rollout_source_path" not in data.files
