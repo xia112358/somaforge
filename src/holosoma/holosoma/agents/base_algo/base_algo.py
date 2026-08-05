@@ -171,15 +171,13 @@ class BaseAlgo:
         """
         return getattr(self, "unwrapped_env", self.env)
 
-    def _collect_env_state(self) -> dict[str, torch.Tensor | float]:
+    def _collect_env_state(self) -> dict[str, Any]:
         """Collect environment state for checkpointing via the environment interface."""
         env = self._unwrap_env()
         state = env.get_checkpoint_state()
         return state or {}
 
-    def _restore_env_state(self, env_state: dict[str, torch.Tensor | float] | None) -> None:
+    def _restore_env_state(self, env_state: dict[str, Any] | None) -> None:
         """Restore environment state from checkpoint via the environment interface."""
-        if not env_state:
-            return
         env = self._unwrap_env()
         env.load_checkpoint_state(env_state)

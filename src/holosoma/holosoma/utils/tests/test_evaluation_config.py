@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -13,7 +14,7 @@ from holosoma.config_types.eval_callback import EvaluationConfig
 from holosoma.config_types.experiment import ExperimentConfig
 from holosoma.eval_agent import run_eval_with_tyro
 from holosoma.utils.eval_utils import CheckpointConfig
-from holosoma.utils.sim_utils import sync_launcher_headless_config
+from holosoma.utils.sim_utils import configure_newton_cuda_graph_for_visualizer, sync_launcher_headless_config
 from holosoma.utils.tyro_utils import TYRO_CONIFG
 from holosoma.utils.viewport_camera import prime_overview_camera
 
@@ -105,6 +106,33 @@ def test_visualizer_selection_is_the_display_source_of_truth(
 
     assert resolved.training.headless is expected_headless
     assert launcher_args.headless is expected_headless
+
+
+def test_kit_visualizer_disables_newton_cuda_graph_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("HOLOSOMA_NEWTON_USE_CUDA_GRAPH", raising=False)
+    launcher_args = argparse.Namespace(visualizer=["kit"], headless=False)
+
+    configure_newton_cuda_graph_for_visualizer(launcher_args)
+
+    assert os.environ["HOLOSOMA_NEWTON_USE_CUDA_GRAPH"] == "0"
+
+
+def test_headless_keeps_newton_cuda_graph_default_unset(monkeypatch) -> None:
+    monkeypatch.delenv("HOLOSOMA_NEWTON_USE_CUDA_GRAPH", raising=False)
+    launcher_args = argparse.Namespace(visualizer=[], headless=True)
+
+    configure_newton_cuda_graph_for_visualizer(launcher_args)
+
+    assert "HOLOSOMA_NEWTON_USE_CUDA_GRAPH" not in os.environ
+
+
+def test_explicit_newton_cuda_graph_override_wins_in_kit(monkeypatch) -> None:
+    monkeypatch.setenv("HOLOSOMA_NEWTON_USE_CUDA_GRAPH", "1")
+    launcher_args = argparse.Namespace(visualizer=["kit"], headless=False)
+
+    configure_newton_cuda_graph_for_visualizer(launcher_args)
+
+    assert os.environ["HOLOSOMA_NEWTON_USE_CUDA_GRAPH"] == "1"
 
 
 class _FakeSimulationContext:

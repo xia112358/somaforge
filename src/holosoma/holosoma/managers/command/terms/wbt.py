@@ -1102,6 +1102,27 @@ def get_filtered_body_names(body_list: List[str], pattern: str) -> List[str]:
 
 
 class MotionCommand(CommandTermBase):
+    _CHECKPOINT_SCHEMA = "holosoma_wbt_motion_sampler_v1"
+    _PER_MOTION_CHECKPOINT_FIELDS = (
+        "_normal_motion_sampling_weights",
+        "_probe_completion_ema",
+        "_probe_success_ema",
+        "_probe_fail_ema",
+        "_probe_timeout_ema",
+        "_probe_count",
+        "_probe_fail_bin_hist",
+        "_completion_success_streak",
+        "_completion_fail_streak",
+        "_completion_success_count",
+        "_completion_fail_count",
+        "_completion_episode_count",
+        "_completion_progress_ema",
+        "_completion_success_ema",
+        "_completion_fail_ema",
+        "_completion_learned_mask",
+        "_failure_window_failure_hist",
+    )
+
     def __init__(self, cfg: Any, env: WholeBodyTrackingManager):
         super().__init__(cfg, env)
 
@@ -2675,6 +2696,174 @@ class MotionCommand(CommandTermBase):
             self._normal_motion_sampling_weights.sum().clamp(min=1e-8)
         )
 
+    def _checkpoint_motion_keys(self) -> list[str]:
+        return [str(Path(path).expanduser().resolve()) for path in self.motion.motion_files]
+
+    def get_checkpoint_state(self) -> dict[str, Any]:
+        """Return learned reset-sampler state keyed by canonical motion path."""
+
+        motion_keys = self._checkpoint_motion_keys()
+        tensors: dict[str, torch.Tensor] = {}
+        for field in self._PER_MOTION_CHECKPOINT_FIELDS:
+            value = getattr(self, field, None)
+            if torch.is_tensor(value) and value.ndim >= 1 and value.shape[0] == len(motion_keys):
+                tensors[field] = value.detach().cpu().clone()
+
+        adaptive: dict[str, torch.Tensor] = {}
+        sampler = getattr(self, "adaptive_timesteps_sampler", None)
+        if sampler is not None:
+            for field in ("bin_failed_count", "current_bin_failed_count"):
+                value = getattr(sampler, field, None)
+                if torch.is_tensor(value) and value.ndim >= 1 and value.shape[0] == len(motion_keys):
+                    adaptive[field] = value.detach().cpu().clone()
+
+        return {
+            "schema": self._CHECKPOINT_SCHEMA,
+            "motion_keys": motion_keys,
+            "tensors": tensors,
+            "adaptive_timesteps": adaptive,
+            "restore_provenance": {
+                "restored": bool(getattr(self, "_sampler_checkpoint_restored", False)),
+                "matched_motion_count": int(
+                    getattr(self, "_sampler_checkpoint_matched_motion_count", 0)
+                ),
+                "saved_motion_count": int(
+                    getattr(self, "_sampler_checkpoint_saved_motion_count", 0)
+                ),
+                "reason": str(getattr(self, "_sampler_checkpoint_restore_reason", "fresh_run")),
+            },
+        }
+
+    @staticmethod
+    def _restore_rows_by_motion_key(
+        current: torch.Tensor,
+        saved: Any,
+        current_indices: torch.Tensor,
+        saved_indices: torch.Tensor,
+    ) -> torch.Tensor | None:
+        saved_tensor = torch.as_tensor(saved, device=current.device, dtype=current.dtype)
+        if saved_tensor.ndim != current.ndim or saved_tensor.shape[1:] != current.shape[1:]:
+            return None
+        if saved_indices.numel() > 0 and int(saved_indices.max().item()) >= saved_tensor.shape[0]:
+            return None
+        restored = current.clone()
+        restored[current_indices] = saved_tensor[saved_indices]
+        return restored
+
+    def _set_checkpoint_restore_status(self, *, restored: bool, matched: int, saved: int, reason: str) -> None:
+        self._sampler_checkpoint_restored = bool(restored)
+        self._sampler_checkpoint_matched_motion_count = int(matched)
+        self._sampler_checkpoint_saved_motion_count = int(saved)
+        self._sampler_checkpoint_restore_reason = str(reason)
+
+    def load_checkpoint_state(self, state: dict[str, Any] | None) -> None:
+        """Restore learned sampler state, remapping rows if the manifest was reordered."""
+
+        if not isinstance(state, dict):
+            self._set_checkpoint_restore_status(restored=False, matched=0, saved=0, reason="legacy_checkpoint")
+            logger.warning("WBT sampler state was not restored: legacy checkpoint has no sampler state.")
+            return
+        if state.get("schema") != self._CHECKPOINT_SCHEMA:
+            self._set_checkpoint_restore_status(restored=False, matched=0, saved=0, reason="unsupported_schema")
+            logger.warning(
+                "WBT sampler state was not restored: unsupported schema "
+                f"{state.get('schema')!r}."
+            )
+            return
+
+        saved_keys = [str(Path(path).expanduser().resolve()) for path in state.get("motion_keys", [])]
+        current_keys = self._checkpoint_motion_keys()
+        saved_index_by_key = {key: index for index, key in enumerate(saved_keys)}
+        matched_pairs = [
+            (current_index, saved_index_by_key[key])
+            for current_index, key in enumerate(current_keys)
+            if key in saved_index_by_key
+        ]
+        if not matched_pairs:
+            self._set_checkpoint_restore_status(
+                restored=False,
+                matched=0,
+                saved=len(saved_keys),
+                reason="no_matching_motions",
+            )
+            logger.warning("WBT sampler state was not restored: no checkpoint motions match the current manifest.")
+            return
+
+        current_indices = torch.tensor([pair[0] for pair in matched_pairs], device=self.device, dtype=torch.long)
+        saved_indices = torch.tensor([pair[1] for pair in matched_pairs], device=self.device, dtype=torch.long)
+        restored_fields = 0
+        tensors = state.get("tensors", {})
+        if isinstance(tensors, dict):
+            for field in self._PER_MOTION_CHECKPOINT_FIELDS:
+                current = getattr(self, field, None)
+                if not torch.is_tensor(current) or field not in tensors:
+                    continue
+                restored = self._restore_rows_by_motion_key(
+                    current,
+                    tensors[field],
+                    current_indices,
+                    saved_indices,
+                )
+                if restored is None:
+                    logger.warning(f"Skipping incompatible WBT sampler checkpoint field {field}.")
+                    continue
+                current.copy_(restored)
+                restored_fields += 1
+
+        weights = getattr(self, "_normal_motion_sampling_weights", None)
+        if torch.is_tensor(weights):
+            weights.clamp_(min=0.0)
+            weights.div_(weights.sum().clamp(min=1e-8))
+
+        adaptive = state.get("adaptive_timesteps", {})
+        sampler = getattr(self, "adaptive_timesteps_sampler", None)
+        if sampler is not None and isinstance(adaptive, dict):
+            for field in ("bin_failed_count", "current_bin_failed_count"):
+                current = getattr(sampler, field, None)
+                if not torch.is_tensor(current) or field not in adaptive:
+                    continue
+                restored = self._restore_rows_by_motion_key(
+                    current,
+                    adaptive[field],
+                    current_indices,
+                    saved_indices,
+                )
+                if restored is None:
+                    logger.warning(f"Skipping incompatible WBT adaptive sampler checkpoint field {field}.")
+                    continue
+                current.copy_(restored)
+                restored_fields += 1
+
+        restored = restored_fields > 0
+        reason = "restored" if restored else "no_compatible_fields"
+        self._set_checkpoint_restore_status(
+            restored=restored,
+            matched=len(matched_pairs),
+            saved=len(saved_keys),
+            reason=reason,
+        )
+        log = logger.info if restored else logger.warning
+        log(
+            "WBT sampler checkpoint restore: "
+            f"restored={restored}, matched_motions={len(matched_pairs)}/{len(current_keys)}, "
+            f"saved_motions={len(saved_keys)}, restored_fields={restored_fields}, reason={reason}."
+        )
+
+    @staticmethod
+    def _append_checkpoint_restore_metrics(owner: Any, metrics: dict[str, float]) -> dict[str, float]:
+        if not hasattr(owner, "_sampler_checkpoint_restored"):
+            return metrics
+        metrics.update(
+            {
+                "sampler_checkpoint_restored": float(owner._sampler_checkpoint_restored),
+                "sampler_checkpoint_matched_motion_count": float(
+                    owner._sampler_checkpoint_matched_motion_count
+                ),
+                "sampler_checkpoint_saved_motion_count": float(owner._sampler_checkpoint_saved_motion_count),
+            }
+        )
+        return metrics
+
     def get_motion_learning_progress_metrics(self) -> dict[str, float]:
         """Return probe learning progress metrics for TensorBoard."""
         if getattr(self, "_use_completion_learning_sampler", False):
@@ -2685,7 +2874,7 @@ class MotionCommand(CommandTermBase):
             fail = self._completion_fail_ema.detach()
             max_weight, max_weight_motion = weights.max(dim=0)
             min_success, min_success_motion = success.min(dim=0)
-            return {
+            return MotionCommand._append_checkpoint_restore_metrics(self, {
                 "completion_learned_frac": float(learned.to(torch.float32).mean().item()),
                 "completion_progress_ema_mean": float(progress.mean().item()),
                 "completion_success_ema_mean": float(success.mean().item()),
@@ -2694,7 +2883,7 @@ class MotionCommand(CommandTermBase):
                 "completion_success_ema_min_motion": float(min_success_motion.item()),
                 "completion_normal_motion_weight_max": float(max_weight.item()),
                 "completion_normal_motion_weight_max_motion": float(max_weight_motion.item()),
-            }
+            })
 
         if getattr(self, "_use_group_probe_envs", False):
             completion = self._group_probe_completion_ema.detach()
@@ -2706,7 +2895,7 @@ class MotionCommand(CommandTermBase):
             min_success, min_success_group = success.min(dim=0)
             max_weight, max_weight_group = weights.max(dim=0)
 
-            return {
+            return MotionCommand._append_checkpoint_restore_metrics(self, {
                 "group_probe_completion_ema_mean": float(completion.mean().item()),
                 "group_probe_completion_ema_min": float(min_completion.item()),
                 "group_probe_completion_ema_min_group": float(min_completion_group.item()),
@@ -2717,10 +2906,10 @@ class MotionCommand(CommandTermBase):
                 "group_probe_timeout_ema_mean": float(timeout.mean().item()),
                 "group_probe_normal_group_weight_max": float(max_weight.item()),
                 "group_probe_normal_group_weight_max_group": float(max_weight_group.item()),
-            }
+            })
 
         if not getattr(self, "_use_start_probe_envs", False):
-            return {}
+            return MotionCommand._append_checkpoint_restore_metrics(self, {})
 
         completion = self._probe_completion_ema.detach()
         success = self._probe_success_ema.detach()
@@ -2731,7 +2920,7 @@ class MotionCommand(CommandTermBase):
         min_success, min_success_motion = success.min(dim=0)
         max_weight, max_weight_motion = weights.max(dim=0)
 
-        return {
+        return MotionCommand._append_checkpoint_restore_metrics(self, {
             "start_probe_episode_count": float(self._probe_count.sum().item()),
             "completion_ema_mean": float(completion.mean().item()),
             "completion_ema_min": float(min_completion.item()),
@@ -2743,7 +2932,7 @@ class MotionCommand(CommandTermBase):
             "timeout_ema_mean": float(timeout.mean().item()),
             "normal_motion_weight_max": float(max_weight.item()),
             "normal_motion_weight_max_motion": float(max_weight_motion.item()),
-        }
+        })
 
     def update_metrics(self):
         """Update the metrics. After action, before step() is called."""
@@ -3295,6 +3484,24 @@ class MotionCommand(CommandTermBase):
         body_pos_w = self.motion.body_pos_w[future_steps][:, :, self.tracked_body_indexes]
         body_quat_w = self.motion.body_quat_w[future_steps][:, :, self.tracked_body_indexes]
         return self._localize_motion_pos_quat_future(body_pos_w, body_quat_w)
+
+    def future_joint_pos_vel(self, offsets: tuple[int, ...]) -> tuple[torch.Tensor, torch.Tensor]:
+        offsets_t = torch.as_tensor(offsets, dtype=torch.long, device=self.device)
+        future_steps = self.time_steps[:, None] + offsets_t[None, :]
+        start_idx = self.motion.motion_start_idx[self.motion_ids][:, None]
+        end_idx = self.motion.motion_end_idx[self.motion_ids][:, None]
+        future_steps = future_steps.clamp(min=start_idx, max=end_idx - 1)
+        return self.motion.joint_pos[future_steps], self.motion.joint_vel[future_steps]
+
+    def future_body_pos_quat_offsets(
+        self, offsets: tuple[int, ...]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        offsets_t = torch.as_tensor(offsets, dtype=torch.long, device=self.device)
+        future_steps = self.time_steps[:, None] + offsets_t[None, :]
+        start_idx = self.motion.motion_start_idx[self.motion_ids][:, None]
+        end_idx = self.motion.motion_end_idx[self.motion_ids][:, None]
+        future_steps = future_steps.clamp(min=start_idx, max=end_idx - 1)
+        return self.future_body_pos_quat_w(future_steps)
 
     def _maybe_sample_motion_matched_origins(self, env_ids: torch.Tensor) -> None:
         terrain_state = self._env.terrain_manager.get_state("locomotion_terrain")

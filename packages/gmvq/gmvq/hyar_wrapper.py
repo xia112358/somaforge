@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any, Optional
 
 import torch
@@ -32,18 +33,27 @@ class FrozenGMVQCodec(nn.Module):
 
     def __init__(
         self,
-        checkpoint: str | Path,
+        checkpoint: str | Path | Mapping[str, Any],
         device: str | torch.device = "cpu",
         trainable: bool = False,
     ) -> None:
         super().__init__()
-        ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
-        validate_g1_asset_metadata(ckpt.get("robot_asset"), context=f"GMVQ checkpoint {checkpoint}")
+        if isinstance(checkpoint, Mapping):
+            ckpt = dict(checkpoint)
+            checkpoint_context = "embedded GMVQ checkpoint"
+        else:
+            ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
+            checkpoint_context = f"GMVQ checkpoint {checkpoint}"
+        validate_g1_asset_metadata(ckpt.get("robot_asset"), context=checkpoint_context)
         contact_provenance = ckpt.get("contact_force_provenance")
-        if not isinstance(contact_provenance, dict) or contact_provenance.get("source_backend") != "isaaclab3_newton_mjwarp":
-            raise ValueError(f"GMVQ checkpoint {checkpoint} has no Newton contact-force provenance")
+        if contact_provenance is not None and (
+            not isinstance(contact_provenance, dict)
+            or contact_provenance.get("source_backend") != "isaaclab3_newton_mjwarp"
+        ):
+            raise ValueError(f"{checkpoint_context} has invalid Newton contact-force provenance")
         self.robot_asset = dict(ckpt["robot_asset"])
-        self.contact_force_provenance = dict(contact_provenance)
+        self.contact_force_provenance = None if contact_provenance is None else dict(contact_provenance)
+        self.reference_kind = "kinematic_ref" if contact_provenance is None else "force_annotated_ref"
         cfg = ckpt["model_config"]
         self.model = GMVQAutoEncoder(**cfg)
         self.model.load_state_dict(ckpt["model_state"])
@@ -66,7 +76,7 @@ class FrozenGMVQCodec(nn.Module):
 
     @property
     def theta_dim(self) -> int:
-        return int(self.model.latent_dim)
+        return int(self.model.theta_dim)
 
     @property
     def t(self) -> int:
@@ -81,6 +91,11 @@ class FrozenGMVQCodec(nn.Module):
             return x
         return (x - self.norm_stats.mean.to(x.device)) / self.norm_stats.std.to(x.device)
 
+    def denormalize(self, x: torch.Tensor) -> torch.Tensor:
+        if self.norm_stats is None:
+            return x
+        return x * self.norm_stats.std.to(x.device) + self.norm_stats.mean.to(x.device)
+
     def encode_segment(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         """Encode normalized segments x: [B, T, D] to GMVQ hybrid code."""
         ctx = torch.enable_grad() if self.trainable else torch.no_grad()
@@ -94,20 +109,20 @@ class FrozenGMVQCodec(nn.Module):
             "x_recon": out["x_recon"],
         }
 
-    def decode_hybrid(self, k: torch.Tensor, theta: torch.Tensor) -> dict[str, torch.Tensor]:
+    def decode_hybrid(
+        self,
+        k: torch.Tensor,
+        theta: torch.Tensor,
+        lengths: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
         """Decode GMVQ hybrid code `(k, theta)` back to segment space."""
-        q = self.model.quantizer
-        sigma = q.sigma().to(theta.device)
-        mu_k = q.code_mu.to(theta.device)[k]
-        sigma_k = sigma[k]
-        theta_dec = q._theta_for_decode(theta)
-        z_q = mu_k + sigma_k * theta_dec
-        if self.model.decoder_type in {"latent", "time"}:
-            dec_in = z_q
-        else:
-            dec_in = torch.cat([mu_k, theta_dec], dim=-1)
-        x_hat = self.model.decoder(dec_in)
-        return {"x_hat": x_hat, "z_q": z_q, "theta_dec": theta_dec}
+        decoded = self.model.decode_hybrid(k, theta, lengths=lengths)
+        return {
+            "x_hat": decoded["x_hat"],
+            "z_q": decoded["z_q"],
+            "theta_dec": decoded["theta_dec"],
+            "length_pred": decoded["log_length_pred"].exp(),
+        }
 
 
 class HyARActionVAE(nn.Module):

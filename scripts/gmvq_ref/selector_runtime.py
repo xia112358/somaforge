@@ -15,6 +15,7 @@ from gmvq.hyar_wrapper import FrozenGMVQCodec
 
 from scripts.gmvq_ref.train_selector_code import SelectorMLP
 from scripts.gmvq_ref.train_selector_theta import ThetaMLP
+from scripts.gmvq_ref.start_conditioned_decoder import load_start_conditioned_decoder
 
 
 FEATURE_KEYS = (
@@ -34,6 +35,7 @@ class SelectorOutput:
     theta: torch.Tensor
     x_hat: torch.Tensor
     z_q: torch.Tensor
+    length_pred: torch.Tensor
 
 
 def _as_2d_float(array: np.ndarray | torch.Tensor, *, device: torch.device) -> torch.Tensor:
@@ -79,6 +81,7 @@ class GMVQSelectorRuntime(torch.nn.Module):
         code_checkpoint: str | Path,
         theta_checkpoint: str | Path,
         gmvq_checkpoint: str | Path,
+        start_decoder_checkpoint: str | Path | None = None,
         device: str | torch.device = "cpu",
     ) -> None:
         super().__init__()
@@ -109,6 +112,13 @@ class GMVQSelectorRuntime(torch.nn.Module):
         self.theta_model.load_state_dict(theta_ckpt["model_state"])
 
         self.gmvq_codec = FrozenGMVQCodec(gmvq_checkpoint, device=self.device_ref, trainable=False)
+        self.start_decoder = (
+            None
+            if start_decoder_checkpoint is None
+            else load_start_conditioned_decoder(
+                start_decoder_checkpoint, device=self.device_ref
+            )
+        )
         self.num_codes = int(code_cfg["num_codes"])
 
         self.register_buffer("code_mean", torch.as_tensor(code_ckpt["norm"]["mean"], dtype=torch.float32))
@@ -122,6 +132,11 @@ class GMVQSelectorRuntime(torch.nn.Module):
         self.code_checkpoint = str(Path(code_checkpoint).expanduser())
         self.theta_checkpoint = str(Path(theta_checkpoint).expanduser())
         self.gmvq_checkpoint = str(Path(gmvq_checkpoint).expanduser())
+        self.start_decoder_checkpoint = (
+            None
+            if start_decoder_checkpoint is None
+            else str(Path(start_decoder_checkpoint).expanduser())
+        )
 
         self.to(self.device_ref)
         self.eval()
@@ -146,16 +161,82 @@ class GMVQSelectorRuntime(torch.nn.Module):
         theta_norm = self.theta_model(x)
         return theta_norm * self.theta_std + self.theta_mean
 
-    def decode(self, code: torch.Tensor, theta: torch.Tensor) -> dict[str, torch.Tensor]:
-        return self.gmvq_codec.decode_hybrid(code.to(self.device_ref), theta.to(self.device_ref))
+    def decode(
+        self,
+        code: torch.Tensor,
+        theta: torch.Tensor,
+        lengths: torch.Tensor | None = None,
+        start_joint_pos: torch.Tensor | np.ndarray | None = None,
+        start_joint_vel: torch.Tensor | np.ndarray | None = None,
+    ) -> dict[str, torch.Tensor]:
+        lengths_dev = None if lengths is None else lengths.to(self.device_ref)
+        result = self.gmvq_codec.decode_hybrid(
+            code.to(self.device_ref),
+            theta.to(self.device_ref),
+            lengths=lengths_dev,
+        )
+        if self.start_decoder is None:
+            return result
+        if start_joint_pos is None or start_joint_vel is None:
+            raise ValueError(
+                "start-conditioned decoding requires start_joint_pos and start_joint_vel"
+            )
+        start_q = torch.as_tensor(
+            start_joint_pos, dtype=torch.float32, device=self.device_ref
+        ).clone()
+        start_qd = torch.as_tensor(
+            start_joint_vel, dtype=torch.float32, device=self.device_ref
+        )
+        if start_q.ndim == 1:
+            start_q = start_q.unsqueeze(0)
+        if start_qd.ndim == 1:
+            start_qd = start_qd.unsqueeze(0)
+        if start_q.shape != (result["x_hat"].shape[0], 36):
+            raise ValueError(f"start_joint_pos must be [B,36], got {tuple(start_q.shape)}")
+        if start_qd.shape != (result["x_hat"].shape[0], 35):
+            raise ValueError(f"start_joint_vel must be [B,35], got {tuple(start_qd.shape)}")
+        start_q[:, :3] = 0.0
+        start_state = torch.cat((start_q, start_qd), dim=-1)
+        stats = self.gmvq_codec.norm_stats
+        if stats is not None:
+            mean = stats.mean.to(self.device_ref).reshape(-1)
+            std = stats.std.to(self.device_ref).reshape(-1)
+            start_state = (start_state - mean) / std
+        result["x_hat"] = self.start_decoder(
+            result["x_hat"],
+            start_state=start_state,
+            codes=code.to(self.device_ref),
+            theta=theta.to(self.device_ref),
+            lengths=lengths_dev,
+        )
+        return result
 
     @torch.no_grad()
-    def forward(self, obs: torch.Tensor, code: torch.Tensor | None = None) -> SelectorOutput:
+    def forward(
+        self,
+        obs: torch.Tensor,
+        code: torch.Tensor | None = None,
+        lengths: torch.Tensor | None = None,
+        start_joint_pos: torch.Tensor | np.ndarray | None = None,
+        start_joint_vel: torch.Tensor | np.ndarray | None = None,
+    ) -> SelectorOutput:
         obs = obs.to(self.device_ref, dtype=torch.float32)
         k = self.predict_code(obs) if code is None else code.to(self.device_ref, dtype=torch.long)
         theta = self.predict_theta(obs, k)
-        dec = self.decode(k, theta)
-        return SelectorOutput(code=k, theta=theta, x_hat=dec["x_hat"], z_q=dec["z_q"])
+        dec = self.decode(
+            k,
+            theta,
+            lengths=lengths,
+            start_joint_pos=start_joint_pos,
+            start_joint_vel=start_joint_vel,
+        )
+        return SelectorOutput(
+            code=k,
+            theta=theta,
+            x_hat=dec["x_hat"],
+            z_q=dec["z_q"],
+            length_pred=dec["length_pred"],
+        )
 
     def metadata(self) -> dict[str, Any]:
         return {
@@ -166,4 +247,5 @@ class GMVQSelectorRuntime(torch.nn.Module):
             "code_checkpoint": self.code_checkpoint,
             "theta_checkpoint": self.theta_checkpoint,
             "gmvq_checkpoint": self.gmvq_checkpoint,
+            "start_decoder_checkpoint": self.start_decoder_checkpoint,
         }

@@ -1,8 +1,15 @@
 # GMVQ Ref Pipeline
 
-This repo is the integration layer for policy/runtime work. Keep `motion_edit` and
-`gmvq-vae` as separate repositories, and use this repo to pin the data protocol,
-paths, manifests, and evaluation commands.
+> This is the detailed preparation/history document. The accepted production
+> artifact set and the only current online GMVQ/WBT run command are maintained
+> in [`climb00-pairwise48-production.md`](climb00-pairwise48-production.md).
+> Paths under `tmp/gmvq_play` in this document are historical examples, not
+> production inputs.
+
+SomaForge is the integration workspace for Motion Edit, GMVQ, and Holosoma
+policy/runtime work. Their source packages remain separate Python modules, but
+the canonical data protocol, manifests, runtime bundles, and evaluation
+commands are versioned together in this repository.
 
 ## Repository Roles
 
@@ -11,8 +18,23 @@ paths, manifests, and evaluation commands.
 - `holosoma_newton`: IsaacLab/Newton policy environment, motion manifests,
   policy eval, visualization, and glue scripts.
 
-Do not copy the source trees into each other. Use local paths, editable installs,
-or submodules only after the interfaces are stable.
+Do not bypass the package interfaces by copying implementation files between
+modules. Shared robot identity and motion contracts belong in
+`somaforge_core`.
+
+## Current runtime boundary
+
+The accepted production bundle documented in
+[`climb00-pairwise48-production.md`](climb00-pairwise48-production.md) uses the
+embedded GMVQ codec, code selector, theta selector, duration prior,
+transition mask, and start-conditioned decoder. It is the only promoted online
+runtime.
+
+The newer `current_frame_future` path is a development path for predicting one
+complete absolute future segment from the current scan and robot state. It does
+not integrate predicted pose increments. Its whole-segment continuity and
+closed-loop terminal recovery are under evaluation, so checkpoints under
+`tmp/` must not replace `runtime/current/models/climb00_pairwise48/gmvq.pt`.
 
 ## Ref Data Contract
 

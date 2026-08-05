@@ -200,6 +200,8 @@ class PPO(BaseAlgo):
         self._init_config()
 
         self.current_learning_iteration = 0
+        self._pending_env_state = None
+        self._pending_env_state_restore = False
         self.eval_callbacks: list[RLEvalCallback] = []
         _ = self.env.reset_all()
 
@@ -375,6 +377,12 @@ class PPO(BaseAlgo):
         self._train_mode()
 
         obs_dict = self.env.reset_all()
+
+        # Environment reset initializes command-term buffers.  Restore learned
+        # sampler/curriculum state only after that reset so resume does not
+        # immediately erase it.  Call through for legacy checkpoints as well,
+        # allowing environments to record an explicit non-restored status.
+        self._restore_pending_env_state_after_reset()
 
         # Initialize environments with different episode length buffers
         # Must happen AFTER reset_all() to avoid being overwritten by reset
@@ -849,9 +857,19 @@ class PPO(BaseAlgo):
             # Checkpoints are written after completing ``iter``. Resume at the
             # following iteration instead of applying that update twice.
             self.current_learning_iteration = int(loaded_dict["iter"]) + 1
-            self._restore_env_state(loaded_dict.get("env_state"))
+            self._pending_env_state = loaded_dict.get("env_state")
+            self._pending_env_state_restore = True
             return loaded_dict.get("infos")
         return None
+
+    def _restore_pending_env_state_after_reset(self) -> None:
+        """Restore checkpointed environment state after reset initialized its buffers."""
+
+        if not self._pending_env_state_restore:
+            return
+        self._restore_env_state(self._pending_env_state)
+        self._pending_env_state = None
+        self._pending_env_state_restore = False
 
     def save(self, path, infos=None):
         checkpoint_dict = {

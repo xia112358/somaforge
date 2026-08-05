@@ -74,26 +74,36 @@ Old checkpoints and motion manifests are intentionally incompatible. Start
 from a fresh canonical source motion and rebuild the pipeline in this order:
 
 ```text
-OmniRetarget/PyRoki qpos
--> Newton canonical FK conversion
--> initial WBT baseline policy
--> Newton rollout/contact-force manifest
--> validated Motion Edit ContactEditPlan
--> low-jitter rollout pose authority (6 Hz zero-phase cleanup)
--> contact-Laplacian whole-body semantic curves
--> Newton robot-local rigid contact patches
--> PyRoki trajectory IK + Newton soft signed-distance similarity
+original force-free motion
+-> direct Newton FK canonicalization
+-> self-collision-enabled WBT policy
+-> parallel Newton policy rollouts with measured force/raw contacts
+-> one fused rollout source
+-> surface-aware contact layer and validated ContactEditPlan
+-> contact-Laplacian semantic curves
+-> Newton robot-local rigid patches
+-> PyRoki trajectory IK with Newton penetration/self-collision costs
 -> direct Newton FK canonical edited motion
--> frame-boundary Newton force replay
--> accepted canonical 8-part Newton force reference/manifest
--> GMVQ segment pack and checkpoint
--> WBT training from scratch
+-> fine-tune the same self-collision policy on the augmented motion
+-> Newton policy execution produces the augmented motion's real force
 ```
 
-The retained reference implementation is
-[`height110_soft_signed_distance_v2`](packages/motion_edit/docs/height110_production_pipeline.md).
-It is the authority for edited-motion generation and force extraction. The old
-force-retarget/projector loops are not production paths.
+The retained reference implementation is documented in
+[`height110_production_pipeline.md`](packages/motion_edit/docs/height110_production_pipeline.md).
+Self-collision is enabled from the initial policy onward. The old clean6hz,
+frame-boundary replay, force-retarget, and projector branches are not
+production paths.
+
+The accepted `climb_00` augmentation and online GMVQ/WBT result is pinned in
+[`climb00-pairwise48-production.md`](docs/climb00-pairwise48-production.md).
+Its motions, terrains, manifest, WBT checkpoint, and self-contained GMVQ bundle
+live under stable `runtime/current/` paths; production commands must not point
+back into `tmp/`.
+
+Experimental whole-segment GMVQ decoders remain development-only until they
+pass both offline continuity checks and multi-height closed-loop WBT
+acceptance. A checkpoint in `tmp/` never supersedes the stable bundle merely
+because it can be loaded or reaches STOP after retries.
 
 ### 1. Bootstrap and validate assets
 
@@ -118,9 +128,11 @@ python scripts/check_motion_manifest.py
 
 ### 2. Train the initial WBT baseline
 
-The first WBT run uses only the Newton-canonicalized source motion and terrain. It
-does not depend on Motion Edit, GM-VQ, or HyAR. Save the baseline checkpoint
-and rollout/contact manifest under `runtime/current/`.
+The first WBT run uses only the Newton-canonicalized source motion and terrain.
+It does not depend on Motion Edit, GM-VQ, or HyAR. Self-collision must already
+be enabled here and remains enabled for rollout collection and every later
+fine-tune. Save the accepted checkpoint and rollout recording under
+`runtime/current/`.
 
 ```bash
 source scripts/source_isaaclab3_newton_setup.sh
@@ -150,9 +162,10 @@ packages/motion_edit/motion-edit contact-editor \
 packages/motion_edit/motion-edit validate-contact-edit-plan --plan /path/to/plan.json
 ```
 
-The production generator consumes one pose authority and one force rollout
-authority. It writes canonical kinematics only; stale source-force and
-`raw_contact_*` fields are not copied:
+The production generator consumes one fused rollout source for pose, measured
+force evidence, contact timing, and raw Newton patch geometry. It writes
+canonical edited kinematics only; stale source-force and `raw_contact_*` fields
+are not copied:
 
 ```bash
 conda run --no-capture-output -n env_somaforge python \
@@ -160,24 +173,25 @@ conda run --no-capture-output -n env_somaforge python \
   --plan /path/to/validated_plan.json \
   --output "$PWD/tmp/motion_edit_run/final_motion.npz" \
   --intermediate-dir "$PWD/tmp/motion_edit_run/work" \
+  --ik-collision-reference-cache \
+    "$PWD/tmp/motion_edit_run/source_collision_reference.npz" \
   --ik-conda-env env_somaforge \
   --newton-device cpu
 ```
+
+Reuse the same collision-reference cache for every variant derived from one
+source rollout. Its terrain, source qpos, and canonical robot-asset hashes are
+validated before use; a mismatch is recomputed rather than accepted.
 
 The generated motion must contain `joint_pos [T,36]`, `joint_vel [T,35]`,
 complete body pose/velocity arrays, canonical joint/body names,
 `robot_asset_json`, and direct-Newton kinematics provenance. Body poses are
 exactly direct Newton FK of `joint_pos`.
 
-Contact force is calculated afterward with frame-boundary Newton replay. At
-each 20 ms control boundary the edited state is authoritative, Newton advances
-four continuous 5 ms substeps, and the fourth substep supplies the force
-sample. Source forces are references only and are never migrated into the
-edited file. See the retained height110 pipeline for the replay, policy
-reference build, fine-tune, and acceptance commands.
-
-The resulting force files carry `contact_force_provenance_json` with the
-Newton solver configuration. MuJoCo diagnostic forces are rejected by WBT.
+The edited motion and the accepted self-collision policy checkpoint are the
+two inputs to fine-tuning. Force is not copied or replay-baked into the edited
+NPZ. The fine-tuned policy produces the augmented motion's real contact force
+when it executes in Newton.
 `contact_force_part_w` is the unfiltered Newton force from the latest physics
 step and is time-aligned with `contact_force_part_position_w` and the raw
 contact channels. `contact_force_part_history_w` preserves the real physics

@@ -64,12 +64,35 @@ def main() -> None:
     if args.data:
         arrays = load_segment_arrays(args.data)
         segments = arrays["segments"]
+        code_segments = arrays.get("code_segments")
+        theta_segments = arrays.get("theta_segments")
         valid_mask = arrays.get("valid_mask")
         lengths = arrays.get("lengths")
         ns = ckpt.get("norm_stats")
         stats = NormStats(mean=ns["mean"], std=ns["std"]) if ns is not None else None
         segments, _ = normalize_segments(segments, stats=stats)
-        dataset = SegmentDataset(segments)
+        code_ns = ckpt.get("code_norm_stats")
+        theta_ns = ckpt.get("theta_norm_stats")
+        code_stats = (
+            None
+            if code_ns is None
+            else NormStats(mean=code_ns["mean"], std=code_ns["std"])
+        )
+        theta_stats = (
+            None
+            if theta_ns is None
+            else NormStats(mean=theta_ns["mean"], std=theta_ns["std"])
+        )
+        if code_segments is not None:
+            code_segments, _ = normalize_segments(code_segments, stats=code_stats)
+        if theta_segments is not None:
+            theta_segments, _ = normalize_segments(theta_segments, stats=theta_stats)
+        dataset = SegmentDataset(
+            segments,
+            code_segments=code_segments,
+            theta_segments=theta_segments,
+        )
+        metadata = arrays.get("metadata", {})
     else:
         valid_mask = None
         lengths = None
@@ -80,6 +103,7 @@ def main() -> None:
             t=cfg.get("t", 120),
             d=cfg.get("d", 14),
         )
+        metadata = {}
 
     model = GMVQAutoEncoder(**cfg).to(args.device)
     model.load_state_dict(ckpt["model_state"])
@@ -102,7 +126,15 @@ def main() -> None:
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
     offset = 0
     with torch.no_grad():
-        for x in loader:
+        for batch in loader:
+            if isinstance(batch, dict):
+                x = batch["x"]
+                code_x = batch.get("code_x")
+                theta_x = batch.get("theta_x")
+            else:
+                x = batch
+                code_x = None
+                theta_x = None
             batch_size = x.shape[0]
             batch_mask = None
             batch_lengths = None
@@ -112,7 +144,13 @@ def main() -> None:
                 batch_lengths = lengths[offset : offset + batch_size].to(args.device)
             offset += batch_size
             x = x.to(args.device)
-            out = model(x, valid_mask=batch_mask, lengths=batch_lengths)
+            out = model(
+                x,
+                valid_mask=batch_mask,
+                lengths=batch_lengths,
+                code_x=None if code_x is None else code_x.to(args.device),
+                theta_x=None if theta_x is None else theta_x.to(args.device),
+            )
             all_codes.append(out["codes"].cpu())
             all_theta.append(out["theta"].cpu())
             all_z_e.append(out["z_e"].cpu())
@@ -153,6 +191,18 @@ def main() -> None:
         np.save(out_dir / "lengths.npy", lengths.numpy())
     if valid_mask is not None:
         np.save(out_dir / "valid_mask.npy", valid_mask.numpy())
+    if args.data:
+        latent_payload: dict[str, np.ndarray] = {
+            "codes": codes_t.numpy(),
+            "theta": theta_t.numpy(),
+            "z_e": z_e_t.numpy(),
+            "z_q": z_q_t.numpy(),
+        }
+        if lengths is not None:
+            latent_payload["lengths"] = lengths.numpy()
+        for key, value in metadata.items():
+            latent_payload[key] = np.asarray(value)
+        np.savez_compressed(out_dir / "latents.npz", **latent_payload)
 
     usage = code_usage_stats(codes_t, cfg["num_codes"])
     print("code usage histogram:")

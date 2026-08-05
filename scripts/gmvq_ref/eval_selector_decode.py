@@ -48,6 +48,7 @@ def _decode_batches(
     codec: FrozenGMVQCodec,
     code: np.ndarray,
     theta: np.ndarray,
+    lengths: np.ndarray,
     *,
     device: torch.device,
     batch_size: int,
@@ -56,7 +57,8 @@ def _decode_batches(
     for start in range(0, code.shape[0], batch_size):
         k = torch.from_numpy(code[start : start + batch_size].astype(np.int64)).to(device)
         th = torch.from_numpy(theta[start : start + batch_size].astype(np.float32)).to(device)
-        outs.append(codec.decode_hybrid(k, th)["x_hat"].cpu().numpy())
+        length = torch.from_numpy(lengths[start : start + batch_size].astype(np.int64)).to(device)
+        outs.append(codec.decode_hybrid(k, th, lengths=length)["x_hat"].cpu().numpy())
     return np.concatenate(outs, axis=0)
 
 
@@ -101,6 +103,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         obs, obs_keys = build_code_features(data, ["height", "root", "joint"])
         codes_true = np.asarray(data["codes"], dtype=np.int64)
         theta_true = np.asarray(data["theta"], dtype=np.float32)
+        lengths_all = np.asarray(data["lengths"], dtype=np.int64)
         groups = np.asarray(data[args.split_group]).astype(str)
         train_mask, val_mask, test_mask = _group_split(groups, args.train_frac, args.val_frac, args.seed)
 
@@ -111,6 +114,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     obs_test = obs[test_indices]
     codes_test = codes_true[test_indices]
     theta_test = theta_true[test_indices]
+    lengths_test = lengths_all[test_indices]
 
     codes_pred = _predict_codes(runtime, obs_test, args.batch_size)
     theta_true_code = _predict_theta(runtime, obs_test, codes_test, args.batch_size)
@@ -124,9 +128,15 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         std = codec.norm_stats.std.cpu().numpy().astype(np.float32)
         target = (segments - mean) / std
 
-    oracle = _decode_batches(codec, codes_test, theta_test, device=device, batch_size=args.batch_size)
-    selector_true_code = _decode_batches(codec, codes_test, theta_true_code, device=device, batch_size=args.batch_size)
-    selector_pred_code = _decode_batches(codec, codes_pred, theta_pred_code, device=device, batch_size=args.batch_size)
+    oracle = _decode_batches(
+        codec, codes_test, theta_test, lengths_test, device=device, batch_size=args.batch_size
+    )
+    selector_true_code = _decode_batches(
+        codec, codes_test, theta_true_code, lengths_test, device=device, batch_size=args.batch_size
+    )
+    selector_pred_code = _decode_batches(
+        codec, codes_pred, theta_pred_code, lengths_test, device=device, batch_size=args.batch_size
+    )
 
     summary: dict[str, Any] = {
         "schema": "gmvq_selector_decode_eval_v1",

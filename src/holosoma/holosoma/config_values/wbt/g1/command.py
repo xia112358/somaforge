@@ -66,12 +66,47 @@ def make_wbt_command(
                 params={"motion_config": config},
             )
         },
-        reset_terms={
-            "motion_command": CommandTermCfg(func="holosoma.managers.command.terms.wbt:MotionCommand")
-        },
-        step_terms={
-            "motion_command": CommandTermCfg(func="holosoma.managers.command.terms.wbt:MotionCommand")
-        },
+        reset_terms={"motion_command": CommandTermCfg(func="holosoma.managers.command.terms.wbt:MotionCommand")},
+        step_terms={"motion_command": CommandTermCfg(func="holosoma.managers.command.terms.wbt:MotionCommand")},
+    )
+
+
+def make_gmvq_wbt_command(
+    *,
+    bundle: str,
+    bootstrap_motion: str,
+    tracking_gate_m: float = 0.15,
+    boundary_record_path: str | None = None,
+) -> CommandManagerCfg:
+    """Run an existing WBT policy against online GMVQ references.
+
+    The bootstrap motion supplies only the canonical reset pose and motion
+    schema.  After reset, the command is decoded from current scan and robot
+    state at each atom boundary.
+    """
+    config = replace(
+        motion_config,
+        motion_file=bootstrap_motion,
+        motion_manifest="",
+        motion_dir="",
+        reset_sampler="uniform",
+        use_start_probe_envs=False,
+        start_at_timestep_zero_prob=1.0,
+        freeze_at_timestep_zero_prob=0.0,
+    )
+    params = {
+        "motion_config": config,
+        "gmvq_bundle": bundle,
+        "gmvq_tracking_gate_m": float(tracking_gate_m),
+    }
+    if boundary_record_path:
+        params["gmvq_boundary_record_path"] = boundary_record_path
+    path = "holosoma.managers.command.terms.gmvq_wbt:GMVQMotionCommand"
+    return CommandManagerCfg(
+        params={},
+        setup_terms={"motion_command": CommandTermCfg(func=path, params=params)},
+        reset_terms={"motion_command": CommandTermCfg(func=path)},
+        step_terms={"motion_command": CommandTermCfg(func=path)},
     )
 
 
@@ -88,5 +123,6 @@ __all__ = [
     "g1_29dof_wbt_baseline_29_command",
     "g1_29dof_wbt_baseline_single_command",
     "g1_29dof_wbt_contact_force_command",
+    "make_gmvq_wbt_command",
     "make_wbt_command",
 ]

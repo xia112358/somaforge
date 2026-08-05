@@ -173,8 +173,7 @@ def future_motion_ref_joint_pos(
     offsets: tuple[int, ...] = (1, 2, 4, 8),
 ) -> torch.Tensor:
     motion_command = _get_motion_command_and_assert_type(env)
-    future_steps = _future_motion_time_steps(motion_command, offsets)
-    joint_pos = motion_command.motion.joint_pos[future_steps]
+    joint_pos, _ = motion_command.future_joint_pos_vel(offsets)
     joint_pos = joint_pos - env.default_dof_pos[:, None, :]
     return joint_pos.reshape(env.num_envs, -1)
 
@@ -184,11 +183,10 @@ def future_motion_ref_pos_b(
     offsets: tuple[int, ...] = (1, 2, 4, 8),
 ) -> torch.Tensor:
     motion_command = _get_motion_command_and_assert_type(env)
-    future_steps = _future_motion_time_steps(motion_command, offsets)
     num_offsets = len(offsets)
     num_bodies = len(motion_command.motion_cfg.body_names_to_track)
 
-    body_pos_w, body_quat_w = motion_command.future_body_pos_quat_w(future_steps)
+    body_pos_w, body_quat_w = motion_command.future_body_pos_quat_offsets(offsets)
 
     ref_pos_w = motion_command.robot_ref_pos_w[:, None, None, :].expand(-1, num_offsets, num_bodies, -1)
     ref_quat_w = motion_command.robot_ref_quat_w[:, None, None, :].expand(-1, num_offsets, num_bodies, -1)
@@ -206,11 +204,10 @@ def future_motion_ref_ori_b(
     offsets: tuple[int, ...] = (1, 2, 4, 8),
 ) -> torch.Tensor:
     motion_command = _get_motion_command_and_assert_type(env)
-    future_steps = _future_motion_time_steps(motion_command, offsets)
     num_offsets = len(offsets)
     num_bodies = len(motion_command.motion_cfg.body_names_to_track)
 
-    body_pos_w, body_quat_w = motion_command.future_body_pos_quat_w(future_steps)
+    body_pos_w, body_quat_w = motion_command.future_body_pos_quat_offsets(offsets)
 
     ref_pos_w = motion_command.robot_ref_pos_w[:, None, None, :].expand(-1, num_offsets, num_bodies, -1)
     ref_quat_w = motion_command.robot_ref_quat_w[:, None, None, :].expand(-1, num_offsets, num_bodies, -1)

@@ -51,6 +51,26 @@ def _copy_source_motion(source_motion: dict[str, Any]) -> dict[str, Any]:
     return copied
 
 
+def _relative_metadata(path: str | Path, row_count: int) -> tuple[bool, np.ndarray | None]:
+    with np.load(Path(path).expanduser(), allow_pickle=True) as data:
+        relative_root = bool(np.asarray(data["relative_root"]).item()) if "relative_root" in data.files else False
+        anchors = np.asarray(data["anchor_root_pos"], dtype=np.float32) if "anchor_root_pos" in data.files else None
+    if anchors is not None and anchors.shape != (row_count, 3):
+        raise ValueError(f"anchor_root_pos must have shape [{row_count},3], got {anchors.shape}")
+    if relative_root and anchors is None:
+        raise ValueError("relative-root segment pack is missing anchor_root_pos")
+    return relative_root, anchors
+
+
+def _restore_world_positions(split: dict[str, np.ndarray], anchor: np.ndarray) -> None:
+    if "joint_pos" in split:
+        split["joint_pos"] = split["joint_pos"].copy()
+        split["joint_pos"][:3] += anchor
+    if "body_pos_w" in split:
+        split["body_pos_w"] = split["body_pos_w"].copy()
+        split["body_pos_w"] += anchor[None, :]
+
+
 def decode_segments(
     *,
     checkpoint: str | Path,
@@ -88,13 +108,24 @@ def decode_segments(
         recon = denormalize_segments(recon, stats)
     recon_np = recon.numpy()
 
-    source_paths = np.asarray(metadata.get("source_paths"), dtype=object).reshape(-1)
+    source_paths = np.asarray(metadata.get("source_paths"), dtype=object).astype(str).reshape(-1)
+    relative_root, anchor_root_pos = _relative_metadata(data, recon_np.shape[0])
     if source_motion is None:
         if source_paths.size == 0:
             raise ValueError("provide --source-motion when prepared dataset has no source_paths metadata")
-        source_motion_path = Path(str(source_paths[0])).expanduser()
+        unique_sources = sorted(set(source_paths.tolist()))
+        if len(unique_sources) != 1:
+            raise ValueError(
+                f"prepared dataset contains {len(unique_sources)} source motions; provide --source-motion"
+            )
+        source_motion_path = Path(unique_sources[0]).expanduser().resolve()
     else:
-        source_motion_path = Path(source_motion).expanduser()
+        source_motion_path = Path(source_motion).expanduser().resolve()
+    selected_rows = np.flatnonzero(
+        np.asarray([Path(value).expanduser().resolve() == source_motion_path for value in source_paths])
+    )
+    if selected_rows.size == 0:
+        raise ValueError(f"source motion has no matching segment rows: {source_motion_path}")
     source = _load_npz(source_motion_path)
     decoded = _copy_source_motion(source)
 
@@ -105,10 +136,16 @@ def decode_segments(
     else:
         lengths_np = lengths.numpy().astype(np.int64)
 
-    for i, (start, end, length) in enumerate(zip(start_frames, end_frames, lengths_np)):
+    for i in selected_rows.tolist():
+        start = int(start_frames[i])
+        end = int(end_frames[i])
+        length = int(lengths_np[i])
         count = min(int(length), int(end) - int(start), recon_np.shape[1])
         for local in range(count):
             split = _split_feature_frame(recon_np[i, local], source_motion=source, feature_keys=feature_keys)
+            if relative_root:
+                assert anchor_root_pos is not None
+                _restore_world_positions(split, anchor_root_pos[i])
             frame = int(start) + local
             for key, value in split.items():
                 decoded[key][frame] = value.astype(decoded[key].dtype, copy=False)
@@ -120,7 +157,8 @@ def decode_segments(
                 "prepared_data": str(Path(data).expanduser()),
                 "source_motion": str(source_motion_path),
                 "feature_keys": feature_keys,
-                "segment_count": int(recon_np.shape[0]),
+                "segment_count": int(selected_rows.size),
+                "relative_root": relative_root,
             },
             sort_keys=True,
         ),
@@ -133,19 +171,21 @@ def decode_segments(
     if latents_output is not None:
         lat_path = Path(latents_output).expanduser().resolve()
         lat_path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(
-            lat_path,
-            codes=out["codes"].cpu().numpy(),
-            theta=out["theta"].cpu().numpy(),
-            z_e=out["z_e"].cpu().numpy(),
-            z_q=out["z_q"].cpu().numpy(),
-            lengths=None if lengths is None else lengths.numpy(),
-            segment_ids=np.asarray(metadata.get("segment_ids"), dtype=object),
-            start_frames=start_frames,
-            end_frames=end_frames,
-            source_paths=source_paths,
-            robot_asset_json=np.asarray(encode_robot_asset_json(ckpt["robot_asset"])),
-        )
+        latent_payload: dict[str, np.ndarray] = {
+            "codes": out["codes"].cpu().numpy(),
+            "theta": out["theta"].cpu().numpy(),
+            "z_e": out["z_e"].cpu().numpy(),
+            "z_q": out["z_q"].cpu().numpy(),
+            "lengths": end_frames - start_frames if lengths is None else lengths.numpy(),
+            "start_frames": start_frames,
+            "end_frames": end_frames,
+            "source_paths": source_paths,
+            "robot_asset_json": np.asarray(encode_robot_asset_json(ckpt["robot_asset"])),
+        }
+        for key in ("segment_ids", "motion_ids", "active_bodies", "anchor_root_pos"):
+            if key in metadata:
+                latent_payload[key] = np.asarray(metadata[key])
+        np.savez(lat_path, **latent_payload)
     return output_path
 
 

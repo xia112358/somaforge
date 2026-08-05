@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import torch
 
@@ -24,6 +25,23 @@ class WholeBodyTrackingManager(BaseTask):
         self.need_to_refresh_envs = torch.ones(self.num_envs, dtype=torch.bool, device=self.device, requires_grad=False)
         self._configure_default_dof_pos()
         self._init_domain_rand_buffers()
+
+    def get_checkpoint_state(self) -> dict[str, Any]:
+        """Persist learned WBT command sampling state with the policy."""
+
+        motion_command = self.command_manager.get_state("motion_command")
+        if motion_command is None:
+            return {}
+        return {"motion_sampler": motion_command.get_checkpoint_state()}
+
+    def load_checkpoint_state(self, state: dict[str, Any] | None) -> None:
+        """Restore WBT command sampling state after the training reset."""
+
+        motion_command = self.command_manager.get_state("motion_command")
+        if motion_command is None:
+            return
+        sampler_state = state.get("motion_sampler") if isinstance(state, dict) else None
+        motion_command.load_checkpoint_state(sampler_state)
 
     def _configure_default_dof_pos(self):
         self.default_dof_pos_base = torch.zeros(

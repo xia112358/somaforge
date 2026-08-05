@@ -74,11 +74,30 @@ def _load_surface_map(
     source_paths: np.ndarray,
     surface_jsonl: Path | None,
     surface_dir: Path | None,
+    surface_map: Path | None,
 ) -> tuple[dict[str, list[Surface]], list[str]]:
     source_strings = np.asarray(source_paths).astype(str).tolist()
     keys = sorted({_motion_surface_key(path) for path in source_strings})
     surfaces_by_key: dict[str, list[Surface]] = {}
     loaded_ids: list[str] = []
+    if surface_map is not None:
+        payload = json.loads(surface_map.expanduser().read_text(encoding="utf-8"))
+        mapping = payload.get("surfaces_by_motion", payload)
+        if not isinstance(mapping, dict):
+            raise ValueError(f"surface map must contain a mapping: {surface_map}")
+        for source in sorted(set(source_strings)):
+            source_path = Path(source).expanduser().resolve()
+            key = _motion_surface_key(source)
+            candidates = (source, str(source_path), source_path.name, source_path.stem, key)
+            catalog = next((mapping[candidate] for candidate in candidates if candidate in mapping), None)
+            if catalog is None:
+                raise KeyError(f"surface map has no catalog for source ref {source}")
+            catalog_path = Path(str(catalog)).expanduser()
+            if not catalog_path.is_absolute():
+                catalog_path = surface_map.expanduser().resolve().parent / catalog_path
+            surfaces_by_key[key] = _load_surfaces(catalog_path)
+            loaded_ids.extend([surface.surface_id for surface in surfaces_by_key[key]])
+        return surfaces_by_key, loaded_ids
     if surface_dir is not None:
         for key in keys:
             path = surface_dir.expanduser() / f"{key}_top_ground_surfaces.jsonl"
@@ -169,6 +188,38 @@ def _grid_points(scan_size: float, num_points_per_axis: int) -> np.ndarray:
     points[:, 0] = grid_x.reshape(-1)
     points[:, 1] = grid_y.reshape(-1)
     return points
+
+
+def _forward_multiscale_grid(
+    *,
+    near_size: float,
+    near_points_per_axis: int,
+    forward_length: float,
+    forward_half_width: float,
+    forward_rows: int,
+    forward_cols: int,
+) -> np.ndarray:
+    """Dense near-field grid plus a wider robot-forward terrain grid."""
+    near = _grid_points(near_size, near_points_per_axis)
+    forward_x = np.linspace(
+        near_size / 2.0,
+        forward_length,
+        forward_rows,
+        dtype=np.float32,
+    )
+    forward_y = np.linspace(
+        -forward_half_width,
+        forward_half_width,
+        forward_cols,
+        dtype=np.float32,
+    )
+    grid_x, grid_y = np.meshgrid(forward_x, forward_y, indexing="ij")
+    forward = np.zeros((forward_rows * forward_cols, 3), dtype=np.float32)
+    forward[:, 0] = grid_x.reshape(-1)
+    forward[:, 1] = grid_y.reshape(-1)
+    # Keep both grids rectangular. The shared boundary is intentionally sampled
+    # by both CNN branches so neither spatial tensor needs holes or padding.
+    return np.concatenate((near, forward), axis=0)
 
 
 def _body_index(body_names: np.ndarray, preferred: tuple[str, ...]) -> int:
@@ -283,12 +334,38 @@ def extract(args: argparse.Namespace) -> dict[str, Any]:
         theta = np.asarray(latents["theta"], dtype=np.float32)
         z_q = np.asarray(latents["z_q"], dtype=np.float32) if "z_q" in latents.files else np.zeros_like(theta)
         source_paths = np.asarray(latents["source_paths"]).astype(str) if "source_paths" in latents.files else np.asarray([])
+        original_sample_count = int(start_frames.shape[0])
+        terminal_sources: list[str] = []
+        if args.include_terminal_stop:
+            if source_paths.size == 0:
+                raise ValueError("--include-terminal-stop requires source_paths in the latent pack")
+            terminal_sources = list(dict.fromkeys(source_paths.tolist()))
+            terminal_frames = []
+            for source in terminal_sources:
+                with np.load(source, allow_pickle=False) as ref:
+                    terminal_frames.append(int(ref["joint_pos"].shape[0]) - 1)
+            terminal_frames_array = np.asarray(terminal_frames, dtype=np.int64)
+            stop_code = int(codes.max(initial=-1)) + 1
+            start_frames = np.concatenate((start_frames, terminal_frames_array))
+            end_frames = np.concatenate((end_frames, terminal_frames_array + 1))
+            lengths = np.concatenate((lengths, np.zeros(len(terminal_sources), dtype=np.int64)))
+            codes = np.concatenate((codes, np.full(len(terminal_sources), stop_code, dtype=np.int64)))
+            theta = np.concatenate(
+                (theta, np.zeros((len(terminal_sources), theta.shape[1]), dtype=np.float32)),
+                axis=0,
+            )
+            z_q = np.concatenate(
+                (z_q, np.zeros((len(terminal_sources), z_q.shape[1]), dtype=np.float32)),
+                axis=0,
+            )
+            source_paths = np.concatenate((source_paths, np.asarray(terminal_sources)))
         if source_paths.size == 0 and args.ref_npz is not None:
             source_paths = np.asarray([str(args.ref_npz)] * start_frames.shape[0], dtype=np.str_)
         surfaces_by_key, surface_ids = _load_surface_map(
             source_paths=source_paths,
             surface_jsonl=args.surface_jsonl,
             surface_dir=args.surface_dir,
+            surface_map=args.surface_map,
         )
         ref_frames = _read_ref_frames(
             source_paths=source_paths,
@@ -302,7 +379,18 @@ def extract(args: argparse.Namespace) -> dict[str, Any]:
         root_lin_vel_w = ref_frames["root_lin_vel_w"]
         root_ang_vel_w = ref_frames["root_ang_vel_w"]
 
-        local_grid = _grid_points(args.scan_size, args.num_points_per_axis)
+        local_grid = (
+            _forward_multiscale_grid(
+                near_size=args.scan_size,
+                near_points_per_axis=args.num_points_per_axis,
+                forward_length=args.forward_scan_length,
+                forward_half_width=args.forward_scan_half_width,
+                forward_rows=args.forward_scan_rows,
+                forward_cols=args.forward_scan_cols,
+            )
+            if args.forward_scan
+            else _grid_points(args.scan_size, args.num_points_per_axis)
+        )
         sample_count = len(start_frames)
         point_count = local_grid.shape[0]
         scan_points_w = np.zeros((sample_count, point_count, 3), dtype=np.float32)
@@ -333,9 +421,19 @@ def extract(args: argparse.Namespace) -> dict[str, Any]:
             "z_q": z_q,
             "height_scan": height_scan.astype(np.float32),
             "terrain_height_w": terrain_height_w.astype(np.float32),
+            "terrain_top_height_w": terrain_height_w.max(axis=1, keepdims=True).astype(np.float32),
             "terrain_surface_index": terrain_surface_index,
             "scan_points_w": scan_points_w.astype(np.float32),
             "local_grid": local_grid.astype(np.float32),
+            "scan_grid_shapes": np.asarray(
+                (
+                    (args.num_points_per_axis, args.num_points_per_axis),
+                    (args.forward_scan_rows, args.forward_scan_cols),
+                )
+                if args.forward_scan
+                else ((args.num_points_per_axis, args.num_points_per_axis),),
+                dtype=np.int64,
+            ),
             "root_pos_w": root_pos_w.astype(np.float32),
             "root_quat_w": root_quat_w.astype(np.float32),
             "root_lin_vel_w": root_lin_vel_w.astype(np.float32),
@@ -348,6 +446,11 @@ def extract(args: argparse.Namespace) -> dict[str, Any]:
             "robot_asset_json": np.asarray(encode_robot_asset_json()),
         }
 
+        row_metadata_defaults: dict[str, Any] = {
+            "segment_ids": "stop",
+            "motion_ids": "",
+            "active_bodies": "[]",
+        }
         for key in (
             "segment_ids",
             "motion_ids",
@@ -361,8 +464,29 @@ def extract(args: argparse.Namespace) -> dict[str, Any]:
             "checkpoint",
             "source_segments_npz",
         ):
-            if key in latents.files:
-                arrays[key] = np.asarray(latents[key])
+            if key == "source_paths":
+                arrays[key] = source_paths
+                continue
+            if key not in latents.files:
+                continue
+            value = np.asarray(latents[key])
+            if terminal_sources and value.ndim > 0 and value.shape[0] == original_sample_count:
+                if key == "anchor_root_pos":
+                    terminal_value = root_pos_w[original_sample_count:]
+                elif key == "motion_ids":
+                    original_paths = np.asarray(latents["source_paths"]).astype(str)
+                    original_motion_ids = np.asarray(latents[key]).astype(str)
+                    terminal_value = np.asarray(
+                        [
+                            original_motion_ids[np.flatnonzero(original_paths == source)[0]]
+                            for source in terminal_sources
+                        ]
+                    )
+                else:
+                    fill = row_metadata_defaults.get(key, "")
+                    terminal_value = np.full((len(terminal_sources),) + value.shape[1:], fill, dtype=value.dtype)
+                value = np.concatenate((value, terminal_value), axis=0)
+            arrays[key] = value
 
         for key in (
             "contact_force_part_mask",
@@ -374,6 +498,8 @@ def extract(args: argparse.Namespace) -> dict[str, Any]:
             if key in ref_frames:
                 arrays[key] = ref_frames[key]
 
+        arrays["sequence_ids"] = np.asarray(arrays["motion_ids"]).astype(str)
+
     args.output_npz.parent.mkdir(parents=True, exist_ok=True)
     args.output_manifest.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(args.output_npz, **arrays)
@@ -381,19 +507,26 @@ def extract(args: argparse.Namespace) -> dict[str, Any]:
     manifest = {
         "schema": "selector_height_dataset_v1_manifest",
         "motion_id": args.motion_id,
-        "sample_count": int(len(start_frames)),
+        "sample_count": int(len(arrays["codes"])),
         "scan_size": float(args.scan_size),
         "num_points_per_axis": int(args.num_points_per_axis),
+        "scan_profile": "near_plus_forward" if args.forward_scan else "near_square",
+        "forward_scan_length": float(args.forward_scan_length) if args.forward_scan else 0.0,
+        "forward_scan_half_width": float(args.forward_scan_half_width) if args.forward_scan else 0.0,
+        "terminal_stop_count": len(terminal_sources),
         "height_scan_dim": int(height_scan.shape[1]),
         "ref_npz": str(args.ref_npz) if args.ref_npz is not None else "",
         "latents_npz": str(args.latents_npz),
         "surface_jsonl": str(args.surface_jsonl),
         "surface_dir": str(args.surface_dir) if args.surface_dir is not None else "",
+        "surface_map": str(args.surface_map) if args.surface_map is not None else "",
         "output_npz": str(args.output_npz),
         "start_frame_min": int(start_frames.min()),
         "start_frame_max": int(start_frames.max()),
         "code_count": int(len(np.unique(codes))),
-        "code_hist": np.bincount(codes, minlength=int(codes.max(initial=0)) + 1).astype(int).tolist(),
+        "code_hist": np.bincount(
+            arrays["codes"], minlength=int(np.asarray(arrays["codes"]).max(initial=0)) + 1
+        ).astype(int).tolist(),
         "surface_ids": surface_ids,
         "height_scan_min": float(np.min(height_scan)),
         "height_scan_max": float(np.max(height_scan)),
@@ -409,11 +542,18 @@ def main() -> None:
     parser.add_argument("--latents-npz", type=Path, required=True)
     parser.add_argument("--surface-jsonl", type=Path, default=None)
     parser.add_argument("--surface-dir", type=Path, default=None)
+    parser.add_argument("--surface-map", type=Path, default=None)
     parser.add_argument("--motion-id", default="climb_00_z_scale_1.0")
     parser.add_argument("--output-npz", type=Path, required=True)
     parser.add_argument("--output-manifest", type=Path, required=True)
     parser.add_argument("--scan-size", type=float, default=0.6)
-    parser.add_argument("--num-points-per-axis", type=int, default=7)
+    parser.add_argument("--num-points-per-axis", type=int, default=11)
+    parser.add_argument("--forward-scan", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--forward-scan-length", type=float, default=1.6)
+    parser.add_argument("--forward-scan-half-width", type=float, default=0.9)
+    parser.add_argument("--forward-scan-rows", type=int, default=16)
+    parser.add_argument("--forward-scan-cols", type=int, default=17)
+    parser.add_argument("--include-terminal-stop", action=argparse.BooleanOptionalAction, default=False)
     args = parser.parse_args()
     manifest = extract(args)
     print(json.dumps(manifest, indent=2, sort_keys=True))

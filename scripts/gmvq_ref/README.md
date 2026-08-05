@@ -1,5 +1,19 @@
 # GMVQ Ref Integration Scripts
 
+> Production status: the accepted online GMVQ/WBT route and its stable artifact
+> paths are defined in
+> [`docs/climb00-pairwise48-production.md`](../../docs/climb00-pairwise48-production.md).
+> Commands and paths below this notice are retained as offline preparation and
+> historical diagnostics; they are not the current production launcher.
+
+The promoted bundle uses the start-conditioned decoder described by the
+production runbook. `train_current_frame_future.py`,
+`finetune_current_frame_future_unrolled.py`, and
+`generate_current_frame_future_ref.py` are development tools for a direct
+whole-segment decoder. That decoder predicts absolute future frames in one
+pass; it must not be promoted until whole-trajectory continuity, terminal
+recovery, and multi-height WBT acceptance all pass.
+
 This directory contains SomaForge integration scripts for Newton-validated
 Motion Edit references and GMVQ.
 

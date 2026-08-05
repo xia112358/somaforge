@@ -82,6 +82,27 @@ def get_launcher_visualizers(launcher_args: argparse.Namespace | None) -> set[st
     return {str(v).strip().lower() for v in visualizers if str(v).strip()}
 
 
+def configure_newton_cuda_graph_for_visualizer(launcher_args: argparse.Namespace) -> None:
+    """Avoid the known Cubric/Newton CUDA-graph conflict in Kit mode.
+
+    Newton's Kit renderer enables Cubric transform propagation. With the
+    current Isaac Lab 3.0 stack, combining it with Newton's relaxed CUDA graph
+    corrupts the first simulated state. Headless runs do not use Cubric and
+    retain the graph-enabled default. An explicit environment setting wins.
+    """
+    env_name = "HOLOSOMA_NEWTON_USE_CUDA_GRAPH"
+    if env_name in os.environ:
+        return
+    visualizers = get_launcher_visualizers(launcher_args)
+    use_kit = "kit" in visualizers or not bool(getattr(launcher_args, "headless", True))
+    if use_kit:
+        os.environ[env_name] = "0"
+        logger.warning(
+            "Disabled Newton CUDA graph for Kit visualization because the current "
+            "Cubric + relaxed CUDA-graph combination corrupts the first physics step."
+        )
+
+
 def sync_launcher_headless_config(
     tyro_config: ExperimentConfig | RunSimConfig, launcher_args: argparse.Namespace | None
 ) -> ExperimentConfig | RunSimConfig:
@@ -162,6 +183,7 @@ def setup_isaaclab_launcher(
     args_cli.env_spacing = config.simulator.config.scene.env_spacing
     args_cli.output_dir = config.logger.base_dir
     args_cli.headless = config.training.headless
+    configure_newton_cuda_graph_for_visualizer(args_cli)
     if getattr(args_cli, "experience", None) in (None, ""):
         headless_experience = os.environ.get("HOLOSOMA_ISAACLAB3_NEWTON_HEADLESS_EXPERIENCE")
         kit_experience = os.environ.get("HOLOSOMA_ISAACLAB3_NEWTON_KIT_EXPERIENCE")

@@ -55,6 +55,7 @@ def compute_loss(
     beta_balance = float(getattr(cfg, "beta_balance", 0.01))
     beta_sep = float(getattr(cfg, "beta_sep", 0.001))
     beta_theta_moments = float(getattr(cfg, "beta_theta_moments", 0.01))
+    beta_local_basis = float(getattr(cfg, "beta_local_basis", 0.001))
     beta_length = float(getattr(cfg, "beta_length", 0.05))
     target_bits = float(getattr(cfg, "target_bits", 4.0))
     codebook_loss_weight = float(getattr(cfg, "codebook_loss_weight", 1.0))
@@ -70,7 +71,9 @@ def compute_loss(
         if frame_mask.shape != x.shape[:2]:
             raise ValueError(f"valid_mask must have shape {tuple(x.shape[:2])}, got {tuple(frame_mask.shape)}")
         mask = frame_mask.unsqueeze(-1)
-        recon_loss = ((x_recon - x).square() * mask).sum() / (mask.sum() * x.shape[-1]).clamp_min(1.0)
+        recon_sse = ((x_recon - x).square() * mask).sum(dim=(1, 2))
+        recon_count = (frame_mask.sum(dim=1) * x.shape[-1]).clamp_min(1.0)
+        recon_loss = (recon_sse / recon_count).mean()
     else:
         frame_mask = None
         recon_loss = F.mse_loss(x_recon, x)
@@ -129,15 +132,21 @@ def compute_loss(
             theta_moments = theta_moments + mean_loss + var_loss
             active_moment_codes = active_moment_codes + 1.0
     theta_moments = theta_moments / active_moment_codes.clamp_min(1.0)
+    local_theta_basis = getattr(model, "local_theta_basis", None)
+    local_basis_loss = (
+        local_theta_basis.square().mean()
+        if local_theta_basis is not None
+        else torch.zeros((), device=x.device)
+    )
 
     if x.shape[1] > 1:
         recon_vel = x_recon[:, 1:] - x_recon[:, :-1]
         target_vel = x[:, 1:] - x[:, :-1]
         if frame_mask is not None:
             vel_mask = (frame_mask[:, 1:] * frame_mask[:, :-1]).unsqueeze(-1)
-            vel_loss = ((recon_vel - target_vel).square() * vel_mask).sum() / (
-                vel_mask.sum() * x.shape[-1]
-            ).clamp_min(1.0)
+            vel_sse = ((recon_vel - target_vel).square() * vel_mask).sum(dim=(1, 2))
+            vel_count = (vel_mask.squeeze(-1).sum(dim=1) * x.shape[-1]).clamp_min(1.0)
+            vel_loss = (vel_sse / vel_count).mean()
         else:
             vel_loss = F.mse_loss(recon_vel, target_vel)
     else:
@@ -165,6 +174,7 @@ def compute_loss(
         + beta_balance * balance_loss
         + beta_sep * sep_loss
         + beta_theta_moments * theta_moments
+        + beta_local_basis * local_basis_loss
         + beta_sigma * sigma_reg
         + beta_vel * vel_loss
         + beta_length * length_loss
@@ -185,6 +195,7 @@ def compute_loss(
         "balance_loss": balance_loss.detach(),
         "sep_loss": sep_loss.detach(),
         "theta_moments": theta_moments.detach(),
+        "local_basis_loss": local_basis_loss.detach(),
         "sigma_reg": sigma_reg.detach(),
         "active_codes": usage["active_codes"].detach(),
         "perplexity": usage["perplexity"].detach(),

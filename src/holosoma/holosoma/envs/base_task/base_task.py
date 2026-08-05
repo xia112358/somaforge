@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+from typing import Any
 
 import numpy as np
 from loguru import logger
@@ -206,11 +207,11 @@ class BaseTask:
     def _refresh_sim_tensors(self):
         self.simulator.refresh_sim_tensors()
 
-    def get_checkpoint_state(self) -> dict[str, torch.Tensor | float]:
+    def get_checkpoint_state(self) -> dict[str, Any]:
         """Return environment-specific state to persist in checkpoints."""
         return {}
 
-    def load_checkpoint_state(self, state: dict[str, torch.Tensor | float] | None) -> None:
+    def load_checkpoint_state(self, state: dict[str, Any] | None) -> None:
         """Restore environment-specific state from a checkpoint."""
         if not state:
             return

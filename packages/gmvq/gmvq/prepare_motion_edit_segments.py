@@ -22,7 +22,9 @@ class PreparedSegment:
     start_frame: int
     end_frame: int
     active_body: str
-    contact_force_provenance_json: str
+    contact_force_provenance_json: str | None
+    anchor_root_pos: np.ndarray
+    relative_root: bool
 
 
 def _iter_jsonl_paths(path: Path) -> list[Path]:
@@ -170,6 +172,71 @@ def _iter_motion_edit_manifest_records(path: Path, *, motion_root: Path | None =
     raise ValueError(f"unsupported motion_edit manifest schema_version={schema_version}")
 
 
+def _load_segment_template(path: Path) -> list[dict]:
+    records = list(_iter_records(_iter_jsonl_paths(path)))
+    records = [record for record in records if str(record.get("track") or "proto") == "proto"]
+    if not records:
+        raise ValueError(f"segment template contains no proto records: {path}")
+    return records
+
+
+def _iter_motion_manifest_records(
+    path: Path,
+    *,
+    segment_template: Path,
+    motion_root: Path | None,
+    include_tail: bool,
+) -> Iterable[dict]:
+    payload = json.loads(path.expanduser().read_text(encoding="utf-8"))
+    motion_files = payload.get("motion_files")
+    if not isinstance(motion_files, list) or not motion_files:
+        raise ValueError(f"motion manifest contains no motion_files: {path}")
+    template = _load_segment_template(segment_template)
+    template_end = max(int(record["end_frame"]) for record in template)
+
+    for motion in motion_files:
+        if not isinstance(motion, dict) or not motion.get("motion_file"):
+            continue
+        source_path = _resolve_motion_path(
+            str(motion["motion_file"]),
+            manifest_path=path,
+            motion_root=motion_root,
+        )
+        motion_id = str(motion.get("motion_name") or motion.get("motion_id") or source_path.stem)
+        with np.load(source_path, allow_pickle=False) as data:
+            frame_count = int(np.asarray(data["joint_pos"]).shape[0])
+
+        intervals: list[tuple[int, int, str]] = []
+        for template_index, record in enumerate(template):
+            start = max(0, int(record["start_frame"]))
+            end = min(frame_count, int(record["end_frame"]))
+            if end > start:
+                intervals.append((start, end, str(record.get("segment_id") or f"phase_{template_index:04d}")))
+        if include_tail and template_end < frame_count:
+            intervals.append((template_end, frame_count, "tail"))
+
+        for phase_index, (start, end, phase_id) in enumerate(intervals):
+            metadata = template[min(phase_index, len(template) - 1)].get("metadata")
+            metadata = dict(metadata) if isinstance(metadata, dict) else {}
+            metadata.update(
+                {
+                    "source_manifest": str(path),
+                    "segment_template": str(segment_template),
+                    "template_segment_id": phase_id,
+                }
+            )
+            yield {
+                "track": "proto",
+                "clip_npz": str(source_path),
+                "motion_path": str(source_path),
+                "motion_id": motion_id,
+                "segment_id": f"{motion_id}_{phase_id}",
+                "start_frame": start,
+                "end_frame": end,
+                "metadata": metadata,
+            }
+
+
 def _flatten_feature(array: np.ndarray) -> np.ndarray:
     array = np.asarray(array)
     if array.ndim < 2:
@@ -177,19 +244,33 @@ def _flatten_feature(array: np.ndarray) -> np.ndarray:
     return array.reshape(array.shape[0], -1)
 
 
-def _feature_slice(data: np.lib.npyio.NpzFile, keys: list[str], start: int, end: int) -> np.ndarray:
+def _feature_slice(
+    data: np.lib.npyio.NpzFile,
+    keys: list[str],
+    start: int,
+    end: int,
+    *,
+    relative_root: bool,
+) -> tuple[np.ndarray, np.ndarray]:
     parts: list[np.ndarray] = []
+    anchor_root_pos = np.asarray(data["joint_pos"][start, :3], dtype=np.float32)
     for key in keys:
         if key not in data.files:
             raise KeyError(f"missing feature key {key!r}")
-        part = _flatten_feature(np.asarray(data[key][start:end]))
+        value = np.asarray(data[key][start:end], dtype=np.float32).copy()
+        if relative_root and key == "joint_pos":
+            value[:, :3] -= anchor_root_pos[None, :]
+        elif relative_root and key == "body_pos_w":
+            value -= anchor_root_pos[None, None, :]
+        part = _flatten_feature(value)
         parts.append(part.astype(np.float32, copy=False))
     if not parts:
         raise ValueError("at least one feature key is required")
     frames = {part.shape[0] for part in parts}
     if len(frames) != 1:
         raise ValueError(f"feature keys have inconsistent frame counts: {sorted(frames)}")
-    return np.concatenate(parts, axis=1) if len(parts) > 1 else parts[0]
+    feature = np.concatenate(parts, axis=1) if len(parts) > 1 else parts[0]
+    return feature, anchor_root_pos
 
 
 def _prepare_record(
@@ -200,6 +281,7 @@ def _prepare_record(
     min_len: int,
     max_len: int,
     pad_value: float,
+    relative_root: bool = False,
 ) -> PreparedSegment | None:
     if str(record.get("track") or "proto") != "proto":
         return None
@@ -221,14 +303,20 @@ def _prepare_record(
     with np.load(path, allow_pickle=True) as data:
         value = data["robot_asset_json"] if "robot_asset_json" in data.files else None
         decode_robot_asset_json(value, context=f"motion {path}")
-        contact_provenance = decode_contact_force_provenance(
-            data["contact_force_provenance_json"]
-            if "contact_force_provenance_json" in data.files
-            else None,
-            context=f"motion {path}",
-            require_newton=True,
+        contact_provenance = None
+        if "contact_force_provenance_json" in data.files:
+            contact_provenance = decode_contact_force_provenance(
+                data["contact_force_provenance_json"],
+                context=f"motion {path}",
+                require_newton=True,
+            )
+        feature, anchor_root_pos = _feature_slice(
+            data,
+            feature_keys,
+            start,
+            end,
+            relative_root=relative_root,
         )
-        feature = _feature_slice(data, feature_keys, start, end)
     if feature.shape[0] != length:
         raise ValueError(
             f"{record.get('segment_id', '<unknown>')}: expected {length} frames, got {feature.shape[0]}"
@@ -252,7 +340,13 @@ def _prepare_record(
         start_frame=start,
         end_frame=end,
         active_body=str(metadata.get("active_body") or ""),
-        contact_force_provenance_json=encode_contact_force_provenance(contact_provenance),
+        contact_force_provenance_json=(
+            encode_contact_force_provenance(contact_provenance)
+            if contact_provenance is not None
+            else None
+        ),
+        anchor_root_pos=anchor_root_pos,
+        relative_root=relative_root,
     )
 
 
@@ -417,6 +511,65 @@ def prepare_motion_edit_manifest_segments(
     return prepared, stats
 
 
+def prepare_motion_manifest_segments(
+    manifest: str | Path,
+    *,
+    segment_template: str | Path,
+    feature_keys: list[str],
+    target_len: int = 192,
+    min_len: int = 16,
+    max_len: int = 192,
+    pad_value: float = 0.0,
+    motion_root: str | Path | None = None,
+    include_tail: bool = False,
+    relative_root: bool = False,
+) -> tuple[list[PreparedSegment], dict[str, int]]:
+    if target_len <= 0:
+        raise ValueError("--target-len must be positive")
+    if min_len <= 0:
+        raise ValueError("--min-len must be positive")
+    if max_len < min_len or max_len > target_len:
+        raise ValueError("--max-len must be between --min-len and --target-len")
+
+    stats = {
+        "records": 0,
+        "kept": 0,
+        "dropped_non_proto": 0,
+        "dropped_missing_source": 0,
+        "dropped_short": 0,
+        "dropped_long": 0,
+    }
+    prepared: list[PreparedSegment] = []
+    root = Path(motion_root).expanduser().resolve() if motion_root is not None else None
+    for record in _iter_motion_manifest_records(
+        Path(manifest).expanduser().resolve(),
+        segment_template=Path(segment_template).expanduser().resolve(),
+        motion_root=root,
+        include_tail=include_tail,
+    ):
+        stats["records"] += 1
+        length = int(record["end_frame"]) - int(record["start_frame"])
+        if length < min_len:
+            stats["dropped_short"] += 1
+            continue
+        if length > max_len:
+            stats["dropped_long"] += 1
+            continue
+        item = _prepare_record(
+            record,
+            feature_keys=feature_keys,
+            target_len=target_len,
+            min_len=min_len,
+            max_len=max_len,
+            pad_value=pad_value,
+            relative_root=relative_root,
+        )
+        if item is not None:
+            prepared.append(item)
+            stats["kept"] += 1
+    return prepared, stats
+
+
 def write_npz(path: str | Path, prepared: list[PreparedSegment], *, feature_keys: list[str], stats: dict[str, int]) -> Path:
     if not prepared:
         raise ValueError("no segments matched the requested filters")
@@ -425,24 +578,31 @@ def write_npz(path: str | Path, prepared: list[PreparedSegment], *, feature_keys
     segments = np.stack([item.segment for item in prepared], axis=0).astype(np.float32, copy=False)
     valid_mask = np.stack([item.valid_mask for item in prepared], axis=0)
     lengths = np.asarray([item.length for item in prepared], dtype=np.int64)
-    np.savez(
-        out,
-        segments=segments,
-        valid_mask=valid_mask,
-        lengths=lengths,
-        feature_keys=np.asarray(feature_keys),
-        segment_ids=np.asarray([item.segment_id for item in prepared]),
-        motion_ids=np.asarray([item.motion_id for item in prepared]),
-        source_paths=np.asarray([item.source_path for item in prepared]),
-        start_frames=np.asarray([item.start_frame for item in prepared], dtype=np.int64),
-        end_frames=np.asarray([item.end_frame for item in prepared], dtype=np.int64),
-        active_bodies=np.asarray([item.active_body for item in prepared]),
-        contact_force_provenance_json=np.asarray(
-            [item.contact_force_provenance_json for item in prepared]
-        ),
-        stats_json=np.asarray(json.dumps(stats, sort_keys=True)),
-        robot_asset_json=np.asarray(encode_robot_asset_json()),
-    )
+    relative_modes = {item.relative_root for item in prepared}
+    if len(relative_modes) != 1:
+        raise ValueError("cannot mix absolute and relative-root segments in one pack")
+    payload: dict[str, np.ndarray] = {
+        "segments": segments,
+        "valid_mask": valid_mask,
+        "lengths": lengths,
+        "feature_keys": np.asarray(feature_keys),
+        "segment_ids": np.asarray([item.segment_id for item in prepared]),
+        "motion_ids": np.asarray([item.motion_id for item in prepared]),
+        "source_paths": np.asarray([item.source_path for item in prepared]),
+        "start_frames": np.asarray([item.start_frame for item in prepared], dtype=np.int64),
+        "end_frames": np.asarray([item.end_frame for item in prepared], dtype=np.int64),
+        "active_bodies": np.asarray([item.active_body for item in prepared]),
+        "anchor_root_pos": np.stack([item.anchor_root_pos for item in prepared]).astype(np.float32),
+        "relative_root": np.asarray(bool(prepared[0].relative_root)),
+        "stats_json": np.asarray(json.dumps(stats, sort_keys=True)),
+        "robot_asset_json": np.asarray(encode_robot_asset_json()),
+    }
+    force_values = [item.contact_force_provenance_json for item in prepared]
+    if any(value is not None for value in force_values):
+        if not all(value is not None for value in force_values):
+            raise ValueError("cannot mix force-backed and kinematic-only refs in one segment pack")
+        payload["contact_force_provenance_json"] = np.asarray(force_values)
+    np.savez(out, **payload)
     return out
 
 
@@ -452,6 +612,8 @@ def parse_args() -> argparse.Namespace:
     source.add_argument("--segments", type=str, help="A .segments.jsonl file or directory of JSONL files.")
     source.add_argument("--cut-summary", type=str, help="motion_edit raw_contact_29_cut_summary.json path.")
     source.add_argument("--motion-edit-manifest", type=str, help="motion_edit export-manifest JSON path.")
+    source.add_argument("--motion-manifest", type=str, help="Canonical motion/terrain manifest with motion_files.")
+    p.add_argument("--segment-template", type=str, default=None, help="Shared proto JSONL phase template.")
     p.add_argument("--output", type=str, required=True, help="Output .npz path.")
     p.add_argument(
         "--feature-key",
@@ -464,13 +626,30 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-len", type=int, default=32)
     p.add_argument("--pad-value", type=float, default=0.0)
     p.add_argument("--motion-root", type=str, default=None, help="Root used to resolve relative motion paths from a motion_edit manifest.")
+    p.add_argument("--include-tail", action="store_true", help="Include frames after the final template segment.")
+    p.add_argument("--relative-root", action="store_true", help="Encode root/body world positions relative to segment start.")
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     feature_keys = args.feature_key or ["joint_pos"]
-    if args.motion_edit_manifest:
+    if args.motion_manifest:
+        if not args.segment_template:
+            raise ValueError("--motion-manifest requires --segment-template")
+        prepared, stats = prepare_motion_manifest_segments(
+            args.motion_manifest,
+            segment_template=args.segment_template,
+            feature_keys=feature_keys,
+            target_len=args.target_len,
+            min_len=args.min_len,
+            max_len=args.max_len,
+            pad_value=args.pad_value,
+            motion_root=args.motion_root,
+            include_tail=args.include_tail,
+            relative_root=args.relative_root,
+        )
+    elif args.motion_edit_manifest:
         prepared, stats = prepare_motion_edit_manifest_segments(
             args.motion_edit_manifest,
             feature_keys=feature_keys,
