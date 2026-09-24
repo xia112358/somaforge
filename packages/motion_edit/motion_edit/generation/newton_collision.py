@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import numpy as np
 from somaforge_core import G1_29DOF_JOINT_ORDER, canonical_g1_urdf_path
+
 from motion_edit.generation.newton_collision_filter import (
     apply_self_collision_filters_to_builder,
 )
-
 
 NEWTON_SHAPE_MARGIN_M = 0.01
 NEWTON_MAX_TRIANGLE_PAIRS = 2_500_000
@@ -73,6 +74,7 @@ class DirectNewtonCollisionScene:
         terrain_mesh: str | Path | None,
         *,
         device: str = "cpu",
+        ground_height_m: float = 0.0,
     ) -> None:
         import newton
         import trimesh
@@ -112,9 +114,7 @@ class DirectNewtonCollisionScene:
             if isinstance(loaded, trimesh.Scene):
                 loaded = loaded.dump(concatenate=True)
             if not isinstance(loaded, trimesh.Trimesh):
-                raise ValueError(
-                    f"target terrain is not a triangle mesh: {terrain_path}"
-                )
+                raise ValueError(f"target terrain is not a triangle mesh: {terrain_path}")
             mesh = newton.Mesh(
                 np.asarray(loaded.vertices, dtype=np.float32),
                 np.asarray(loaded.faces, dtype=np.int32).reshape(-1),
@@ -127,7 +127,7 @@ class DirectNewtonCollisionScene:
                 scale=(1.0, 1.0, 1.0),
                 label="terrain_obstacle",
             )
-            builder.add_ground_plane(height=0.0, label="terrain_ground")
+            builder.add_ground_plane(height=float(ground_height_m), label="terrain_ground")
 
         self.model = builder.finalize(device=self.device, requires_grad=True)
         self.state = self.model.state()
@@ -193,6 +193,20 @@ class DirectNewtonCollisionScene:
             self.state.joint_qd,
             self.state,
         )
+
+    def body_poses(
+        self,
+        body_names: Sequence[str] | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return current Newton FK poses in world frame and WXYZ order."""
+        positions, quaternion_xyzw = _split_transforms(self.state.body_q.numpy())
+        names = self.body_names if body_names is None else tuple(str(name) for name in body_names)
+        missing = [name for name in names if name not in self.body_index]
+        if missing:
+            raise ValueError(f"Newton collision model is missing bodies: {missing}")
+        indices = np.asarray([self.body_index[name] for name in names], dtype=np.int64)
+        quaternion_wxyz = quaternion_xyzw[indices][:, [3, 0, 1, 2]]
+        return positions[indices].copy(), quaternion_wxyz.copy()
 
     def collide(self) -> NewtonCollisionContacts:
         self.pipeline.collide(self.state, self.contacts)
@@ -273,9 +287,7 @@ class DirectNewtonCollisionScene:
             robot_indices.append(index)
             robot_points.append(robot_point)
             terrain_points.append(terrain_point)
-            outward_normals.append(
-                outward / max(float(np.linalg.norm(outward)), 1.0e-12)
-            )
+            outward_normals.append(outward / max(float(np.linalg.norm(outward)), 1.0e-12))
         return NewtonCollisionContacts(
             shape0=shape0,
             shape1=shape1,
@@ -311,7 +323,7 @@ class DirectNewtonCollisionScene:
 
 
 __all__ = [
-    "DirectNewtonCollisionScene",
     "NEWTON_SHAPE_MARGIN_M",
+    "DirectNewtonCollisionScene",
     "NewtonCollisionContacts",
 ]

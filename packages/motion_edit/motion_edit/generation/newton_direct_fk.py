@@ -47,6 +47,8 @@ def canonicalize_motion_with_direct_newton_fk(
     robot_urdf: str | Path | None = None,
     device: str = "cpu",
     overwrite: bool = False,
+    joint_velocity_filter_window: int | None = None,
+    joint_velocity_filter_polyorder: int = 3,
 ) -> DirectNewtonFkResult:
     """Canonicalize a Holosoma q trajectory with direct Newton ``eval_fk``.
 
@@ -73,6 +75,8 @@ def canonicalize_motion_with_direct_newton_fk(
                 ),
                 "device": str(device),
                 "overwrite": bool(overwrite),
+                "joint_velocity_filter_window": joint_velocity_filter_window,
+                "joint_velocity_filter_polyorder": int(joint_velocity_filter_polyorder),
             },
         }
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
@@ -125,7 +129,12 @@ def canonicalize_motion_with_direct_newton_fk(
     canonical_joint_pos = joint_pos[:, 7:][:, canonical_joint_indices]
     canonical_qpos = np.concatenate([joint_pos[:, :7], canonical_joint_pos], axis=1)
     canonical_qpos[:, 3:7] = _normalize_quat_wxyz(canonical_qpos[:, 3:7])
-    canonical_qvel = _holosoma_joint_velocities(canonical_qpos, fps)
+    canonical_qvel = _holosoma_joint_velocities(
+        canonical_qpos,
+        fps,
+        filter_window=joint_velocity_filter_window,
+        filter_polyorder=joint_velocity_filter_polyorder,
+    )
 
     urdf_path = Path(robot_urdf).expanduser().resolve() if robot_urdf is not None else canonical_g1_urdf_path()
     if not urdf_path.is_file():
@@ -251,6 +260,15 @@ def canonicalize_motion_with_direct_newton_fk(
         "joint_count": int(model.joint_count),
         "body_count": int(model.body_count),
         "import_result_keys": sorted(str(key) for key in import_result) if isinstance(import_result, dict) else [],
+        "joint_velocity_derivation": (
+            "pose_finite_difference"
+            if joint_velocity_filter_window is None
+            else "pose_local_polynomial_derivative"
+        ),
+        "joint_velocity_filter_window": joint_velocity_filter_window,
+        "joint_velocity_filter_polyorder": (
+            None if joint_velocity_filter_window is None else int(joint_velocity_filter_polyorder)
+        ),
     }
     provenance = direct_newton_kinematics_provenance(
         source_path=str(source_path),
@@ -259,6 +277,14 @@ def canonicalize_motion_with_direct_newton_fk(
         body_names=list(body_names),
         metadata=backend_metadata,
     )
+    provenance["joint_velocity_derivation"] = backend_metadata["joint_velocity_derivation"]
+    if joint_velocity_filter_window is not None:
+        provenance["joint_velocity_filter"] = {
+            "window": int(joint_velocity_filter_window),
+            "polyorder": int(joint_velocity_filter_polyorder),
+            "zero_phase": True,
+            "boundary_mode": "shifted_local_polynomial",
+        }
 
     generated = _strip_stale_kinematics(source)
     generated.update(
@@ -362,12 +388,51 @@ def _normalize_quat_wxyz(quat: np.ndarray) -> np.ndarray:
     return q / np.maximum(np.linalg.norm(q, axis=-1, keepdims=True), 1.0e-12)
 
 
-def _holosoma_joint_velocities(qpos: np.ndarray, fps: float) -> np.ndarray:
+def _local_polynomial_derivative(
+    values: np.ndarray,
+    fps: float,
+    *,
+    window: int,
+    polyorder: int,
+) -> np.ndarray:
+    """Differentiate sampled values with a zero-phase local polynomial fit."""
+    x = np.asarray(values, dtype=np.float64)
+    if window < 3 or window % 2 == 0:
+        raise ValueError(f"joint velocity filter window must be odd and >= 3, got {window}")
+    if polyorder < 1 or polyorder >= window:
+        raise ValueError(f"joint velocity filter polyorder must be in [1, window), got {polyorder}")
+    if x.shape[0] < window:
+        raise ValueError(f"motion has {x.shape[0]} frames, fewer than velocity filter window {window}")
+
+    half = window // 2
+    output = np.empty_like(x)
+    for frame in range(x.shape[0]):
+        start = min(max(frame - half, 0), x.shape[0] - window)
+        indices = np.arange(start, start + window)
+        time = (indices - frame) / float(fps)
+        design = np.vander(time, N=polyorder + 1, increasing=True)
+        derivative_weights = np.linalg.pinv(design)[1]
+        output[frame] = np.tensordot(derivative_weights, x[indices], axes=(0, 0))
+    return output
+
+
+def _holosoma_joint_velocities(
+    qpos: np.ndarray,
+    fps: float,
+    *,
+    filter_window: int | None = None,
+    filter_polyorder: int = 3,
+) -> np.ndarray:
     q = np.asarray(qpos, dtype=np.float64)
     if q.shape[0] == 1:
         return np.zeros((1, q.shape[1] - 1), dtype=np.float32)
     dt = 1.0 / float(fps)
     root_linear = np.gradient(q[:, :3], dt, axis=0)
     root_angular = angular_velocity_wxyz(_normalize_quat_wxyz(q[:, 3:7]), dt)
-    joint_velocity = np.gradient(q[:, 7:], dt, axis=0)
+    if filter_window is None:
+        joint_velocity = np.gradient(q[:, 7:], dt, axis=0)
+    else:
+        joint_velocity = _local_polynomial_derivative(
+            q[:, 7:], fps, window=filter_window, polyorder=filter_polyorder
+        )
     return np.concatenate([root_linear, root_angular, joint_velocity], axis=1).astype(np.float32)

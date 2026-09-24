@@ -51,8 +51,10 @@ members = [
     "packages/somaforge_core",
     "packages/motion_edit",
     "packages/gmvq",
+    "packages/climb00_pipeline",
     "src/holosoma",
 ]
 
 [tool.uv.sources]
 somaforge-core = { workspace = true }
+motion-edit = { workspace = true }
