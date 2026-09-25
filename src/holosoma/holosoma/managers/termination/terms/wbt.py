@@ -369,6 +369,14 @@ class BadTracking(TerminationTermBase):
         # NOTE: body_names_to_track is shared with command_manager
         self.body_names_to_track = cfg.params["body_names_to_track"]
         self.bad_motion_body_pos_threshold = cfg.params["bad_motion_body_pos_threshold"]
+        self.exclude_probe_envs = bool(cfg.params.get("exclude_probe_envs", False))
+        self.probe_fixed_qualification_boundary = bool(
+            cfg.params.get("probe_fixed_qualification_boundary", False)
+        )
+        if self.exclude_probe_envs and self.probe_fixed_qualification_boundary:
+            raise ValueError(
+                "exclude_probe_envs and probe_fixed_qualification_boundary are mutually exclusive"
+            )
         self.bad_motion_body_pos_body_indexes = self._get_index_of_a_in_b(
             self.bad_motion_body_pos_body_names, self.body_names_to_track, self.env.device
         )
@@ -410,7 +418,6 @@ class BadTracking(TerminationTermBase):
             if self.check_motion_body_pos
             else torch.zeros_like(bad_ref_pos)
         )
-        bad_tracking = bad_ref_pos | bad_ref_ori | bad_motion_body_pos
 
         self._last_ref_pos_error = ref_pos_error.detach().clone()
         self._last_ref_ori_error = ref_ori_error.detach().clone()
@@ -420,12 +427,48 @@ class BadTracking(TerminationTermBase):
         else:
             self._last_motion_body_pos_body_index = torch.zeros_like(ref_pos_error, dtype=torch.long)
 
-        self.metrics["bad_ref_pos_rate"] = bad_ref_pos.to(torch.float32).mean()
-        self.metrics["bad_ref_ori_rate"] = bad_ref_ori.to(torch.float32).mean()
-        self.metrics["bad_motion_body_pos_rate"] = bad_motion_body_pos.to(torch.float32).mean()
         self.metrics["bad_ref_pos_error_max"] = ref_pos_error.max()
         self.metrics["bad_ref_ori_error_max"] = ref_ori_error.max()
         self.metrics["bad_motion_body_pos_error_max"] = max_motion_body_pos_error.max()
+
+        curriculum_manager = getattr(self.env, "curriculum_manager", None)
+        tracking_precision = (
+            curriculum_manager.get_term("tracking_precision") if curriculum_manager is not None else None
+        )
+        observe_probe_error = getattr(tracking_precision, "observe_probe_tracking_error", None)
+        if callable(observe_probe_error):
+            observe_probe_error(
+                max_motion_body_pos_error,
+                ref_position_error=ref_pos_error,
+                ref_orientation_error=ref_ori_error,
+            )
+
+        if self.probe_fixed_qualification_boundary:
+            probe_mask = getattr(motion_command, "_probe_env_mask", None)
+            if probe_mask is None or tracking_precision is None:
+                raise RuntimeError(
+                    "probe_fixed_qualification_boundary requires tracking_precision and probe environments"
+                )
+            fixed_bad_ref_pos = ref_pos_error > tracking_precision.base_root_pos_threshold
+            fixed_bad_ref_ori = ref_ori_error > tracking_precision.base_root_ori_threshold
+            fixed_bad_motion_body_pos = (
+                max_motion_body_pos_error > tracking_precision.base_body_threshold
+                if self.check_motion_body_pos
+                else torch.zeros_like(bad_ref_pos)
+            )
+            bad_ref_pos = torch.where(probe_mask, fixed_bad_ref_pos, bad_ref_pos)
+            bad_ref_ori = torch.where(probe_mask, fixed_bad_ref_ori, bad_ref_ori)
+            bad_motion_body_pos = torch.where(
+                probe_mask,
+                fixed_bad_motion_body_pos,
+                bad_motion_body_pos,
+            )
+
+        bad_tracking = bad_ref_pos | bad_ref_ori | bad_motion_body_pos
+
+        self.metrics["bad_ref_pos_rate"] = bad_ref_pos.to(torch.float32).mean()
+        self.metrics["bad_ref_ori_rate"] = bad_ref_ori.to(torch.float32).mean()
+        self.metrics["bad_motion_body_pos_rate"] = bad_motion_body_pos.to(torch.float32).mean()
 
         if motion_command.motion.has_object:
             object_pos_error = torch.norm(motion_command.object_pos_w - motion_command.simulator_object_pos_w, dim=-1)
@@ -444,6 +487,11 @@ class BadTracking(TerminationTermBase):
             start_idx = motion_command.motion.motion_start_idx[motion_command.motion_ids]
             first_eval_step = (env.episode_length_buf <= 1) & (motion_command.time_steps == start_idx)
             bad_tracking = bad_tracking & ~first_eval_step
+
+        if self.exclude_probe_envs:
+            probe_mask = getattr(motion_command, "_probe_env_mask", None)
+            if probe_mask is not None:
+                bad_tracking = bad_tracking & ~probe_mask
 
         return bad_tracking
 

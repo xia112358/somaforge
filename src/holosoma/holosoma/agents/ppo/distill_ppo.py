@@ -48,6 +48,8 @@ class DistillPPO(PPO):
             copy.deepcopy(self.config.module_dict.actor),
             input_dim=list(self.teacher_obs_keys),
         )
+        if distill_cfg.teacher_module_type is not None:
+            teacher_actor_cfg = dataclasses.replace(teacher_actor_cfg, type=distill_cfg.teacher_module_type)
         if distill_cfg.teacher_hidden_dims is not None:
             teacher_actor_cfg = dataclasses.replace(
                 teacher_actor_cfg,
@@ -95,6 +97,7 @@ class DistillPPO(PPO):
             self.storage.register("dagger_valid_mask", shape=(1,), dtype=torch.float)
 
     def _rollout_step(self, obs_dict):
+        self._update_php_student_tracking_boundary()
         if self._teacher_uses_student_actor_obs:
             return super()._rollout_step(obs_dict)
 
@@ -173,8 +176,23 @@ class DistillPPO(PPO):
 
             self.storage["returns"] = returns
             self.storage["advantages"] = advantages
-
         return obs_dict
+
+    def _update_php_student_tracking_boundary(self) -> None:
+        anneal_iters = int(getattr(self.config.distill, "php_student_termination_anneal_iters", 0))
+        if anneal_iters <= 0:
+            return
+        term = getattr(getattr(self.env, "termination_manager", None), "_term_instances", {}).get(
+            "bad_tracking"
+        )
+        if term is None:
+            return
+        progress = min(max(float(self.current_learning_iteration) / float(anneal_iters), 0.0), 1.0)
+        term.bad_ref_pos_threshold = 0.5 + 0.5 * progress
+        term.bad_ref_ori_threshold = 0.8 + 0.8 * progress
+        term.bad_motion_body_pos_threshold = 0.25 + 0.25 * progress
+        term.bad_object_pos_threshold = 0.5
+        term.bad_object_ori_threshold = 0.8 + 0.8 * progress
 
     def _compute_dagger_valid_mask(self) -> torch.Tensor:
         distill_cfg = self.config.distill
@@ -239,10 +257,7 @@ class DistillPPO(PPO):
         distill_type = getattr(self.config.distill, "distill_type", "kl")
         if distill_type in ("mse_dagger", "php_dagger_ppo"):
             ppo_actor_loss = loss_dict["actor_loss"]
-            if distill_type == "php_dagger_ppo":
-                ppo_actor_loss, ppo_actor_active = self._php_ppo_actor_loss(ppo_actor_loss, distill_loss, ppo_lambda)
-            else:
-                ppo_actor_active = torch.ones((), dtype=torch.float32, device=self.device)
+            ppo_actor_active = torch.ones((), dtype=torch.float32, device=self.device)
             loss_dict["actor_loss"] = ppo_lambda * ppo_actor_loss + distill_loss
             loss_dict["dagger_mse"] = distill_metric
             loss_dict["dagger_loss"] = distill_loss
@@ -263,27 +278,6 @@ class DistillPPO(PPO):
             loss_dict["lambda_ppo"] = ppo_lambda
             loss_dict["teacher_prior_loss"] = distill_loss
         return loss_dict
-
-    def _php_ppo_actor_loss(
-        self, ppo_actor_loss: torch.Tensor, dagger_loss: torch.Tensor, ppo_lambda: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Keep PHP-style DAgger dominant until PPO is meant to carry signal.
-
-        PHP-Parkour treats PPO as a success-driven correction that is introduced
-        after the student has a usable DAgger prior. A tiny PPO coefficient is
-        not enough protection here because the PPO surrogate can become huge
-        when the distillation update moves the policy mean while std is small.
-        """
-
-        ppo_start_lambda = torch.tensor(0.1, dtype=torch.float32, device=self.device)
-        active = (ppo_lambda >= ppo_start_lambda).to(torch.float32)
-        ppo_loss = ppo_actor_loss * active
-
-        dagger_scale = dagger_loss.detach().abs().clamp_min(1.0)
-        max_ppo_scale = dagger_scale / ppo_lambda.detach().clamp_min(1.0e-6)
-        ppo_loss = max_ppo_scale * torch.tanh(ppo_loss / max_ppo_scale)
-        ppo_loss = self._finite_tensor(ppo_loss, clamp=1.0e6)
-        return ppo_loss, active
 
     def _compute_teacher_distill_loss(
         self, minibatch
@@ -393,7 +387,8 @@ class DistillPPO(PPO):
             final = float(distill_cfg.lambda_kl_final)
         if distill_type == "php_dagger_ppo" or distill_cfg.lambda_kl_anneal_schedule == "php_parkour":
             anneal_iters = self._php_curriculum_anneal_iters()
-            return max(final, init - float(self.current_learning_iteration) / float(anneal_iters))
+            progress = min(max(float(self.current_learning_iteration) / float(anneal_iters), 0.0), 1.0)
+            return init + (final - init) * progress
         anneal_iters = int(distill_cfg.lambda_kl_anneal_iters)
         if anneal_iters <= 0:
             return init

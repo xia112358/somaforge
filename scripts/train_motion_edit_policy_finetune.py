@@ -44,7 +44,7 @@ def _replace_motion_config(command, manifest: Path):
         start_at_timestep_zero_prob=0.0,
         freeze_at_timestep_zero_prob=0.0,
         use_start_probe_envs=True,
-        probe_env_per_motion=10,
+        probe_env_per_motion=3,
         probe_completion_alpha=0.02,
         probe_uniform_mix=0.4,
         failure_window_pre_frames=50,

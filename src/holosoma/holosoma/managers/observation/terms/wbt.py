@@ -7,7 +7,14 @@ from typing import TYPE_CHECKING
 import torch
 
 from holosoma.managers.command.terms.wbt import MotionCommand
-from holosoma.utils.rotations import quat_apply_yaw, quat_rotate_inverse, quaternion_to_matrix, subtract_frame_transforms
+from holosoma.managers.observation.base import ObservationTermBase
+from holosoma.utils.rotations import (
+    quat_apply_yaw,
+    quat_rotate_inverse,
+    quaternion_to_matrix,
+    subtract_frame_transforms,
+    yaw_quat,
+)
 from holosoma.utils.torch_utils import get_axis_params, to_torch
 
 if TYPE_CHECKING:
@@ -118,6 +125,57 @@ def actions(env: WholeBodyTrackingManager) -> torch.Tensor:
     return env.action_manager.action
 
 
+def php_velocity_command(
+    env: WholeBodyTrackingManager, command: tuple[float, float] = (1.0, 0.0)
+) -> torch.Tensor:
+    """Planar velocity command paired with the climb trajectory."""
+    return torch.tensor(command, dtype=torch.float32, device=env.device).expand(env.num_envs, -1)
+
+
+class PHPDepthImage(ObservationTermBase):
+    """Noisy 58x87 ray depth with the paper's 60--80 ms observation delay."""
+
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
+        params = cfg.params
+        self.max_distance = float(params.get("max_distance", 5.0))
+        self.offset_range = tuple(params.get("offset_range", (-0.03, 0.03)))
+        self.gaussian_std = float(params.get("gaussian_std", 0.03))
+        self.delay_steps = tuple(params.get("delay_steps", (3, 4)))
+        self._buffer = None
+        self._cursor = 0
+        self._delay = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        if env_ids is None:
+            env_ids = torch.arange(self.env.num_envs, device=self.env.device)
+        low, high = int(self.delay_steps[0]), int(self.delay_steps[1])
+        self._delay[env_ids] = torch.randint(low, high + 1, (env_ids.numel(),), device=self.env.device)
+        if self._buffer is not None:
+            self._buffer[:, env_ids] = self._buffer[self._cursor, env_ids]
+
+    def __call__(self, env: WholeBodyTrackingManager, **kwargs) -> torch.Tensor:
+        sensor = env.simulator.scene.sensors["php_depth_camera"]
+        ray_hits_w = sensor.data.ray_hits_w.torch
+        sensor_pos_w = sensor.data.pos_w.torch
+        depth = torch.linalg.vector_norm(ray_hits_w - sensor_pos_w[:, None, :], dim=-1)
+        depth = torch.nan_to_num(depth, nan=self.max_distance, posinf=self.max_distance, neginf=0.0)
+        depth = depth.clamp_(0.0, self.max_distance)
+        offset = torch.empty((env.num_envs, 1), device=env.device).uniform_(*self.offset_range)
+        depth = (depth + offset + torch.randn_like(depth) * self.gaussian_std).clamp_(0.0, self.max_distance)
+        depth = depth.flatten(1)
+
+        buffer_len = int(self.delay_steps[1]) + 1
+        if self._buffer is None:
+            self._buffer = depth.unsqueeze(0).repeat(buffer_len, 1, 1)
+            self.reset()
+        self._cursor = (self._cursor + 1) % buffer_len
+        self._buffer[self._cursor] = depth
+        read_idx = (self._cursor - self._delay) % buffer_len
+        env_idx = torch.arange(env.num_envs, device=env.device)
+        return self._buffer[read_idx, env_idx]
+
+
 def proto_command(
     env: WholeBodyTrackingManager,
     root_goal_offset: tuple[float, float, float] = (0.8, 0.0, 0.45),
@@ -160,65 +218,189 @@ def motion_ref_joint_vel(env: WholeBodyTrackingManager) -> torch.Tensor:
     return motion_command.joint_vel
 
 
-def _future_motion_time_steps(motion_command: MotionCommand, offsets: tuple[int, ...]) -> torch.Tensor:
-    offsets_t = torch.tensor(offsets, dtype=torch.long, device=motion_command.device)
-    future_steps = motion_command.time_steps[:, None] + offsets_t[None, :]
-    start_idx = motion_command.motion.motion_start_idx[motion_command.motion_ids][:, None]
-    end_idx = motion_command.motion.motion_end_idx[motion_command.motion_ids][:, None]
-    return future_steps.clamp(min=start_idx, max=end_idx - 1)
+_FUTURE_REFERENCE_OFFSETS = (1, 2, 4, 8)
+_SPARSE_CLIMB_REFERENCE_OFFSETS = (0, 1, 2, 3, 4, 8, 12, 16, 24, 32, 50)
+_POLICY_REFERENCE_OFFSETS = (0, 1, 2, 4, 8)
+
+_SPARSE_CLIMB_BODY_NAMES = (
+    "pelvis",
+    "torso_link",
+    "left_ankle_roll_link",
+    "right_ankle_roll_link",
+    "left_wrist_yaw_link",
+    "right_wrist_yaw_link",
+    "left_knee_link",
+    "right_knee_link",
+)
 
 
-def future_motion_ref_joint_pos(
+def policy_reference_window(
     env: WholeBodyTrackingManager,
-    offsets: tuple[int, ...] = (1, 2, 4, 8),
+    include_current: bool,
+    add_noise: bool,
+    include_joint_velocity: bool = True,
 ) -> torch.Tensor:
+    """Return a fused, time-major policy reference window.
+
+    Each full frame is ``[q(29), qd(29), torso_pos_b(3), torso_rot6d_b(6)]``.
+    When ``include_joint_velocity`` is false, the qd block is omitted and each
+    frame becomes ``[q(29), torso_pos_b(3), torso_rot6d_b(6)]``.
+    The clean five-frame tensor is shared by actor and critic within a command step.
+    """
+
     motion_command = _get_motion_command_and_assert_type(env)
-    joint_pos, _ = motion_command.future_joint_pos_vel(offsets)
-    joint_pos = joint_pos - env.default_dof_pos[:, None, :]
-    return joint_pos.reshape(env.num_envs, -1)
+    frames = motion_command._policy_reference_window_cache
+    if frames is None:
+        joint_pos, joint_vel = motion_command.future_joint_pos_vel(_POLICY_REFERENCE_OFFSETS)
+        body_pos_w, body_quat_w = motion_command.future_ref_body_pos_quat_offsets(_POLICY_REFERENCE_OFFSETS)
+
+        num_frames = len(_POLICY_REFERENCE_OFFSETS)
+        robot_pos_w = motion_command.robot_ref_pos_w[:, None, :].expand(-1, num_frames, -1)
+        robot_quat_w = motion_command.robot_ref_quat_w[:, None, :].expand(-1, num_frames, -1)
+        pos_b, ori_b = subtract_frame_transforms(
+            robot_pos_w.reshape(-1, 3),
+            robot_quat_w.reshape(-1, 4),
+            body_pos_w.reshape(-1, 3),
+            body_quat_w.reshape(-1, 4),
+        )
+        pos_b = pos_b.reshape(env.num_envs, num_frames, 3)
+        ori_rot6d_b = quaternion_to_matrix(ori_b, w_last=True)[..., :2].reshape(env.num_envs, num_frames, 6)
+        frames = torch.cat([joint_pos, joint_vel, pos_b, ori_rot6d_b], dim=-1)
+        motion_command._policy_reference_window_cache = frames
+
+    frames = frames if include_current else frames[:, 1:]
+    if add_noise:
+        frames = frames.clone()
+        frames[..., 58:61] += (torch.rand_like(frames[..., 58:61]) * 2.0 - 1.0) * 0.25
+        frames[..., 61:67] += (torch.rand_like(frames[..., 61:67]) * 2.0 - 1.0) * 0.05
+    if not include_joint_velocity:
+        frames = torch.cat([frames[..., :29], frames[..., 58:67]], dim=-1)
+    return frames.reshape(env.num_envs, -1)
+
+
+def sparse_climb_reference_window(
+    env: WholeBodyTrackingManager,
+    add_noise: bool,
+) -> torch.Tensor:
+    """Future climb intent without joint targets.
+
+    Per frame layout is torso pose(9), LF/RF/LH/RH/LK/RK poses(54), and
+    matching contact bits(6). All spatial targets use the current executed
+    torso-yaw frame, preserving gravity-aligned vertical directions while
+    removing global translation and heading.
+    """
+    motion_command = _get_motion_command_and_assert_type(env)
+    body_names = list(motion_command.motion_cfg.body_names_to_track)
+    missing = [name for name in _SPARSE_CLIMB_BODY_NAMES if name not in body_names]
+    if missing:
+        raise RuntimeError(f"Sparse climb reference bodies are not tracked: {missing}")
+    selected = torch.as_tensor(
+        [body_names.index(name) for name in _SPARSE_CLIMB_BODY_NAMES],
+        dtype=torch.long,
+        device=env.device,
+    )
+    body_pos_w, body_quat_w = motion_command.future_body_pos_quat_offsets(
+        _SPARSE_CLIMB_REFERENCE_OFFSETS
+    )
+    body_pos_w = body_pos_w.index_select(2, selected)
+    body_quat_w = body_quat_w.index_select(2, selected)
+    frame_count = len(_SPARSE_CLIMB_REFERENCE_OFFSETS)
+    body_count = len(_SPARSE_CLIMB_BODY_NAMES)
+    robot_pos_w = motion_command.robot_ref_pos_w[:, None, None, :].expand(
+        -1, frame_count, body_count, -1
+    )
+    robot_yaw_quat_w = yaw_quat(motion_command.robot_ref_quat_w, w_last=True)
+    robot_quat_w = robot_yaw_quat_w[:, None, None, :].expand(
+        -1, frame_count, body_count, -1
+    )
+    pos_b, quat_b = subtract_frame_transforms(
+        robot_pos_w.reshape(-1, 3),
+        robot_quat_w.reshape(-1, 4),
+        body_pos_w.reshape(-1, 3),
+        body_quat_w.reshape(-1, 4),
+    )
+    pos_b = pos_b.reshape(env.num_envs, frame_count, body_count, 3)
+    rot6d_b = quaternion_to_matrix(quat_b, w_last=True)[..., :2].reshape(
+        env.num_envs, frame_count, body_count, 6
+    )
+
+    # CONTACT_FORCE_PART_ORDER is LHEEL/LTOE/RHEEL/RTOE/LH/RH/LK/RK.
+    force_mask = motion_command.future_contact_force_part_mask_offsets(
+        _SPARSE_CLIMB_REFERENCE_OFFSETS
+    ).to(torch.bool)
+    contact = torch.stack(
+        (
+            force_mask[..., 0] | force_mask[..., 1],
+            force_mask[..., 2] | force_mask[..., 3],
+            force_mask[..., 4],
+            force_mask[..., 5],
+            force_mask[..., 6],
+            force_mask[..., 7],
+        ),
+        dim=-1,
+    ).to(pos_b.dtype)
+    # Selected body order is pelvis, torso, LF, RF, LH, RH, LK, RK. Pelvis is
+    # intentionally omitted: torso supplies the root target, while all six
+    # contact-capable endpoints carry the same position/orientation contract.
+    endpoint_pos = pos_b[..., 2:8, :].reshape(env.num_envs, frame_count, -1)
+    endpoint_rot6d = rot6d_b[..., 2:8, :].reshape(env.num_envs, frame_count, -1)
+    frames = torch.cat(
+        (pos_b[..., 1, :], rot6d_b[..., 1, :], endpoint_pos, endpoint_rot6d, contact),
+        dim=-1,
+    )
+    if add_noise:
+        frames = frames.clone()
+        frames[..., :3] += (torch.rand_like(frames[..., :3]) * 2.0 - 1.0) * 0.02
+        frames[..., 3:9] += (torch.rand_like(frames[..., 3:9]) * 2.0 - 1.0) * 0.03
+        frames[..., 9:27] += (torch.rand_like(frames[..., 9:27]) * 2.0 - 1.0) * 0.02
+        frames[..., 27:63] += (torch.rand_like(frames[..., 27:63]) * 2.0 - 1.0) * 0.03
+    return frames.reshape(env.num_envs, -1)
+
+
+def future_motion_command(env: WholeBodyTrackingManager, offset: int) -> torch.Tensor:
+    """Return one future frame with the same q/qd layout as ``motion_command``."""
+
+    motion_command = _get_motion_command_and_assert_type(env)
+    joint_pos, joint_vel = motion_command.future_joint_pos_vel(_FUTURE_REFERENCE_OFFSETS)
+    offset_index = _FUTURE_REFERENCE_OFFSETS.index(offset)
+    return torch.cat([joint_pos[:, offset_index], joint_vel[:, offset_index]], dim=1)
 
 
 def future_motion_ref_pos_b(
     env: WholeBodyTrackingManager,
-    offsets: tuple[int, ...] = (1, 2, 4, 8),
+    offset: int,
 ) -> torch.Tensor:
+    """Return the future torso target position relative to the current robot torso."""
+
     motion_command = _get_motion_command_and_assert_type(env)
-    num_offsets = len(offsets)
-    num_bodies = len(motion_command.motion_cfg.body_names_to_track)
-
-    body_pos_w, body_quat_w = motion_command.future_body_pos_quat_offsets(offsets)
-
-    ref_pos_w = motion_command.robot_ref_pos_w[:, None, None, :].expand(-1, num_offsets, num_bodies, -1)
-    ref_quat_w = motion_command.robot_ref_quat_w[:, None, None, :].expand(-1, num_offsets, num_bodies, -1)
+    body_pos_w, body_quat_w = motion_command.future_ref_body_pos_quat_offsets(_FUTURE_REFERENCE_OFFSETS)
+    offset_index = _FUTURE_REFERENCE_OFFSETS.index(offset)
     pos_b, _ = subtract_frame_transforms(
-        ref_pos_w.reshape(-1, 3),
-        ref_quat_w.reshape(-1, 4),
-        body_pos_w.reshape(-1, 3),
-        body_quat_w.reshape(-1, 4),
+        motion_command.robot_ref_pos_w,
+        motion_command.robot_ref_quat_w,
+        body_pos_w[:, offset_index],
+        body_quat_w[:, offset_index],
     )
-    return pos_b.reshape(env.num_envs, -1)
+    return pos_b.view(env.num_envs, -1)
 
 
 def future_motion_ref_ori_b(
     env: WholeBodyTrackingManager,
-    offsets: tuple[int, ...] = (1, 2, 4, 8),
+    offset: int,
 ) -> torch.Tensor:
+    """Return the future torso target orientation relative to the current robot torso."""
+
     motion_command = _get_motion_command_and_assert_type(env)
-    num_offsets = len(offsets)
-    num_bodies = len(motion_command.motion_cfg.body_names_to_track)
-
-    body_pos_w, body_quat_w = motion_command.future_body_pos_quat_offsets(offsets)
-
-    ref_pos_w = motion_command.robot_ref_pos_w[:, None, None, :].expand(-1, num_offsets, num_bodies, -1)
-    ref_quat_w = motion_command.robot_ref_quat_w[:, None, None, :].expand(-1, num_offsets, num_bodies, -1)
+    body_pos_w, body_quat_w = motion_command.future_ref_body_pos_quat_offsets(_FUTURE_REFERENCE_OFFSETS)
+    offset_index = _FUTURE_REFERENCE_OFFSETS.index(offset)
     _, ori_b = subtract_frame_transforms(
-        ref_pos_w.reshape(-1, 3),
-        ref_quat_w.reshape(-1, 4),
-        body_pos_w.reshape(-1, 3),
-        body_quat_w.reshape(-1, 4),
+        motion_command.robot_ref_pos_w,
+        motion_command.robot_ref_quat_w,
+        body_pos_w[:, offset_index],
+        body_quat_w[:, offset_index],
     )
     mat = quaternion_to_matrix(ori_b, w_last=True)
-    return mat[..., :2].reshape(env.num_envs, -1)
+    return mat[..., :2].reshape(mat.shape[0], -1)
 
 
 def pelvis_global_pos(env: WholeBodyTrackingManager) -> torch.Tensor:

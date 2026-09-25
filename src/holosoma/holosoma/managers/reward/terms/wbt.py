@@ -6,11 +6,12 @@ import re
 from typing import TYPE_CHECKING, List, Sequence
 
 import torch
+from somaforge_core.contact_schema import CONTACT_FORCE_PART_BODY_NAMES
 
 from holosoma.config_types.reward import RewardTermCfg
 from holosoma.managers.command.terms.wbt import CONTACT_FORCE_PART_ORDER, MotionCommand
-from somaforge_core.contact_schema import CONTACT_FORCE_PART_BODY_NAMES
 from holosoma.managers.reward.base import RewardTermBase
+from holosoma.utils.contact_forces import contact_force_view
 from holosoma.utils.rotations import get_euler_xyz_in_tensor, quat_error_magnitude
 
 if TYPE_CHECKING:
@@ -97,15 +98,58 @@ def motion_global_ref_orientation_error_exp(env: WholeBodyTrackingManager, sigma
     return torch.exp(-error / sigma**2)
 
 
-def motion_relative_body_position_error_exp(env: WholeBodyTrackingManager, sigma: float) -> torch.Tensor:
+def motion_relative_body_position_error_exp(
+    env: WholeBodyTrackingManager,
+    sigma: float,
+    worst_k: int = 0,
+) -> torch.Tensor:
     motion_command = _get_motion_command_and_assert_type(env)
     error = torch.sum(torch.square(motion_command.body_pos_relative_w - motion_command.robot_body_pos_w), dim=-1)
+    if worst_k > 0:
+        count = min(int(worst_k), int(error.shape[-1]))
+        error = torch.topk(error, k=count, dim=-1).values
     return torch.exp(-error.mean(-1) / sigma**2)
 
 
 def motion_relative_body_orientation_error_exp(env: WholeBodyTrackingManager, sigma: float) -> torch.Tensor:
     motion_command = _get_motion_command_and_assert_type(env)
     error = quat_error_magnitude(motion_command.body_quat_relative_w, motion_command.robot_body_quat_w) ** 2
+    return torch.exp(-error.mean(-1) / sigma**2)
+
+
+def motion_relative_selected_body_position_error_exp(
+    env: WholeBodyTrackingManager,
+    sigma: float,
+    body_names: Sequence[str],
+) -> torch.Tensor:
+    """Track selected reference bodies without dilution by the full body set."""
+    motion_command = _get_motion_command_and_assert_type(env)
+    tracked_names = list(motion_command.motion_cfg.body_names_to_track)
+    missing = [name for name in body_names if name not in tracked_names]
+    if missing:
+        raise RuntimeError(f"Selected position reward bodies are not tracked: {missing}")
+    indices = torch.as_tensor([tracked_names.index(name) for name in body_names], device=env.device)
+    error = torch.sum(
+        torch.square(motion_command.body_pos_relative_w - motion_command.robot_body_pos_w), dim=-1
+    ).index_select(1, indices)
+    return torch.exp(-error.mean(-1) / sigma**2)
+
+
+def motion_relative_selected_body_orientation_error_exp(
+    env: WholeBodyTrackingManager,
+    sigma: float,
+    body_names: Sequence[str],
+) -> torch.Tensor:
+    """Track selected body orientations without dilution by unrelated links."""
+    motion_command = _get_motion_command_and_assert_type(env)
+    tracked_names = list(motion_command.motion_cfg.body_names_to_track)
+    missing = [name for name in body_names if name not in tracked_names]
+    if missing:
+        raise RuntimeError(f"Selected orientation reward bodies are not tracked: {missing}")
+    indices = torch.as_tensor([tracked_names.index(name) for name in body_names], device=env.device)
+    error = torch.square(
+        quat_error_magnitude(motion_command.body_quat_relative_w, motion_command.robot_body_quat_w)
+    ).index_select(1, indices)
     return torch.exp(-error.mean(-1) / sigma**2)
 
 
@@ -158,6 +202,15 @@ CONTACT_FORCE_PART_INDICES = tuple(range(len(CONTACT_FORCE_PART_ORDER)))
 
 DEFAULT_CONTACT_FORCE_PART_BODY_NAMES = tuple(
     CONTACT_FORCE_PART_BODY_NAMES[part] for part in CONTACT_FORCE_PART_ORDER
+)
+
+SPARSE_CLIMB_CONTACT_BODY_NAMES = (
+    (*CONTACT_FORCE_PART_BODY_NAMES["LHEE"], *CONTACT_FORCE_PART_BODY_NAMES["LTOE"]),
+    (*CONTACT_FORCE_PART_BODY_NAMES["RHEE"], *CONTACT_FORCE_PART_BODY_NAMES["RTOE"]),
+    CONTACT_FORCE_PART_BODY_NAMES["LH"],
+    CONTACT_FORCE_PART_BODY_NAMES["RH"],
+    CONTACT_FORCE_PART_BODY_NAMES["LK"],
+    CONTACT_FORCE_PART_BODY_NAMES["RK"],
 )
 
 
@@ -650,47 +703,113 @@ def _part_contact_force_magnitude(
     env: WholeBodyTrackingManager,
     part_body_names: Sequence[Sequence[str]] | None = None,
     force_reduce: str = "sum",
+    history_reduce: str = "latest",
 ) -> torch.Tensor:
-    if force_reduce in {"sum", "mean"}:
-        return torch.norm(
-            _part_contact_force_vector(env, part_body_names, force_reduce=force_reduce),
-            dim=-1,
-        )
-    groups = _a2a_body_groups(env, part_body_names or DEFAULT_CONTACT_FORCE_PART_BODY_NAMES)
-    body_force = torch.norm(env.simulator.contact_forces_history, dim=-1).max(dim=1)[0]
-    return _a2a_part_body_values(body_force, groups, reduce=force_reduce)
+    part_history = _part_contact_force_history(env, part_body_names, force_reduce)
+    magnitude_history = torch.norm(part_history, dim=-1)
+    if history_reduce == "latest":
+        return magnitude_history[:, 0]
+    if history_reduce == "max":
+        return magnitude_history.max(dim=1).values
+    raise ValueError(f"Unsupported contact force history reduction: {history_reduce}")
+
+
+def _part_contact_force_history(
+    env: WholeBodyTrackingManager,
+    part_body_names: Sequence[Sequence[str]] | None = None,
+    force_reduce: str = "sum",
+) -> torch.Tensor:
+    """Aggregate the full-resolution contact sensor into semantic parts.
+
+    Body reduction is performed independently at every physics-history sample,
+    matching ``extract_rollout_ref_contact_force_demo.py``.  Required collision
+    links must all be present: silently treating an unresolved hand or partial
+    foot as contact-free corrupts the supervision signal.
+    """
+    names_by_part = part_body_names or DEFAULT_CONTACT_FORCE_PART_BODY_NAMES
+    group_key = tuple(tuple(names) for names in names_by_part)
+    step_cache = getattr(env, "_holosoma_step_cache", None)
+    if step_cache is None:
+        step_cache = {}
+        setattr(env, "_holosoma_step_cache", step_cache)
+    cache_key = ("part_contact_force_history", group_key, force_reduce)
+    cached = step_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    body_names, body_force_history = contact_force_view(env.simulator)
+    index_cache = getattr(env, "_holosoma_contact_group_index_cache", None)
+    if index_cache is None:
+        index_cache = {}
+        setattr(env, "_holosoma_contact_group_index_cache", index_cache)
+    index_key = (
+        tuple(body_names),
+        group_key,
+        body_force_history.device.type,
+        body_force_history.device.index,
+    )
+    groups = index_cache.get(index_key)
+    if groups is None:
+        name_to_index = {name: index for index, name in enumerate(body_names)}
+        resolved_groups = []
+        for part_index, names in enumerate(names_by_part):
+            missing = [name for name in names if name not in name_to_index]
+            if missing:
+                raise RuntimeError(
+                    "Contact sensor is missing required collision links for "
+                    f"part {part_index}: {missing}. Available body count={len(body_names)}."
+                )
+            resolved_groups.append(
+                torch.as_tensor(
+                    [name_to_index[name] for name in names],
+                    dtype=torch.long,
+                    device=body_force_history.device,
+                )
+            )
+        groups = tuple(resolved_groups)
+        index_cache[index_key] = groups
+
+    part_history = []
+    for ids in groups:
+        selected = body_force_history.index_select(2, ids)
+        if force_reduce == "sum":
+            reduced = selected.sum(dim=2)
+        elif force_reduce == "mean":
+            reduced = selected.mean(dim=2)
+        elif force_reduce == "max":
+            magnitude = torch.norm(selected, dim=-1)
+            max_index = magnitude.argmax(dim=2)
+            reduced = torch.gather(
+                selected,
+                2,
+                max_index[..., None, None].expand(-1, -1, 1, 3),
+            ).squeeze(2)
+        else:
+            raise ValueError(f"Unsupported contact force vector reduction: {force_reduce}")
+        part_history.append(reduced)
+    result = torch.stack(part_history, dim=2)
+    step_cache[cache_key] = result
+    return result
 
 
 def _part_contact_force_vector(
     env: WholeBodyTrackingManager,
     part_body_names: Sequence[Sequence[str]] | None = None,
     force_reduce: str = "sum",
+    history_reduce: str = "latest",
 ) -> torch.Tensor:
-    groups = _a2a_body_groups(env, part_body_names or DEFAULT_CONTACT_FORCE_PART_BODY_NAMES)
-    body_force_history = env.simulator.contact_forces_history
-    body_force_magnitude_history = torch.norm(body_force_history, dim=-1)
-    history_index = body_force_magnitude_history.argmax(dim=1)
-    env_index = torch.arange(body_force_history.shape[0], device=body_force_history.device)[:, None]
-    body_index = torch.arange(body_force_history.shape[2], device=body_force_history.device)[None, :]
-    body_force = body_force_history[env_index, history_index, body_index]
-
-    part_forces = []
-    for ids in groups:
-        if ids.numel() == 0:
-            part_forces.append(torch.zeros(body_force.shape[0], 3, device=body_force.device, dtype=body_force.dtype))
-            continue
-        selected = body_force.index_select(1, ids)
-        if force_reduce == "sum":
-            part_forces.append(selected.sum(dim=1))
-        elif force_reduce == "mean":
-            part_forces.append(selected.mean(dim=1))
-        elif force_reduce == "max":
-            magnitude = torch.norm(selected, dim=-1)
-            max_index = magnitude.argmax(dim=1)
-            part_forces.append(selected[torch.arange(selected.shape[0], device=selected.device), max_index])
-        else:
-            raise ValueError(f"Unsupported contact force vector reduction: {force_reduce}")
-    return torch.stack(part_forces, dim=1)
+    part_history = _part_contact_force_history(env, part_body_names, force_reduce)
+    if history_reduce == "latest":
+        return part_history[:, 0]
+    if history_reduce == "max":
+        magnitude = torch.norm(part_history, dim=-1)
+        max_index = magnitude.argmax(dim=1)
+        return torch.gather(
+            part_history,
+            1,
+            max_index[:, None, :, None].expand(-1, 1, -1, 3),
+        ).squeeze(1)
+    raise ValueError(f"Unsupported contact force history reduction: {history_reduce}")
 
 
 def _a2a_support_mask(
@@ -1010,6 +1129,130 @@ def motion_contact_force_magnitude_error_exp(
     error = torch.square((actual_force - ref_force) / max(force_scale, 1e-6)) * expected
     denom = expected.sum(dim=1).clamp(min=1.0)
     return torch.exp(-(error.sum(dim=1) / denom) / max(sigma, 1e-6) ** 2)
+
+
+def _sparse_contact_balanced_score(
+    actual_contact: torch.Tensor,
+    expected_contact: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return score, expected-contact recall, and expected-free specificity."""
+    expected_count = expected_contact.sum(dim=-1)
+    expected_free_count = (~expected_contact).sum(dim=-1)
+    true_positive = (actual_contact & expected_contact).sum(dim=-1)
+    true_negative = ((~actual_contact) & (~expected_contact)).sum(dim=-1)
+
+    recall = torch.where(
+        expected_count > 0,
+        true_positive.to(torch.float32) / expected_count.clamp(min=1).to(torch.float32),
+        torch.ones_like(expected_count, dtype=torch.float32),
+    )
+    specificity = torch.where(
+        expected_free_count > 0,
+        true_negative.to(torch.float32) / expected_free_count.clamp(min=1).to(torch.float32),
+        torch.ones_like(expected_free_count, dtype=torch.float32),
+    )
+    return recall * specificity, recall, specificity
+
+
+def motion_sparse_contact_match(
+    env: WholeBodyTrackingManager,
+    contact_threshold: float = 10.0,
+) -> torch.Tensor:
+    """Balanced six-part contact score for LF/RF/LH/RH/LK/RK.
+
+    Expected-contact recall is multiplied by expected-free specificity. This
+    prevents the class-imbalance shortcut where predicting no contacts earns a
+    high mean accuracy. Canonical sphere-hand collision links are used rather
+    than wrist links, matching the rollout contact schema and robot asset.
+    """
+    motion_command = _get_motion_command_and_assert_type(env)
+    # Reproduce the demonstration-side contract exactly: reduce each of the
+    # eight canonical parts independently, take the maximum across the saved
+    # physics history, then merge heel/toe masks into LF/RF.
+    actual_part_force = _part_contact_force_magnitude(
+        env,
+        DEFAULT_CONTACT_FORCE_PART_BODY_NAMES,
+        force_reduce="sum",
+        history_reduce="max",
+    )
+    actual_part_contact = actual_part_force > contact_threshold
+    actual_contact = torch.stack(
+        (
+            actual_part_contact[..., 0] | actual_part_contact[..., 1],
+            actual_part_contact[..., 2] | actual_part_contact[..., 3],
+            actual_part_contact[..., 4],
+            actual_part_contact[..., 5],
+            actual_part_contact[..., 6],
+            actual_part_contact[..., 7],
+        ),
+        dim=-1,
+    )
+    force_mask = motion_command.contact_force_part_mask.to(torch.bool)
+    expected_contact = torch.stack(
+        (
+            force_mask[..., 0] | force_mask[..., 1],
+            force_mask[..., 2] | force_mask[..., 3],
+            force_mask[..., 4],
+            force_mask[..., 5],
+            force_mask[..., 6],
+            force_mask[..., 7],
+        ),
+        dim=-1,
+    )
+    score, recall, specificity = _sparse_contact_balanced_score(actual_contact, expected_contact)
+    expected_count = expected_contact.sum(dim=-1)
+
+    # Direct step metrics make failures attributable without adding zero-weight
+    # reward terms (which RewardManager intentionally skips).
+    env.log_dict["sparse_climb/contact_recall"] = recall.detach()
+    env.log_dict["sparse_climb/contact_specificity"] = specificity.detach()
+    env.log_dict["sparse_climb/contact_expected_count"] = expected_count.to(torch.float32).detach()
+    for part_index, part_name in enumerate(("lf", "rf", "lh", "rh", "lk", "rk")):
+        env.log_dict[f"sparse_climb/contact_match_{part_name}"] = (
+            actual_contact[:, part_index] == expected_contact[:, part_index]
+        ).to(torch.float32).detach()
+        env.log_dict[f"sparse_climb/contact_actual_{part_name}"] = actual_contact[:, part_index].to(
+            torch.float32
+        ).detach()
+        env.log_dict[f"sparse_climb/contact_expected_{part_name}"] = expected_contact[:, part_index].to(
+            torch.float32
+        ).detach()
+    return score
+
+
+def motion_sparse_contact_match_exp(
+    env: WholeBodyTrackingManager,
+    sigma: float = 1.0,
+    contact_threshold: float = 10.0,
+) -> torch.Tensor:
+    """Legacy sparse-contact reward retained for saved-checkpoint replay.
+
+    New experiments must use :func:`motion_sparse_contact_match`. Keeping the
+    historical implementation here lets old configs load without silently
+    changing the behavior being diagnosed.
+    """
+    motion_command = _get_motion_command_and_assert_type(env)
+    actual_force = _part_contact_force_magnitude(
+        env,
+        DEFAULT_A2A_PART_BODY_NAMES,
+        force_reduce="sum",
+        history_reduce="max",
+    )
+    actual_contact = actual_force > contact_threshold
+    force_mask = motion_command.contact_force_part_mask.to(torch.bool)
+    expected_contact = torch.stack(
+        (
+            force_mask[..., 0] | force_mask[..., 1],
+            force_mask[..., 2] | force_mask[..., 3],
+            force_mask[..., 4],
+            force_mask[..., 5],
+            force_mask[..., 6],
+            force_mask[..., 7],
+        ),
+        dim=-1,
+    )
+    mismatch = torch.ne(actual_contact, expected_contact).to(torch.float32).mean(dim=-1)
+    return torch.exp(-mismatch / max(sigma, 1e-6) ** 2)
 
 
 def motion_contact_force_relative_magnitude_error_exp(

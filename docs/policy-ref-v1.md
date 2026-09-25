@@ -2,7 +2,7 @@
 
 `policy_ref_v1` is the single cross-repository reference-motion contract.
 It means the reference object consumed by the Holosoma WBT policy. All contact
-editing, IK, augmentation, GMVQ training, and GMVQ decoding steps serve this
+editing, IK, augmentation, Predictor training, and Infiller generation steps serve this
 format.
 
 ## Required Fields
@@ -56,7 +56,7 @@ source_* metadata
 ```
 
 Optional fields are for contact analysis, segmentation, augmentation, debugging,
-and manifests. They are not the GMVQ decoder target interface.
+and manifests. They are not the trajectory generator target interface.
 
 ## Pipeline Rule
 
@@ -65,9 +65,9 @@ The only artifact passed between repositories as a motion reference is
 
 ```text
 motion_edit generated raw npz
--> canonicalize_policy_ref.py
+-> canonical Newton FK
 -> policy_ref_v1 npz
--> GMVQ prepare/train/decode
+-> Predictor + Infiller generation and Newton validation
 -> policy eval
 ```
 
@@ -76,26 +76,11 @@ before entering the next stage.
 
 ## Canonicalization
 
-Use:
+Use the canonical-asset Newton FK path documented in the repository README
+(`scripts/canonicalize_omniretarget_newton.py`) and validate the motion manifest
+with `scripts/check_motion_manifest.py`. The retired codec-specific
+canonicalizer is no longer an entrypoint.
 
-```bash
-python3 scripts/gmvq_ref/canonicalize_policy_ref.py \
-  --input raw.npz \
-  --output canonical.policy_ref_v1.npz
-```
-
-The script:
-
-- validates required shapes;
-- casts numeric arrays to `float32`;
-- normalizes quaternions;
-- fills or regenerates `joint_vel` as `[root_lin_vel, root_ang_vel, dof_vel]`
-  if missing or shape-incompatible;
-- fills `body_lin_vel_w` if missing or shape-incompatible;
-- fills `body_ang_vel_w` from `body_quat_w` if missing or shape-incompatible;
-- writes `policy_ref_schema="policy_ref_v1"`;
-- writes a JSON canonicalization report.
-
-If a source NPZ contains unreadable legacy pickle metadata, the canonicalizer
-skips that optional key and records it in the report. Required fields are never
-silently skipped.
+References must retain the fields and quaternion conventions above. Never
+reuse source force or raw-contact labels for a newly generated trajectory;
+query Newton again and preserve its provenance.

@@ -53,6 +53,13 @@ def _load_source_motion(plan: Any, preview: Any) -> tuple[dict[str, Any], Path]:
     path = _resolve_source_path(plan)
     motion = preview._load_motion_npz(path)
     missing = [name for name in _REQUIRED_ROLLOUT_FIELDS if name not in motion]
+    labels_path = getattr(plan, "metadata", {}).get("newton_contact_file")
+    if missing and labels_path and all(name.startswith("raw_contact_") for name in missing):
+        # Current motions carry solver observations in a hash-bound sidecar.
+        # Never fabricate legacy force arrays just to satisfy an old container.
+        from somaforge_core.newton_contact_data import load_contact_labels
+        load_contact_labels(path, labels_path)
+        missing = []
     if missing:
         raise ValueError(
             "contact-aware generation requires one unified rollout source as its "
@@ -165,9 +172,11 @@ def generate_contact_aware_pyroki_preview(
         layers_root,
         contact_layer=contact_layer,
     )
-    graph = preview.read_contact_graph(
+    from motion_edit.contact.layers import read_verified_contact_graph
+    graph = read_verified_contact_graph(
         resolved_layers_root / contact_layer,
         plan.source_motion_id,
+        motion_path=source_path, labels_path=plan.metadata.get('newton_contact_file'),
     )
     surface_path = (
         resolved_layers_root
@@ -260,9 +269,10 @@ def generate_contact_aware_pyroki_preview(
         json.dumps(proxy_metadata, sort_keys=True)
     )
 
-    patches, binding_summary = preview.bind_newton_contact_patches(
-        graph.anchors,
-        source_motion,
+    from motion_edit.contact.layers import verified_source_patches
+    patches, binding_summary = verified_source_patches(
+        graph,
+        source_motion_path=source_path,
         min_force_norm=float(min_raw_contact_force_norm),
     )
     binding_summary["source_motion_path"] = str(source_path)
@@ -310,6 +320,43 @@ def generate_contact_aware_pyroki_preview(
         }
     )
     plan_metadata = dict(plan.metadata or {})
+    if "release_witnesses" in plan_metadata:
+        taskspace_metadata["release_witnesses"] = plan_metadata["release_witnesses"]
+    if "native_hard_release" in plan_metadata:
+        taskspace_metadata["native_hard_release"] = plan_metadata["native_hard_release"]
+    taskspace_metadata["normalize_contact_group_weights"] = bool(plan_metadata.get("normalize_contact_group_weights", False))
+    if "root_yaw_condition" in plan_metadata:
+        taskspace_metadata["root_yaw_condition"] = dict(plan_metadata["root_yaw_condition"])
+    if plan_metadata.get("free_surface_contacts"):
+        offsets = plan_metadata.get("free_surface_reference_offsets")
+        if offsets is not None and (not isinstance(offsets, dict) or not plan_metadata.get("convex_surface_targets")):
+            raise ValueError("Explicit free-surface offsets require convex actual-face targets")
+        if offsets is None and Path(plan_metadata["source_terrain_mesh"]).resolve() != Path(plan_metadata["target_terrain_mesh"]).resolve():
+            raise ValueError("Free surface contact pilot currently requires unchanged terrain")
+        by_anchor = {patch.anchor_id: patch for patch in patches}
+        contacts = []
+        for contact in taskspace.contacts:
+            patch = by_anchor[contact.anchor_id]
+            slots = np.searchsorted(patch.source_target_frames, contact.frames)
+            from .free_surface_reference import reference_offsets
+            offset = reference_offsets(contact.frames, offsets[contact.anchor_id] if offsets is not None else [0., 0., 0.])
+            breaks=np.flatnonzero(np.any(np.diff(offset,axis=0)!=0,axis=1))+1
+            for indices in np.split(np.arange(len(contact.frames)),breaks):
+                if not len(indices):continue
+                contacts.append(preview.replace(contact,frames=np.asarray(contact.frames)[indices],
+                    target_uv=None,
+                    points_local_by_frame=(None if contact.points_local_by_frame is None else contact.points_local_by_frame[indices]),
+                    target_points_w=np.asarray(patch.source_target_points_w)[slots[indices]]+offset[indices,None,:],
+                    metadata={**contact.metadata, "target_contract": "unrotated_demonstration_weak_reference",
+                              "free_surface_reference_offset_world": offset[indices[0]].tolist()}))
+        taskspace = preview.replace(taskspace, contacts=tuple(contacts))
+        if plan_metadata.get("stable_contact_material_samples"):
+            from .stable_contact_material import stabilize_contact_material_samples
+            taskspace = stabilize_contact_material_samples(taskspace, source_motion)
+            taskspace_metadata["optimization_sample_contract"] = "fixed_material_set_per_active_episode_v1"
+        taskspace_metadata["free_surface_contacts"] = True
+        taskspace_metadata["convex_surface_targets"] = bool(plan_metadata.get("convex_surface_targets", False))
+        taskspace_metadata["surface_reference_ratio"] = float(source_reference_weight)
     target_terrain_mesh = plan_metadata.get("target_terrain_mesh")
     if target_terrain_mesh:
         source_terrain_mesh = plan_metadata.get("source_terrain_mesh")

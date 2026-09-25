@@ -131,6 +131,8 @@ def compile_pyroki_taskspace(
     )[None, :]
 
     per_frame: list[list[tuple[int, np.ndarray, np.ndarray, float]]] = [list() for _ in range(spec.frame_count)]
+    normalize_groups = bool(spec.metadata.get("normalize_contact_group_weights", False))
+    per_frame_groups = [[] for _ in range(spec.frame_count)]
     unresolved_contacts: list[str] = []
     for contact in spec.contacts:
         link_index = resolve_link_index(links, contact.body_label, (contact.body_label,))
@@ -146,10 +148,17 @@ def compile_pyroki_taskspace(
         )
         local_frames = np.asarray(contact.frames, dtype=np.int64) - int(spec.frame_start)
         weight = float(edited_contact_weight if contact.kind == "edited_contact" else fixed_contact_weight)
+        group = None
+        if normalize_groups:
+            surface = contact.metadata.get("target_surface_id") or contact.surface_id
+            if not surface or not contact.shape_labels:
+                raise ValueError(f"{contact.anchor_id}: contact normalization requires shape and surface identity")
+            group = (link_index, tuple(sorted(set(contact.shape_labels))), surface)
         for contact_frame_index, local_frame in enumerate(local_frames.tolist()):
             if not 0 <= local_frame < spec.frame_count:
                 raise ValueError(f"{contact.anchor_id}: frame {local_frame} lies outside the solve window")
             for point_index in range(points_local.shape[0]):
+                per_frame_groups[local_frame].append(group)
                 per_frame[local_frame].append(
                     (
                         link_index,
@@ -162,6 +171,13 @@ def compile_pyroki_taskspace(
                         weight,
                     )
                 )
+
+    if normalize_groups:
+        from collections import Counter
+        for frame, items in enumerate(per_frame):
+            counts = Counter(per_frame_groups[frame])
+            per_frame[frame] = [(link, local, target, weight / counts[group])
+                for (link, local, target, weight), group in zip(items, per_frame_groups[frame])]
 
     max_contacts = max(1, max((len(items) for items in per_frame), default=0))
     contact_link_indices = np.zeros((spec.frame_count, max_contacts), dtype=np.int32)

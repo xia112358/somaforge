@@ -1093,6 +1093,9 @@ def solve_pyroki_fullbody_ik(
     if "contact_aware_taskspace_json" in payload:
         collision_spec = ContactAwareTaskspaceMotion.from_arrays(payload)
         collision_metadata = dict(collision_spec.metadata)
+        if (collision_metadata.get('native_hard_release') or {}).get('geometry_file'):
+            # Set precision before source FK as well, independent of CLI env.
+            jax.config.update('jax_enable_x64', True)
         raw_terrain_mesh = collision_metadata.get("target_terrain_mesh")
         if raw_terrain_mesh:
             collision_terrain_mesh = str(
@@ -1240,6 +1243,24 @@ def solve_pyroki_fullbody_ik(
     if pelvis_column is not None:
         root_source[:, :3] = compiled.semantic_targets_w[:n_frames, pelvis_column]
 
+    # Opt-in task condition, never inferred from or written into contact labels.
+    yaw_condition = (collision_spec.metadata.get("root_yaw_condition")
+                     if collision_spec is not None else None)
+    yaw_enabled = yaw_condition is not None
+    root_dofs = 4 if yaw_enabled else 3
+    if yaw_enabled:
+        yaw_degrees = float(yaw_condition["reference_delta_degrees"])
+        initial_q = np.asarray(yaw_condition["initial_qpos"], dtype=np.float64)
+        if not np.isfinite(yaw_degrees) or initial_q.shape != (7 + actuated_count,) or not np.isfinite(initial_q).all():
+            raise ValueError("Invalid explicit root yaw/initial pose condition")
+        if not np.isclose(np.linalg.norm(initial_q[3:7]), 1., atol=1.e-5):
+            raise ValueError("Initial root quaternion must be normalized")
+        yaw_rotation = Rotation.from_euler("z", yaw_degrees, degrees=True)
+        rotations = Rotation.from_quat(root_source[:, [4, 5, 6, 3]])
+        root_source[:, 3:7] = (yaw_rotation * rotations).as_quat()[:, [3, 0, 1, 2]]
+        root_source[0] = initial_q[:7]
+        cfg_source[0] = initial_q[7:]
+
     lower = np.asarray(robot.joints.lower_limits, dtype=np.float64)
     upper = np.asarray(robot.joints.upper_limits, dtype=np.float64)
     finite = np.isfinite(lower) & np.isfinite(upper)
@@ -1255,6 +1276,46 @@ def solve_pyroki_fullbody_ik(
     )
     foot_orientation_indices_jax = jnp.asarray(foot_orientation_indices, dtype=jnp.int32)
     source_foot_orientations = source_fk[:, foot_orientation_indices, :4]
+    free_surface_contacts = bool(collision_spec is not None and collision_spec.metadata.get("free_surface_contacts"))
+    from motion_edit.generation.surface_contact_loss import compile_surface_faces, surface_residual
+    surface_reference_ratio = float(collision_spec.metadata.get("surface_reference_ratio", 0.01)) if free_surface_contacts else 0.
+    if free_surface_contacts:
+        if not 0 <= surface_reference_ratio < 1:
+            raise ValueError("Surface reference must be weaker than normal contact constraint")
+        surface_normals_w, surface_edges_w, surface_offsets_w = compile_surface_faces(collision_spec, compiled, link_names)
+    convex_mode = bool(free_surface_contacts and collision_spec.metadata.get("convex_surface_targets"))
+    from motion_edit.generation.surface_contact_loss import compile_bounded_face_targets, bounded_face_targets as convex_targets, contact_previous_slots, contact_temporal_residual
+    cfg_stop = root_dofs + actuated_count
+    coefficient_count = 0
+    if convex_mode:
+        convex_vertices_w, convex_valid, convex_finite, initial_logits = compile_bounded_face_targets(collision_spec, compiled)
+        coefficient_shape = initial_logits.shape[1:]
+        coefficient_count = int(np.prod(coefficient_shape))
+        solved_logits = np.zeros_like(initial_logits[:n_frames])
+        previous_slots = contact_previous_slots(collision_spec, compiled)
+        solved_target_corrections_w = np.zeros((*convex_finite[:n_frames].shape,3))
+        # Reuse the existing demonstration-relative joint acceleration residual.
+        # Free landing points add freedom at contact transitions; retain posture
+        # continuity there without extending contact activation into flight.
+        q_acceleration_weight = max(float(q_acceleration_weight), 2.0)
+    solve_attempts = []
+    from motion_edit.generation.release_witness_loss import compile_release_witnesses, release_residual
+    release_data = compile_release_witnesses(
+        collision_spec.metadata if collision_spec is not None else {}, list(link_names), n_frames)
+    hard_release = collision_spec.metadata.get('native_hard_release') if collision_spec else None
+    hard_mask = None
+    hard_query_calls = 0
+    release_geometry = None
+    geometry_jacobian_calls = 0
+    if hard_release:
+        from somaforge_core.newton_contact_data import load_contact_labels
+        hard_labels = load_contact_labels(Path(source_path), Path(hard_release['source_labels']))
+        hard_mask = hard_labels['contact_part_mask']
+        if hard_mask.shape != (n_frames, 6):raise ValueError('Hard release source frame mismatch')
+        if np.any(release_data[-1]):raise ValueError('Hard release cannot consume feedback witnesses')
+        if hard_release.get('geometry_file'):
+            from motion_edit.generation.native_geometry_release import GeometryRelease
+            release_geometry = GeometryRelease(hard_release['geometry_file'], hard_release['model_fingerprint'], list(link_names))
 
     def quat_apply_jax(quat: Any, vector: Any) -> Any:
         qvec = quat[..., 1:4]
@@ -1291,10 +1352,34 @@ def solve_pyroki_fullbody_ik(
         self_collision_sqrt_weight: Any,
         root_delta_previous: Any,
         root_delta_previous_previous: Any,
+        root_yaw_axis_base: Any,
+        surface_normals_base: Any,
+        surface_edges_base: Any,
+        surface_offsets_base: Any,
+        convex_vertices_base: Any,
+        convex_valid_frame: Any,
+        convex_finite_frame: Any,
+        contact_previous_correction: Any,
+        contact_previous_previous_correction: Any,
+        contact_velocity_mask: Any,
+        contact_acceleration_mask: Any,
+        release_indices: Any,
+        release_points: Any,
+        release_targets: Any,
+        release_normals: Any,
+        release_weights: Any,
     ) -> Any:
-        root_delta = solve_state[:3]
-        q_cfg = solve_state[3:]
+        root_state = solve_state[:root_dofs]
+        root_delta = root_state[:3]
+        q_cfg = solve_state[root_dofs:cfg_stop]
         fk = robot.forward_kinematics(q_cfg)
+        if yaw_enabled:
+            half = root_state[3] * .5
+            yaw_q = jnp.concatenate((jnp.cos(half)[None], root_yaw_axis_base * jnp.sin(half)))
+            original_q = fk[:, :4]
+            w = yaw_q[0] * original_q[:, :1] - jnp.sum(yaw_q[1:] * original_q[:, 1:], axis=-1, keepdims=True)
+            xyz = yaw_q[0] * original_q[:, 1:] + original_q[:, :1] * yaw_q[1:] + jnp.cross(yaw_q[1:], original_q[:, 1:])
+            fk = jnp.concatenate((w, xyz, quat_apply_jax(yaw_q, fk[:, 4:7])), axis=-1)
         semantic_pos = fk[semantic_indices_jax, 4:7] + root_delta
         semantic_res = ((semantic_pos - semantic_target_base) * semantic_sqrt_weight[:, None]).reshape(-1)
 
@@ -1305,6 +1390,26 @@ def solve_pyroki_fullbody_ik(
             + root_delta
         )
         contact_res = ((contact_pred - contact_target_base) * contact_sqrt_weight[:, None]).reshape(-1)
+        if free_surface_contacts:
+            contact_res = surface_residual(contact_pred, contact_target_base, surface_normals_base,
+                surface_edges_base, surface_offsets_base, contact_sqrt_weight, surface_reference_ratio, xp=jnp)
+        if convex_mode:
+            target, _ = convex_targets(solve_state[cfg_stop:].reshape(coefficient_shape),
+                                       convex_vertices_base, convex_valid_frame, xp=jnp)
+            # Normal reference clearance remains the verified Newton source's.
+            # Only the surface footprint is parametrized by convex coefficients.
+            error = contact_pred-target
+            tangent = error-jnp.sum(error*surface_normals_base,axis=-1)[:,None]*surface_normals_base
+            contact_res = jnp.concatenate((contact_res,
+                (tangent*contact_sqrt_weight[:,None]*convex_finite_frame[:,None]).reshape(-1)))
+            correction = target-contact_target_base
+            correction = correction-jnp.sum(correction*surface_normals_base,axis=-1)[:,None]*surface_normals_base
+            # Landing-point continuity is a weak tie-breaker, not a persistent
+            # pin that stores posture error until contact release. Joint-space
+            # demonstration-relative smoothness remains the primary temporal term.
+            contact_res = jnp.concatenate((contact_res, 0.1 * contact_temporal_residual(correction,
+                contact_previous_correction,contact_previous_previous_correction,
+                contact_velocity_mask,contact_acceleration_mask,xp=jnp)))
 
         prior_res = (q_cfg - q_prior) * q_prior_scale
         smooth_res = (q_cfg - q_previous) * float(q_smooth_weight)
@@ -1384,12 +1489,15 @@ def solve_pyroki_fullbody_ik(
             self_collision_sqrt_weight,
             array_module=jnp,
         )
-        root_delta_prior_res = root_delta * np.sqrt(25.0)
+        root_delta_prior_res = root_state * np.sqrt(25.0)
+        release_pose = fk[release_indices]
+        release_pred = release_pose[:, 4:7] + quat_apply_jax(release_pose[:, :4], release_points) + root_delta
+        release_res = release_residual(release_pred, release_targets, release_normals, release_weights, xp=jnp)
         root_delta_velocity_res = (
-            root_delta - root_delta_previous
+            root_state - root_delta_previous
         ) * np.sqrt(100.0)
         root_delta_acceleration_res = (
-            root_delta
+            root_state
             - 2.0 * root_delta_previous
             + root_delta_previous_previous
         ) * np.sqrt(400.0)
@@ -1408,6 +1516,7 @@ def solve_pyroki_fullbody_ik(
                 root_delta_prior_res,
                 root_delta_velocity_res,
                 root_delta_acceleration_res,
+                release_res,
             ],
             axis=0,
         )
@@ -1415,12 +1524,25 @@ def solve_pyroki_fullbody_ik(
     residual_compiled = jax.jit(residual_jax)
     jac_compiled = jax.jit(jax.jacfwd(residual_jax, argnums=0))
 
+    def native_projection(x, indices, local_points, normals, yaw_axis):
+        fk = robot.forward_kinematics(x[root_dofs:cfg_stop])[indices]
+        points = fk[:,4:7]+quat_apply_jax(fk[:,:4],local_points)
+        if yaw_enabled:
+            half=x[3]*.5
+            rotation=jnp.concatenate((jnp.cos(half)[None],yaw_axis*jnp.sin(half)))
+            points=quat_apply_jax(rotation,points)
+        return jnp.sum((points+x[:3])*normals,axis=-1)
+    native_projection_jac=jax.jit(jax.jacfwd(native_projection,argnums=0))
+    if release_geometry is not None:
+        geometry_fk = jax.jit(lambda cfg: robot.forward_kinematics(cfg))
+        geometry_jac_capacity = int(release_geometry.allowed.size)
+
     out_cfg = np.zeros((n_frames, actuated_count), dtype=np.float64)
-    out_root_delta_base = np.zeros((n_frames, 3), dtype=np.float64)
+    out_root_delta_base = np.zeros((n_frames, root_dofs), dtype=np.float64)
     q_previous = cfg_source[0]
     q_previous_previous = cfg_source[0]
-    root_delta_previous = np.zeros(3, dtype=np.float64)
-    root_delta_previous_previous = np.zeros(3, dtype=np.float64)
+    root_delta_previous = np.zeros(root_dofs, dtype=np.float64)
+    root_delta_previous_previous = np.zeros(root_dofs, dtype=np.float64)
     success: list[bool] = []
     nfev: list[int] = []
     costs: list[float] = []
@@ -1456,6 +1578,14 @@ def solve_pyroki_fullbody_ik(
     solve_upper = np.concatenate(
         (np.full(3, root_delta_limit_m), upper)
     )
+    if yaw_enabled:
+        # Existing translation limits unchanged; yaw is an additional radian DOF.
+        solve_lower = np.concatenate((solve_lower[:3], [-np.pi], lower))
+        solve_upper = np.concatenate((solve_upper[:3], [np.pi], upper))
+    if convex_mode:
+        solve_lower = np.r_[solve_lower, np.zeros(coefficient_count)]
+        solve_upper = np.r_[solve_upper, np.ones(coefficient_count)]
+    normal_solve_lower, normal_solve_upper = solve_lower.copy(), solve_upper.copy()
     collision_scene = (
         _cached_newton_collision_scene(
             collision_terrain_mesh,
@@ -1575,8 +1705,46 @@ def solve_pyroki_fullbody_ik(
                 )
 
     for frame in range(n_frames):
+        if hard_release and frame % 100 == 0:
+            mode='geometry-release' if release_geometry is not None else 'native-hard-release'
+            print(f'{mode} frame={frame}/{n_frames} evaluations={hard_query_calls}',flush=True)
         root = root_source[frame].copy()
         root_rotation = _quat_wxyz_to_rotation(root[3:7])
+        root_yaw_axis_base = root_rotation.inv().apply([0., 0., 1.])
+        surface_args = (np.zeros((1, 3)), np.zeros((1, 1, 3)), np.zeros((1, 1)))
+        convex_args = (np.zeros((1,3,3)),np.ones((1,3),bool),np.zeros(1,bool))
+        coefficient_initial = np.empty(0)
+        temporal_args = (np.zeros((1,3)),np.zeros((1,3)),np.zeros(1),np.zeros(1))
+        if convex_mode:
+            convex_args = (root_rotation.inv().apply((convex_vertices_w[frame]-root[:3]).reshape(-1,3)).reshape(convex_vertices_w[frame].shape),
+                           convex_valid[frame],convex_finite[frame])
+            warm = initial_logits[frame].copy()
+            previous_correction = np.zeros((len(warm),3)); previous_previous_correction = previous_correction.copy()
+            velocity_mask = np.zeros(len(warm)); acceleration_mask = velocity_mask.copy()
+            if frame > 0:
+                for slot, old in enumerate(previous_slots[frame]):
+                    if old < 0 or not convex_finite[frame,slot] or not convex_finite[frame-1,old]: continue
+                    if not np.array_equal(convex_vertices_w[frame,slot],convex_vertices_w[frame-1,old]):
+                        raise ValueError('Persistent contact changed face parameterization')
+                    warm[slot] = solved_logits[frame-1,old]
+                    previous_correction[slot] = solved_target_corrections_w[frame-1,old]
+                    velocity_mask[slot] = 1.
+                    older = previous_slots[frame-1,old]
+                    if frame > 1 and older >= 0 and convex_finite[frame-2,older]:
+                        previous_previous_correction[slot] = solved_target_corrections_w[frame-2,older]
+                        acceleration_mask[slot] = 1.
+            coefficient_initial = warm.reshape(-1)
+            temporal_args = (root_rotation.inv().apply(previous_correction),root_rotation.inv().apply(previous_previous_correction),velocity_mask,acceleration_mask)
+        if free_surface_contacts:
+            surface_args = (
+                root_rotation.inv().apply(surface_normals_w[frame]),
+                root_rotation.inv().apply(surface_edges_w[frame].reshape(-1, 3)).reshape(surface_edges_w[frame].shape),
+                surface_offsets_w[frame]-np.sum(surface_edges_w[frame]*root[:3], axis=-1),
+            )
+        solve_lower, solve_upper = normal_solve_lower.copy(), normal_solve_upper.copy()
+        if yaw_enabled and frame == 0:
+            initial_state = np.concatenate((np.zeros(root_dofs), cfg_source[0]))
+            solve_lower[:cfg_stop], solve_upper[:cfg_stop] = initial_state - 1.e-10, initial_state + 1.e-10
         semantic_target_base = root_rotation.inv().apply(
             compiled.semantic_targets_w[frame] - root[:3][None, :]
         )
@@ -1598,6 +1766,7 @@ def solve_pyroki_fullbody_ik(
                 (
                     root_delta_previous,
                     q_previous if frame > 0 else q_prior,
+                    coefficient_initial,
                 )
             ),
             solve_lower,
@@ -1624,6 +1793,15 @@ def solve_pyroki_fullbody_ik(
                 root_delta_previous_previous,
                 dtype=np.float64,
             ),
+            np.asarray(root_yaw_axis_base, dtype=np.float64),
+            *surface_args,
+            *convex_args,
+            *temporal_args,
+            release_data[0][frame],
+            release_data[1][frame],
+            root_rotation.inv().apply(release_data[2][frame] - root[:3]),
+            root_rotation.inv().apply(release_data[3][frame]),
+            release_data[4][frame],
         )
 
         args_jax = tuple(jnp.asarray(value) for value in args)
@@ -1634,24 +1812,171 @@ def solve_pyroki_fullbody_ik(
         def jac(x: np.ndarray) -> np.ndarray:
             return np.asarray(jac_compiled(jnp.asarray(x), *args_jax))
 
-        result = least_squares(
-            fun,
-            x0,
-            jac=jac,
-            bounds=(solve_lower, solve_upper),
-            max_nfev=int(max_nfev),
-            xtol=1.0e-5,
-            ftol=1.0e-5,
-            gtol=1.0e-5,
-        )
+        frame_fixed_coefficients = None
+        active_solve_indices = np.arange(len(x0))
+        if convex_mode:
+            active_coefficients = np.flatnonzero(np.repeat(convex_finite[frame],coefficient_shape[-1]))
+            active_solve_indices = np.r_[np.arange(cfg_stop), cfg_stop+active_coefficients]
+
+        def solve_frame(start):
+            nonlocal frame_fixed_coefficients
+            if not convex_mode:
+                # Keep the established solver path, including Jacobian layout,
+                # untouched when the new landing-point variables are disabled.
+                return least_squares(fun,start,jac=jac,bounds=(solve_lower,solve_upper),
+                    max_nfev=int(max_nfev),xtol=1.e-5,ftol=1.e-5,gtol=1.e-5)
+            original_start = start.copy()
+            total_nfev = 0
+            for attempt in range(0 if frame_fixed_coefficients is not None else (4 if convex_mode else 1)):
+                template = start.copy()
+                def expand(value):
+                    full = template.copy(); full[active_solve_indices] = value
+                    return full
+                solved = least_squares(lambda value:fun(expand(value)),start[active_solve_indices],
+                    jac=lambda value:jac(expand(value))[:,active_solve_indices],
+                    bounds=(solve_lower[active_solve_indices],solve_upper[active_solve_indices]),
+                    max_nfev=int(max_nfev),xtol=1.e-5,ftol=1.e-5,gtol=1.e-5)
+                solved.x = expand(solved.x)
+                total_nfev += int(solved.nfev)
+                if convex_mode:
+                    solve_attempts.append(dict(frame=frame,attempt=attempt,success=bool(solved.success),
+                        status=int(solved.status),cost=float(solved.cost),nfev=int(solved.nfev)))
+                if solved.success: break
+                start = solved.x
+            if convex_mode and (frame_fixed_coefficients is not None or not solved.success):
+                # Reuse the established fixed-target pose solve. Never freeze q,
+                # silently accept failure, or project the generated posture.
+                if frame_fixed_coefficients is None:
+                    frame_fixed_coefficients = original_start[cfg_stop:].copy()
+                def reduced_fun(value):return fun(np.r_[value, frame_fixed_coefficients])
+                def reduced_jac(value):return jac(np.r_[value, frame_fixed_coefficients])[:,:cfg_stop]
+                reduced_start = original_start[:cfg_stop]
+                for attempt in range(4):
+                    reduced = least_squares(reduced_fun,reduced_start,jac=reduced_jac,
+                        bounds=(solve_lower[:cfg_stop],solve_upper[:cfg_stop]),max_nfev=int(max_nfev),
+                        xtol=1.e-5,ftol=1.e-5,gtol=1.e-5)
+                    total_nfev += int(reduced.nfev)
+                    solve_attempts.append(dict(frame=frame,attempt=attempt,mode='fixed_target_fallback',
+                        success=bool(reduced.success),status=int(reduced.status),cost=float(reduced.cost),nfev=int(reduced.nfev)))
+                    if reduced.success:break
+                    reduced_start = reduced.x
+                reduced.x = np.r_[reduced.x, frame_fixed_coefficients]
+                solved = reduced
+            if convex_mode and (not solved.success or not np.isfinite(solved.x).all()):
+                raise RuntimeError(f'Frame {frame}: convex contact solve did not converge after retries; refusing trajectory output')
+            solved.nfev = total_nfev
+            return solved
+
+        if hard_release:
+            from scipy.optimize import minimize, OptimizeResult
+            from somaforge_core.motion_schema import G1_29DOF_JOINT_ORDER
+            from motion_edit.generation.native_release_constraint import NativeReleaseConstraint
+            canonical_slots=[robot_joint_names.index(n) for n in G1_29DOF_JOINT_ORDER]
+
+            def hard_candidate_root(x):
+                value=root.copy()
+                value[:3]+=root_rotation.apply(x[:3])
+                if yaw_enabled:value[3:7]=(Rotation.from_rotvec([0.,0.,x[3]])*root_rotation).as_quat()[[3,0,1,2]]
+                return value
+
+            def state_to_q(x):
+                return np.r_[hard_candidate_root(x),x[root_dofs:cfg_stop][canonical_slots]]
+
+            def native_witness_jac(x, pairs, model):
+                fk=np.asarray(robot.forward_kinematics(jnp.asarray(x[root_dofs:cfg_stop])))
+                bp,bq=world_body_poses_from_pyroki_fk(hard_candidate_root(x)[None,:],fk[None,...])
+                indices=np.zeros(6,np.int32);local=np.zeros((6,3));normals=np.zeros((6,3))
+                for p,pair in enumerate(pairs):
+                    if pair is None:continue
+                    if 'normal_w' not in pair:raise ValueError('Native normal missing; no witness fallback')
+                    body=model['body_labels'][pair['body']].rsplit('/',1)[-1]
+                    i=link_names.index(body);indices[p]=i
+                    normal=np.asarray(pair['normal_w'])
+                    point=np.asarray(pair['solver_position_w'])+.5*pair['dist']*normal
+                    local[p]=_quat_wxyz_to_rotation(bq[0,i]).inv().apply(point-bp[0,i])
+                    normals[p]=root_rotation.inv().apply(normal)
+                return np.asarray(native_projection_jac(jnp.asarray(x),jnp.asarray(indices),
+                    jnp.asarray(local),jnp.asarray(normals),jnp.asarray(root_yaw_axis_base)),dtype=np.float64)
+
+            native_constraint=NativeReleaseConstraint(hard_mask[frame],hard_release['model_fingerprint'],state_to_q,native_witness_jac)
+            if release_geometry is not None:
+                from motion_edit.generation.native_geometry_release import FastFrameGeometryConstraint
+                def geometry_forward_vertices(x, shapes):
+                    fk=np.asarray(geometry_fk(jnp.asarray(x[root_dofs:cfg_stop])))[release_geometry.indices[shapes]]
+                    local=release_geometry.vertices[shapes]
+                    q=fk[:,None,:4]; uv=np.cross(q[...,1:],local)
+                    points=local+2.*(q[...,:1]*uv+np.cross(q[...,1:],uv))+fk[:,None,4:7]
+                    if yaw_enabled:
+                        rotation=Rotation.from_rotvec(root_yaw_axis_base*x[3])
+                        points=rotation.apply(points.reshape(-1,3)).reshape(points.shape)
+                    return root_rotation.apply((points+x[:3]).reshape(-1,3)).reshape(points.shape)+root[:3]
+
+                def geometry_support_jac(x, indices, local, normals):
+                    # One static executable; only cfg/root columns, never face
+                    # coordinates. Inactive rows have zero derivative normals.
+                    count=len(indices); capacity=geometry_jac_capacity
+                    ii=np.zeros(capacity,np.int32);pp=np.zeros((capacity,3));nn=np.zeros((capacity,3))
+                    ii[:count]=indices;pp[:count]=local
+                    nn[:count]=root_rotation.inv().apply(normals)
+                    return np.asarray(native_projection_jac(jnp.asarray(x),jnp.asarray(ii),
+                        jnp.asarray(pp),jnp.asarray(nn),jnp.asarray(root_yaw_axis_base)),np.float64)[:count]
+
+                native_constraint=FastFrameGeometryConstraint(release_geometry,hard_mask[frame],
+                    cfg_stop,geometry_forward_vertices,geometry_support_jac)
+            constraint_name='geometry-release' if release_geometry is not None else 'native-hard-release'
+            unconstrained_solve_frame=solve_frame
+
+            def solve_frame(start):
+                initial=unconstrained_solve_frame(start)
+                if native_constraint.feasible(initial.x):return initial
+                slots=active_solve_indices
+                template=np.asarray(initial.x,dtype=np.float64).copy()
+                def expand(v):
+                    full=template.copy();full[slots]=v;return full
+                objective_cache={}
+                def objective(v):
+                    if 'v' not in objective_cache or not np.array_equal(v,objective_cache['v']):
+                        x=expand(v);r=fun(x)
+                        objective_cache.clear()
+                        objective_cache.update(v=v.copy(),x=x,r=r,value=float(.5*np.dot(r,r)))
+                    return objective_cache['value']
+                def objective_jac(v):
+                    objective(v)
+                    if 'gradient' not in objective_cache:
+                        objective_cache['gradient']=np.asarray(jac(objective_cache['x'])[:,slots].T@objective_cache['r'],dtype=np.float64)
+                    return objective_cache['gradient']
+                solved=minimize(objective,template[slots],jac=objective_jac,method='SLSQP',
+                    bounds=list(zip(solve_lower[slots],solve_upper[slots])),
+                    # Express separation in millimetres for SQP conditioning;
+                    # this does not change the native activation boundary.
+                    constraints=[dict(type='ineq',fun=lambda v:1000.*native_constraint.fun(expand(v)),
+                        jac=lambda v:1000.*native_constraint.jac(expand(v))[:,slots])],
+                    options=dict(maxiter=150,ftol=1.e-6))
+                full=expand(solved.x)
+                if not solved.success or not native_constraint.feasible(full):
+                    # A native mesh nearest-feature switch can invalidate an
+                    # SQP derivative. Continue this same constrained solve with
+                    # a derivative-free method, never a generated-rollout loop.
+                    print(f'{constraint_name} derivative-free frame={frame}',flush=True)
+                    solved=minimize(objective,solved.x,method='COBYLA',
+                        bounds=list(zip(solve_lower[slots],solve_upper[slots])),
+                        constraints=[dict(type='ineq',fun=lambda v:1000.*native_constraint.fun(expand(v)))],
+                        options=dict(maxiter=1500,rhobeg=.002,tol=1.e-5,catol=1.e-9))
+                    full=expand(solved.x)
+                if not solved.success or not native_constraint.feasible(full):
+                    raise RuntimeError(f'Frame {frame}: {constraint_name} infeasible/unconverged: {solved.message}; constraint_feasible={native_constraint.feasible(full)} gap={native_constraint.fun(full).tolist()} cost={solved.fun}; refusing output')
+                return OptimizeResult(x=full,success=True,nfev=initial.nfev+solved.nfev,
+                    cost=float(solved.fun),message=solved.message)
+
+        result = solve_frame(x0)
         frame_nfev = int(result.nfev)
         frame_success = bool(result.success)
         candidate_root_delta = np.clip(
-            result.x[:3],
-            solve_lower[:3],
-            solve_upper[:3],
+            result.x[:root_dofs],
+            solve_lower[:root_dofs],
+            solve_upper[:root_dofs],
         )
-        candidate_cfg = np.clip(result.x[3:], lower, upper)
+        candidate_cfg = np.clip(result.x[root_dofs:cfg_stop], lower, upper)
 
         def active_collision_contacts(
             q_cfg: np.ndarray,
@@ -1677,7 +2002,9 @@ def solve_pyroki_fullbody_ik(
             if collision_scene is None:
                 return None, [], 0.0, 0.0, []
             query_root = root.copy()
-            query_root[:3] += root_rotation.apply(root_delta_base)
+            query_root[:3] += root_rotation.apply(root_delta_base[:3])
+            if yaw_enabled:
+                query_root[3:7] = (Rotation.from_rotvec([0., 0., root_delta_base[3]]) * root_rotation).as_quat()[[3, 0, 1, 2]]
             qpos_query = np.concatenate([query_root, q_cfg], axis=0)
             contacts = collision_scene.query_qpos(qpos_query)
             reference_signed_by_body_surface = (
@@ -1953,8 +2280,10 @@ def solve_pyroki_fullbody_ik(
             )
             candidate_root = root.copy()
             candidate_root[:3] += root_rotation.apply(
-                candidate_root_delta
+                candidate_root_delta[:3]
             )
+            if yaw_enabled:
+                candidate_root[3:7] = (Rotation.from_rotvec([0., 0., candidate_root_delta[3]]) * root_rotation).as_quat()[[3, 0, 1, 2]]
             body_position_w, body_quaternion_w = (
                 world_body_poses_from_pyroki_fk(
                     candidate_root[None, :],
@@ -2081,30 +2410,30 @@ def solve_pyroki_fullbody_ik(
                     root_delta_previous_previous,
                     dtype=np.float64,
                 ),
+                np.asarray(root_yaw_axis_base, dtype=np.float64),
+                *surface_args,
+                *convex_args,
+                *temporal_args,
+                release_data[0][frame],
+                release_data[1][frame],
+                root_rotation.inv().apply(release_data[2][frame] - root[:3]),
+                root_rotation.inv().apply(release_data[3][frame]),
+                release_data[4][frame],
             )
             args_jax = tuple(jnp.asarray(value) for value in args)
             candidate_state = np.concatenate(
-                (candidate_root_delta, candidate_cfg)
+                (candidate_root_delta, candidate_cfg, result.x[cfg_stop:])
             )
-            refined = least_squares(
-                fun,
-                candidate_state,
-                jac=jac,
-                bounds=(solve_lower, solve_upper),
-                max_nfev=int(max_nfev),
-                xtol=1.0e-5,
-                ftol=1.0e-5,
-                gtol=1.0e-5,
-            )
+            refined = solve_frame(candidate_state)
             collision_refinement_solve_count += 1
             frame_nfev += int(refined.nfev)
             frame_success = frame_success and bool(refined.success)
             candidate_root_delta = np.clip(
-                refined.x[:3],
-                solve_lower[:3],
-                solve_upper[:3],
+                refined.x[:root_dofs],
+                solve_lower[:root_dofs],
+                solve_upper[:root_dofs],
             )
-            candidate_cfg = np.clip(refined.x[3:], lower, upper)
+            candidate_cfg = np.clip(refined.x[root_dofs:cfg_stop], lower, upper)
             result = refined
             (
                 initial_contacts,
@@ -2146,11 +2475,22 @@ def solve_pyroki_fullbody_ik(
                 for item in active_self_contacts
             )
         q_previous_previous = q_previous
+        if hard_release:
+            if not native_constraint.feasible(result.x):raise RuntimeError(f'Frame {frame}: final hard release violated')
+            hard_query_calls+=native_constraint.calls
+            if release_geometry is not None:
+                geometry_jacobian_calls+=native_constraint.jacobian_calls
         q_previous = candidate_cfg
         root_delta_previous_previous = root_delta_previous
         root_delta_previous = candidate_root_delta
         out_cfg[frame] = q_previous
         out_root_delta_base[frame] = root_delta_previous
+        if convex_mode:
+            solved_logits[frame] = result.x[cfg_stop:].reshape(coefficient_shape)
+            chosen,_ = convex_targets(solved_logits[frame],convex_vertices_w[frame],convex_valid[frame])
+            correction = chosen-compiled.contact_targets_w[frame]
+            normal = surface_normals_w[frame]
+            solved_target_corrections_w[frame] = correction-np.sum(correction*normal,axis=-1)[:,None]*normal
         success.append(frame_success)
         nfev.append(frame_nfev)
         costs.append(float(result.cost))
@@ -2158,7 +2498,7 @@ def solve_pyroki_fullbody_ik(
     solved_root = root_source[:n_frames].copy()
     solved_root[:, :3] += np.stack(
         [
-            _quat_wxyz_to_rotation(root[3:7]).apply(delta)
+            _quat_wxyz_to_rotation(root[3:7]).apply(delta[:3])
             for root, delta in zip(
                 solved_root,
                 out_root_delta_base,
@@ -2166,6 +2506,10 @@ def solve_pyroki_fullbody_ik(
         ],
         axis=0,
     )
+    if yaw_enabled:
+        solved_root[:, 3:7] = (Rotation.from_rotvec(np.column_stack((
+            np.zeros(n_frames), np.zeros(n_frames), out_root_delta_base[:, 3]))) *
+            Rotation.from_quat(solved_root[:, [4, 5, 6, 3]])).as_quat()[:, [3, 0, 1, 2]]
     qpos = np.concatenate([solved_root, out_cfg], axis=1)
     qpos[:, 3:7] = normalize_quat_wxyz(qpos[:, 3:7])
     qvel = holosoma_joint_velocities(qpos, fps)
@@ -2214,6 +2558,14 @@ def solve_pyroki_fullbody_ik(
         "semantic_target_error_m": _stats(semantic_error),
         "contact_target_error_m": _stats(contact_error),
         "active_contact_point_samples": int(np.count_nonzero(contact_mask)),
+        "release_witness_point_frames": int(np.count_nonzero(release_data[-1])),
+        "native_hard_release": bool(hard_release),
+        "native_hard_release_query_calls": hard_query_calls if release_geometry is None else 0,
+        "native_geometry_evaluations": hard_query_calls if release_geometry is not None else 0,
+        "native_geometry_jacobian_evaluations": geometry_jacobian_calls,
+        "native_geometry_requires_final_audit": release_geometry is not None,
+        "release_witness_contract": "native_allocated_contact_release_witness_v1",
+        "release_witness_requires_native_requery": True,
         "unresolved_semantics": list(compiled.unresolved_semantics),
         "unresolved_contacts": list(compiled.unresolved_contacts),
         "least_squares_success_count": int(sum(success)),
@@ -2225,14 +2577,26 @@ def solve_pyroki_fullbody_ik(
         "source_velocity_weight": float(q_velocity_weight),
         "source_acceleration_weight": float(q_acceleration_weight),
         "root_translation_limit_m": float(root_delta_limit_m),
+        "root_yaw_optimized": yaw_enabled,
+        "free_surface_contacts": free_surface_contacts,
+        "convex_surface_targets": convex_mode,
+        "contact_weight_contract": "shape_face_mean_v1" if collision_spec is not None and collision_spec.metadata.get("normalize_contact_group_weights") else "per_point_sum",
+        "convex_target_parameterization": "bounded_two_coordinate_triangle_or_quad" if convex_mode else None,
+        "inactive_contact_variables_removed": convex_mode,
+        "convex_contact_temporal_contract": "shape_face_matched_demonstration_relative_correction" if convex_mode else None,
+        "convex_contact_temporal_residual_scale": 0.1 if convex_mode else None,
+        "convex_solve_attempts": solve_attempts if convex_mode else None,
+        "surface_reference_ratio": surface_reference_ratio if free_surface_contacts else None,
+        "root_yaw_condition": yaw_condition,
+        "root_yaw_delta_rad": _stats(out_root_delta_base[:, 3]) if yaw_enabled else None,
         "root_translation_delta_m": _stats(
-            np.linalg.norm(out_root_delta_base, axis=-1)
+            np.linalg.norm(out_root_delta_base[:, :3], axis=-1)
         ),
         "root_translation_velocity_mps": _stats(
-            np.diff(out_root_delta_base, axis=0) * float(fps)
+            np.diff(out_root_delta_base[:, :3], axis=0) * float(fps)
         ),
         "root_translation_acceleration_mps2": _stats(
-            np.diff(out_root_delta_base, n=2, axis=0)
+            np.diff(out_root_delta_base[:, :3], n=2, axis=0)
             * float(fps) ** 2
         ),
         "environment_collision_backend": (
@@ -2369,8 +2733,15 @@ def solve_pyroki_fullbody_ik(
 
     output = Path(output_path).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
+    convex_output = {}
+    if convex_mode:
+        chosen, coefficients = convex_targets(solved_logits, convex_vertices_w[:n_frames], convex_valid[:n_frames])
+        convex_output = dict(optimized_surface_targets_w=chosen,
+            optimized_surface_target_weights=coefficients, optimized_surface_target_mask=convex_finite[:n_frames],
+            optimized_surface_target_vertices_w=convex_vertices_w[:n_frames])
     np.savez_compressed(
         output,
+        **convex_output,
         fps=np.asarray(float(fps)),
         joint_pos=qpos.astype(np.float32),
         joint_vel=qvel.astype(np.float32),

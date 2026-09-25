@@ -1,12 +1,8 @@
-"""Give each output its own contact/safety gate for secondary objectives."""
-
-import torch
-
-
-def contact_priority_loss(primary, secondary, accepted):
-    if primary.shape != secondary.shape or primary.shape != accepted.shape:
-        raise ValueError("contact priority requires one acceptance value per output")
-    if accepted.dtype != torch.bool:
-        raise ValueError("contact acceptance must be an explicit boolean Newton result")
-    # Avoid NaN * 0 for unavailable layout evidence on rejected outputs.
-    return primary + torch.where(accepted.detach(), secondary, torch.zeros_like(secondary))
+"""Compatibility alias for :mod:`contact_solver.contact_priority`."""
+if __name__ == "__main__":
+    import runpy
+    runpy.run_module("contact_solver.contact_priority", run_name="__main__")
+else:
+    import importlib
+    import sys
+    sys.modules[__name__] = importlib.import_module("contact_solver.contact_priority")

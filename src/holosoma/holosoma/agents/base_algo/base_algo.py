@@ -39,6 +39,10 @@ class BaseAlgo:
     def load(self, path):
         return NotImplementedError
 
+    def load_for_inference(self, path):
+        """Load policy inference state without restoring training runtime state."""
+        raise NotImplementedError
+
     @property
     def inference_model(self):
         return NotImplementedError

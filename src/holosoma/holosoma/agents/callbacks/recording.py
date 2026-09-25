@@ -14,6 +14,7 @@ import numpy as np
 from loguru import logger
 from somaforge_core import canonical_g1_asset_metadata
 from somaforge_core.contact_schema import NEWTON_COLLISION_PIPELINE, NEWTON_CONTACT_BACKEND
+from somaforge_core.contact_record_storage import compact_snapshot, stack_contact_channel
 
 from holosoma.agents.callbacks.base_callback import RLEvalCallback
 from holosoma.config_types.eval_callback import RecordingConfig
@@ -30,6 +31,10 @@ class EvalRecordingCallback(RLEvalCallback):
     ):
         super().__init__(config, training_loop)
         self.env_id = config.env_id
+        self.profile = config.profile
+        if self.profile != "full":
+            raise ValueError("Only the full recording profile is supported")
+        self.stop_when_done = bool(config.stop_when_done)
 
         output_path = config.output_path
         if not output_path.endswith(".npz"):
@@ -45,6 +50,10 @@ class EvalRecordingCallback(RLEvalCallback):
         self._bootstrap_state_recorded = False
         self._stopped_after_done = False
 
+    def _records_initial_state(self) -> bool:
+        """Respect the requested reset/bootstrap phase origin recording."""
+        return bool(self.config.record_initial_state)
+
     def _get_env(self):
         """Get the unwrapped BaseTask environment."""
         return self.training_loop._unwrap_env()
@@ -57,7 +66,10 @@ class EvalRecordingCallback(RLEvalCallback):
         arrays: dict[str, np.ndarray] = {}
         for name, values in self._buffers.items():
             if values:
-                arrays[name] = np.stack(values, axis=0)
+                if name.startswith(('solver_contact_', 'raw_contact_')) and not name.endswith('_count'):
+                    arrays[name] = stack_contact_channel(values)
+                else:
+                    arrays[name] = np.stack(values, axis=0)
 
         arrays["_metadata_json"] = np.array(json.dumps(self._metadata))
 
@@ -115,18 +127,21 @@ class EvalRecordingCallback(RLEvalCallback):
         contact_sensor = getattr(sim, "contact_sensor", None)
         if contact_sensor is not None and hasattr(contact_sensor, "body_names"):
             self._metadata["contact_sensor_body_names"] = list(contact_sensor.body_names)
-        try:
-            from isaaclab_newton.physics.newton_manager import NewtonManager
+        if self.profile == "full":
+            try:
+                from isaaclab_newton.physics.newton_manager import NewtonManager
 
-            model = getattr(NewtonManager, "_model", None)
-            if model is not None:
-                self._metadata["newton_body_labels"] = [str(x) for x in getattr(model, "body_label", [])]
-                self._metadata["newton_shape_labels"] = [str(x) for x in getattr(model, "shape_label", [])]
-                shape_body = getattr(model, "shape_body", None)
-                if shape_body is not None:
-                    self._metadata["newton_shape_body"] = np.asarray(shape_body.numpy(), dtype=np.int32).tolist()
-        except Exception as exc:
-            logger.debug(f"EvalRecordingCallback: Newton contact metadata unavailable: {exc}")
+                model = getattr(NewtonManager, "_model", None)
+                if model is not None:
+                    self._metadata["newton_body_labels"] = [str(x) for x in getattr(model, "body_label", [])]
+                    self._metadata["newton_shape_labels"] = [str(x) for x in getattr(model, "shape_label", [])]
+                    shape_body = getattr(model, "shape_body", None)
+                    if shape_body is not None:
+                        self._metadata["newton_shape_body"] = np.asarray(
+                            shape_body.numpy(), dtype=np.int32
+                        ).tolist()
+            except Exception as exc:
+                logger.debug(f"EvalRecordingCallback: Newton contact metadata unavailable: {exc}")
 
         # Static robot properties
         robot_cfg = env.robot_config
@@ -137,21 +152,27 @@ class EvalRecordingCallback(RLEvalCallback):
         asset_cfg = robot_cfg.asset
         self._metadata["urdf_path"] = str(Path(asset_cfg.asset_root) / asset_cfg.urdf_file)
 
-        channel_names = [
-            "dof_pos_target",
+        base_channel_names = [
             "dof_pos",
             "dof_vel",
-            "torques",
-            "torques_substep",
-            "dof_pos_substep",
-            "dof_vel_substep",
-            "actions",
             "root_pos",
             "root_quat_xyzw",
             "root_lin_vel",
             "root_ang_vel",
             "body_pos_w",
             "body_quat_xyzw",
+            "motion_id",
+            "motion_time_step",
+            "terminated",
+            "timeout",
+        ]
+        full_channel_names = [
+            "dof_pos_target",
+            "torques",
+            "torques_substep",
+            "dof_pos_substep",
+            "dof_vel_substep",
+            "actions",
             "body_lin_vel_w",
             "body_ang_vel_w",
             "contact_forces",
@@ -167,16 +188,26 @@ class EvalRecordingCallback(RLEvalCallback):
             "raw_contact_point1_w",
             "raw_contact_normal_w",
             "raw_contact_force_w",
-            "motion_id",
-            "motion_time_step",
-            "terminated",
-            "timeout",
             "commanded_velocity",
         ]
+        channel_names = base_channel_names + (
+            full_channel_names if self.profile == "full" else []
+        )
         for name in channel_names:
             self._buffers[name] = []
 
-        logger.info(f"EvalRecordingCallback: recording env_id={self.env_id}, output={self.output_path}")
+        if self.profile == "full":
+            from holosoma.simulator.isaaclab3_newton.contact_snapshot import FIELDS
+            for field in FIELDS:
+                self._buffers[f"solver_contact_{field}"] = []
+
+        self._metadata["recording_profile"] = self.profile
+        self._metadata["record_initial_state_requested"] = bool(self.config.record_initial_state)
+        self._metadata["record_initial_state_effective"] = self._records_initial_state()
+        logger.info(
+            "EvalRecordingCallback: recording "
+            f"env_id={self.env_id}, profile={self.profile}, output={self.output_path}"
+        )
 
     def on_pre_eval_env_step(self, actor_state: dict) -> dict:
         return actor_state
@@ -184,7 +215,7 @@ class EvalRecordingCallback(RLEvalCallback):
     def on_pre_eval_reset_bootstrap(self, actor_state: dict) -> dict:
         if self.env_id >= 0 and self._stopped_after_done:
             return actor_state
-        if self.config.record_initial_state and not self._initial_state_recorded:
+        if self._records_initial_state() and not self._initial_state_recorded:
             self._record_step(actor_state)
             self._initial_state_recorded = True
         return actor_state
@@ -192,7 +223,7 @@ class EvalRecordingCallback(RLEvalCallback):
     def on_post_eval_reset(self, actor_state: dict) -> dict:
         if self.env_id >= 0 and self._stopped_after_done:
             return actor_state
-        if not self.config.record_initial_state:
+        if not self._records_initial_state():
             return actor_state
         if not self._initial_state_recorded:
             self._record_step(actor_state)
@@ -207,14 +238,14 @@ class EvalRecordingCallback(RLEvalCallback):
         self._current_actor_state = actor_state
         if self.env_id < 0:
             self._update_all_env_done_metadata(actor_state)
-            if self._all_envs_done():
+            if self.stop_when_done and self._all_envs_done():
                 self._stopped_after_done = True
                 return actor_state
             self._record_step(actor_state)
             return actor_state
         if self._stopped_after_done:
             return actor_state
-        if self._actor_state_done(actor_state):
+        if self.stop_when_done and self._actor_state_done(actor_state):
             self._metadata["episode_done"] = True
             self._metadata["done_step"] = int(self._step_count)
             self._metadata["done_is_timeout"] = self._actor_state_timeout(actor_state)
@@ -310,9 +341,10 @@ class EvalRecordingCallback(RLEvalCallback):
 
         self._buffers["dof_pos"].append(_to_np(sim.dof_pos[eid]))  # post_eval_env_step, so after 4 decimation
         self._buffers["dof_vel"].append(_to_np(sim.dof_vel[eid]))
-        self._buffers["torques"].append(
-            _to_np(self._extract_torques(env, eid))
-        )  # pre_eval_env_step, so the torques is the last decimation
+        if self.profile == "full":
+            self._buffers["torques"].append(
+                _to_np(self._extract_torques(env, eid))
+            )  # pre_eval_env_step, so the torques is the last decimation
 
         # robot_root_states: [num_envs, 13] = pos(3), quat_xyzw(4), lin_vel(3), ang_vel(3)
         root = sim.robot_root_states[eid]
@@ -348,6 +380,7 @@ class EvalRecordingCallback(RLEvalCallback):
                 logger.debug(f"EvalRecordingCallback: failed to read raw rigid contacts: {exc}")
                 raw_contacts = None
             if raw_contacts is not None:
+                raw_contacts = compact_snapshot(raw_contacts)
                 self._buffers["raw_contact_count"].append(np.asarray(raw_contacts["count"], dtype=np.int32))
                 self._buffers["raw_contact_shape0"].append(np.asarray(raw_contacts["shape0"], dtype=np.int32))
                 self._buffers["raw_contact_shape1"].append(np.asarray(raw_contacts["shape1"], dtype=np.int32))
@@ -358,19 +391,26 @@ class EvalRecordingCallback(RLEvalCallback):
                 self._buffers["raw_contact_normal_w"].append(np.asarray(raw_contacts["normal_w"], dtype=np.float32))
                 self._buffers["raw_contact_force_w"].append(np.asarray(raw_contacts["force_w"], dtype=np.float32))
 
-        if hasattr(env, "command_manager") and env.command_manager is not None:
-            try:
-                motion_command = env.command_manager.get_state("motion_command")
-                self._buffers["motion_id"].append(_to_np(motion_command.motion_ids[eid]))
-                self._buffers["motion_time_step"].append(_to_np(motion_command.time_steps[eid]))
-            except (AttributeError, KeyError, IndexError):
-                pass
-        if hasattr(env, "termination_manager") and env.termination_manager is not None:
-            try:
-                self._buffers["terminated"].append(_to_np(env.termination_manager.terminated[eid]))
-                self._buffers["timeout"].append(_to_np(env.termination_manager.time_outs[eid]))
-            except (AttributeError, IndexError):
-                pass
+        if self.profile == "full":
+            if not callable(getattr(sim, "get_solver_contact_snapshot", None)):
+                raise RuntimeError(
+                    "Full recording requires Newton/MJWarp solver contact snapshots; "
+                    "raw contacts and forces cannot replace activation labels."
+                )
+            snapshot = compact_snapshot(sim.get_solver_contact_snapshot())
+            for field, value in snapshot.items():
+                self._buffers[f"solver_contact_{field}"].append(np.asarray(value))
+            self._metadata["solver_contact_semantics"] = {
+                "schema": "newton_mjwarp_constraint_snapshot_v1",
+                "activation": "CONSTRAINT type and dist < includemargin",
+                "allocation": "active and every expected efc row allocated (constraint_rows)",
+                "indexing": "solver contacts; not raw Newton contact indices",
+                "time": "last solver constraint evaluation; motion poses may be post-integration",
+                "force_is_separate": True,
+                "storage": "valid rows retained in original order; padded to observed maximum count, not solver capacity",
+            }
+
+        self._record_motion_and_termination(env, eid, _to_np)
 
         # substep tensors: [decimation, num_dof] — one row per physics sub-step
         torques_substep, dof_pos_substep, dof_vel_substep = self._extract_substep_data(env, eid)
@@ -392,6 +432,22 @@ class EvalRecordingCallback(RLEvalCallback):
                 pass
 
         self._step_count += 1
+
+
+    def _record_motion_and_termination(self, env: Any, eid: int | slice, to_np: Any) -> None:
+        if hasattr(env, "command_manager") and env.command_manager is not None:
+            try:
+                motion_command = env.command_manager.get_state("motion_command")
+                self._buffers["motion_id"].append(to_np(motion_command.motion_ids[eid]))
+                self._buffers["motion_time_step"].append(to_np(motion_command.time_steps[eid]))
+            except (AttributeError, KeyError, IndexError):
+                pass
+        if hasattr(env, "termination_manager") and env.termination_manager is not None:
+            try:
+                self._buffers["terminated"].append(to_np(env.termination_manager.terminated[eid]))
+                self._buffers["timeout"].append(to_np(env.termination_manager.time_outs[eid]))
+            except (AttributeError, IndexError):
+                pass
 
     def _extract_dof_pos_target(self, env: Any, env_id: int | slice) -> torch.Tensor:
         """Extract desired target joint positions from the action manager's joint control term.

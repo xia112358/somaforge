@@ -30,18 +30,17 @@ def replay(tyro_config: ExperimentConfig, launcher_args: argparse.Namespace | No
     tyro_env_config = get_tyro_env_config(tyro_config)
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     env = get_class(env_target)(tyro_env_config, device=device)
-    _set_replay_camera(env)
+    selection_guard = _disable_replay_scene_selection()
 
     try:
-        done = False
-        camera_reapplied = False
+        env.simulator.sim.step()
+        done = env.step_visualize_motion(None)  # type: ignore[attr-defined]
+        _set_replay_camera(env)
         while not done:
             env.simulator.sim.step()
             done = env.step_visualize_motion(None)  # type: ignore[attr-defined]
-            if not camera_reapplied:
-                _set_replay_camera(env)
-                camera_reapplied = True
     finally:
+        del selection_guard
         close_simulation_app(simulation_app)
 
 
@@ -55,49 +54,22 @@ def _set_replay_camera(env) -> None:
     sim = getattr(simulator, "sim", None)
     if sim is not None and hasattr(sim, "set_camera_view"):
         sim.set_camera_view(eye, target)
-        _set_active_viewport_camera_z_up(sim, eye, target)
 
 
-def _set_active_viewport_camera_z_up(sim, eye: tuple[float, float, float], target: tuple[float, float, float]) -> None:
+def _disable_replay_scene_selection():
+    """Keep replay mouse interaction camera-only without affecting other Kit workflows."""
     try:
         import omni.kit.viewport.utility as viewport_utils
-        from pxr import Gf, Sdf, UsdGeom
-    except Exception:
-        return
+        import omni.usd
 
-    viewport_api = viewport_utils.get_active_viewport()
-    if viewport_api is None:
-        return
-
-    stage = getattr(sim, "stage", None)
-    if stage is None:
-        return
-
-    camera_path = Sdf.Path("/World/ReplayCamera")
-    camera_prim = stage.GetPrimAtPath(camera_path)
-    if not camera_prim.IsValid():
-        camera_prim = UsdGeom.Camera.Define(stage, camera_path).GetPrim()
-
-    camera = UsdGeom.Camera(camera_prim)
-    camera.CreateFocalLengthAttr(20.0)
-    camera.CreateClippingRangeAttr((0.01, 10000.0))
-
-    transform = Gf.Matrix4d(1).SetLookAt(
-        Gf.Vec3d(*eye),
-        Gf.Vec3d(*target),
-        Gf.Vec3d(0.0, 0.0, 1.0),
-    ).GetInverse()
-    xformable = UsdGeom.Xformable(camera_prim)
-    xformable.ClearXformOpOrder()
-    xformable.AddTransformOp().Set(transform)
-
-    camera_prim.CreateAttribute("omni:kit:centerOfInterest", Sdf.ValueTypeNames.Vector3d, True).Set(Gf.Vec3d(*target))
-    try:
-        viewport_api.camera_path = camera_path
-    except Exception:
-        set_active_camera = getattr(viewport_api, "set_active_camera", None)
-        if set_active_camera is not None:
-            set_active_camera(str(camera_path))
+        selection = omni.usd.get_context().get_selection()
+        selection.set_selected_prim_paths([], False)
+        viewport_window = viewport_utils.get_active_viewport_window()
+        if viewport_window is None:
+            return None
+        return viewport_utils.disable_selection(viewport_window)
+    except (AttributeError, ImportError):
+        return None
 
 
 def _get_replay_camera_target(env) -> tuple[float, float, float]:

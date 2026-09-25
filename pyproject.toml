@@ -50,11 +50,15 @@ lint.ignore=[
 members = [
     "packages/somaforge_core",
     "packages/motion_edit",
-    "packages/gmvq",
     "packages/climb00_pipeline",
+    "packages/generator",
+    "packages/contact_solver",
     "src/holosoma",
 ]
 
 [tool.uv.sources]
 somaforge-core = { workspace = true }
 motion-edit = { workspace = true }
+
+somaforge-generator = { workspace = true }
+contact-solver = { workspace = true }

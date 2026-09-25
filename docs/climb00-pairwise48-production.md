@@ -1,3 +1,8 @@
+> Historical record: the GMVQ/HyAR code and online entrypoints below have been retired.
+> Predictor + Infiller now provide the generation architecture. Old artifacts remain
+> preserved locally; commands below are not current runnable instructions.
+> See the repository README and `baselines/corrected1000/README.md`.
+
 # Climb00 Pairwise48 Production Result
 
 This document is the single path registry and runbook for the accepted

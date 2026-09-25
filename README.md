@@ -1,7 +1,8 @@
 # SomaForge
 
 SomaForge is the unified workspace for G1 contact-aware motion editing,
-residual GM-VQ skill representation, and IsaacLab3/Newton whole-body tracking.
+next-contact prediction, endpoint-conditioned trajectory infilling, and
+IsaacLab3/Newton whole-body tracking.
 
 ## Layout
 
@@ -9,13 +10,15 @@ residual GM-VQ skill representation, and IsaacLab3/Newton whole-body tracking.
 src/holosoma/               WBT training, evaluation, and simulator integration
 src/holosoma_retargeting/   Retargeting tools (separate environment)
 packages/motion_edit/       Contact Editor and force-reference generation
-packages/gmvq/              GMVQ and HyAR models
-packages/somaforge_core/    Shared robot asset identity contract
+packages/generator/         Predictor, Infiller, datasets and generation training
+packages/contact_solver/    Contact objectives, collision gradients and projection
+packages/climb00_pipeline/  Legacy import and module CLI compatibility
+packages/somaforge_core/    Shared assets, FK, contracts and Newton contact semantics
 OmniRetarget_Dataset/       Imported preprocessing tools
 runtime/current/            Outputs made with the canonical robot asset
 runtime/legacy_wrong_urdf/  Quarantined old data; never use for training
 configs/assets_manifest.json Manifest-first registry for every runtime asset
-configs/training_pipeline_manifest.json Shared three-stage training data contract
+configs/training_pipeline_manifest.json Shared training data contract
 ```
 
 ## Canonical assets
@@ -27,8 +30,8 @@ src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf
 ```
 
 All runtime inputs are selected through `configs/assets_manifest.json` and
-`configs/training_pipeline_manifest.json`. Training motions, GMVQ datasets,
-selectors, and checkpoints must carry the matching `robot_asset_json` identity.
+`configs/training_pipeline_manifest.json`. Training motions, Predictor/Infiller datasets,
+and checkpoints must carry the matching `robot_asset_json` identity.
 Missing or mismatched identity is rejected.
 
 ```bash
@@ -94,16 +97,21 @@ Self-collision is enabled from the initial policy onward. The old clean6hz,
 frame-boundary replay, force-retarget, and projector branches are not
 production paths.
 
-The accepted `climb_00` augmentation and online GMVQ/WBT result is pinned in
-[`climb00-pairwise48-production.md`](docs/climb00-pairwise48-production.md).
-Its motions, terrains, manifest, WBT checkpoint, and self-contained GMVQ bundle
-live under stable `runtime/current/` paths; production commands must not point
-back into `tmp/`.
+The current generation architecture is:
 
-Experimental whole-segment GMVQ decoders remain development-only until they
-pass both offline continuity checks and multi-height closed-loop WBT
-acceptance. A checkpoint in `tmp/` never supersedes the stable bundle merely
-because it can be loaded or reaches STOP after retries.
+```text
+current robot state + actual contact observation + terrain
+-> Predictor: next contact plan and endpoint pose
+-> Infiller: continuous motion between endpoints
+-> Newton validation and WBT tracking
+```
+
+Predictor and Infiller replace the retired GMVQ/HyAR module. Their code lives in
+`packages/climb00_pipeline/`. The current corrected1000 Predictor experiment is
+recorded in [baselines/corrected1000](baselines/corrected1000/README.md).
+Its raw recursive evaluation uses Predictor outputs alone; it is not an
+acceptance result for an integrated Predictor + Infiller + WBT deployment.
+The older [pairwise48 report](docs/climb00-pairwise48-production.md) is historical.
 
 ### 1. Bootstrap and validate assets
 
@@ -129,7 +137,7 @@ python scripts/check_motion_manifest.py
 ### 2. Train the initial WBT baseline
 
 The first WBT run uses only the Newton-canonicalized source motion and terrain.
-It does not depend on Motion Edit, GM-VQ, or HyAR. Self-collision must already
+It does not depend on Motion Edit, Predictor, or Infiller. Self-collision must already
 be enabled here and remains enabled for rollout collection and every later
 fine-tune. Save the accepted checkpoint and rollout recording under
 `runtime/current/`.
@@ -228,28 +236,22 @@ Evaluation does not write persistent TensorBoard or W&B logs by default.
 `--acceptance.config.enabled True`, and `--export-onnx True` each enable one
 explicit output type.
 
-### 4. Prepare and train GM-VQ / HyAR
+### 4. Train Predictor and Infiller
 
-Prepare segments from the Newton rollout force manifest, then train from the
-resulting pack. Keep the pack and checkpoints under `runtime/current/`:
+Use actual Newton contact labels and event boundaries. Predictor learns the
+next contact plan and endpoint pose; Infiller learns the trajectory between
+endpoints. Generated trajectories require independent contact, collision and
+WBT acceptance before use as validated references.
 
-```bash
-source scripts/source_somaforge.sh
-conda run -n env_somaforge python -m gmvq.prepare_motion_edit_segments \
-  --motion-edit-manifest runtime/current/manifests/newton_contact_force_8part.json \
-  --motion-root runtime/current/motions \
-  --output runtime/current/models/example_segment_pack.npz
-conda run -n env_somaforge python -m gmvq.train_gmvq \
-  --data runtime/current/models/example_segment_pack.npz \
-  --save_dir runtime/current/models/example_gmvq
-```
-
-The packer and trainer reject missing or incompatible robot fingerprints.
+See [the corrected1000 baseline](baselines/corrected1000/README.md) for the
+saved Predictor configuration and entrypoints. Model weights and training data
+remain local. See `packages/climb00_pipeline/` for the Infiller implementations;
+this replacement does not assert a newly validated combined runtime.
 
 ### 5. Train the refined Holosoma WBT policy
 
 Use the canonical Newton USD and the Newton-validated force manifest produced
-from Motion Edit or a GM-VQ/HyAR-decoded reference. Do not resume the baseline
+from Motion Edit or a Predictor/Infiller-generated reference. Do not resume the baseline
 checkpoint:
 
 ```bash

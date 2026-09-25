@@ -235,6 +235,67 @@ def test_compile_pyroki_taskspace_resolves_semantics_and_global_contact_frames()
     assert compiled.unresolved_contacts == ()
 
 
+def test_contact_group_weight_is_independent_of_manifold_point_count() -> None:
+    from dataclasses import replace
+
+    spec = _spec()
+    contact = replace(spec.contacts[0], metadata={"target_surface_id": "top"})
+    extra = replace(contact, anchor_id="extra", frames=np.array([11]),
+                    target_points_w=contact.target_points_w[:1])
+    grouped = replace(spec, contacts=(contact, extra),
+                      metadata={"normalize_contact_group_weights": True})
+    links = ("pelvis", "left_ankle_roll_link", "left_elbow_link")
+    compiled = compile_pyroki_taskspace(grouped, links)
+    np.testing.assert_allclose(compiled.contact_weights.sum(axis=1), [0, 100, 100])
+    np.testing.assert_allclose(compiled.contact_weights[1], [50, 50])
+    legacy = compile_pyroki_taskspace(replace(grouped, metadata={}), links)
+    np.testing.assert_allclose(legacy.contact_weights.sum(axis=1), [0, 200, 100])
+    independent = replace(extra, shape_labels=("other_shape",))
+    separate = compile_pyroki_taskspace(replace(grouped, contacts=(contact, independent)), links)
+    np.testing.assert_allclose(separate.contact_weights.sum(axis=1), [0, 200, 100])
+    np.testing.assert_array_equal(compiled.contact_targets_w, legacy.contact_targets_w)
+    np.testing.assert_array_equal(compiled.contact_points_local, legacy.contact_points_local)
+
+
+def test_contact_group_normalization_requires_surface_identity() -> None:
+    from dataclasses import replace
+    import pytest
+
+    with pytest.raises(ValueError, match="requires shape and surface identity"):
+        compile_pyroki_taskspace(replace(_spec(), metadata={"normalize_contact_group_weights": True}),
+                                ("pelvis", "left_ankle_roll_link", "left_elbow_link"))
+
+
+def test_stable_material_preserves_activation_and_source_motion():
+    from dataclasses import replace
+    from motion_edit.generation.stable_contact_material import stabilize_contact_material_samples
+
+    spec = _spec()
+    metadata = {"target_surface_id": "top", "target_contract": "unrotated_demonstration_weak_reference"}
+    a = replace(spec.contacts[0], frames=np.array([10]),
+                target_points_w=spec.contacts[0].target_points_w[:1], metadata=metadata)
+    b = replace(a, anchor_id="b", frames=np.array([11]),
+                shape_labels=("left_sole", "left_sole"),
+                points_local=np.array([[0.1, 0, -0.05], [-0.1, 0, -0.05]]),
+                target_points_w=np.zeros((1, 2, 3)))
+    source = {"body_names": np.array(["left_ankle_roll_link"]),
+              "body_pos_w": np.zeros((13, 1, 3)),
+              "body_quat_w": np.tile([1., 0, 0, 0], (13, 1, 1))}
+    source["body_pos_w"][11, 0, 0] = 0.03
+    stable = stabilize_contact_material_samples(replace(spec, contacts=(a, b)), source)
+    assert len(stable.contacts) == 1
+    contact = stable.contacts[0]
+    np.testing.assert_array_equal(contact.frames, [10, 11])
+    assert contact.points_local.shape == (2, 3)
+    assert contact.points_local_by_frame is None
+    np.testing.assert_allclose(contact.target_points_w[1]-contact.target_points_w[0],
+                               [[.03, 0, 0], [.03, 0, 0]])
+    assert contact.metadata["optimization_samples_are_contact_truth"] is False
+    assert a.points_local.shape == (1, 3)  # source observations untouched
+    gap = stabilize_contact_material_samples(replace(spec, contacts=(a, replace(b, frames=np.array([12])))), source)
+    assert [list(c.frames) for c in gap.contacts] == [[10], [12]]
+
+
 def test_compile_pyroki_taskspace_uses_rolling_local_points_by_frame() -> None:
     spec = _spec()
     rolling = ContactPatchTarget(

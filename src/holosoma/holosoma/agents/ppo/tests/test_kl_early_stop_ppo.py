@@ -88,3 +88,44 @@ def test_raw_gaussian_kl_is_zero_for_unchanged_means_above_action_bound() -> Non
     kl = algo._compute_kl_div(raw_mean, sigma, raw_mean.clone(), sigma.clone())
 
     torch.testing.assert_close(kl, torch.tensor(0.0))
+
+
+def test_filter_ppo_minibatch_excludes_competence_probe_rows() -> None:
+    minibatch = {
+        "actor_obs": torch.arange(8, dtype=torch.float32).reshape(4, 2),
+        "actions": torch.arange(4, dtype=torch.float32).reshape(4, 1),
+        "ppo_valid": torch.tensor([[True], [False], [True], [False]]),
+    }
+
+    filtered, excluded_fraction = PPO._filter_ppo_minibatch(minibatch)
+
+    assert excluded_fraction == 0.5
+    torch.testing.assert_close(filtered["actor_obs"], minibatch["actor_obs"][[0, 2]])
+    torch.testing.assert_close(filtered["actions"], minibatch["actions"][[0, 2]])
+    assert filtered["ppo_valid"].all()
+
+
+def test_advantage_normalization_uses_only_ppo_valid_rows() -> None:
+    algo = object.__new__(PPO)
+    algo.is_multi_gpu = False
+    advantages = torch.tensor([[[1.0], [1000.0]], [[3.0], [-1000.0]]])
+    ppo_valid = torch.tensor([[[True], [False]], [[True], [False]]])
+
+    normalized = algo._normalize_advantages(advantages, ppo_valid)
+    valid = normalized[ppo_valid]
+
+    torch.testing.assert_close(valid.mean(), torch.tensor(0.0))
+    torch.testing.assert_close(valid.std(unbiased=False), torch.tensor(1.0))
+    torch.testing.assert_close(valid, torch.tensor([-1.0, 1.0]))
+
+
+def test_replace_competence_probe_actions_preserves_normal_samples() -> None:
+    sampled = torch.tensor([[0.2, 0.3], [0.4, 0.5], [0.6, 0.7]])
+    means = torch.tensor([[2.0, -2.0], [3.0, -3.0], [4.0, -4.0]])
+    probe_mask = torch.tensor([False, True, False])
+
+    actions = PPO._replace_competence_probe_actions(sampled, means, probe_mask, action_clip=1.0)
+
+    torch.testing.assert_close(actions[0], sampled[0])
+    torch.testing.assert_close(actions[1], torch.tensor([1.0, -1.0]))
+    torch.testing.assert_close(actions[2], sampled[2])

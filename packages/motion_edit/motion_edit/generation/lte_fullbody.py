@@ -1245,6 +1245,11 @@ def _contact_laplacian_handles_from_edits(
         keypoints=keypoints,
         n_frames=n_frames,
         contact_motion=source_motion,
+        verified_patches=(
+            list(graph.patches)
+            if any(a.metadata.get("newton_shape_label") for a in graph.anchors)
+            else None
+        ),
     )
     handles: list[ContactHandleSpec] = []
     for episode in episodes:
@@ -1639,7 +1644,9 @@ def apply_contact_edit_plan_to_motion(
     if not source_motion.exists():
         raise FileNotFoundError(source_motion)
     _validate_source_robot_asset(source_motion)
-    graph = read_contact_graph(layers_root / (source_contact_layer or plan.source_contact_layer), plan.source_motion_id)
+    from motion_edit.contact.layers import read_verified_contact_graph
+    graph = read_verified_contact_graph(layers_root / (source_contact_layer or plan.source_contact_layer),
+        plan.source_motion_id, motion_path=source_motion, labels_path=plan.metadata.get('newton_contact_file'))
     edits = [ContactAnchorEditRecord(**raw) for raw in plan.edits]
     edits.extend(_surface_transform_anchor_edits(plan, graph))
     if mode == "lte_fullbody":

@@ -3,6 +3,8 @@ from __future__ import annotations
 from isaaclab_newton.physics import NewtonManager
 from isaaclab_newton.sensors.ray_caster.ray_caster import RayCaster as NewtonRayCaster
 from loguru import logger
+import math
+import torch
 
 
 class HolosomaNewtonRayCaster(NewtonRayCaster):
@@ -26,6 +28,40 @@ class HolosomaNewtonRayCaster(NewtonRayCaster):
             self._view_count,
             self._num_envs,
         )
+
+    def _initialize_rays_impl(self) -> None:
+        super()._initialize_rays_impl()
+        self._php_canonical_ray_directions = self.ray_directions.torch.clone()
+
+    def reset(self, env_ids=None, env_mask=None):
+        super().reset(env_ids=env_ids, env_mask=env_mask)
+        max_angle = float(getattr(self.cfg, "angular_drift_degrees", 0.0))
+        if max_angle <= 0.0 or not hasattr(self, "_php_canonical_ray_directions"):
+            return
+        if env_ids is None:
+            ids = torch.arange(self._view_count, device=self.device)
+        else:
+            ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
+        radians = math.radians(max_angle)
+        angles = torch.empty((ids.numel(), 3), device=self.device).uniform_(-radians, radians)
+        cx, cy, cz = torch.cos(angles).unbind(-1)
+        sx, sy, sz = torch.sin(angles).unbind(-1)
+        rotation = torch.stack(
+            (
+                cy * cz,
+                cz * sx * sy - cx * sz,
+                sx * sz + cx * cz * sy,
+                cy * sz,
+                cx * cz + sx * sy * sz,
+                cx * sy * sz - cz * sx,
+                -sy,
+                cy * sx,
+                cx * cy,
+            ),
+            dim=-1,
+        ).reshape(-1, 3, 3)
+        canonical = self._php_canonical_ray_directions.index_select(0, ids)
+        self.ray_directions.torch[ids] = torch.einsum("eij,erj->eri", rotation, canonical)
 
     @staticmethod
     def _resolve_site_indices(labels: list[str], prim_expr: str, num_envs: int) -> list[int]:

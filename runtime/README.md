@@ -3,7 +3,7 @@
 `current/` contains outputs created with the canonical G1 sphere-hand asset.
 `legacy_wrong_urdf/` contains preserved data and configuration produced before
 the asset contract was enforced. Legacy artifacts must not be used for
-training, evaluation, Motion Edit generation, or GMVQ fitting.
+training, evaluation, Motion Edit generation, or Predictor/Infiller training.
 
 The tracked manifest at `configs/assets_manifest.json` is the source of truth
 for robot, terrain, motion, model, and generated-asset locations. New files

@@ -554,6 +554,34 @@ def create_motion_control_sliders(
         print(f"[motion switched] {source_motion_npz} frames={n_frames}")
         return {"motion_npz": source_motion_npz, "motion_name": motion_name, "n_frames": n_frames}
 
+    motion_dropdown = None
+    motion_dropdown_paths: dict[str, str] = {}
+    if not timeline_wrapper and len(original_motion_paths or []) > 1:
+        for path_text in original_motion_paths or []:
+            path = Path(path_text)
+            label = path.stem
+            if label in motion_dropdown_paths:
+                label = path.name
+            motion_dropdown_paths[label] = str(path)
+        initial_label = next(
+            (
+                label
+                for label, path_text in motion_dropdown_paths.items()
+                if Path(path_text) == Path(source_motion_npz)
+            ),
+            next(iter(motion_dropdown_paths)),
+        )
+        with server.gui.add_folder("Motion"):
+            motion_dropdown = server.gui.add_dropdown(
+                "trajectory",
+                options=list(motion_dropdown_paths),
+                initial_value=initial_label,
+            )
+
+        @motion_dropdown.on_update
+        def _(_) -> None:
+            _switch_original_motion(motion_dropdown_paths[str(motion_dropdown.value)])
+
     def _slice_npz_dict(data: dict[str, object], start: int, end: int) -> dict[str, object]:
         out: dict[str, object] = {}
         for key, value in data.items():

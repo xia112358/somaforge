@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from loguru import logger
 from somaforge_core.contact_schema import CONTACT_FORCE_PART_ORDER, decode_contact_force_provenance
-from somaforge_core.kinematics import validate_pose_velocity_consistency, validate_root_body_consistency
+from somaforge_core.kinematics import validate_root_body_consistency
 from somaforge_core.motion_schema import decode_kinematics_provenance
 from somaforge_core.robot_assets import decode_robot_asset_json
 
@@ -124,6 +124,7 @@ class MotionLoader:
         """Store motion tensors in simulator body/joint order once at load time."""
         self._joint_pos = self._joint_pos[:, joint_indexes].contiguous()
         self._joint_vel = self._joint_vel[:, joint_indexes].contiguous()
+        self._sim_joint_vel = self._sim_joint_vel[:, joint_indexes].contiguous()
         self._body_pos_w = self._body_pos_w[:, body_indexes].contiguous()
         self._body_quat_w = self._body_quat_w[:, body_indexes].contiguous()
         self._body_lin_vel_w = self._body_lin_vel_w[:, body_indexes].contiguous()
@@ -204,6 +205,13 @@ class MotionLoader:
 
             joint_pos_raw = data["joint_pos"]
             joint_vel_raw = data["joint_vel"]
+            sim_joint_vel_raw = data["sim_joint_vel"] if "sim_joint_vel" in data else joint_vel_raw
+            sim_root_lin_vel_raw = (
+                data["sim_root_lin_vel"] if "sim_root_lin_vel" in data else joint_vel_raw[:, :3]
+            )
+            sim_root_ang_vel_raw = (
+                data["sim_root_ang_vel"] if "sim_root_ang_vel" in data else joint_vel_raw[:, 3:6]
+            )
             body_pos_w_raw = data["body_pos_w"]
             body_quat_w_raw = data["body_quat_w"]
             body_lin_vel_w_raw = data["body_lin_vel_w"]
@@ -225,6 +233,22 @@ class MotionLoader:
                     f"Unexpected joint_vel columns: got {num_vel_cols}, expected {len(joint_names) + 6}. "
                     f"File: {motion_file}"
                 )
+            if sim_joint_vel_raw.shape != joint_vel_raw.shape:
+                raise ValueError(
+                    f"Unexpected sim_joint_vel shape: got {sim_joint_vel_raw.shape}, "
+                    f"expected {joint_vel_raw.shape}. File: {motion_file}"
+                )
+            expected_root_vel_shape = (joint_pos_raw.shape[0], 3)
+            if sim_root_lin_vel_raw.shape != expected_root_vel_shape:
+                raise ValueError(
+                    f"Unexpected sim_root_lin_vel shape: got {sim_root_lin_vel_raw.shape}, "
+                    f"expected {expected_root_vel_shape}. File: {motion_file}"
+                )
+            if sim_root_ang_vel_raw.shape != expected_root_vel_shape:
+                raise ValueError(
+                    f"Unexpected sim_root_ang_vel shape: got {sim_root_ang_vel_raw.shape}, "
+                    f"expected {expected_root_vel_shape}. File: {motion_file}"
+                )
             if num_bodies != len(body_names):
                 raise ValueError(
                     f"Body count mismatch: body_pos_w has {num_bodies} bodies but body_names has "
@@ -238,17 +262,12 @@ class MotionLoader:
                 body_quat_w_raw,
                 root_body_index=body_names.index("pelvis"),
             )
-            validate_pose_velocity_consistency(
-                body_pos_w_raw,
-                body_quat_w_raw,
-                body_lin_vel_w_raw,
-                body_ang_vel_w_raw,
-                self.fps,
-            )
-
             # Strip root DOFs
             self._joint_pos = torch.tensor(joint_pos_raw[:, 7:], dtype=torch.float32, device=device)
             self._joint_vel = torch.tensor(joint_vel_raw[:, 6:], dtype=torch.float32, device=device)
+            self._sim_joint_vel = torch.tensor(sim_joint_vel_raw[:, 6:], dtype=torch.float32, device=device)
+            self._sim_root_lin_vel = torch.tensor(sim_root_lin_vel_raw, dtype=torch.float32, device=device)
+            self._sim_root_ang_vel = torch.tensor(sim_root_ang_vel_raw, dtype=torch.float32, device=device)
 
             assert len(joint_names) == self._joint_pos.shape[1], (
                 f"Joint names ({len(joint_names)}) != joint_pos columns ({self._joint_pos.shape[1]}) in {motion_file}"
@@ -472,6 +491,20 @@ class MotionLoader:
         if self._motion_order_canonicalized:
             return self._joint_vel
         return self._joint_vel[:, self._joint_indexes]
+
+    @property
+    def sim_joint_vel(self) -> torch.Tensor:
+        if self._motion_order_canonicalized:
+            return self._sim_joint_vel
+        return self._sim_joint_vel[:, self._joint_indexes]
+
+    @property
+    def sim_root_lin_vel(self) -> torch.Tensor:
+        return self._sim_root_lin_vel
+
+    @property
+    def sim_root_ang_vel(self) -> torch.Tensor:
+        return self._sim_root_ang_vel
 
     @property
     def body_pos_w(self) -> torch.Tensor:
@@ -704,6 +737,9 @@ class MultiMotionLoader:
         # Concatenate all motion data
         self._joint_pos = torch.cat([ld._joint_pos for ld in loaders], dim=0)
         self._joint_vel = torch.cat([ld._joint_vel for ld in loaders], dim=0)
+        self._sim_joint_vel = torch.cat([ld._sim_joint_vel for ld in loaders], dim=0)
+        self._sim_root_lin_vel = torch.cat([ld._sim_root_lin_vel for ld in loaders], dim=0)
+        self._sim_root_ang_vel = torch.cat([ld._sim_root_ang_vel for ld in loaders], dim=0)
         self._body_pos_w = torch.cat([ld._body_pos_w for ld in loaders], dim=0)
         self._body_quat_w = torch.cat([ld._body_quat_w for ld in loaders], dim=0)
         self._body_lin_vel_w = torch.cat([ld._body_lin_vel_w for ld in loaders], dim=0)
@@ -837,6 +873,20 @@ class MultiMotionLoader:
         if self._motion_order_canonicalized:
             return self._joint_vel
         return self._joint_vel[:, self._joint_indexes]
+
+    @property
+    def sim_joint_vel(self) -> torch.Tensor:
+        if self._motion_order_canonicalized:
+            return self._sim_joint_vel
+        return self._sim_joint_vel[:, self._joint_indexes]
+
+    @property
+    def sim_root_lin_vel(self) -> torch.Tensor:
+        return self._sim_root_lin_vel
+
+    @property
+    def sim_root_ang_vel(self) -> torch.Tensor:
+        return self._sim_root_ang_vel
 
     @property
     def body_pos_w(self) -> torch.Tensor:
@@ -1266,6 +1316,9 @@ class MotionCommand(CommandTermBase):
         self.metrics: dict[str, torch.Tensor] = {}
 
         self.init_buffers()
+        self._future_joint_cache: dict[tuple[int, ...], tuple[torch.Tensor, torch.Tensor]] = {}
+        self._future_ref_body_cache: dict[tuple[int, ...], tuple[torch.Tensor, torch.Tensor]] = {}
+        self._policy_reference_window_cache: torch.Tensor | None = None
 
         # 6. visualization markers for isaacsim
         if self._env.viewer and self._env.simulator.get_simulator_type() == SimulatorType.ISAACLAB3_NEWTON:
@@ -1276,6 +1329,9 @@ class MotionCommand(CommandTermBase):
         env_ids = self._ensure_index_tensor(env_ids)
         if env_ids.numel() == 0:
             return
+        self._future_joint_cache.clear()
+        self._future_ref_body_cache.clear()
+        self._policy_reference_window_cache = None
 
         self._update_completion_learning_stats(env_ids)
         self._clear_pending_chain_checks(env_ids)
@@ -1425,11 +1481,11 @@ class MotionCommand(CommandTermBase):
         # 1. Get the root/body poses from the motion data
         root_pos = self.root_pos_w[env_ids].clone()
         root_rot = self.root_quat_w[env_ids].clone()
-        root_lin_vel = self.root_lin_vel_w[env_ids].clone()
-        root_ang_vel = self.root_ang_vel_w[env_ids].clone()
+        root_lin_vel = self.reset_root_lin_vel_w[env_ids].clone()
+        root_ang_vel = self.reset_root_ang_vel_w[env_ids].clone()
 
         dof_pos = self.joint_pos[env_ids].clone()
-        dof_vel = self.joint_vel[env_ids].clone()
+        dof_vel = self.reset_joint_vel[env_ids].clone()
 
         # 2. Adding noise
         # 2.1 prepare the noise scale
@@ -1496,6 +1552,20 @@ class MotionCommand(CommandTermBase):
             torch.rand(root_ang_vel.shape, device=self.device) - 0.5
         ) * 2 * root_ang_vel_noise_rpy.unsqueeze(0)  # (num_envs, 3)
 
+        # Start probes measure whether the current policy can execute a motion
+        # from its canonical first frame.  Applying reset randomization to
+        # those environments makes a strict body-position threshold judge the
+        # sampled initial pose before the policy has taken an action.  Keep
+        # normal training environments randomized, but restore probe targets
+        # to the exact reference state.
+        probe_reset_mask = self._probe_env_mask[env_ids]
+        if torch.any(probe_reset_mask):
+            target_dof_pos[probe_reset_mask] = dof_pos[probe_reset_mask]
+            target_root_pos[probe_reset_mask] = root_pos[probe_reset_mask]
+            target_root_rot[probe_reset_mask] = root_rot[probe_reset_mask]
+            target_root_lin_vel[probe_reset_mask] = root_lin_vel[probe_reset_mask]
+            target_root_ang_vel[probe_reset_mask] = root_ang_vel[probe_reset_mask]
+
         # 3. Set the robot states in simulator
         self._env.simulator.dof_pos[env_ids] = target_dof_pos
         self._env.simulator.dof_vel[env_ids] = target_dof_vel
@@ -1518,6 +1588,8 @@ class MotionCommand(CommandTermBase):
             )
             obj_pos_noise = obj_pos_noise * self.init_pose_cfg.overall_noise_scale  # (3,)
             target_obj_pos = obj_pos + (torch.rand(obj_pos.shape, device=self.device) - 0.5) * 2 * obj_pos_noise
+            if torch.any(probe_reset_mask):
+                target_obj_pos[probe_reset_mask] = obj_pos[probe_reset_mask]
 
             object_states = torch.cat(
                 [target_obj_pos, obj_ori, obj_lin_vel, torch.zeros_like(obj_lin_vel)], dim=-1
@@ -1531,6 +1603,9 @@ class MotionCommand(CommandTermBase):
 
     def step(self) -> None:
         """called in _update_tasks_callback of the environment. (after compute_reward, before compute_observations)"""
+        self._future_joint_cache.clear()
+        self._future_ref_body_cache.clear()
+        self._policy_reference_window_cache = None
         # 0. update time steps, all motion joint/body poses are updated automatically with the time steps.
         advance_mask = torch.ones_like(self.time_steps, dtype=torch.bool)
 
@@ -1745,7 +1820,7 @@ class MotionCommand(CommandTermBase):
             plan_path = Path.cwd() / plan_path
         with plan_path.open("r", encoding="utf-8") as f:
             plan = json.load(f)
-        if not isinstance(plan, dict) or plan.get("kind") != "gmvq_event_token_plan":
+        if not isinstance(plan, dict) or plan.get("kind") != "contact_event_token_plan":
             raise ValueError(f"Unsupported event token plan: {plan_path}")
         tokens = plan.get("tokens")
         if not isinstance(tokens, list) or not tokens:
@@ -2079,6 +2154,10 @@ class MotionCommand(CommandTermBase):
         return self.motion.joint_vel[self.time_steps]
 
     @property
+    def reset_joint_vel(self) -> torch.Tensor:
+        return self.motion.sim_joint_vel[self.time_steps]
+
+    @property
     def body_pos_w(self) -> torch.Tensor:
         pos_w = self.motion.body_pos_w[self.time_steps][:, self.tracked_body_indexes]
         quat_w = self.motion.body_quat_w[self.time_steps][:, self.tracked_body_indexes]
@@ -2139,6 +2218,14 @@ class MotionCommand(CommandTermBase):
     @property
     def root_ang_vel_w(self) -> torch.Tensor:
         return self.motion.body_ang_vel_w[self.time_steps, 0]
+
+    @property
+    def reset_root_lin_vel_w(self) -> torch.Tensor:
+        return self.motion.sim_root_lin_vel[self.time_steps]
+
+    @property
+    def reset_root_ang_vel_w(self) -> torch.Tensor:
+        return self.motion.sim_root_ang_vel[self.time_steps]
 
     @property
     def active_part_mask(self) -> torch.Tensor:
@@ -2515,9 +2602,17 @@ class MotionCommand(CommandTermBase):
         else:
             motion_end_done = motion_end_done[probe_env_ids].to(torch.bool)
         failure_terminated = terminated & ~motion_end_done
-        fail = failure_terminated | force_fail
+        fixed_qualified = torch.ones_like(failure_terminated)
+        curriculum_manager = getattr(self._env, "curriculum_manager", None)
+        tracking_precision = (
+            curriculum_manager.get_term("tracking_precision") if curriculum_manager is not None else None
+        )
+        completed_probe_qualification = getattr(tracking_precision, "completed_probe_qualification", None)
+        if callable(completed_probe_qualification):
+            fixed_qualified = completed_probe_qualification(probe_env_ids).to(device=self.device, dtype=torch.bool)
+        fail = failure_terminated | force_fail | ~fixed_qualified
         timeout = time_outs
-        success = (completion >= 0.98) & ~fail & ~timeout
+        success = (completion >= 0.98) & fixed_qualified & ~fail & ~timeout
         alpha = float(self.motion_cfg.probe_completion_alpha)
 
         if getattr(self, "_use_group_probe_envs", False):
@@ -3486,12 +3581,17 @@ class MotionCommand(CommandTermBase):
         return self._localize_motion_pos_quat_future(body_pos_w, body_quat_w)
 
     def future_joint_pos_vel(self, offsets: tuple[int, ...]) -> tuple[torch.Tensor, torch.Tensor]:
+        cached = self._future_joint_cache.get(offsets)
+        if cached is not None:
+            return cached
         offsets_t = torch.as_tensor(offsets, dtype=torch.long, device=self.device)
         future_steps = self.time_steps[:, None] + offsets_t[None, :]
         start_idx = self.motion.motion_start_idx[self.motion_ids][:, None]
         end_idx = self.motion.motion_end_idx[self.motion_ids][:, None]
         future_steps = future_steps.clamp(min=start_idx, max=end_idx - 1)
-        return self.motion.joint_pos[future_steps], self.motion.joint_vel[future_steps]
+        result = self.motion.joint_pos[future_steps], self.motion.joint_vel[future_steps]
+        self._future_joint_cache[offsets] = result
+        return result
 
     def future_body_pos_quat_offsets(
         self, offsets: tuple[int, ...]
@@ -3502,6 +3602,35 @@ class MotionCommand(CommandTermBase):
         end_idx = self.motion.motion_end_idx[self.motion_ids][:, None]
         future_steps = future_steps.clamp(min=start_idx, max=end_idx - 1)
         return self.future_body_pos_quat_w(future_steps)
+
+    def future_ref_body_pos_quat_offsets(
+        self, offsets: tuple[int, ...]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return localized future poses for only the reference body, cached per command step."""
+        cached = self._future_ref_body_cache.get(offsets)
+        if cached is not None:
+            return cached
+
+        offsets_t = torch.as_tensor(offsets, dtype=torch.long, device=self.device)
+        future_steps = self.time_steps[:, None] + offsets_t[None, :]
+        start_idx = self.motion.motion_start_idx[self.motion_ids][:, None]
+        end_idx = self.motion.motion_end_idx[self.motion_ids][:, None]
+        future_steps = future_steps.clamp(min=start_idx, max=end_idx - 1)
+        body_pos_w = self.motion.body_pos_w[future_steps, self.ref_body_index][:, :, None, :]
+        body_quat_w = self.motion.body_quat_w[future_steps, self.ref_body_index][:, :, None, :]
+        localized_pos, localized_quat = self._localize_motion_pos_quat_future(body_pos_w, body_quat_w)
+        result = localized_pos[:, :, 0], localized_quat[:, :, 0]
+        self._future_ref_body_cache[offsets] = result
+        return result
+
+    def future_contact_force_part_mask_offsets(self, offsets: tuple[int, ...]) -> torch.Tensor:
+        """Return the recorded contact schedule at future reference offsets."""
+        offsets_t = torch.as_tensor(offsets, dtype=torch.long, device=self.device)
+        future_steps = self.time_steps[:, None] + offsets_t[None, :]
+        start_idx = self.motion.motion_start_idx[self.motion_ids][:, None]
+        end_idx = self.motion.motion_end_idx[self.motion_ids][:, None]
+        future_steps = future_steps.clamp(min=start_idx, max=end_idx - 1)
+        return self.motion.contact_force_part_mask[future_steps]
 
     def _maybe_sample_motion_matched_origins(self, env_ids: torch.Tensor) -> None:
         terrain_state = self._env.terrain_manager.get_state("locomotion_terrain")
@@ -3586,16 +3715,25 @@ class MotionCommand(CommandTermBase):
         use_completion_window = (
             torch.rand(env_ids.numel(), device=self.device) >= uniform_mix
         )
-        completion_mean = self._completion_ema_reset_center()
         completion_candidate_indices = torch.where(use_completion_window)[0]
-        if completion_candidate_indices.numel() == 0 or completion_mean is None:
+        if completion_candidate_indices.numel() == 0:
             return sampled
 
         candidate_motion_ids = motion_ids[completion_candidate_indices]
+        completion_stats = self._completion_ema_reset_centers(candidate_motion_ids)
+        if completion_stats is None:
+            return sampled
+        completion_centers, completion_valid = completion_stats
+        completion_candidate_indices = completion_candidate_indices[completion_valid]
+        candidate_motion_ids = candidate_motion_ids[completion_valid]
+        completion_centers = completion_centers[completion_valid]
+        if completion_candidate_indices.numel() == 0:
+            return sampled
+
         candidate_start_idx = self.motion.motion_start_idx[candidate_motion_ids]
         candidate_end_idx = self.motion.motion_end_idx[candidate_motion_ids]
         candidate_lengths = (candidate_end_idx - candidate_start_idx - 1).clamp(min=1)
-        target_local = torch.round(completion_mean * candidate_lengths.to(torch.float32)).long()
+        target_local = torch.round(completion_centers * candidate_lengths.to(torch.float32)).long()
         target_global = candidate_start_idx + target_local
         sampled[completion_candidate_indices] = self._sample_around_failure_frames(
             candidate_motion_ids,
@@ -3609,15 +3747,22 @@ class MotionCommand(CommandTermBase):
         sampled = torch.minimum(torch.maximum(sampled, start_idx), last_idx)
         return sampled
 
-    def _completion_ema_reset_center(self) -> torch.Tensor | None:
-        """Return the current probe completion mean used by the replay reset branch."""
+    def _completion_ema_reset_centers(
+        self, motion_ids: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+        """Return completion-window centers and validity for the requested motions."""
         if getattr(self, "_use_group_probe_envs", False):
-            if not torch.any(self._group_probe_count > 0):
-                return None
-            return self._group_probe_completion_ema.mean().clamp(0.0, 1.0)
-        if not getattr(self, "_use_start_probe_envs", False) or not torch.any(self._probe_count > 0):
+            group_ids = self._motion_group_ids[motion_ids]
+            return (
+                self._group_probe_completion_ema[group_ids].clamp(0.0, 1.0),
+                self._group_probe_count[group_ids] > 0,
+            )
+        if not getattr(self, "_use_start_probe_envs", False):
             return None
-        return self._probe_completion_ema.mean().clamp(0.0, 1.0)
+        return (
+            self._probe_completion_ema[motion_ids].clamp(0.0, 1.0),
+            self._probe_count[motion_ids] > 0,
+        )
 
     def _sample_around_failure_frames(self, motion_ids: torch.Tensor, failed_time_steps: torch.Tensor) -> torch.Tensor:
         start_idx = self.motion.motion_start_idx[motion_ids]

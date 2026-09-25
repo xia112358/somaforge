@@ -11,10 +11,11 @@ resolution-markers = [
 [manifest]
 members = [
     "climb00-pipeline",
-    "gmvq",
+    "contact-solver",
     "holosoma",
     "motion-edit",
     "somaforge-core",
+    "somaforge-generator",
 ]
 
 [[package]]
@@ -310,18 +311,16 @@ name = "climb00-pipeline"
 version = "0.1.0"
 source = { editable = "packages/climb00_pipeline" }
 dependencies = [
-    { name = "motion-edit" },
-    { name = "numpy" },
+    { name = "contact-solver" },
     { name = "somaforge-core" },
-    { name = "torch" },
+    { name = "somaforge-generator" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "motion-edit", editable = "packages/motion_edit" },
-    { name = "numpy" },
+    { name = "contact-solver", editable = "packages/contact_solver" },
     { name = "somaforge-core", editable = "packages/somaforge_core" },
-    { name = "torch" },
+    { name = "somaforge-generator", editable = "packages/generator" },
 ]
 
 [[package]]
@@ -383,6 +382,36 @@ sdist = { url = "https://files.pythonhosted.org/packages/3f/0b/30328302903c55218
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fe/19/3ba5e1b0bcc7b91aeab6c258afd70e4907d220fed3972febe38feb40db30/configargparse-1.7.5-py3-none-any.whl", hash = "sha256:1e63fdffedf94da9cd435fc13a1cd24777e76879dd2343912c1f871d4ac8c592", size = 27692, upload-time = "2026-03-11T02:19:36.442Z" },
 ]
+
+[[package]]
+name = "contact-solver"
+version = "0.1.0"
+source = { editable = "packages/contact_solver" }
+dependencies = [
+    { name = "motion-edit" },
+    { name = "numpy" },
+    { name = "somaforge-core" },
+    { name = "torch" },
+]
+
+[package.optional-dependencies]
+research = [
+    { name = "osqp" },
+    { name = "scipy" },
+    { name = "trimesh" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "motion-edit", editable = "packages/motion_edit" },
+    { name = "numpy" },
+    { name = "osqp", marker = "extra == 'research'" },
+    { name = "scipy", marker = "extra == 'research'" },
+    { name = "somaforge-core", editable = "packages/somaforge_core" },
+    { name = "torch" },
+    { name = "trimesh", marker = "extra == 'research'" },
+]
+provides-extras = ["research"]
 
 [[package]]
 name = "contourpy"
@@ -699,23 +728,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/33/f6/354ae6491228b5eb40e10d89c4d13c651fe1cf7556e35ebdded50cff57ce/gitpython-3.1.50.tar.gz", hash = "sha256:80da2d12504d52e1f998772dc5baf6e553f8d2fcfe1fcc226c9d9a2ee3372dcc", size = 219798, upload-time = "2026-05-06T04:01:26.571Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/20/7a/1c6e3562dfd8950adbb11ffbc65d21e7c89d01a6e4f137fa981056de25c5/gitpython-3.1.50-py3-none-any.whl", hash = "sha256:d352abe2908d07355014abdd21ddf798c2a961469239afec4962e9da884858f9", size = 212507, upload-time = "2026-05-06T04:01:23.799Z" },
-]
-
-[[package]]
-name = "gmvq"
-version = "0.1.0"
-source = { editable = "packages/gmvq" }
-dependencies = [
-    { name = "numpy" },
-    { name = "somaforge-core" },
-    { name = "torch" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "numpy" },
-    { name = "somaforge-core", editable = "packages/somaforge_core" },
-    { name = "torch" },
 ]
 
 [[package]]
@@ -2002,6 +2014,26 @@ wheels = [
 ]
 
 [[package]]
+name = "osqp"
+version = "1.1.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jinja2" },
+    { name = "joblib" },
+    { name = "numpy" },
+    { name = "scipy" },
+    { name = "setuptools" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b0/7f/b441062e4766851fdf1d066857134c4c3bcf7e0089e4a1d007b6114cecd5/osqp-1.1.3.tar.gz", hash = "sha256:48f53ef5ec89e6ce99ffa955bc6ea0cf2eec09ea3d40905f0c9fadc939609907", size = 57816, upload-time = "2026-06-12T16:59:27.208Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/49/d2/f21ddf1b41ecc14784186129125c4e9c19d8f6f7ade0f2e0efd4a44dded6/osqp-1.1.3-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:2b59e8094fe29d928d568cad0156a42daa44257ce142fb7808400016a62dc28c", size = 328512, upload-time = "2026-06-12T16:58:49.796Z" },
+    { url = "https://files.pythonhosted.org/packages/de/45/1f99a9f25dc9534323b8ef9e578dc93acb33e2b762d5be267e1380b2dda5/osqp-1.1.3-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:e5620abbdb259190da6f0e5421b9fdfd9386b46690210ce82aea6102cc85c67f", size = 308891, upload-time = "2026-06-12T16:58:51.07Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/25/176dbb33c3c3605367c0de8720945c6bdd8f9b0d411e0a94ef747085f034/osqp-1.1.3-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:e44ad08234cfbd6d9f2a823118547e683b038676887e096533935b9fcc15fd3c", size = 328135, upload-time = "2026-06-12T16:58:52.185Z" },
+    { url = "https://files.pythonhosted.org/packages/77/89/96e2e4de3b89e7363931c70eb58bded22656f5512bde18eb7a9272ce48d8/osqp-1.1.3-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:6ceef7fb4f332892b6e0bbc17323d5c9e028c3f9db726b62a15d876d0f81cc06", size = 354077, upload-time = "2026-06-12T16:58:53.379Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/4b/6a1e4f5aa28117bc0a78be5e9f4071b6a11c00a33a01bc673c3faf2a0a65/osqp-1.1.3-cp312-cp312-win_amd64.whl", hash = "sha256:e7e9bd3939e47e726673218a7b04b9784ecbf9ef0b8bc69107d20cc659836ac1", size = 316733, upload-time = "2026-06-12T16:58:54.397Z" },
+]
+
+[[package]]
 name = "packaging"
 version = "26.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2782,6 +2814,25 @@ wheels = [
 name = "somaforge-core"
 version = "0.1.0"
 source = { editable = "packages/somaforge_core" }
+
+[[package]]
+name = "somaforge-generator"
+version = "0.1.0"
+source = { editable = "packages/generator" }
+dependencies = [
+    { name = "contact-solver" },
+    { name = "numpy" },
+    { name = "somaforge-core" },
+    { name = "torch" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "contact-solver", editable = "packages/contact_solver" },
+    { name = "numpy" },
+    { name = "somaforge-core", editable = "packages/somaforge_core" },
+    { name = "torch" },
+]
 
 [[package]]
 name = "soupsieve"

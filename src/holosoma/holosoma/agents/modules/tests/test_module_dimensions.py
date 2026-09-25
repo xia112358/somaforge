@@ -9,7 +9,7 @@ This test suite verifies that:
 import pytest
 import torch
 
-from holosoma.agents.modules.modules import BaseModule
+from holosoma.agents.modules.modules import BaseModule, build_cnn_layer
 from holosoma.config_types.algo import LayerConfig, ModuleConfig
 
 
@@ -173,6 +173,20 @@ def test_base_module_forward_pass(simple_module_config):
 
     # Check output shape
     assert output.shape == (batch_size, 10)
+
+
+def test_php_depth_cnn_global_average_pool_outputs_32_features():
+    cfg = LayerConfig(
+        encoder_activation="ELU",
+        hidden_channels=(16, 32, 32),
+        kernel_size=(5, 3, 3),
+        stride=(2, 2, 1),
+        padding=(2, 1, 1),
+        global_average_pool=True,
+    )
+    encoder = build_cnn_layer(1, 58, 87, cfg.hidden_channels, cfg.kernel_size, cfg.stride, cfg.padding, cfg)
+    assert encoder.output_size == 32
+    assert encoder(torch.zeros(4, 58 * 87)).shape == (4, 32)
 
 
 @pytest.mark.parametrize(

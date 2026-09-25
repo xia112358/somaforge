@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import field
+from typing import Literal
 
 from holosoma.config_types.video import VideoConfig
 from pydantic.dataclasses import dataclass
@@ -24,6 +25,12 @@ class RecordingConfig:
 
     record_initial_state: bool = False
     """Record the reset state before the first evaluation environment step."""
+
+    profile: Literal["full"] = "full"
+    """Channel profile for full physics/contact replay."""
+
+    stop_when_done: bool = True
+    """Stop recording after the selected environment(s) finish their first episode."""
 
 
 @dataclass(frozen=True)

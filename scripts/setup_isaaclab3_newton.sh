@@ -43,7 +43,7 @@ if [[ ! -f $SENTINEL_FILE ]]; then
   pip install --upgrade pip
   pip install -U torch==2.10.0 torchvision==0.25.0 --index-url https://download.pytorch.org/whl/cu128
   pip install "isaacsim[all,extscache]==6.0.0" --extra-index-url https://pypi.nvidia.com
-  # Motion Edit and GMVQ share this runtime with Isaac Lab. JAX reuses the
+  # Motion Edit and Predictor/Infiller share this runtime with Isaac Lab. JAX reuses the
   # CUDA 12 libraries installed with PyTorch; the matching PTX compiler wheel
   # is pinned explicitly so PyRoki can compile solver graphs on the GPU.
   pip install \
@@ -80,7 +80,9 @@ if [[ ! -f $SENTINEL_FILE ]]; then
   pip install -e $ISAACLAB_PATH/source/isaaclab_visualizers
   pip install -e $ROOT_DIR/packages/somaforge_core
   pip install -e $ROOT_DIR/packages/motion_edit --no-deps
-  pip install -e $ROOT_DIR/packages/gmvq --no-deps
+  pip install -e $ROOT_DIR/packages/contact_solver --no-deps
+  pip install -e $ROOT_DIR/packages/generator --no-deps
+  pip install -e $ROOT_DIR/packages/climb00_pipeline --no-deps
   pip install -e $ROOT_DIR/src/holosoma
   pip install -e $ROOT_DIR/src/holosoma_retargeting
   pip install --upgrade 'wandb>=0.21.1'

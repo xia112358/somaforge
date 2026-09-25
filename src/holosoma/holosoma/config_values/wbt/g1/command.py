@@ -7,6 +7,8 @@ from holosoma.config_types.command import CommandManagerCfg, CommandTermCfg, Mot
 BASELINE_SINGLE_MANIFEST = "runtime/current/manifests/omniretarget_baseline.json"
 BASELINE_29_MANIFEST = "runtime/current/manifests/omniretarget_baseline_29.json"
 CONTACT_FORCE_MANIFEST = "runtime/current/manifests/newton_contact_force_8part.json"
+CLIMB00_MANIFEST = "runtime/current/manifests/wbt_single_climb_00.json"
+SPARSE_CLIMB00_MANIFEST = "tmp/climb00_sparse_command_stable_v3/manifest.json"
 
 init_pose_config = NoiseToInitialPoseConfig(
     overall_noise_scale=1.0,
@@ -71,43 +73,6 @@ def make_wbt_command(
     )
 
 
-def make_gmvq_wbt_command(
-    *,
-    bundle: str,
-    bootstrap_motion: str,
-    tracking_gate_m: float = 0.15,
-    boundary_record_path: str | None = None,
-) -> CommandManagerCfg:
-    """Run an existing WBT policy against online GMVQ references.
-
-    The bootstrap motion supplies only the canonical reset pose and motion
-    schema.  After reset, the command is decoded from current scan and robot
-    state at each atom boundary.
-    """
-    config = replace(
-        motion_config,
-        motion_file=bootstrap_motion,
-        motion_manifest="",
-        motion_dir="",
-        reset_sampler="uniform",
-        use_start_probe_envs=False,
-        start_at_timestep_zero_prob=1.0,
-        freeze_at_timestep_zero_prob=0.0,
-    )
-    params = {
-        "motion_config": config,
-        "gmvq_bundle": bundle,
-        "gmvq_tracking_gate_m": float(tracking_gate_m),
-    }
-    if boundary_record_path:
-        params["gmvq_boundary_record_path"] = boundary_record_path
-    path = "holosoma.managers.command.terms.gmvq_wbt:GMVQMotionCommand"
-    return CommandManagerCfg(
-        params={},
-        setup_terms={"motion_command": CommandTermCfg(func=path, params=params)},
-        reset_terms={"motion_command": CommandTermCfg(func=path)},
-        step_terms={"motion_command": CommandTermCfg(func=path)},
-    )
 
 
 g1_29dof_wbt_baseline_single_command = make_wbt_command(
@@ -120,9 +85,10 @@ __all__ = [
     "BASELINE_29_MANIFEST",
     "BASELINE_SINGLE_MANIFEST",
     "CONTACT_FORCE_MANIFEST",
+    "CLIMB00_MANIFEST",
+    "SPARSE_CLIMB00_MANIFEST",
     "g1_29dof_wbt_baseline_29_command",
     "g1_29dof_wbt_baseline_single_command",
     "g1_29dof_wbt_contact_force_command",
-    "make_gmvq_wbt_command",
     "make_wbt_command",
 ]

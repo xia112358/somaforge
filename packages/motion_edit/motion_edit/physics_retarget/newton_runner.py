@@ -293,7 +293,7 @@ class NewtonSubprocessRunner:
         paths = [
             self.repo_root / "packages/somaforge_core",
             self.repo_root / "packages/motion_edit",
-            self.repo_root / "packages/gmvq",
+            self.repo_root / "packages/climb00_pipeline",
             self.repo_root / "src/holosoma",
             self.repo_root / "src/holosoma_retargeting",
             isaaclab_path / "source/isaaclab",

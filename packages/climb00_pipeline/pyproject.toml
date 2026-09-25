@@ -5,9 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "climb00-pipeline"
 version = "0.1.0"
-description = "Keyframe prediction and trajectory infilling pipeline for climb00."
+description = "Compatibility imports for the SomaForge generator and contact solver."
 requires-python = ">=3.10"
-dependencies = ["numpy", "torch", "somaforge-core", "motion-edit"]
+dependencies = ["somaforge-generator", "contact-solver", "somaforge-core"]
 
 [tool.setuptools.packages.find]
 where = ["."]

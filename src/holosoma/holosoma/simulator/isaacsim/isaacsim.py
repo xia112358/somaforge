@@ -354,6 +354,7 @@ class IsaacSim(BaseSimulator):
 
         terrain_prim_path = "/World/ground"
         height_scanner_config = None
+        php_depth_camera_config = None
         terrain_state = self.terrain_manager.get_state("locomotion_terrain")
         use_raycaster_height_scanner = terrain_state.mesh_type not in ["fake", None]
         height_scanner_body = None
@@ -421,6 +422,30 @@ class IsaacSim(BaseSimulator):
             if height_scanner_config.spawn is not None:
                 height_scanner_config.spawn.spawn_path = height_scanner_spawn_path
 
+        depth_cfg = self.simulator_config.depth_ray_camera
+        if depth_cfg.enabled:
+            depth_body_path = self._resolve_env0_robot_child_path(depth_cfg.body_name)
+            depth_spawn_path = f"{depth_body_path}/php_depth_camera"
+            depth_prim_path = f"{self._env0_path_to_env_regex(depth_body_path)}/php_depth_camera"
+            php_depth_camera_config = RayCasterCfg(
+                prim_path=depth_prim_path,
+                offset=RayCasterCfg.OffsetCfg(pos=depth_cfg.offset_pos, rot=depth_cfg.offset_rot_wxyz),
+                ray_alignment="base",
+                pattern_cfg=patterns.PinholeCameraPatternCfg(
+                    focal_length=depth_cfg.focal_length,
+                    horizontal_aperture=depth_cfg.horizontal_aperture,
+                    width=depth_cfg.width,
+                    height=depth_cfg.height,
+                ),
+                debug_vis=False,
+                max_distance=depth_cfg.max_distance,
+                drift_range=depth_cfg.translation_drift_range,
+                mesh_prim_paths=[terrain_prim_path],
+            )
+            object.__setattr__(php_depth_camera_config, "angular_drift_degrees", depth_cfg.angular_drift_degrees)
+            if php_depth_camera_config.spawn is not None:
+                php_depth_camera_config.spawn.spawn_path = depth_spawn_path
+
         print_prim_tree("/World/envs/env_0/Robot")
         log_robot_properties("/World/envs/env_0/Robot", "*")
 
@@ -432,6 +457,10 @@ class IsaacSim(BaseSimulator):
         if height_scanner_config:
             self._height_scanner = HolosomaNewtonRayCaster(height_scanner_config)
             self.scene.sensors["height_scanner"] = self._height_scanner
+
+        if php_depth_camera_config:
+            self._php_depth_camera = HolosomaNewtonRayCaster(php_depth_camera_config)
+            self.scene.sensors["php_depth_camera"] = self._php_depth_camera
 
         # clone, filter, and replicate
         self.scene.clone_environments(copy_from_source=False)
@@ -903,6 +932,11 @@ class IsaacSim(BaseSimulator):
             world_points[valid_bodies] = body_pos[ids] + cls._quat_rotate_xyzw(body_quat[ids], world_points[valid_bodies])
         return world_points
 
+    def get_solver_contact_snapshot(self) -> dict[str, np.ndarray]:
+        from isaaclab_newton.physics.newton_manager import NewtonManager
+        from holosoma.simulator.isaaclab3_newton.contact_snapshot import snapshot_solver_contacts
+        return snapshot_solver_contacts(NewtonManager._solver, NewtonManager._model)
+
     def get_raw_rigid_contacts(self) -> dict[str, np.ndarray] | None:
         """Return Newton raw rigid contacts for the latest physics step, with world-space points."""
         try:
@@ -1024,6 +1058,29 @@ class IsaacSim(BaseSimulator):
         # update buffers at sim
         self.scene.update(dt=1.0 / self.simulator_config.sim.fps)
         t_update = _profile_mark()
+
+        # Opt-in, low-frequency MJWarp diagnostics for tracking intermittent
+        # rollout slowdowns without synchronizing every physics step.
+        diag_interval = int(os.environ.get("HOLOSOMA_DIAG_NEWTON_INTERVAL", "0") or 0)
+        if diag_interval > 0 and self._sim_step_counter % diag_interval == 0:
+            try:
+                from isaaclab_newton.physics.newton_manager import NewtonManager
+
+                mjw_data = getattr(getattr(NewtonManager, "_solver", None), "mjw_data", None)
+                stats = []
+                for stat_name in ("nacon", "nefc", "ncollision", "solver_niter"):
+                    stat_value = getattr(mjw_data, stat_name, None)
+                    if stat_value is None:
+                        continue
+                    stat_np = np.asarray(stat_value.numpy())
+                    stats.append(
+                        f"{stat_name}_min={stat_np.min():.1f} "
+                        f"{stat_name}_mean={stat_np.mean():.1f} "
+                        f"{stat_name}_max={stat_np.max():.1f}"
+                    )
+                logger.info("Newton rollout stats: step={} {}", self._sim_step_counter, " ".join(stats))
+            except Exception as exc:
+                logger.warning("Newton rollout stats unavailable: {}", exc)
 
         # Need to update these tensors after each step, since they are used in `_apply_force_in_physics_step`
         self.dof_pos = self._robot.data.joint_pos[:, self.dof_ids]  # (num_envs, num_dof)

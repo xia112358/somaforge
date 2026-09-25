@@ -34,6 +34,7 @@ from holosoma.utils.inference_helpers import (
     get_control_gains_from_config,
     get_urdf_text_from_robot_config,
 )
+from holosoma.utils.rotations import quaternion_to_matrix, subtract_frame_transforms
 
 console = Console()
 
@@ -103,6 +104,18 @@ class EmpiricalNormalization(nn.Module):
         self._var.copy_(M2 / new_count)
         self._std.copy_(self._var.sqrt())
         self.count.copy_(new_count)
+
+
+def execution_mean_consistency_error(
+    exec_mu: torch.Tensor,
+    teacher_mu: torch.Tensor,
+    fixed_scale: float,
+) -> torch.Tensor:
+    """Match execution-reference action means without involving policy variance."""
+    if fixed_scale <= 0.0:
+        raise ValueError(f"fixed_scale must be positive, got {fixed_scale}")
+    normalized_error = (exec_mu - teacher_mu.detach()) / float(fixed_scale)
+    return 0.5 * normalized_error.square().sum(dim=-1).mean()
 
 
 class Minibatch(TypedDict):
@@ -211,8 +224,8 @@ class PPO(BaseAlgo):
         # Observation manager system - history is defined per-module in module_dict
         assert self.env.observation_manager is not None
         self.algo_history_length_dict = {
-            "actor_obs": self.env.observation_manager.cfg.groups["actor_obs"].history_length,
-            "critic_obs": self.env.observation_manager.cfg.groups["critic_obs"].history_length,
+            group_name: group_cfg.history_length
+            for group_name, group_cfg in self.env.observation_manager.cfg.groups.items()
         }
 
         self.num_act = self.env.robot_config.actions_dim
@@ -260,6 +273,9 @@ class PPO(BaseAlgo):
             device=self.device,
             history_length=self.algo_history_length_dict,
         )
+        self._actor_first_layer_gradient_mask: torch.Tensor | None = None
+        self._actor_first_layer_weight: nn.Parameter | None = None
+        self._configure_actor_finetune()
         self.anchor_actor: nn.Module | None = None
         if self.config.anchor_kl_checkpoint and self.config.anchor_kl_coef > 0.0:
             self.anchor_actor = setup_ppo_actor_module(
@@ -305,6 +321,61 @@ class PPO(BaseAlgo):
             self.config.critic_optimizer, params=self.critic.parameters(), lr=self.critic_learning_rate
         )
 
+    def _configure_actor_finetune(self) -> None:
+        mode = self.config.actor_finetune_mode
+        valid_modes = {"none", "ref_q", "ref_qd", "last_layers", "full_actor"}
+        if mode not in valid_modes:
+            raise ValueError(f"Unknown actor_finetune_mode={mode!r}; expected one of {sorted(valid_modes)}")
+        if mode in {"none", "full_actor"}:
+            return
+
+        actor_layers = self.actor.actor_module.module
+        linear_layers = [layer for layer in actor_layers if isinstance(layer, nn.Linear)]
+        if not linear_layers:
+            raise ValueError("Actor fine-tuning requires at least one Linear layer.")
+        for parameter in self.actor.parameters():
+            parameter.requires_grad_(False)
+
+        if mode == "last_layers":
+            for layer in linear_layers[-2:]:
+                for parameter in layer.parameters():
+                    parameter.requires_grad_(True)
+            logger.info("Actor fine-tuning: updating the final two Linear layers only.")
+            return
+
+        first_layer = linear_layers[0]
+        expected_reference_dim = 4 * 67
+        if first_layer.in_features < expected_reference_dim:
+            raise ValueError(
+                f"Actor fine-tuning mode {mode!r} expects a four-frame 67D reference window at input start, "
+                f"but first layer has only {first_layer.in_features} inputs."
+            )
+        mask = torch.zeros_like(first_layer.weight)
+        within_frame = range(0, 29) if mode == "ref_q" else range(29, 58)
+        selected_columns = [frame * 67 + column for frame in range(4) for column in within_frame]
+        mask[:, selected_columns] = 1.0
+        first_layer.weight.requires_grad_(True)
+        first_layer.weight.register_hook(lambda grad: grad * mask)
+        self._actor_first_layer_weight = first_layer.weight
+        self._actor_first_layer_gradient_mask = mask
+        logger.info(
+            f"Actor fine-tuning: updating first-layer {mode} columns only "
+            f"({len(selected_columns)}/{first_layer.in_features} input columns)."
+        )
+
+    def _mask_actor_optimizer_state(self) -> None:
+        weight = self._actor_first_layer_weight
+        mask = self._actor_first_layer_gradient_mask
+        if weight is None or mask is None:
+            return
+        if weight.grad is not None:
+            weight.grad.mul_(mask)
+        state = self.actor_optimizer.state.get(weight, {})
+        for key in ("exp_avg", "exp_avg_sq", "max_exp_avg_sq"):
+            value = state.get(key)
+            if isinstance(value, torch.Tensor) and value.shape == weight.shape:
+                value.mul_(mask)
+
     def _get_obs_dim(self, obs_keys: list[str]) -> int:
         """Compute total observation dimension for given observation keys."""
         obs_dim = 0
@@ -327,7 +398,10 @@ class PPO(BaseAlgo):
     def _normalize_actor_obs(self, actor_obs: torch.Tensor, update: bool = True) -> torch.Tensor:
         actor_obs = self._finite_tensor(actor_obs, clamp=1.0e6)
         if self.empirical_normalization:
-            actor_obs = self.actor_obs_normalizer(actor_obs, update=update)
+            actor_obs = self.actor_obs_normalizer(
+                actor_obs,
+                update=update and not self.config.freeze_actor_obs_normalizer,
+            )
         return self._finite_tensor(actor_obs, clamp=1.0e6)
 
     def _normalize_critic_obs(self, critic_obs: torch.Tensor, update: bool = True) -> torch.Tensor:
@@ -357,9 +431,21 @@ class PPO(BaseAlgo):
             ("actions_log_prob", (1,), torch.float),
             ("action_mean", (self.num_act,), torch.float),
             ("action_sigma", (self.num_act,), torch.float),
+            ("ppo_valid", (1,), torch.bool),
         ]
         for key, shape, dtype in minibatch_keys:
             self.storage.register(key, shape=shape, dtype=dtype)
+
+        if self.config.exec_consistency_coef > 0.0:
+            if actor_obs_dim < 152:
+                raise ValueError("Execution consistency requires a 152D q-only future reference prefix.")
+            self.storage.register("exec_joint_pos", shape=(29,), dtype=torch.float)
+            self.storage.register("exec_torso_pos_w", shape=(3,), dtype=torch.float)
+            self.storage.register("exec_torso_quat_w", shape=(4,), dtype=torch.float)
+            self.storage.register("exec_motion_id", shape=(), dtype=torch.long)
+            self.storage.register("exec_motion_time_step", shape=(), dtype=torch.long)
+            self.storage.register("exec_actor_obs", shape=(actor_obs_dim,), dtype=torch.float)
+            self.storage.register("exec_consistency_valid", shape=(1,), dtype=torch.bool)
 
     def _eval_mode(self):
         self.actor.eval()
@@ -446,7 +532,35 @@ class PPO(BaseAlgo):
 
                 actions = self.actor.act({"actor_obs": actor_obs})
                 actions = self._finite_tensor(actions, clamp=self.config.action_clip)
+                motion_command = self.env.command_manager.get_state("motion_command")
+                probe_env_mask = getattr(motion_command, "_probe_env_mask", None)
+                if probe_env_mask is None:
+                    probe_env_mask = torch.zeros(self.env.num_envs, dtype=torch.bool, device=self.device)
+                else:
+                    probe_env_mask = probe_env_mask.to(device=self.device, dtype=torch.bool)
+                if torch.any(probe_env_mask):
+                    # Competence probes use the same deterministic mean action
+                    # as deployment/evaluation.  Their transitions are marked
+                    # invalid for PPO below because they were not sampled from
+                    # the behavior distribution.
+                    actions = self._replace_competence_probe_actions(
+                        actions,
+                        self.actor.action_mean,
+                        probe_env_mask,
+                        self.config.action_clip,
+                    )
                 values = self._finite_tensor(self.critic.evaluate({"critic_obs": critic_obs}).detach(), clamp=1.0e4)
+                exec_state = None
+                if self.config.exec_consistency_coef > 0.0:
+                    if motion_command is None:
+                        raise RuntimeError("Execution consistency requires a motion_command state term.")
+                    exec_state = {
+                        "exec_joint_pos": self.env.simulator.dof_pos.detach().clone(),
+                        "exec_torso_pos_w": motion_command.robot_ref_pos_w.detach().clone(),
+                        "exec_torso_quat_w": motion_command.robot_ref_quat_w.detach().clone(),
+                        "exec_motion_id": motion_command.motion_ids.detach().clone(),
+                        "exec_motion_time_step": motion_command.time_steps.detach().clone(),
+                    }
                 t_policy = _profile_mark()
 
                 obs_dict, rewards, dones, infos = self.env.step({"actions": actions})
@@ -482,19 +596,23 @@ class PPO(BaseAlgo):
                 t_logprob = _profile_mark()
 
                 # Add transition to storage
-                self.storage.add(
-                    actor_obs=actor_obs,
-                    critic_obs=critic_obs,
-                    actions=actions,
-                    values=values,
-                    actions_log_prob=actions_log_prob,
-                    action_mean=self._finite_tensor(self.actor.action_mean.detach(), clamp=1.0e3),
-                    action_sigma=self._finite_tensor(self.actor.action_std.detach(), fill=1.0, clamp=10.0).clamp_min(
-                        1.0e-6
-                    ),
-                    rewards=self._finite_tensor(rewards + final_rewards, clamp=1.0e4).view(-1, 1),
-                    dones=dones.view(-1, 1),
-                )
+                transition = {
+                    "actor_obs": actor_obs,
+                    "critic_obs": critic_obs,
+                    "actions": actions,
+                    "values": values,
+                    "actions_log_prob": actions_log_prob,
+                    "action_mean": self._finite_tensor(self.actor.action_mean.detach(), clamp=1.0e3),
+                    "action_sigma": self._finite_tensor(
+                        self.actor.action_std.detach(), fill=1.0, clamp=10.0
+                    ).clamp_min(1.0e-6),
+                    "ppo_valid": (~probe_env_mask).view(-1, 1),
+                    "rewards": self._finite_tensor(rewards + final_rewards, clamp=1.0e4).view(-1, 1),
+                    "dones": dones.view(-1, 1),
+                }
+                if exec_state is not None:
+                    transition.update(exec_state)
+                self.storage.add(**transition)
                 t_store = _profile_mark()
 
                 # Reset actor and critic for completed envs
@@ -523,6 +641,8 @@ class PPO(BaseAlgo):
                     )
                     os.environ["HOLOSOMA_PROFILE_ROLLOUT_STEPS"] = str(profile_remaining - 1)
 
+            self._synchronize_newton_rollout_boundary()
+
             # Return / Advantage computation
             last_critic_obs = torch.cat([obs_dict[k] for k in self.critic_obs_keys], dim=1)
             last_critic_obs = self._normalize_critic_obs(last_critic_obs, update=False)
@@ -534,14 +654,90 @@ class PPO(BaseAlgo):
                 self.storage["values"].to(self.device),
                 self.storage["dones"].to(self.device),
                 self.storage["rewards"].to(self.device),
+                self.storage["ppo_valid"].to(self.device),
             )
 
             self.storage["returns"] = returns
             self.storage["advantages"] = advantages
+            if self.config.exec_consistency_coef > 0.0:
+                self._build_execution_reference_observations()
 
         return obs_dict
 
-    def _compute_returns_and_advantages(self, last_values, values, dones, rewards):
+    def _synchronize_newton_rollout_boundary(self) -> None:
+        """Drain Newton's asynchronous CUDA work once per collected rollout."""
+        simulator_cfg = getattr(getattr(self.env, "simulator", None), "simulator_config", None)
+        simulator_name = str(getattr(simulator_cfg, "name", "")).strip().lower()
+        if simulator_name == "isaaclab3_newton" and torch.cuda.is_available():
+            torch.cuda.synchronize(self.device)
+
+    @torch.no_grad()
+    def _build_execution_reference_observations(self) -> None:
+        """Build [q, torso position, torso rotation-6D] execution futures after collection."""
+        offsets = (1, 2, 4, 8)
+        reference_dim = 4 * 38
+        actor_obs = self.storage["actor_obs"]
+        exec_actor_obs = self.storage["exec_actor_obs"]
+        exec_actor_obs.copy_(actor_obs)
+        valid = self.storage["exec_consistency_valid"]
+        valid.zero_()
+
+        joint_pos = self.storage["exec_joint_pos"]
+        torso_pos = self.storage["exec_torso_pos_w"]
+        torso_quat = self.storage["exec_torso_quat_w"]
+        motion_id = self.storage["exec_motion_id"]
+        motion_step = self.storage["exec_motion_time_step"]
+        dones = self.storage["dones"].squeeze(-1)
+        num_steps, num_envs = joint_pos.shape[:2]
+        usable_steps = num_steps - max(offsets)
+        if usable_steps <= 0:
+            return
+
+        base_pos = torso_pos[:usable_steps]
+        base_quat = torso_quat[:usable_steps]
+        frames = []
+        validity = torch.ones((usable_steps, num_envs), dtype=torch.bool, device=self.device)
+        for offset in offsets:
+            target_pos = torso_pos[offset : offset + usable_steps]
+            target_quat = torso_quat[offset : offset + usable_steps]
+            pos_b, quat_b = subtract_frame_transforms(
+                base_pos.reshape(-1, 3),
+                base_quat.reshape(-1, 4),
+                target_pos.reshape(-1, 3),
+                target_quat.reshape(-1, 4),
+            )
+            rotation_6d = quaternion_to_matrix(quat_b, w_last=True)[..., :2].reshape(usable_steps, num_envs, 6)
+            frames.append(
+                torch.cat(
+                    (
+                        joint_pos[offset : offset + usable_steps],
+                        pos_b.reshape(usable_steps, num_envs, 3),
+                        rotation_6d,
+                    ),
+                    dim=-1,
+                )
+            )
+            validity &= motion_id[offset : offset + usable_steps] == motion_id[:usable_steps]
+            validity &= motion_step[offset : offset + usable_steps] == motion_step[:usable_steps] + offset
+
+        # A done after action t resets the state stored at t+1, so no done may occur before t+8.
+        for delta in range(max(offsets)):
+            validity &= ~dones[delta : delta + usable_steps]
+
+        exec_reference_raw = torch.stack(frames, dim=2).reshape(usable_steps, num_envs, reference_dim)
+        validity &= torch.isfinite(exec_reference_raw).all(dim=-1)
+        if self.empirical_normalization:
+            mean = self.actor_obs_normalizer._mean[..., :reference_dim]
+            std = self.actor_obs_normalizer._std[..., :reference_dim]
+            exec_reference = (exec_reference_raw - mean) / (std + self.actor_obs_normalizer.eps)
+        else:
+            exec_reference = exec_reference_raw
+        exec_actor_obs[:usable_steps, :, :reference_dim].copy_(
+            self._finite_tensor(exec_reference, clamp=1.0e6)
+        )
+        valid[:usable_steps, :, 0].copy_(validity)
+
+    def _compute_returns_and_advantages(self, last_values, values, dones, rewards, ppo_valid=None):
         last_values = self._finite_tensor(last_values, clamp=1.0e4)
         values = self._finite_tensor(values, clamp=1.0e4)
         rewards = self._finite_tensor(rewards, clamp=1.0e4)
@@ -562,11 +758,13 @@ class PPO(BaseAlgo):
         returns = self._finite_tensor(returns, clamp=1.0e4)
         advantages = self._finite_tensor(advantages, clamp=1.0e4)
 
-        if self.is_multi_gpu:
-            advantages = self._normalize_advantages_multi_gpu(advantages)
-        else:
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        advantages = self._normalize_advantages(advantages, ppo_valid)
         advantages = self._finite_tensor(advantages, clamp=10.0)
+
+        valid_mask = self._advantage_valid_mask(advantages, ppo_valid)
+        valid_advantages = advantages[valid_mask]
+        self._last_valid_advantage_mean = float(valid_advantages.mean().item())
+        self._last_valid_advantage_std = float(valid_advantages.std(unbiased=False).item())
 
         return returns, advantages
 
@@ -583,6 +781,8 @@ class PPO(BaseAlgo):
         for key in loss_dict:
             loss_dict[key] /= num_updates
         loss_dict.update(action_diagnostics)
+        loss_dict["valid_advantage_mean"] = getattr(self, "_last_valid_advantage_mean", 0.0)
+        loss_dict["valid_advantage_std"] = getattr(self, "_last_valid_advantage_std", 0.0)
         self.storage.clear()
         return loss_dict
 
@@ -596,7 +796,34 @@ class PPO(BaseAlgo):
             "executed_action_at_bound_fraction": float((actions.abs() >= action_clip).float().mean().item()),
         }
 
+    @staticmethod
+    def _filter_ppo_minibatch(minibatch: Minibatch) -> tuple[Minibatch, float]:
+        """Remove deterministic competence-probe transitions from a PPO minibatch."""
+        ppo_valid = minibatch["ppo_valid"].squeeze(-1).to(torch.bool)
+        excluded_fraction = 1.0 - float(ppo_valid.float().mean().item())
+        if torch.all(ppo_valid):
+            return minibatch, excluded_fraction
+        return {key: value[ppo_valid] for key, value in minibatch.items()}, excluded_fraction
+
+    @staticmethod
+    def _replace_competence_probe_actions(
+        sampled_actions: torch.Tensor,
+        action_mean: torch.Tensor,
+        probe_env_mask: torch.Tensor,
+        action_clip: float,
+    ) -> torch.Tensor:
+        """Use clipped policy means only for competence-probe environments."""
+        actions = sampled_actions.clone()
+        actions[probe_env_mask] = torch.nan_to_num(
+            action_mean[probe_env_mask], nan=0.0, posinf=action_clip, neginf=-action_clip
+        ).clamp(min=-action_clip, max=action_clip)
+        return actions
+
     def _update_algo_step(self, minibatch: Minibatch, loss_dict: dict[str, float]):
+        minibatch, excluded_fraction = self._filter_ppo_minibatch(minibatch)
+        loss_dict["probe_excluded_fraction"] = loss_dict.get("probe_excluded_fraction", 0.0) + excluded_fraction
+        if minibatch["ppo_valid"].shape[0] == 0:
+            return loss_dict
         ppo_loss_dict = self._compute_ppo_loss(minibatch)
 
         self.actor_optimizer.zero_grad()
@@ -622,6 +849,7 @@ class PPO(BaseAlgo):
         nn.utils.clip_grad_norm_(self.actor.parameters(), self.config.max_grad_norm)
         nn.utils.clip_grad_norm_(self.critic.parameters(), self.config.max_grad_norm)
 
+        self._mask_actor_optimizer_state()
         self.actor_optimizer.step()
         self.critic_optimizer.step()
         actor_nonfinite = self._sanitize_module_parameters(self.actor)
@@ -768,6 +996,25 @@ class PPO(BaseAlgo):
             - self.config.entropy_coef * entropy_loss
             + self.config.symmetry_actor_coef * symmetry_actor_loss
         )
+        exec_consistency_mean_error = torch.zeros((), dtype=torch.float32, device=self.device)
+        exec_consistency_loss = torch.zeros((), dtype=torch.float32, device=self.device)
+        if self.config.exec_consistency_coef > 0.0:
+            exec_valid = minibatch["exec_consistency_valid"].squeeze(-1)
+            if exec_valid.any():
+                exec_actor_obs = self._finite_tensor(minibatch["exec_actor_obs"][exec_valid], clamp=1.0e6)
+                self.actor.act({"actor_obs": exec_actor_obs})
+                exec_mu = self._finite_tensor(self.actor.action_mean, clamp=1.0e3)
+                teacher_mu = old_mu_batch[exec_valid].detach()
+                exec_consistency_mean_error = execution_mean_consistency_error(
+                    exec_mu,
+                    teacher_mu,
+                    fixed_scale=self.config.init_noise_std,
+                )
+                exec_consistency_mean_error = self._finite_tensor(
+                    exec_consistency_mean_error, clamp=1.0e4
+                ).clamp(min=0.0)
+                exec_consistency_loss = self.config.exec_consistency_coef * exec_consistency_mean_error
+                actor_loss = actor_loss + exec_consistency_loss
         anchor_kl = torch.zeros((), dtype=torch.float32, device=self.device)
         anchor_kl_loss = torch.zeros((), dtype=torch.float32, device=self.device)
         if self.anchor_actor is not None and self.config.anchor_kl_coef > 0.0:
@@ -809,6 +1056,10 @@ class PPO(BaseAlgo):
         if self.anchor_actor is not None and self.config.anchor_kl_coef > 0.0:
             losses["anchor_kl"] = anchor_kl.detach()
             losses["anchor_kl_loss"] = anchor_kl_loss.detach()
+        if self.config.exec_consistency_coef > 0.0:
+            losses["exec_consistency_mean_error"] = exec_consistency_mean_error.detach()
+            losses["exec_consistency_loss"] = exec_consistency_loss.detach()
+            losses["exec_consistency_valid_fraction"] = minibatch["exec_consistency_valid"].float().mean().detach()
         return losses
 
     def _compute_kl_div(self, old_mu_batch, old_sigma_batch, mu_batch, sigma_batch) -> torch.Tensor:
@@ -861,6 +1112,26 @@ class PPO(BaseAlgo):
             self._pending_env_state_restore = True
             return loaded_dict.get("infos")
         return None
+
+    def load_for_inference(self, ckpt_path: str | None) -> dict | None:
+        """Load network and normalization weights only.
+
+        Evaluation must not inherit optimizer moments, learning rates,
+        iteration counters, or checkpointed environment/curriculum state.
+        """
+        if ckpt_path is None:
+            return None
+        logger.info(f"Loading inference weights from {ckpt_path}")
+        loaded_dict = self._load_checked_checkpoint(ckpt_path)
+        self.actor.load_state_dict(loaded_dict["actor_model_state_dict"])
+        self.critic.load_state_dict(loaded_dict["critic_model_state_dict"])
+        if self.empirical_normalization and loaded_dict.get("actor_obs_normalizer_state_dict") is not None:
+            self.actor_obs_normalizer.load_state_dict(loaded_dict["actor_obs_normalizer_state_dict"])
+        if self.empirical_normalization and loaded_dict.get("critic_obs_normalizer_state_dict") is not None:
+            self.critic_obs_normalizer.load_state_dict(loaded_dict["critic_obs_normalizer_state_dict"])
+        self._pending_env_state = None
+        self._pending_env_state_restore = False
+        return loaded_dict.get("infos")
 
     def _restore_pending_env_state_after_reset(self) -> None:
         """Restore checkpointed environment state after reset initialized its buffers."""
@@ -1034,17 +1305,43 @@ class PPO(BaseAlgo):
 
         logger.info(f"Synchronized model weights across {self.gpu_world_size} GPUs")
 
-    def _normalize_advantages_multi_gpu(self, advantages):
+    @staticmethod
+    def _advantage_valid_mask(advantages, ppo_valid):
+        if ppo_valid is None:
+            return torch.ones_like(advantages, dtype=torch.bool)
+        valid_mask = ppo_valid.to(device=advantages.device, dtype=torch.bool)
+        if valid_mask.shape != advantages.shape:
+            valid_mask = valid_mask.expand_as(advantages)
+        return valid_mask
+
+    def _normalize_advantages(self, advantages, ppo_valid=None):
+        valid_mask = self._advantage_valid_mask(advantages, ppo_valid)
+        if self.is_multi_gpu:
+            return self._normalize_advantages_multi_gpu(advantages, valid_mask)
+
+        valid_advantages = advantages[valid_mask]
+        if valid_advantages.numel() == 0:
+            raise RuntimeError("Cannot normalize advantages without any PPO-valid transitions.")
+        mean = valid_advantages.mean()
+        variance = ((valid_advantages - mean) ** 2).mean()
+        return (advantages - mean) / torch.sqrt(variance + 1e-8)
+
+    def _normalize_advantages_multi_gpu(self, advantages, valid_mask):
+        valid_advantages = advantages[valid_mask]
         local_stats = torch.stack(
             [
-                advantages.mean(),
-                (advantages**2).mean(),
+                valid_advantages.sum(),
+                (valid_advantages**2).sum(),
+                valid_mask.sum().to(dtype=advantages.dtype),
             ]
         )
         torch.distributed.all_reduce(local_stats, op=torch.distributed.ReduceOp.SUM)
 
-        global_mean = local_stats[0] / self.gpu_world_size
-        global_sq_mean = local_stats[1] / self.gpu_world_size
+        global_count = local_stats[2]
+        if global_count.item() <= 0:
+            raise RuntimeError("Cannot normalize advantages without any PPO-valid transitions.")
+        global_mean = local_stats[0] / global_count
+        global_sq_mean = local_stats[1] / global_count
         global_variance = global_sq_mean - global_mean**2
         global_std = torch.sqrt(global_variance + 1e-8)
 
@@ -1087,7 +1384,10 @@ class PPO(BaseAlgo):
     @torch.no_grad()
     def evaluate_policy(self, max_eval_steps: int | None = None):
         self._create_eval_callbacks()
-        self._pre_evaluate_policy()
+        # The policy-bootstrap reset below is the single authoritative reset for
+        # an evaluation run.  Resetting once here and again below used to create
+        # an extra all-environment episode before the first policy action.
+        self._pre_evaluate_policy(reset_env=False)
         actor_state = self._create_actor_state()
         self.eval_policy = self.get_inference_policy()
 

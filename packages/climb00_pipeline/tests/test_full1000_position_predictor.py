@@ -195,3 +195,52 @@ def test_clipping_in_execution_only_mode_supports_empty_planner_gradients():
     assert norms['planner'] == 0 and norms['executor'] > 0
     assert norms['planner'].device == norms['executor'].device == model.pose_head.weight.device
     assert torch.isfinite(torch.stack(list(norms.values())).norm())
+
+
+def test_execution_observation_gradient_switch_preserves_forward_and_plan_isolation():
+    _, obs = setup()
+    isolated = Full1000PositionPredictor(24, 1, 8, region_plan=True, event_roles=True).eval()
+    connected = Full1000PositionPredictor(24, 1, 8, region_plan=True, event_roles=True,
+                                         execution_observation_gradients=True).eval()
+    connected.load_state_dict(isolated.state_dict())
+    a, b = isolated(**obs), connected(**obs)
+    for name in ('qpos', 'role_logits', 'location_logits', 'region_logits'):
+        torch.testing.assert_close(getattr(a, name), getattr(b, name), rtol=0, atol=0)
+    b.role_logits.retain_grad(); b.location_logits.retain_grad(); b.region_logits.retain_grad()
+    b.qpos.square().sum().backward()
+    groups = connected.training_parameter_groups()
+    assert all(p.grad is None for p in groups['planner'])
+    assert b.role_logits.grad is None and b.location_logits.grad is None and b.region_logits.grad is None
+    for module in (connected.shared.layers[0].linear1, connected.global_encoder,
+                   connected.part_encoder, connected.norm, connected.region_geometry_encoder):
+        assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in module.parameters())
+    # Explicitly audit all three observation interfaces, including terrain memory.
+    connected.zero_grad(set_to_none=True)
+    encode = connected._encode_points
+    captured = []
+    def capture(*args, **kwargs):
+        result = encode(*args, **kwargs)
+        captured.extend(result[i] for i in (0, 3, 4))
+        for value in captured: value.retain_grad()
+        return result
+    connected._encode_points = capture
+    connected(**obs).qpos.square().sum().backward()
+    assert all(x.grad is not None and x.grad.abs().sum() > 0 for x in captured)
+    norms = connected.clip_training_gradients()
+    assert norms['planner'] == 0 and norms['shared'] > 0 and norms['executor'] > 0
+    ids = [id(p) for parameters in groups.values() for p in parameters]
+    assert len(ids) == len(set(ids)) == len(list(connected.parameters()))
+
+
+def test_connected_shared_clipping_does_not_rescale_plan_heads():
+    model = Full1000PositionPredictor(24, 1, 8, execution_observation_gradients=True)
+    groups = model.training_parameter_groups()
+    planner, shared = groups['planner'][0], groups['shared'][0]
+    results = []
+    for magnitude in (1., 100000.):
+        model.zero_grad(set_to_none=True)
+        planner.grad = torch.ones_like(planner)
+        shared.grad = torch.full_like(shared, magnitude)
+        model.clip_training_gradients()
+        results.append(planner.grad.clone())
+    torch.testing.assert_close(*results, rtol=0, atol=0)

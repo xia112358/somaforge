@@ -1,4 +1,9 @@
-# Climb00 keyframe pipeline
+# Climb00 compatibility package
+
+Implementations now live in [`generator`](../generator/README.md),
+[`contact_solver`](../contact_solver/README.md), and `somaforge_core`.
+Old imports and `python -m climb00_pipeline.<module>` remain supported.
+New code should use the canonical packages; WBT remains in `src/holosoma`.
 
 ## Direct-infiller training baseline
 
@@ -11,7 +16,7 @@ it does not replace or claim implementation of the separate runtime API below.
 
 ## Package runtime contract
 
-This package is the canonical home of the current three-layer contract:
+The following historical three-layer contract is implemented by the packages above:
 
 1. A privileged offline generator creates full sparse-body teacher trajectories.
 2. A selector predicts one complete next seven-body 63D keyframe from the realized boundary and terrain. Positions and rotation-6D values use the current torso-yaw frame.

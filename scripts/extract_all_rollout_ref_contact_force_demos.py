@@ -112,7 +112,7 @@ def _subprocess_env() -> dict[str, str]:
     source_paths = [
         str(REPO_ROOT / "packages/somaforge_core"),
         str(REPO_ROOT / "packages/motion_edit"),
-        str(REPO_ROOT / "packages/gmvq"),
+        str(REPO_ROOT / "packages/climb00_pipeline"),
         str(REPO_ROOT / "src/holosoma"),
         str(REPO_ROOT / "src/holosoma_retargeting"),
         str(isaaclab_path / "source/isaaclab"),

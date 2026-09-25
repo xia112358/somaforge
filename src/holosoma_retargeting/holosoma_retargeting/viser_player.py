@@ -261,6 +261,10 @@ def resolve_original_motion_paths(qpos_npz: str) -> list[str]:
 
 def resolve_object_urdf(qpos_npz: str, object_urdf: str | None) -> str | None:
     stem = Path(qpos_npz).stem
+    sidecar_terrain = Path(qpos_npz).with_name(f"{stem}.terrain.urdf")
+    if sidecar_terrain.exists():
+        return str(sidecar_terrain.resolve())
+
     parts = stem.split("_")
     is_climb_motion = len(parts) >= 2 and parts[0] == "climb"
     is_mocap_climb_motion = len(parts) >= 4 and parts[:3] == ["mocap", "climb", "seq"]

@@ -84,16 +84,16 @@ class WebMotionDataTests(unittest.TestCase):
         session_payload_mock,
     ) -> None:
         resolve_motion_mock.return_value = EditorMotion(
-            motion_id="gmvq-ref",
-            motion_asset_id="gmvq-ref",
+            motion_id="generated-ref",
+            motion_asset_id="generated-ref",
             motion_version_id=None,
-            motion_path="tmp/gmvq-ref.npz",
+            motion_path="tmp/generated-ref.npz",
             provenance="source",
         )
         read_motion_asset_mock.return_value = MotionAssetRecord(
-            motion_asset_id="gmvq-ref",
-            motion_path="tmp/gmvq-ref.npz",
-            motion_id="gmvq-ref",
+            motion_asset_id="generated-ref",
+            motion_path="tmp/generated-ref.npz",
+            motion_id="generated-ref",
             surface_catalog_path="tmp/surfaces.jsonl",
         )
         prepare_playback_mock.return_value = SimpleNamespace()
@@ -101,12 +101,12 @@ class WebMotionDataTests(unittest.TestCase):
         state = EditorState()
 
         with patch.object(EditorState, "snapshot", return_value=(SimpleNamespace(anchors=[]), [])):
-            payload = _open_motion(state, "gmvq-ref")
+            payload = _open_motion(state, "generated-ref")
 
         self.assertEqual(payload, {"read_only": True})
         self.assertTrue(state.read_only)
         prepare_playback_mock.assert_called_once()
-        reset_generation_mock.assert_called_once_with(state, "gmvq-ref")
+        reset_generation_mock.assert_called_once_with(state, "generated-ref")
         upsert_recent_mock.assert_called_once()
 
     def test_edit_handle_payload_includes_read_only_offset_from_initial_position(self) -> None:

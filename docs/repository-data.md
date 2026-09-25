@@ -15,8 +15,9 @@ These are small enough and useful enough to keep in the repository:
   referenced by the committed manifests.
 - `scripts/*motion_matched*.py`, `scripts/*contact_force*.py`: reproducible
   manifest and contact-force helpers.
-- `scripts/gmvq_ref/`: manifest-based GMVQ/ref integration tools.
-- `docs/data-policy.md`, `docs/gmvq-ref-pipeline.md`,
+- `packages/climb00_pipeline/`: Predictor and Infiller implementations.
+- `baselines/corrected1000/`: saved Predictor entrypoints, configuration and records.
+- `docs/data-policy.md`,
   `docs/cleanup-scope.md`: current project scope and data rules.
 
 ## Not tracked in git
@@ -27,13 +28,13 @@ These must remain local, ignored, or stored externally:
   motion datasets.
 - `data/`: generated contact-force demos, motion viewer exports, and rollout
   derived datasets.
-- `tmp/`: experiments, GMVQ segments/checkpoints/decoded refs, diagnostics,
+- `tmp/`: experiments, Predictor/Infiller datasets, checkpoints and generated references, diagnostics,
   plots, CSVs, and scratch scripts.
 - `logs/`, `logs_eval/`, `runs/`, `wandb/`: training/eval outputs and videos.
 - `*.npz`, `*.pt`, `*.pth`, `*.ckpt`, `*.onnx`, `*.pdf`: generated arrays,
   checkpoints, model exports, and large copied documents.
 
-## GMVQ input manifests
+## Predictor/Infiller input manifests
 
 The canonical 29-motion source manifest is generated locally at:
 
@@ -42,18 +43,18 @@ runtime/current/manifests/omniretarget_baseline_29.json
 ```
 
 Each motion entry binds the source trajectory, Newton-canonicalized trajectory,
-terrain ID, source hash, motion hash, and kinematics provenance. GMVQ and Motion
+terrain ID, source hash, motion hash, and kinematics provenance. Predictor/Infiller and Motion
 Edit derive their own manifests from this source rather than maintaining a
 second machine-specific data index.
 
 - raw retarget source: `runtime/current/omniretarget/robot-terrain/`
 - canonical no-force motion: `runtime/current/motions/`
-- derived Motion Edit and GMVQ data: paths declared by their stage manifests
+- derived Motion Edit and Predictor/Infiller data: paths declared by their stage manifests
 - terrain assets: entries resolved through `configs/assets_manifest.json`
 
-## Known climb00 issue
+## Historical climb00 data issue
 
-The current `motion_edit` cut summary for `climb_00_z_scale_1.0` ends at frame
+The historical `motion_edit` cut summary for `climb_00_z_scale_1.0` ends at frame
 919 while the clean source ref has 1005 frames. The tail `919..1005` must be
 handled deliberately as one of:
 
@@ -61,10 +62,10 @@ handled deliberately as one of:
 - a policy-eval suffix copied directly from the clean ref, or
 - excluded hold/settle metadata.
 
-Do not silently extend the last decoded GMVQ frame and call it clean data.
+Do not silently extend the last generated frame and call it clean data.
 
 ## Rollout data rule
 
 Rollout-derived files contain actual policy state and tracking error. They may
 provide contact/force metadata, but their motion fields must not replace the
-clean ref fields for `ref -> code -> ref` training.
+clean ref fields for clean-reference reconstruction training.

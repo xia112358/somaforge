@@ -101,7 +101,9 @@ def generate_contact_aware_pyroki_preview(
 
     contact_layer = source_contact_layer or plan.source_contact_layer
     layers_root = _resolve_layers_root(layers_root, contact_layer=contact_layer)
-    graph = read_contact_graph(layers_root / contact_layer, plan.source_motion_id)
+    from motion_edit.contact.layers import read_verified_contact_graph
+    graph = read_verified_contact_graph(layers_root / contact_layer, plan.source_motion_id,
+        motion_path=source_motion_path, labels_path=plan.metadata.get('newton_contact_file'))
     surface_path = layers_root / contact_layer / "surfaces" / f"{graph.motion_id}.jsonl"
     source_surfaces = read_contact_surfaces(surface_path) if surface_path.is_file() else []
     variant = expand_task_variant_plan(plan, anchors=graph.anchors, surfaces=source_surfaces)
@@ -147,10 +149,14 @@ def generate_contact_aware_pyroki_preview(
         "rigid_patch_contact_edit_count": len(edits),
     }
 
-    binding_motion, binding_motion_path = _contact_binding_motion(plan, source_motion=motion)
-    patches, binding_summary = bind_newton_contact_patches(
-        graph.anchors,
-        binding_motion,
+    from motion_edit.contact.layers import verified_source_patches
+    alternate = plan.metadata.get('contact_force_source_path')
+    if alternate and Path(alternate).resolve() != source_motion_path.resolve():
+        raise ValueError('Verified source patches cannot use another motion as contact-pose authority')
+    binding_motion, binding_motion_path = motion, str(source_motion_path)
+    patches, binding_summary = verified_source_patches(
+        graph,
+        source_motion_path=source_motion_path,
         min_force_norm=float(min_raw_contact_force_norm),
     )
     binding_summary["source_motion_path"] = binding_motion_path

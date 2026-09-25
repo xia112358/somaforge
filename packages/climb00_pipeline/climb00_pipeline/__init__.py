@@ -1,96 +1,76 @@
-"""Climb00 keyframe-prediction and trajectory-infilling contracts."""
+"""Compatibility exports; implementations live in generator/contact_solver/somaforge_core."""
+from importlib import import_module
 
-from .contact_q_generator import (
-    ContactPlanQInfiller,
-    ContactQPrediction,
-    ContactTransitionPlan,
-    SequentialContactQPredictor,
-)
-from .contracts import BODY_NAMES, CONTACT_BODY_INDEX, CONTACT_PARTS, InteractionBoundary, SparseKeyframe, TeacherSegment
-from .fullbody import (
-    ConstrainedKeypointResult,
-    FullBodyCollisionAudit,
-    FullBodyTeacherSegment,
-    FullBodyTrajectory,
-    KeypointTrajectory,
-)
-from .mechanical import G1MechanicalProjector, MechanicalConstraintError, MechanicallyConstrainedInfiller
-from .neural_infiller import (
-    CanonicalG1CollisionPoints,
-    CanonicalG1ForwardKinematics,
-    ContactAwareQInfillerLoss,
-    G1ActionMedoidQDeformer,
-    G1ConstrainedKeypointInfiller,
-    G1ContactAwareQInfiller,
-    InfillerLoss,
-    InfillerOutput,
-    constrained_infiller_loss,
-    contact_aware_q_infiller_loss,
-    full_geometry_box_collision_penalty,
-    full_geometry_box_ground_penetration,
-    full_geometry_box_penetration,
-    full_geometry_contact_surface_penalty,
-)
-from .teacher_data import TeacherDataset
-from .unified_interaction import (
-    InteractionInfillerLoss,
-    InteractionProjectionResult,
-    InteractionQInfiller,
-    UnifiedInteractionLoss,
-    UnifiedInteractionPrediction,
-    UnifiedInteractionPredictor,
-    contact_rotation_losses,
-    interaction_infiller_loss,
-    project_interaction_q_trajectory,
-    rollout_dense_collision_loss,
-    rollout_ground_collision_loss,
-    unified_interaction_loss,
-)
+_EXPORTS = {'ContactPlanQInfiller': ('generator.contact_q_generator', 'ContactPlanQInfiller'),
+ 'ContactQPrediction': ('generator.contact_q_generator', 'ContactQPrediction'),
+ 'ContactTransitionPlan': ('generator.contact_q_generator', 'ContactTransitionPlan'),
+ 'SequentialContactQPredictor': ('generator.contact_q_generator', 'SequentialContactQPredictor'),
+ 'BODY_NAMES': ('somaforge_core.motion_contracts', 'BODY_NAMES'),
+ 'CONTACT_BODY_INDEX': ('somaforge_core.motion_contracts', 'CONTACT_BODY_INDEX'),
+ 'CONTACT_PARTS': ('somaforge_core.motion_contracts', 'CONTACT_PARTS'),
+ 'InteractionBoundary': ('somaforge_core.motion_contracts', 'InteractionBoundary'),
+ 'SparseKeyframe': ('somaforge_core.motion_contracts', 'SparseKeyframe'),
+ 'TeacherSegment': ('somaforge_core.motion_contracts', 'TeacherSegment'),
+ 'ConstrainedKeypointResult': ('somaforge_core.motion_trajectory', 'ConstrainedKeypointResult'),
+ 'FullBodyCollisionAudit': ('somaforge_core.motion_trajectory', 'FullBodyCollisionAudit'),
+ 'FullBodyTeacherSegment': ('somaforge_core.motion_trajectory', 'FullBodyTeacherSegment'),
+ 'FullBodyTrajectory': ('somaforge_core.motion_trajectory', 'FullBodyTrajectory'),
+ 'KeypointTrajectory': ('somaforge_core.motion_trajectory', 'KeypointTrajectory'),
+ 'G1MechanicalProjector': ('contact_solver.mechanical', 'G1MechanicalProjector'),
+ 'MechanicalConstraintError': ('contact_solver.mechanical', 'MechanicalConstraintError'),
+ 'MechanicallyConstrainedInfiller': ('contact_solver.mechanical',
+                                     'MechanicallyConstrainedInfiller'),
+ 'CanonicalG1CollisionPoints': ('contact_solver.collision_geometry', 'CanonicalG1CollisionPoints'),
+ 'CanonicalG1ForwardKinematics': ('somaforge_core.g1_kinematics', 'CanonicalG1ForwardKinematics'),
+ 'ContactAwareQInfillerLoss': ('generator.neural_infiller', 'ContactAwareQInfillerLoss'),
+ 'G1ActionMedoidQDeformer': ('generator.neural_infiller', 'G1ActionMedoidQDeformer'),
+ 'G1ConstrainedKeypointInfiller': ('generator.neural_infiller', 'G1ConstrainedKeypointInfiller'),
+ 'G1ContactAwareQInfiller': ('generator.neural_infiller', 'G1ContactAwareQInfiller'),
+ 'InfillerLoss': ('generator.neural_infiller', 'InfillerLoss'),
+ 'InfillerOutput': ('somaforge_core.prediction_contracts', 'InfillerOutput'),
+ 'constrained_infiller_loss': ('generator.neural_infiller', 'constrained_infiller_loss'),
+ 'contact_aware_q_infiller_loss': ('generator.neural_infiller', 'contact_aware_q_infiller_loss'),
+ 'full_geometry_box_collision_penalty': ('contact_solver.collision_geometry',
+                                         'full_geometry_box_collision_penalty'),
+ 'full_geometry_box_ground_penetration': ('contact_solver.collision_geometry',
+                                          'full_geometry_box_ground_penetration'),
+ 'full_geometry_box_penetration': ('contact_solver.collision_geometry',
+                                   'full_geometry_box_penetration'),
+ 'full_geometry_contact_surface_penalty': ('contact_solver.collision_geometry',
+                                           'full_geometry_contact_surface_penalty'),
+ 'TeacherDataset': ('generator.teacher_data', 'TeacherDataset'),
+ 'InteractionInfillerLoss': ('generator.unified_interaction', 'InteractionInfillerLoss'),
+ 'InteractionProjectionResult': ('contact_solver.trajectory_projection',
+                                 'InteractionProjectionResult'),
+ 'InteractionQInfiller': ('generator.unified_interaction', 'InteractionQInfiller'),
+ 'UnifiedInteractionLoss': ('generator.unified_interaction', 'UnifiedInteractionLoss'),
+ 'UnifiedInteractionPrediction': ('somaforge_core.prediction_contracts',
+                                  'UnifiedInteractionPrediction'),
+ 'UnifiedInteractionPredictor': ('generator.unified_interaction', 'UnifiedInteractionPredictor'),
+ 'contact_rotation_losses': ('contact_solver.trajectory_projection', 'contact_rotation_losses'),
+ 'interaction_infiller_loss': ('generator.unified_interaction', 'interaction_infiller_loss'),
+ 'project_interaction_q_trajectory': ('contact_solver.trajectory_projection',
+                                      'project_interaction_q_trajectory'),
+ 'rollout_dense_collision_loss': ('contact_solver.trajectory_projection',
+                                  'rollout_dense_collision_loss'),
+ 'rollout_ground_collision_loss': ('contact_solver.trajectory_projection',
+                                   'rollout_ground_collision_loss'),
+ 'unified_interaction_loss': ('generator.unified_interaction', 'unified_interaction_loss')}
+__all__ = list(_EXPORTS)
 
-__all__ = [
-    "BODY_NAMES",
-    "CONTACT_PARTS",
-    "CONTACT_BODY_INDEX",
-    "CanonicalG1CollisionPoints",
-    "CanonicalG1ForwardKinematics",
-    "ConstrainedKeypointResult",
-    "ContactAwareQInfillerLoss",
-    "ContactPlanQInfiller",
-    "ContactQPrediction",
-    "ContactTransitionPlan",
-    "InteractionBoundary",
-    "InteractionInfillerLoss",
-    "InteractionProjectionResult",
-    "InteractionQInfiller",
-    "FullBodyCollisionAudit",
-    "FullBodyTeacherSegment",
-    "FullBodyTrajectory",
-    "G1ActionMedoidQDeformer",
-    "G1ConstrainedKeypointInfiller",
-    "G1ContactAwareQInfiller",
-    "G1MechanicalProjector",
-    "InfillerLoss",
-    "InfillerOutput",
-    "KeypointTrajectory",
-    "MechanicalConstraintError",
-    "MechanicallyConstrainedInfiller",
-    "SequentialContactQPredictor",
-    "SparseKeyframe",
-    "TeacherDataset",
-    "TeacherSegment",
-    "UnifiedInteractionLoss",
-    "UnifiedInteractionPrediction",
-    "UnifiedInteractionPredictor",
-    "contact_rotation_losses",
-    "constrained_infiller_loss",
-    "contact_aware_q_infiller_loss",
-    "full_geometry_box_collision_penalty",
-    "full_geometry_box_ground_penetration",
-    "full_geometry_box_penetration",
-    "full_geometry_contact_surface_penalty",
-    "interaction_infiller_loss",
-    "project_interaction_q_trajectory",
-    "rollout_dense_collision_loss",
-    "rollout_ground_collision_loss",
-    "unified_interaction_loss",
-]
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(name)
+    module, attribute = _EXPORTS[name]
+    value = getattr(import_module(module), attribute)
+    globals()[name] = value
+    return value
+
+# Support historical scripts that add only packages/climb00_pipeline to sys.path.
+from pathlib import Path
+import sys
+_packages = Path(__file__).resolve().parents[2]
+for _name in ("somaforge_core", "motion_edit", "contact_solver", "generator"):
+    _path = _packages / _name
+    if (_path / _name / "__init__.py").is_file() and str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))

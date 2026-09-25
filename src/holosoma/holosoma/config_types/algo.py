@@ -66,6 +66,9 @@ class LayerConfig:
     padding: str | int | tuple[str | int, ...] = "same"
     """Padding mode for convolutions. Only used for CNN modules."""
 
+    global_average_pool: bool = False
+    """Apply spatial global-average pooling after the final convolution."""
+
     module_input_name: tuple[str, ...] = ()
     """Input names for module. Only used for encoder modules."""
 
@@ -144,6 +147,12 @@ class PPOConfig:
     actor_optimizer: OptimizerConfig = field(default_factory=lambda: OptimizerConfig(_target_="torch.optim.AdamW"))
     """Actor optimizer configuration."""
 
+    actor_finetune_mode: str = "none"
+    """Actor update scope: none, ref_q, ref_qd, last_layers, or full_actor."""
+
+    freeze_actor_obs_normalizer: bool = False
+    """Keep actor observation normalization statistics fixed during training."""
+
     critic_learning_rate: float = 1e-5
     """Learning rate for critic network."""
 
@@ -185,6 +194,9 @@ class PPOConfig:
 
     anchor_kl_coef: float = 0.0
     """Coefficient for KL(current policy || frozen reference policy) during actor updates."""
+
+    exec_consistency_coef: float = 0.0
+    """Coefficient for fixed-scale old-reference to execution-reference action-mean consistency."""
 
     init_noise_std: float = 0.8
     """Initial noise standard deviation."""
@@ -285,6 +297,9 @@ class DistillConfig:
     teacher_hidden_dims: tuple[int, ...] | None = None
     """Optional teacher actor MLP hidden dims. Use when student and teacher architectures differ."""
 
+    teacher_module_type: str | None = None
+    """Optional frozen-teacher module type, e.g. ``MLP`` for a CNN student."""
+
     dagger_disable_on_term_names: tuple[str, ...] = ()
     """Termination terms that mark a sample outside the teacher-valid region for DAgger."""
 
@@ -302,6 +317,9 @@ class DistillConfig:
 
     dagger_bad_motion_body_pos_body_names: tuple[str, ...] = ()
     """Tracked body names checked by the expert-valid DAgger mask."""
+
+    php_student_termination_anneal_iters: int = 0
+    """Iterations over which the PHP student's tracking boundary doubles."""
 
 
 @dataclass(frozen=True)
