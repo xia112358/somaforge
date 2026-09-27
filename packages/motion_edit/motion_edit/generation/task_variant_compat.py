@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -191,13 +192,27 @@ def expand_task_variant_plan(
                         )
                     old_world = _anchor_world(anchor, source, uv_before)
                     new_world = (
-                        np.asarray(target.origin, dtype=np.float64)
-                        + float(uv_after[0])
+                        map_points_between_surface_frames(
+                            old_world, raw["source_surface"], raw["target_surface"]
+                        )
+                        + float(uv_delta[0])
                         * np.asarray(target.tangent_u, dtype=np.float64)
-                        + float(uv_after[1])
+                        + float(uv_delta[1])
                         * np.asarray(target.tangent_v, dtype=np.float64)
                     )
                     delta_world = new_world - old_world
+                    # Represent UV translation in the mapping's source frame;
+                    # the destination remains the actual bounded surface.
+                    composed_transform = deepcopy(raw)
+                    composed_transform["source_surface"]["origin"] = (
+                        np.asarray(source.origin, dtype=np.float64)
+                        - uv_delta[0] * np.asarray(source.tangent_u, dtype=np.float64)
+                        - uv_delta[1] * np.asarray(source.tangent_v, dtype=np.float64)
+                    ).tolist()
+                    composed_transform["translation_world"] = (
+                        np.asarray(target.origin, dtype=np.float64)
+                        - composed_transform["source_surface"]["origin"]
+                    ).tolist()
                     expanded.append(
                         replace(
                             explicit_edit,
@@ -223,6 +238,7 @@ def expand_task_variant_plan(
                                 "source_surface": raw["source_surface"],
                                 "target_surface": raw["target_surface"],
                                 "surface_transform_then_uv": True,
+                                "surface_transform": composed_transform,
                             },
                         )
                     )
@@ -270,6 +286,7 @@ def expand_task_variant_plan(
                         ),
                         "source_surface": source_payload,
                         "target_surface": target_payload,
+                        "surface_transform": dict(raw),
                         "height_scale": raw.get("height_scale"),
                     },
                 )

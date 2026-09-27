@@ -223,7 +223,7 @@ def test_compile_pyroki_taskspace_resolves_semantics_and_global_contact_frames()
     spec = _spec()
     compiled = compile_pyroki_taskspace(
         spec,
-        ("pelvis", "left_ankle_roll_link", "left_elbow_link"),
+        ("pelvis", "left_ankle_roll_sphere_5_link", "left_elbow_link", "left_ankle_roll_link"),
         edited_contact_weight=123.0,
     )
     assert compiled.semantic_names == ("pelvis", "left_foot", "left_elbow")
@@ -324,7 +324,7 @@ def test_compile_pyroki_taskspace_keeps_full_contact_weight_at_boundaries() -> N
     spec = _spec()
     compiled = compile_pyroki_taskspace(
         spec,
-        ("pelvis", "left_ankle_roll_link", "left_elbow_link"),
+        ("pelvis", "left_ankle_roll_sphere_5_link", "left_elbow_link", "left_ankle_roll_link"),
         edited_contact_weight=123.0,
     )
     assert compiled.contact_weights[:, 0].tolist() == [0.0, 123.0, 123.0]

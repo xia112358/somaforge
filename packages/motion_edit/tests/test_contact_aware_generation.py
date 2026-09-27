@@ -49,8 +49,8 @@ class ContactAwareGenerationTests(unittest.TestCase):
 
         self.assertEqual(result.output_motion_path, force_out)
         self.assertEqual(result.warnings, ["gen warning", "force warning"])
-        self.assertEqual(calls["generation"]["fullbody_solver"], "batch_contact_laplacian")
-        self.assertEqual(calls["generation"]["mode"], "lte_fullbody")
+        self.assertNotIn("fullbody_solver", calls["generation"])
+        self.assertNotIn("mode", calls["generation"])
         self.assertEqual(calls["force"]["args"][0], generated)
         self.assertEqual(calls["force"]["kwargs"]["source_force_ref_path"], "source.force.npz")
         self.assertEqual(calls["force"]["kwargs"]["max_force_norm"], 5000.0)

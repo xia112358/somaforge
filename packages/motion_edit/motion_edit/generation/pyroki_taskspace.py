@@ -219,11 +219,6 @@ def resolve_link_index(link_names: Sequence[str], label: str, aliases: Sequence[
         key = candidate.lower()
         if key in lowered:
             return lowered.index(key)
-    for candidate in candidates:
-        key = candidate.lower()
-        for index, name in enumerate(lowered):
-            if key and (key in name or name in key):
-                return index
     return None
 
 

@@ -1,19 +1,13 @@
-"""Motion generation backends.
+"""Contact-aware motion generation and internal geometry helpers.
 
-The public generation entry is ContactEditPlan -> ``lte_fullbody``.
-``motion_edit.contact.generation`` is kept as a compatibility wrapper.
-
-Interactive Contact Editor generation supplies ``source_plan_path`` and does
-not expose a solver selector. Those calls now use the unified
-``batch_contact_laplacian`` backend by default. Programmatic and CLI callers can
-still request either backend explicitly; only the legacy ``ik_subprocess`` path
-uses the external LTE/IK subprocess.
+Formal single/batch generation uses generate_contact_aware_pyroki_preview.
+The LTE functions remain internal diagnostic building blocks, not dataset
+acceptance or the production CLI path.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace as _dataclass_replace
-from typing import Any
 
 from motion_edit.generation.contact_semantic_aliases import install_lte_contact_semantic_aliases
 
@@ -37,9 +31,6 @@ from motion_edit.generation.omni_delaunay_cache import install_delaunay_topology
 
 install_delaunay_topology_cache()
 
-from motion_edit.generation.omni_legacy_fallback import install_legacy_foot_fallbacks
-
-install_legacy_foot_fallbacks()
 
 from motion_edit.generation.omni_surface_mapping import install_surface_specific_object_mapping
 
@@ -86,7 +77,6 @@ from motion_edit.generation.contact_force_bake import (
 )
 from motion_edit.generation.lte_fullbody import (
     LteGenerationResult,
-    apply_contact_edit_plan_to_motion as _apply_contact_edit_plan_to_motion,
     resolve_body_index,
 )
 from motion_edit.generation.taskspace_builder import build_contact_aware_taskspace_motion
@@ -99,16 +89,6 @@ from motion_edit.generation.taskspace_spec import (
 )
 
 
-def apply_contact_edit_plan_to_motion(*args: Any, **kwargs: Any) -> LteGenerationResult:
-    if (
-        kwargs.get("mode", "lte_fullbody") == "lte_fullbody"
-        and "fullbody_solver" not in kwargs
-        and kwargs.get("source_plan_path") is not None
-    ):
-        kwargs["fullbody_solver"] = "batch_contact_laplacian"
-    return _apply_contact_edit_plan_to_motion(*args, **kwargs)
-
-
 __all__ = [
     "ContactAwareGenerationResult",
     "ContactAwarePreviewResult",
@@ -117,7 +97,6 @@ __all__ = [
     "ContactPatchTarget",
     "LteGenerationResult",
     "apply_contact_aware_edit_plan_to_motion",
-    "apply_contact_edit_plan_to_motion",
     "bake_retargeted_contact_forces_for_motion",
     "build_contact_aware_taskspace_motion",
     "generate_contact_aware_pyroki_preview",

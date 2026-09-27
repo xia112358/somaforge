@@ -159,3 +159,113 @@ def equal_demo_patch_cloud(clouds):
         points=np.concatenate(clouds),
         point_weights=np.concatenate([np.full(len(c),1/(len(clouds)*len(c))) for c in clouds]),
         demo_centers=centers,center_dispersion_m=float(np.median(distance[medoid])))
+
+
+def first_surface_acquisitions(mask, surfaces, *, window, occupancy):
+    mask = np.asarray(mask, dtype=bool)
+    surfaces = np.asarray(surfaces)
+    if mask.ndim != 2 or surfaces.shape != mask.shape:
+        raise ValueError('Expected matching [frame, endpoint] arrays')
+    if window < 1 or not 0 < occupancy <= 1:
+        raise ValueError('Invalid observation window')
+    events = []
+    needed = int(np.ceil(window * occupancy))
+    for part in range(mask.shape[1]):
+        for surface in np.unique(surfaces[mask[:, part], part]):
+            active = mask[:, part] & (surfaces[:, part] == surface)
+            for frame in np.flatnonzero(active):
+                if frame + window > len(mask):
+                    break
+                if active[frame:frame + window].sum() < needed:
+                    continue
+                if frame != 0:
+                    events.append(dict(frame=int(frame), part_index=part,
+                                       surface=int(surface), kind='first_surface_acquisition'))
+                break
+    return sorted(events, key=lambda row: (row['frame'], row['part_index']))
+
+
+def release_supervision(active, certified_release=None):
+    """Require external action evidence; an all-off vote alone is insufficient."""
+    active = np.asarray(active, dtype=bool)
+    if active.ndim != 2:
+        raise ValueError('Expected [source, frame] observations')
+    if certified_release is None:
+        return np.zeros(active.shape[1], dtype=bool)
+    certified_release = np.asarray(certified_release)
+    if certified_release.dtype != np.bool_ or certified_release.shape != active.shape:
+        raise ValueError('Release evidence must be a boolean [source, frame] array')
+    return ((~active & certified_release).sum(axis=0) > len(active) / 2)
+
+
+def align_event_anchors(reference, source, boundaries, *, band=10):
+    """Match an explicit shared event sequence using pose evidence, not dropouts.
+
+    Event identity and order are input, including repeated same-surface actions.
+    Dynamic programming chooses strictly ordered source times within the band.
+    One whole-body map transports observations; it never creates contact truth.
+    """
+    from scipy.interpolate import PchipInterpolator
+    a, b = pose_features(reference), pose_features(source)
+    edges = np.asarray(boundaries)
+    if (len(a) != len(b) or edges.ndim != 1 or len(edges) < 2
+            or not np.issubdtype(edges.dtype, np.integer)
+            or edges[0] != 0 or edges[-1] != len(a)-1
+            or np.any(np.diff(edges) <= 0) or type(band) is not int or band < 0):
+        raise ValueError('Expected complete, strictly ordered event boundaries')
+    candidates = [np.array([t]) if i in (0, len(edges)-1)
+                  else np.arange(max(1, t-band), min(len(a)-2, t+band)+1)
+                  for i, t in enumerate(edges)]
+    costs = np.array([0.]); backs = []
+    for i in range(1, len(edges)):
+        previous, current = candidates[i-1], candidates[i]
+        options = np.where(previous[:, None] < current[None, :], costs[:, None], np.inf)
+        back = options.argmin(axis=0)
+        local = ((b[current] - a[edges[i]])**2).mean(axis=-1) + 1e-9*(current-edges[i])**2
+        costs = options[back, np.arange(len(current))] + local
+        backs.append(back)
+    if not np.isfinite(costs).any():
+        raise ValueError('No event-order-preserving alignment')
+    j = int(costs.argmin()); selected = [int(candidates[-1][j])]
+    for i in range(len(edges)-1, 0, -1):
+        j = int(backs[i-1][j]); selected.append(int(candidates[i-1][j]))
+    selected = np.array(selected[::-1])
+    continuous = PchipInterpolator(edges, selected)(np.arange(len(a)))
+    # Bound the shared clock as well as its anchors; this preserves monotonicity.
+    clock = np.arange(len(a))
+    continuous = np.clip(continuous, np.maximum(0, clock-band), np.minimum(len(a)-1, clock+band))
+    mapping = np.rint(continuous).astype(int)
+    if np.any(np.diff(mapping) < 0):
+        raise AssertionError('Non-monotone event clock')
+    return mapping, selected
+
+
+def phase_support_penalties(positions, rotations, tasks, *, scale, normal_mode='upper'):
+    """Soft event support prior; output contact still requires Newton requery.
+
+    tasks: (start, inclusive_end, body, local_material_cloud, normal, height).
+    A step follows one material sample, while successive steps may choose
+    different samples. Rotation of the body about its contact is permitted.
+    """
+    import torch
+    if not np.isfinite(scale) or scale <= 0:
+        raise ValueError('Expected positive residual scale')
+    if normal_mode not in ('upper', 'match'):
+        raise ValueError('Unknown normal objective')
+    normal_loss = positions.new_zeros(())
+    tangent_loss = positions.new_zeros(())
+    for start, end, body, cloud, normal, target in tasks:
+        if not 0 <= start < end < len(positions):
+            raise ValueError('Invalid support phase')
+        points = positions[start:end+1, body, None, :] + torch.einsum(
+            'tij,kj->tki', rotations[start:end+1, body], cloud)
+        minimum, chosen = (points @ normal).min(-1)
+        error = (minimum-target)/scale
+        if normal_mode == 'upper':
+            error = error.relu()
+        normal_loss = normal_loss + error.square().mean()
+        steps = torch.arange(end-start, device=positions.device)
+        delta = points[steps+1, chosen[:-1]] - points[steps, chosen[:-1]]
+        tangent = delta - (delta*normal).sum(-1, keepdim=True)*normal
+        tangent_loss = tangent_loss + (tangent/scale).square().mean()
+    return normal_loss/max(1, len(tasks)), tangent_loss/max(1, len(tasks))

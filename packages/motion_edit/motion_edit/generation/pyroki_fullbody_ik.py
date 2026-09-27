@@ -340,14 +340,6 @@ def _environment_contacts_from_lte(
     return contacts
 
 
-def _source_motion_from_lte(lte: dict[str, Any], explicit: str | Path | None) -> Path:
-    if explicit is not None:
-        return Path(explicit).expanduser()
-    if "source_demo" not in lte:
-        raise ValueError("legacy LTE keypoint file has no source_demo; pass --source-motion")
-    return Path(_decode_scalar(lte["source_demo"])).expanduser()
-
-
 def _source_qpos_from_array(raw_value: Any, n_frames: int, actuated_count: int) -> tuple[np.ndarray, np.ndarray]:
     raw = np.asarray(raw_value, dtype=np.float64)
     if raw.ndim != 2:
@@ -589,48 +581,6 @@ def _force_linearization_from_source(
     )
 
 
-def _legacy_compiled_taskspace(lte: dict[str, Any], link_names: tuple[str, ...]) -> CompiledPyrokiTaskspace:
-    targets = {name: np.asarray(lte[name], dtype=np.float64) for name in TARGET_LINK_ALIASES if name in lte}
-    if "root" in lte and "pelvis" not in targets:
-        targets["pelvis"] = np.asarray(lte["root"], dtype=np.float64)
-    if not targets:
-        raise ValueError("legacy LTE input has no supported PyRoki keypoints")
-    n_frames = min(value.shape[0] for value in targets.values())
-    names: list[str] = []
-    indices: list[int] = []
-    values: list[np.ndarray] = []
-    unresolved: list[str] = []
-    for name, target in targets.items():
-        link_index = resolve_link_index(link_names, name, TARGET_LINK_ALIASES.get(name, (name,)))
-        if link_index is None:
-            unresolved.append(name)
-            continue
-        names.append(name)
-        indices.append(link_index)
-        values.append(target[:n_frames])
-    if not indices:
-        raise ValueError("PyRoki IK could not resolve any legacy target links")
-    semantic_targets = np.stack(values, axis=1)
-    semantic_weights = np.broadcast_to(
-        np.asarray([TARGET_WEIGHTS.get(name, 1.0) for name in names], dtype=np.float64)[None, :],
-        (n_frames, len(names)),
-    ).copy()
-    compiled = CompiledPyrokiTaskspace(
-        semantic_names=tuple(names),
-        semantic_link_indices=np.asarray(indices, dtype=np.int32),
-        semantic_targets_w=semantic_targets,
-        semantic_weights=semantic_weights,
-        contact_link_indices=np.zeros((n_frames, 1), dtype=np.int32),
-        contact_points_local=np.zeros((n_frames, 1, 3), dtype=np.float64),
-        contact_targets_w=np.zeros((n_frames, 1, 3), dtype=np.float64),
-        contact_weights=np.zeros((n_frames, 1), dtype=np.float64),
-        unresolved_semantics=tuple(unresolved),
-        unresolved_contacts=(),
-    )
-    compiled.validate()
-    return compiled
-
-
 def _input_problem(
     payload: dict[str, Any],
     *,
@@ -659,6 +609,11 @@ def _input_problem(
             edited_contact_weight=edited_contact_weight,
             fixed_contact_weight=fixed_contact_weight,
         )
+        if compiled.unresolved_semantics or compiled.unresolved_contacts:
+            raise ValueError(
+                f"Taskspace contains unresolved robot mappings: semantics={compiled.unresolved_semantics}, "
+                f"contacts={compiled.unresolved_contacts}; regenerate from the canonical asset"
+            )
         root_source, cfg_source = _source_qpos_from_array(spec.source_qpos, spec.frame_count, actuated_count)
         source_names: list[str] = []
         source_path: str | None = None
@@ -682,25 +637,7 @@ def _input_problem(
             "contact_aware_taskspace_motion_v1",
         )
 
-    compiled = _legacy_compiled_taskspace(payload, link_names)
-    source_path_obj = _source_motion_from_lte(payload, source_motion_path)
-    source_motion = _load_npz(source_path_obj)
-    source_names = _motion_strings(source_motion, ("joint_names", "dof_names", "joint_name", "dof_name"))
-    root_source, cfg_source = _source_qpos_from_array(source_motion["joint_pos"], compiled.frame_count, actuated_count)
-    cfg_source = _align_source_cfg(cfg_source, source_names, robot_joint_names)
-    source_reference = np.ones_like(cfg_source, dtype=np.float64)
-    boundary = np.zeros(cfg_source.shape[0], dtype=np.float64)
-    return (
-        compiled,
-        root_source,
-        cfg_source,
-        source_reference,
-        boundary,
-        _fps_from_motion(source_motion),
-        source_names,
-        str(source_path_obj),
-        "legacy_lte_keypoints",
-    )
+    raise ValueError("Legacy LTE keypoints are no longer supported; regenerate a versioned contact-aware taskspace with generate-ref")
 
 
 def _stats(values: np.ndarray) -> dict[str, float]:
@@ -1086,6 +1023,12 @@ def solve_pyroki_fullbody_ik(
     import yourdfpy
 
     payload = _load_npz(lte_path)
+    if "contact_aware_taskspace_json" not in payload:
+        raise ValueError("Legacy LTE keypoints are no longer supported; regenerate with generate-ref")
+    from motion_edit.generation.contract import validate_generation_metadata
+    validate_generation_metadata(ContactAwareTaskspaceMotion.from_arrays(payload).metadata)
+    if Path(robot_urdf).expanduser().resolve() != canonical_g1_urdf_path().resolve():
+        raise ValueError("Generation requires the canonical G1 robot asset")
     collision_spec: ContactAwareTaskspaceMotion | None = None
     collision_terrain_mesh: str | None = None
     collision_source_terrain_mesh: str | None = None
@@ -1152,6 +1095,7 @@ def solve_pyroki_fullbody_ik(
     )
     n_frames = min(compiled.frame_count, cfg_source.shape[0])
     root_source = root_source[:n_frames].copy()
+    support_source_root = root_source.copy()
     cfg_source = cfg_source[:n_frames].copy()
     source_reference = source_reference[:n_frames]
     boundary_weights = boundary_weights[:n_frames]
@@ -1258,8 +1202,10 @@ def solve_pyroki_fullbody_ik(
         yaw_rotation = Rotation.from_euler("z", yaw_degrees, degrees=True)
         rotations = Rotation.from_quat(root_source[:, [4, 5, 6, 3]])
         root_source[:, 3:7] = (yaw_rotation * rotations).as_quat()[:, [3, 0, 1, 2]]
-        root_source[0] = initial_q[:7]
-        cfg_source[0] = initial_q[7:]
+        # The edited trajectory owns its initial frame too. Splicing a
+        # separately prescribed root into frame zero can create a jump to
+        # the independently optimized frame one.
+        # The initial pose is retained as provenance, not an incompatible pin.
 
     lower = np.asarray(robot.joints.lower_limits, dtype=np.float64)
     upper = np.asarray(robot.joints.upper_limits, dtype=np.float64)
@@ -1277,13 +1223,77 @@ def solve_pyroki_fullbody_ik(
     foot_orientation_indices_jax = jnp.asarray(foot_orientation_indices, dtype=jnp.int32)
     source_foot_orientations = source_fk[:, foot_orientation_indices, :4]
     free_surface_contacts = bool(collision_spec is not None and collision_spec.metadata.get("free_surface_contacts"))
-    from motion_edit.generation.surface_contact_loss import compile_surface_faces, surface_residual
+    from motion_edit.generation.contract import validate_generation_metadata
+    validate_generation_metadata(collision_spec.metadata if collision_spec else {})
+    objective_version = 'consolidated_v1'
+    if not free_surface_contacts:
+        raise ValueError('Consolidated objective requires compiled surface contact tasks')
+    from motion_edit.generation.surface_contact_loss import compile_surface_faces, surface_residual, endpoint_surface_residual
     surface_reference_ratio = float(collision_spec.metadata.get("surface_reference_ratio", 0.01)) if free_surface_contacts else 0.
     if free_surface_contacts:
         if not 0 <= surface_reference_ratio < 1:
             raise ValueError("Surface reference must be weaker than normal contact constraint")
         surface_normals_w, surface_edges_w, surface_offsets_w = compile_surface_faces(collision_spec, compiled, link_names)
-    convex_mode = bool(free_surface_contacts and collision_spec.metadata.get("convex_surface_targets"))
+    support_mask = np.zeros_like(compiled.contact_weights, dtype=bool)
+    support_orientation_projectors = np.zeros((*support_mask.shape,3,3))
+    support_episodes = []
+    support_orientation_targets = None
+    support_approach_seconds = float(collision_spec.metadata.get('support_approach_seconds', 0.0)) if free_surface_contacts else 0.0
+    if not np.isfinite(support_approach_seconds) or support_approach_seconds < 0:
+        raise ValueError('Support approach duration must be finite and nonnegative')
+    approach_data = (np.zeros((n_frames,1),np.int32), np.zeros((n_frames,1,3)), np.zeros((n_frames,1,3)), np.zeros((n_frames,1)), np.full((n_frames,1),-1), np.zeros((n_frames,1)))
+    approach_start_offsets = {}
+    approach_start_rotation_offsets = {}
+    approach_orientation_enabled = bool(collision_spec.metadata.get("support_approach_orientation", True)) if free_surface_contacts else False
+    support_rotation_policy = collision_spec.metadata.get('support_rotation_policy', 'episode_yaw') if free_surface_contacts else None
+    support_origin_policy = collision_spec.metadata.get('support_origin_policy', 'median') if free_surface_contacts else None
+    if free_surface_contacts and support_rotation_policy not in ('episode_yaw', 'authored_surface'):
+        raise ValueError('Unknown support rotation policy')
+    support_residual_scale = float(collision_spec.metadata.get("support_residual_scale", 100.0)) if free_surface_contacts else 0.0
+    if free_surface_contacts and (not np.isfinite(support_residual_scale) or support_residual_scale <= 0):
+        raise ValueError("Support residual scale must be finite and positive")
+    if free_surface_contacts:
+        from motion_edit.generation.support_motion import compile_support_motion, authored_support_targets, orientation_completion_projectors
+        source_root_rotation = Rotation.from_quat(support_source_root[:, [4, 5, 6, 3]]).as_matrix()
+        source_link_rotation = Rotation.from_quat(source_fk[..., [1, 2, 3, 0]].reshape(-1,4)).as_matrix().reshape(*source_fk.shape[:2],3,3)
+        source_world_rotation = source_root_rotation[:,None] @ source_link_rotation
+        source_world_position = support_source_root[:,None,:3] + np.einsum('tij,tnj->tni', source_root_rotation, source_fk[...,4:7])
+        authored_targets, support_edit_rotations = authored_support_targets(
+            collision_spec, compiled, link_names, source_world_position, source_world_rotation,
+            return_rotations=True)
+        if support_rotation_policy == 'episode_yaw':
+            support_edit_rotations = np.broadcast_to(
+                yaw_rotation.as_matrix() if yaw_enabled else np.eye(3), support_edit_rotations.shape)
+        support_targets, support_mask, support_episodes = compile_support_motion(
+            compiled, link_names, source_world_position, source_world_rotation,
+            support_edit_rotations, surface_normals_w, authored_targets, origin_policy=support_origin_policy)
+        target_world_rotation = support_edit_rotations @ source_world_rotation[
+            np.arange(len(compiled.contact_link_indices))[:, None], compiled.contact_link_indices]
+        edited_root_rotation = Rotation.from_quat(root_source[:, [4, 5, 6, 3]]).as_matrix()
+        target_base_rotation = edited_root_rotation[:, None].transpose(0, 1, 3, 2) @ target_world_rotation
+        support_orientation_targets = Rotation.from_matrix(target_base_rotation.reshape(-1, 3, 3)).as_quat()[:, [3, 0, 1, 2]].reshape(*support_mask.shape, 4)
+        compiled.contact_targets_w[:] = support_targets
+        support_orientation_projectors = orientation_completion_projectors(
+            compiled, link_names, source_world_position, source_world_rotation, support_mask)
+        from motion_edit.generation.support_motion import compile_support_approach
+        approach_data = compile_support_approach(compiled, link_names, source_world_position,
+            source_world_rotation, support_edit_rotations, support_targets, support_episodes,
+            round(support_approach_seconds*fps))
+    from motion_edit.generation.support_motion import (
+        compile_approach_orientation, blend_orientation_target, temporal_history_mask)
+    approach_rotations = np.broadcast_to(np.eye(3), (*approach_data[0].shape, 3, 3)).copy()
+    approach_projectors = np.zeros_like(approach_rotations)
+    if free_surface_contacts and approach_orientation_enabled:
+        approach_rotations, approach_projectors = compile_approach_orientation(
+            approach_data, compiled, support_episodes, source_world_rotation,
+            support_edit_rotations, support_orientation_projectors)
+    # The consolidated surface task already enforces the finite footprint;
+    # a second set of per-frame landing coordinates is unnecessary.
+    convex_mode = False  # Endpoint surface tasks replace the retired convex-variable objective.
+    if collision_spec.metadata.get("convex_surface_targets"):
+        # Preserve the baseline temporal coefficient when eliminating only
+        # its auxiliary landing coordinates.
+        q_acceleration_weight = max(float(q_acceleration_weight), 2.0)
     from motion_edit.generation.surface_contact_loss import compile_bounded_face_targets, bounded_face_targets as convex_targets, contact_previous_slots, contact_temporal_residual
     cfg_stop = root_dofs + actuated_count
     coefficient_count = 0
@@ -1368,6 +1378,14 @@ def solve_pyroki_fullbody_ik(
         release_targets: Any,
         release_normals: Any,
         release_weights: Any,
+        support_weight: Any,
+        support_orientation: Any,
+        approach_indices: Any,
+        approach_points: Any,
+        approach_targets: Any,
+        approach_weights: Any,
+        approach_orientation: Any,
+        history_mask: Any,
     ) -> Any:
         root_state = solve_state[:root_dofs]
         root_delta = root_state[:3]
@@ -1393,6 +1411,9 @@ def solve_pyroki_fullbody_ik(
         if free_surface_contacts:
             contact_res = surface_residual(contact_pred, contact_target_base, surface_normals_base,
                 surface_edges_base, surface_offsets_base, contact_sqrt_weight, surface_reference_ratio, xp=jnp)
+            contact_res = endpoint_surface_residual(contact_pred, contact_target_base, surface_normals_base,
+                surface_edges_base, surface_offsets_base, contact_sqrt_weight, support_weight,
+                surface_reference_ratio, xp=jnp)
         if convex_mode:
             target, _ = convex_targets(solve_state[cfg_stop:].reshape(coefficient_shape),
                                        convex_vertices_base, convex_valid_frame, xp=jnp)
@@ -1400,26 +1421,49 @@ def solve_pyroki_fullbody_ik(
             # Only the surface footprint is parametrized by convex coefficients.
             error = contact_pred-target
             tangent = error-jnp.sum(error*surface_normals_base,axis=-1)[:,None]*surface_normals_base
+            landing_weight = contact_sqrt_weight * convex_finite_frame
+            landing_weight = landing_weight * (support_weight <= 0)
             contact_res = jnp.concatenate((contact_res,
-                (tangent*contact_sqrt_weight[:,None]*convex_finite_frame[:,None]).reshape(-1)))
+                (tangent*landing_weight[:,None]).reshape(-1)))
             correction = target-contact_target_base
             correction = correction-jnp.sum(correction*surface_normals_base,axis=-1)[:,None]*surface_normals_base
             # Landing-point continuity is a weak tie-breaker, not a persistent
             # pin that stores posture error until contact release. Joint-space
             # demonstration-relative smoothness remains the primary temporal term.
-            contact_res = jnp.concatenate((contact_res, 0.1 * contact_temporal_residual(correction,
-                contact_previous_correction,contact_previous_previous_correction,
-                contact_velocity_mask,contact_acceleration_mask,xp=jnp)))
 
+        approach_pose = fk[approach_indices]
+        approach_pred = approach_pose[:,4:7]+quat_apply_jax(approach_pose[:,:4], approach_points)+root_delta
+        approach_res = ((approach_pred-approach_targets)*approach_weights[:,None]).reshape(-1)
+        approach_q = approach_pose[:, :4]
+        approach_target_q = approach_orientation[:, :4]
+        approach_rotation_error = (
+            approach_target_q[:, :1] * approach_q[:, 1:]
+            - approach_q[:, :1] * approach_target_q[:, 1:]
+            - jnp.cross(approach_target_q[:, 1:], approach_q[:, 1:]))
+        approach_rotation_free = jnp.einsum('nij,nj->ni',
+            approach_orientation[:, 4:].reshape(-1, 3, 3), approach_rotation_error)
+        approach_res = jnp.concatenate((approach_res,
+            (2.0 * approach_rotation_free * approach_weights[:, None]).reshape(-1)))
+        # A single material point leaves rotation unconstrained, notably for
+        # spherical hands. Keep the demonstrated rigid endpoint orientation
+        # during support as well; do not apply this term in flight.
+        current_orientation = contact_pose[:, :4]
+        target_orientation = support_orientation[:, :4]
+        orientation_error = (
+            target_orientation[:, :1] * current_orientation[:, 1:]
+            - current_orientation[:, :1] * target_orientation[:, 1:]
+            - jnp.cross(target_orientation[:, 1:], current_orientation[:, 1:])
+        )
+        orientation_free = jnp.einsum('nij,nj->ni',support_orientation[:,4:].reshape(-1,3,3),orientation_error)
+        support_orientation_res = (2.0*orientation_free*support_weight[:,None]).reshape(-1)
         prior_res = (q_cfg - q_prior) * q_prior_scale
-        smooth_res = (q_cfg - q_previous) * float(q_smooth_weight)
         velocity_res = (
             (q_cfg - q_previous) - (q_prior - q_prior_previous)
-        ) * float(q_velocity_weight)
+        ) * float(q_velocity_weight) * history_mask[0]
         acceleration_res = (
             (q_cfg - 2.0 * q_previous + q_previous_previous)
             - (q_prior - 2.0 * q_prior_previous + q_prior_previous_previous)
-        ) * float(q_acceleration_weight)
+        ) * float(q_acceleration_weight) * history_mask[1]
 
         foot_pose = fk[foot_orientation_indices_jax]
         foot_quat = foot_pose[:, :4]
@@ -1438,7 +1482,16 @@ def solve_pyroki_fullbody_ik(
         relative = jnp.where(relative[:, :1] < 0.0, -relative, relative)
         foot_orientation_res = (
             2.0 * relative[:, 1:4] * jnp.sqrt(float(foot_orientation_weight))
-        ).reshape(-1)
+        )
+        # Material tasks already determine support orientation. Match by
+        # endpoint so toe/heel shape switches do not reactivate a second prior.
+        from motion_edit.generation.support_motion import endpoint
+        endpoint_groups = jnp.asarray([
+            [endpoint(name) == endpoint(link_names[index]) for name in link_names]
+            for index in foot_orientation_indices])
+        supported_feet = jnp.any(endpoint_groups[:, contact_link_indices] & (support_weight[None, :] > 0), axis=1)
+        foot_orientation_res = foot_orientation_res * (~supported_feet[:, None])
+        foot_orientation_res = foot_orientation_res.reshape(-1)
         collision_pose = fk[collision_link_indices]
         collision_point = (
             collision_pose[:, 4:7]
@@ -1455,9 +1508,6 @@ def solve_pyroki_fullbody_ik(
             )
             * collision_normals_base,
             axis=-1,
-        )
-        collision_similarity_res = (
-            collision_signed_distance * collision_similarity_weight
         )
         collision_deeper_res = (
             jnp.minimum(collision_signed_distance, 0.0)
@@ -1495,31 +1545,21 @@ def solve_pyroki_fullbody_ik(
         release_res = release_residual(release_pred, release_targets, release_normals, release_weights, xp=jnp)
         root_delta_velocity_res = (
             root_state - root_delta_previous
-        ) * np.sqrt(100.0)
+        ) * np.sqrt(100.0) * history_mask[0]
         root_delta_acceleration_res = (
             root_state
             - 2.0 * root_delta_previous
             + root_delta_previous_previous
-        ) * np.sqrt(400.0)
-        return jnp.concatenate(
-            [
-                semantic_res,
-                contact_res,
-                prior_res,
-                smooth_res,
-                velocity_res,
-                acceleration_res,
-                foot_orientation_res,
-                collision_similarity_res,
-                collision_deeper_res,
-                self_collision_res,
-                root_delta_prior_res,
-                root_delta_velocity_res,
-                root_delta_acceleration_res,
-                release_res,
-            ],
-            axis=0,
-        )
+        ) * np.sqrt(400.0) * history_mask[1]
+        # Four responsibilities: endpoint tasks, pose reference, correction
+        # continuity, and collision. No duplicate support XYZ, absolute
+        # motion penalty, or attraction to collision witness planes.
+        endpoint_res = jnp.concatenate((contact_res, approach_res, support_orientation_res))
+        pose_res = jnp.concatenate((semantic_res, prior_res, foot_orientation_res, root_delta_prior_res))
+        temporal_res = jnp.concatenate((velocity_res, acceleration_res,
+                                        root_delta_velocity_res, root_delta_acceleration_res))
+        safety_res = jnp.concatenate((collision_deeper_res, self_collision_res, release_res))
+        return jnp.concatenate((endpoint_res, pose_res, temporal_res, safety_res))
 
     residual_compiled = jax.jit(residual_jax)
     jac_compiled = jax.jit(jax.jacfwd(residual_jax, argnums=0))
@@ -1562,6 +1602,7 @@ def solve_pyroki_fullbody_ik(
         np.zeros(collision_slots, dtype=np.float64),
     )
     collision_similarity_weight_value = float(collision_similarity_weight)
+    collision_similarity_weight_value = 0.0
     collision_deeper_weight_value = 100.0
     collision_max_refinements_value = int(collision_max_refinements)
     self_collision_weight_value = float(self_collision_weight)
@@ -1742,9 +1783,8 @@ def solve_pyroki_fullbody_ik(
                 surface_offsets_w[frame]-np.sum(surface_edges_w[frame]*root[:3], axis=-1),
             )
         solve_lower, solve_upper = normal_solve_lower.copy(), normal_solve_upper.copy()
-        if yaw_enabled and frame == 0:
-            initial_state = np.concatenate((np.zeros(root_dofs), cfg_source[0]))
-            solve_lower[:cfg_stop], solve_upper[:cfg_stop] = initial_state - 1.e-10, initial_state + 1.e-10
+        # Frame zero must satisfy the same edited support targets as later
+        # frames. Pinning it before IK creates a discontinuity at frame one.
         semantic_target_base = root_rotation.inv().apply(
             compiled.semantic_targets_w[frame] - root[:3][None, :]
         )
@@ -1753,6 +1793,39 @@ def solve_pyroki_fullbody_ik(
         )
         semantic_sqrt_weight = np.sqrt(np.maximum(compiled.semantic_weights[frame], 0.0))
         contact_sqrt_weight = np.sqrt(np.maximum(compiled.contact_weights[frame], 0.0))
+        approach_goals = approach_data[2][frame].copy()
+        approach_rotation_goals = approach_rotations[frame].copy()
+        if np.any(approach_data[4][frame] >= 0):
+            previous_frame = max(0,frame-1)
+            previous_root = root_source[previous_frame].copy()
+            previous_rotation = _quat_wxyz_to_rotation(previous_root[3:7])
+            previous_root[:3] += previous_rotation.apply(root_delta_previous[:3])
+            if yaw_enabled:
+                previous_root[3:7] = (Rotation.from_rotvec([0.,0.,root_delta_previous[3]])*previous_rotation).as_quat()[[3,0,1,2]]
+            previous_fk = np.asarray(robot.forward_kinematics(jnp.asarray(q_previous)))
+            previous_positions,previous_quaternions = world_body_poses_from_pyroki_fk(previous_root[None],previous_fk[None])
+            for slot,identity in enumerate(approach_data[4][frame]):
+                if identity < 0:
+                    continue
+                if identity not in approach_start_offsets:
+                    link = approach_data[0][frame,slot]
+                    actual = previous_positions[0,link]+quat_apply_wxyz(previous_quaternions[0,link],approach_data[1][frame,slot])
+                    approach_start_offsets[identity] = actual-approach_goals[slot]
+                approach_goals[slot] += (1.-approach_data[5][frame,slot])*approach_start_offsets[identity]
+                if identity not in approach_start_rotation_offsets:
+                    link = approach_data[0][frame,slot]
+                    actual_rotation = _quat_wxyz_to_rotation(previous_quaternions[0,link]).as_matrix()
+                    approach_start_rotation_offsets[identity] = Rotation.from_matrix(
+                        actual_rotation @ approach_rotation_goals[slot].T).as_rotvec()
+                approach_rotation_goals[slot] = blend_orientation_target(
+                    approach_rotation_goals[slot], approach_start_rotation_offsets[identity],
+                    approach_data[5][frame,slot])
+
+        approach_target_base = root_rotation.inv().apply(approach_goals-root[:3])
+        approach_orientation_frame = np.column_stack((
+            Rotation.from_matrix(root_rotation.as_matrix().T @ approach_rotation_goals).as_quat()[:, [3,0,1,2]],
+            approach_projectors[frame].reshape(-1,9)))
+
         active_surface_weight = active_contact_surface_weight[frame]
         prior_scale = (
             float(q_prior_weight) * np.maximum(source_reference[frame], 0.0)
@@ -1802,6 +1875,12 @@ def solve_pyroki_fullbody_ik(
             root_rotation.inv().apply(release_data[2][frame] - root[:3]),
             root_rotation.inv().apply(release_data[3][frame]),
             release_data[4][frame],
+            support_residual_scale * contact_sqrt_weight * support_mask[frame],
+            np.column_stack((support_orientation_targets[frame] if free_surface_contacts else source_fk[frame, compiled.contact_link_indices[frame], :4], support_orientation_projectors[frame].reshape(-1,9))),
+            approach_data[0][frame], approach_data[1][frame],
+            approach_target_base,
+            support_residual_scale*approach_data[3][frame],
+                approach_orientation_frame, temporal_history_mask(frame),
         )
 
         args_jax = tuple(jnp.asarray(value) for value in args)
@@ -1951,7 +2030,7 @@ def solve_pyroki_fullbody_ik(
                     # this does not change the native activation boundary.
                     constraints=[dict(type='ineq',fun=lambda v:1000.*native_constraint.fun(expand(v)),
                         jac=lambda v:1000.*native_constraint.jac(expand(v))[:,slots])],
-                    options=dict(maxiter=150,ftol=1.e-6))
+                    options=dict(maxiter=int(hard_release.get('sqp_maxiter', 150)),ftol=1.e-6))
                 full=expand(solved.x)
                 if not solved.success or not native_constraint.feasible(full):
                     # A native mesh nearest-feature switch can invalidate an
@@ -1961,7 +2040,17 @@ def solve_pyroki_fullbody_ik(
                     solved=minimize(objective,solved.x,method='COBYLA',
                         bounds=list(zip(solve_lower[slots],solve_upper[slots])),
                         constraints=[dict(type='ineq',fun=lambda v:1000.*native_constraint.fun(expand(v)))],
-                        options=dict(maxiter=1500,rhobeg=.002,tol=1.e-5,catol=1.e-9))
+                        options=dict(maxiter=int(hard_release.get('cobyla_maxiter', 1500)),rhobeg=.002,tol=1.e-5,catol=1.e-9))
+                    full=expand(solved.x)
+                if not solved.success and native_constraint.feasible(full):
+                    # COBYLA can find a feasible point before exhausting its
+                    # objective budget. Refine from it with derivatives; do
+                    # not equate feasibility with objective convergence.
+                    solved=minimize(objective,solved.x,jac=objective_jac,method='SLSQP',
+                        bounds=list(zip(solve_lower[slots],solve_upper[slots])),
+                        constraints=[dict(type='ineq',fun=lambda v:1000.*native_constraint.fun(expand(v)),
+                            jac=lambda v:1000.*native_constraint.jac(expand(v))[:,slots])],
+                        options=dict(maxiter=int(hard_release.get('sqp_maxiter', 150)),ftol=1.e-6))
                     full=expand(solved.x)
                 if not solved.success or not native_constraint.feasible(full):
                     raise RuntimeError(f'Frame {frame}: {constraint_name} infeasible/unconverged: {solved.message}; constraint_feasible={native_constraint.feasible(full)} gap={native_constraint.fun(full).tolist()} cost={solved.fun}; refusing output')
@@ -2419,6 +2508,12 @@ def solve_pyroki_fullbody_ik(
                 root_rotation.inv().apply(release_data[2][frame] - root[:3]),
                 root_rotation.inv().apply(release_data[3][frame]),
                 release_data[4][frame],
+                support_residual_scale * contact_sqrt_weight * support_mask[frame],
+                np.column_stack((support_orientation_targets[frame] if free_surface_contacts else source_fk[frame, compiled.contact_link_indices[frame], :4], support_orientation_projectors[frame].reshape(-1,9))),
+                approach_data[0][frame], approach_data[1][frame],
+                approach_target_base,
+                support_residual_scale*approach_data[3][frame],
+                approach_orientation_frame, temporal_history_mask(frame),
             )
             args_jax = tuple(jnp.asarray(value) for value in args)
             candidate_state = np.concatenate(
@@ -2572,12 +2667,27 @@ def solve_pyroki_fullbody_ik(
         "least_squares_failure_count": int(len(success) - sum(success)),
         "least_squares_nfev": _stats(np.asarray(nfev, dtype=np.float64)),
         "least_squares_cost": _stats(np.asarray(costs, dtype=np.float64)),
+        "augmentation_objective": objective_version,
+        "temporal_history_contract": "velocity_from_frame1_acceleration_from_frame2",
+        "support_approach_orientation": approach_orientation_enabled,
+        "objective_groups": ["endpoint", "pose_reference", "correction_continuity", "collision"],
         "source_foot_orientation_weight": float(foot_orientation_weight),
         "source_foot_orientation_link_count": len(foot_orientation_indices),
         "source_velocity_weight": float(q_velocity_weight),
         "source_acceleration_weight": float(q_acceleration_weight),
         "root_translation_limit_m": float(root_delta_limit_m),
         "root_yaw_optimized": yaw_enabled,
+        "support_motion_contract": "endpoint_episode_rigid_edit_v2" if free_surface_contacts else None,
+        "support_rotation_policy": support_rotation_policy,
+        "support_origin_policy": support_origin_policy,
+        "support_motion_episodes": support_episodes,
+        "support_residual_scale": support_residual_scale,
+        "support_approach_seconds": support_approach_seconds,
+        "support_approach_is_contact_truth": False,
+        "support_target_error_m": _stats(contact_error_all[support_mask[:n_frames]]),
+        "support_target_sample_count": int(support_mask[:n_frames].sum()),
+        "support_target_is_contact_truth": False,
+        "initial_pose_contract": "edited_trajectory_initial_frame" if yaw_enabled else "source_initial_frame",
         "free_surface_contacts": free_surface_contacts,
         "convex_surface_targets": convex_mode,
         "contact_weight_contract": "shape_face_mean_v1" if collision_spec is not None and collision_spec.metadata.get("normalize_contact_group_weights") else "per_point_sum",
@@ -2605,7 +2715,7 @@ def solve_pyroki_fullbody_ik(
             else "disabled"
         ),
         "environment_collision_contract": (
-            "source_rollout_soft_signed_distance_similarity"
+            "source_relative_one_sided_penetration"
             if collision_terrain_mesh is not None
             else "disabled"
         ),

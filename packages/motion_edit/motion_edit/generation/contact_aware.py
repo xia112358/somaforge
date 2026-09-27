@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from motion_edit.contact.plans import ContactEditPlan
 from motion_edit.generation.contact_force_bake import ContactForceBakeResult, bake_retargeted_contact_forces_for_motion
-from motion_edit.generation.lte_fullbody import LteGenerationResult, apply_contact_edit_plan_to_motion
+from motion_edit.generation.lte_fullbody import LteGenerationResult
 
 
 @dataclass(frozen=True)
@@ -50,20 +50,24 @@ def apply_contact_aware_edit_plan_to_motion(
     This helper can only retarget an existing Newton force reference.
     """
 
-    generator = _generation_fn or apply_contact_edit_plan_to_motion
+    from motion_edit.generation import generate_contact_aware_pyroki_preview
+    generator = _generation_fn or generate_contact_aware_pyroki_preview
     force_baker = _force_bake_fn or bake_retargeted_contact_forces_for_motion
     resolved_force_source_ref_path = force_source_ref_path or plan.source_motion_path
-    if force_source_ref_path is not None:
-        generation_kwargs.setdefault("force_source_motion_path", force_source_ref_path)
-    generation_kwargs.setdefault("mode", "lte_fullbody")
-    generation_kwargs.setdefault("fullbody_solver", "batch_contact_laplacian")
+    dry_run = bool(generation_kwargs.pop("dry_run", False))
+    if dry_run and _generation_fn is None:
+        plan.validate()
+        return ContactAwareGenerationResult(generation=LteGenerationResult(
+            output_motion_path=Path(output_motion_path),
+            warnings=["Contact-aware candidate generation; native validation required"],
+        ))
     generation = generator(
         plan,
         output_motion_path=output_motion_path,
         overwrite=overwrite,
         **generation_kwargs,
     )
-    if not bake_force or bool(generation_kwargs.get("dry_run", False)):
+    if not bake_force or dry_run:
         return ContactAwareGenerationResult(generation=generation, force_bake=None)
     force_out = Path(force_output_motion_path).expanduser() if force_output_motion_path is not None else generation.output_motion_path
     force_bake_result = force_baker(

@@ -52,6 +52,8 @@ def _resolve_source_path(plan: Any) -> Path:
 def _load_source_motion(plan: Any, preview: Any) -> tuple[dict[str, Any], Path]:
     path = _resolve_source_path(plan)
     motion = preview._load_motion_npz(path)
+    from somaforge_core.robot_assets import decode_robot_asset_json
+    decode_robot_asset_json(motion.get("robot_asset_json"), context=f"generation source {path}")
     missing = [name for name in _REQUIRED_ROLLOUT_FIELDS if name not in motion]
     labels_path = getattr(plan, "metadata", {}).get("newton_contact_file")
     if missing and labels_path and all(name.startswith("raw_contact_") for name in missing):
@@ -68,10 +70,6 @@ def _load_source_motion(plan: Any, preview: Any) -> tuple[dict[str, Any], Path]:
     return motion, path
 
 
-def _load_force_rollout(plan: Any, preview: Any) -> tuple[dict[str, Any], Path]:
-    """Compatibility alias for callers migrating to the unified source."""
-
-    return _load_source_motion(plan, preview)
 
 
 def _stamp_rollout_authority_metadata(
@@ -138,6 +136,7 @@ def generate_contact_aware_pyroki_preview(
     ik_conda_env: str = "env_somaforge",
     ik_script: str | Path | None = None,
     ik_max_nfev: int | None = None,
+    ik_q_acceleration_weight: float | None = None,
     ik_collision_similarity_weight: float | None = None,
     ik_collision_max_refinements: int | None = None,
     ik_collision_reference_cache: str | Path | None = None,
@@ -160,6 +159,8 @@ def generate_contact_aware_pyroki_preview(
             "contact edit plan must be validated or locked; pass allow_draft=True to override"
         )
     preview.validate_contact_edit_plan(plan, allow_free=allow_free)
+    from .contract import validate_generation_metadata
+    validate_generation_metadata(plan.metadata)
 
     output = Path(output_motion_path).expanduser()
     if output.exists() and not overwrite:
@@ -294,6 +295,13 @@ def generate_contact_aware_pyroki_preview(
         ],
         axis=1,
     )
+    taskspace_edits = edits
+    if (plan.metadata or {}).get("free_surface_contacts"):
+        # An edit window selects where a displacement is requested; it must
+        # not erase the source contact before/after that window. Free-surface
+        # offsets below still apply their original per-frame windows.
+        from .support_motion import full_contact_episode_edits
+        taskspace_edits = full_contact_episode_edits(edits, graph.anchors)
     taskspace = preview.build_contact_aware_taskspace_motion(
         motion_id=graph.motion_id,
         source_motion=source_motion,
@@ -303,7 +311,7 @@ def generate_contact_aware_pyroki_preview(
         patches=patches,
         anchors=graph.anchors,
         surfaces=surfaces,
-        edits=edits,
+        edits=taskspace_edits,
         source_reference_weight=float(source_reference_weight),
         boundary_ramp_frames=int(boundary_ramp_frames),
     )
@@ -328,6 +336,14 @@ def generate_contact_aware_pyroki_preview(
     if "root_yaw_condition" in plan_metadata:
         taskspace_metadata["root_yaw_condition"] = dict(plan_metadata["root_yaw_condition"])
     if plan_metadata.get("free_surface_contacts"):
+        # Keep the authored surface edit separate from the deliberately weak,
+        # unrotated free-landing reference used below.
+        taskspace_metadata["support_surface_transforms"] = list(plan.surface_transforms)
+        if "support_residual_scale" in plan_metadata:
+            taskspace_metadata["support_residual_scale"] = plan_metadata["support_residual_scale"]
+        for key in ("support_rotation_policy", "support_origin_policy", "support_approach_seconds", "support_approach_orientation", "augmentation_objective"):
+            if key in plan_metadata:
+                taskspace_metadata[key] = plan_metadata[key]
         offsets = plan_metadata.get("free_surface_reference_offsets")
         if offsets is not None and (not isinstance(offsets, dict) or not plan_metadata.get("convex_surface_targets")):
             raise ValueError("Explicit free-surface offsets require convex actual-face targets")
@@ -373,9 +389,7 @@ def generate_contact_aware_pyroki_preview(
                     Path(source_terrain_mesh).expanduser().resolve()
                 ),
                 "collision_reference_motion": str(source_path),
-                "environment_collision_contract": (
-                    "source_rollout_soft_signed_distance_similarity"
-                ),
+                "environment_collision_contract": "source_relative_one_sided_penetration",
             }
         )
     taskspace = preview.replace(taskspace, metadata=taskspace_metadata)
@@ -407,6 +421,7 @@ def generate_contact_aware_pyroki_preview(
         ik_script=ik_script,
         ik_conda_env=ik_conda_env,
         ik_max_nfev=ik_max_nfev,
+        ik_q_acceleration_weight=ik_q_acceleration_weight,
         ik_collision_similarity_weight=ik_collision_similarity_weight,
         ik_collision_max_refinements=ik_collision_max_refinements,
         ik_collision_reference_cache=ik_collision_reference_cache,

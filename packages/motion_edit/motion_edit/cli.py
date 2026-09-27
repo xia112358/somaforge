@@ -5,21 +5,11 @@ import shutil
 from dataclasses import replace
 from pathlib import Path
 
-from .augmentation import AugmentationRunConfig, run_augmentation_queue
 from .adapters.omniretarget import detect_omniretarget_paths
 from .adapters.asset_manifest import load_asset_manifest
-from .adapters.lte import import_lte_catalog
-from .curation import filter_segments, load_layer_segments, write_status_layer
+from .curation import filter_segments
 from .editing import clip_motion, splice_motions
-from .export import (
-    export_contact_overlay,
-    export_cutter_segments,
-    export_motion_manifest,
-    export_motion_version_manifest,
-    export_split_npz,
-    export_surface_binding_overlay,
-    export_surface_binding_report,
-)
+from .export import export_contact_overlay, export_motion_version_manifest, export_split_npz, export_surface_binding_overlay, export_surface_binding_report
 from .force_proto import contact_graph_from_masked_motion, segments_from_masked_motion
 from .io import read_jsonl, segment_from_dict, write_jsonl
 from .layers import iter_layer_files, read_layer, write_layer
@@ -42,7 +32,7 @@ from .contact import (
 )
 from .contact.graph import ContactGraph
 from .contact.jitter import DEFAULT_JITTER_BODIES, generate_contact_jitter_plans
-from .generation import apply_contact_aware_edit_plan_to_motion, apply_contact_edit_plan_to_motion
+from .generation import generate_contact_aware_pyroki_preview
 from .contact.layers import read_contact_graph
 from .contact.patches import patches_from_anchors
 from .contact.surface_catalog import box_surfaces, parse_box_descriptor, surfaces_from_obj_mesh_faces, surfaces_from_urdf_meshes
@@ -65,25 +55,7 @@ from .storage.io import (
 )
 from .storage.schema import MotionAssetRecord, MotionVersionRecord
 from .storage.tokens import build_tokens_from_segments
-from .workbench import (
-    WorkbenchSession,
-    curate_segment,
-    export_cutter_session_file,
-    load_workbench_segments,
-    make_workbench_server,
-    move_surface_editor_anchor,
-    prepare_surface_editor_session,
-    read_surface_editor_session,
-    replace_segment,
-    save_surface_editor_session,
-    select_segment,
-    split_segment,
-    sync_cutter_session_file,
-    sync_surface_editor_requests,
-    trim_segment,
-    upsert_workbench_segments,
-    write_workbench_segments,
-)
+from .workbench import export_cutter_session_file, move_surface_editor_anchor, prepare_surface_editor_session, read_surface_editor_session, replace_segment, save_surface_editor_session, select_segment, split_segment, sync_cutter_session_file, sync_surface_editor_requests, trim_segment
 from .workbench.contact_editor_setup import (
     ContactEditorConfig,
     prepare_contact_editor_session as prepare_contact_editor_workbench_session,
@@ -251,50 +223,6 @@ def _cmd_import_asset_manifest(args: argparse.Namespace) -> None:
         f"imported {len(assets)} manifest assets, {segment_count} candidate segments; "
         f"contact layer={LAYERS_ROOT / contact_layer}"
     )
-
-
-def _warn_legacy_layer_workflow(preferred: str) -> None:
-    print(f"legacy layer workflow: for canonical storage, use {preferred} instead.")
-
-
-def _cmd_import_manual_cuts(args: argparse.Namespace) -> None:
-    ensure_data_dirs()
-    _warn_legacy_layer_workflow("cutter --update-canonical or build-canonical-segmentation")
-    segments_dir = Path(args.segments_dir).expanduser().resolve()
-    out_dir = LAYERS_ROOT / "manual" / args.layer_name
-    out_dir.mkdir(parents=True, exist_ok=True)
-    total = 0
-    for source_path in sorted(segments_dir.glob("*.segments.jsonl")):
-        records = read_jsonl(source_path)
-        segments = [segment_from_dict(item, default_source="manual", default_status="manual") for item in records]
-        out_path = out_dir / f"{source_path.name.removesuffix('.segments.jsonl')}.jsonl"
-        write_layer(out_path, segments)
-        total += len(segments)
-    print(f"wrote {total} manual segments to {out_dir}")
-
-
-def _load_source_segments(source: str) -> list:
-    return load_layer_segments(source)
-
-
-def _cmd_export_cutter_segments(args: argparse.Namespace) -> None:
-    ensure_data_dirs()
-    _warn_legacy_layer_workflow("cutter --motion-version-id ... --update-canonical")
-    segments = _load_source_segments(args.source)
-    output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else EXPORTS_ROOT / "cutter_segments" / args.source.replace("/", "_")
-    written = export_cutter_segments(output_dir, segments)
-    if args.install_to:
-        install_dir = Path(args.install_to).expanduser().resolve()
-        backup_dir = BACKUPS_ROOT / f"cutter_segments_{args.source.replace('/', '_')}"
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        for path in written:
-            target = install_dir / path.name
-            if target.exists():
-                shutil.copy2(target, backup_dir / target.name)
-            shutil.copy2(path, target)
-        print(f"installed {len(written)} cutter segment files to {install_dir}; backups in {backup_dir}")
-    else:
-        print(f"exported {len(written)} cutter segment files to {output_dir}")
 
 
 def _cmd_export_contact_overlay(args: argparse.Namespace) -> None:
@@ -854,165 +782,53 @@ def _cmd_validate_contact_edit_plan(args: argparse.Namespace) -> None:
         print(f"warning: {warning}")
 
 
-def _cmd_generate_lte_augmentation(args: argparse.Namespace) -> None:
-    plan = read_contact_edit_plan(args.plan)
-    if plan.status not in {"validated", "locked"} and not args.allow_draft:
-        raise ValueError("contact edit plan must be validated or locked; pass --allow-draft to override")
-    result = apply_contact_edit_plan_to_motion(
-        plan,
-        output_motion_path=args.output_motion,
-        mode=args.mode,
-        source_plan_path=args.plan,
-        source_contact_layer=args.source_contact_layer,
-        output_contact_layer=args.output_contact_layer,
-        output_segment_layer=args.output_segment_layer,
-        output_motion_version_id=args.output_motion_version_id,
-        falloff_before=args.falloff_before,
-        falloff_after=args.falloff_after,
-        global_weight=args.global_weight,
-        edited_body_weight=args.edited_body_weight,
-        fps=args.fps,
-        overwrite=args.overwrite,
-        dry_run=args.dry_run,
-        register_motion_version=args.register_motion_version,
-        build_canonical=args.build_canonical,
-        allow_draft=args.allow_draft,
-        allow_free=args.allow_free,
-        fullbody_solver=args.fullbody_solver,
-        contact_laplacian_iters=args.contact_laplacian_iters,
-        contact_laplacian_damping=args.contact_laplacian_damping,
-        contact_laplacian_trust=args.contact_laplacian_trust,
-        edit_contact_weight=args.edit_contact_weight,
-        fixed_contact_weight=args.fixed_contact_weight,
-        temporal_laplacian_weight=args.temporal_laplacian_weight,
-        body_relative_weight=args.body_relative_weight,
-        q_prior_weight=args.q_prior_weight,
-        q_smooth_weight=args.q_smooth_weight,
-        mesh_laplacian_weight=args.mesh_laplacian_weight,
-        contact_laplacian_proxy_only=args.contact_laplacian_proxy_only,
-        lte_repo_root=args.lte_repo_root,
-        ik_script=args.ik_script,
-        ik_conda_env=args.ik_conda_env,
-        ik_max_nfev=args.ik_max_nfev,
-        ik_q_prior_weight=args.ik_q_prior_weight,
-        ik_q_smooth_weight=args.ik_q_smooth_weight,
-        intermediate_dir=args.intermediate_dir,
-    )
-    action = "dry-run diagnostic geometry" if args.dry_run else "generated diagnostic geometry"
-    print(f"{action} {result.output_motion_path}")
-    if result.output_contact_layer:
-        print(f"output contact layer: {result.output_contact_layer}")
-    if result.output_segment_layer:
-        print(f"output segment layer: {result.output_segment_layer}")
-    if result.output_motion_version_id:
-        print(f"output motion version: {result.output_motion_version_id}")
-    for warning in result.warnings or []:
-        print(f"warning: {warning}")
-
-
 def _cmd_generate_ref(args: argparse.Namespace) -> None:
-    plan_path = Path(args.plan).expanduser()
-    plan = read_contact_edit_plan(plan_path)
-    output_contact_layer = args.output_contact_layer or plan.output_contact_layer
-    output_segment_layer = args.output_segment_layer or plan.output_segment_layer
-    if not output_contact_layer and not args.dry_run:
-        raise ValueError("generate-ref requires --output-contact-layer or output_contact_layer in the plan")
-    result = apply_contact_aware_edit_plan_to_motion(
-        plan,
-        output_motion_path=args.output_motion,
-        bake_force=False,
-        overwrite=args.overwrite,
-        source_plan_path=plan_path,
-        source_contact_layer=args.source_contact_layer,
-        output_contact_layer=output_contact_layer,
-        output_segment_layer=output_segment_layer,
-        output_motion_version_id=args.output_motion_version_id,
-        fps=args.fps,
-        dry_run=args.dry_run,
-        register_motion_version=args.register_motion_version,
-        build_canonical=args.build_canonical,
-        allow_draft=args.allow_draft,
-        allow_free=args.allow_free,
-        fullbody_solver="batch_contact_laplacian",
-        contact_laplacian_iters=args.contact_laplacian_iters,
-        contact_laplacian_damping=args.contact_laplacian_damping,
-        contact_laplacian_trust=args.contact_laplacian_trust,
-        edit_contact_weight=args.edit_contact_weight,
-        fixed_contact_weight=args.fixed_contact_weight,
-        temporal_laplacian_weight=args.temporal_laplacian_weight,
-        body_relative_weight=args.body_relative_weight,
-        q_prior_weight=args.q_prior_weight,
-        q_smooth_weight=args.q_smooth_weight,
-        mesh_laplacian_weight=args.mesh_laplacian_weight,
-        contact_laplacian_proxy_only=False,
-        lte_repo_root=args.lte_repo_root,
-        ik_script=args.ik_script,
-        ik_conda_env=args.ik_conda_env,
-        ik_max_nfev=args.ik_max_nfev,
-        ik_q_prior_weight=args.ik_q_prior_weight,
-        ik_q_smooth_weight=args.ik_q_smooth_weight,
-        intermediate_dir=args.intermediate_dir,
-    )
-    action = "dry-run WBT ref generation" if args.dry_run else "generated WBT ref"
-    print(f"{action} {result.output_motion_path}")
-    if result.generation.output_contact_layer:
-        print(f"output contact layer: {result.generation.output_contact_layer}")
-    if result.generation.output_segment_layer:
-        print(f"output segment layer: {result.generation.output_segment_layer}")
-    if result.generation.output_motion_version_id:
-        print(f"output motion version: {result.generation.output_motion_version_id}")
-    if not args.dry_run:
-        print("next stage: run the edited reference in Newton and collect the canonical 8-part contact rollout")
-    for warning in result.warnings:
-        print(f"warning: {warning}")
-
-
-def _cmd_force_retarget(args: argparse.Namespace) -> None:
-    from .generation.pyroki_trajectory_optimizer import WholeTrajectoryConfig
-    from .physics_retarget import (
-        ForceGuidedRetargetConfig,
-        NewtonSubprocessRunner,
-        WholeTrajectoryPhysicsProjector,
-        load_newton_force_target,
-        run_force_guided_retarget,
-    )
-
-    target = load_newton_force_target(args.target_force_motion)
-    projector = WholeTrajectoryPhysicsProjector(
-        lte_path=args.lte,
-        config=WholeTrajectoryConfig(max_iterations=args.pyroki_iterations),
-    )
-    runner = NewtonSubprocessRunner(
-        base_manifest_path=args.manifest,
-        target_force_motion_path=args.target_force_motion,
-        motion_id=args.motion_id,
-        checkpoint_path=args.checkpoint,
-        python_executable=args.newton_python,
-        repo_root=Path(__file__).resolve().parents[3],
-        parallel_envs=args.num_envs,
-        device=args.device,
-        output_fps=args.fps,
-    )
-    result = run_force_guided_retarget(
-        initial_motion_path=args.initial_motion,
-        target_force_w=target.force_w,
-        target_mask=target.mask,
-        target_joint_pos=target.joint_pos,
-        projector=projector,
-        physics_runner=runner,
-        output_motion_path=args.output_motion,
-        work_dir=args.work_dir,
-        config=ForceGuidedRetargetConfig(
-            max_iterations=args.physics_iterations,
-            force_weight=args.force_weight,
-            tangential_force_weight=args.tangential_force_weight,
-            unexpected_contact_weight=args.unexpected_contact_weight,
-            contact_state_weight=args.contact_state_weight,
-            tracking_weight=args.tracking_weight,
-        ),
-    )
-    print(f"wrote Newton force-retargeted motion {result.output_motion_path}")
-    print(f"best objective={result.best_objective:.6f} iterations={len(result.iterations) - 1}")
+    """Single and batch generation share the actual contact-aware backend."""
+    import hashlib
+    import json
+    if args.plan:
+        if not args.output_motion or args.output_motion_dir:
+            raise ValueError("--plan requires --output-motion only")
+        jobs = [(Path(args.plan).expanduser(), Path(args.output_motion).expanduser())]
+    else:
+        if not args.output_motion_dir or args.output_motion:
+            raise ValueError("--plan-manifest requires --output-motion-dir only")
+        manifest = Path(args.plan_manifest).expanduser().resolve()
+        payload = json.loads(manifest.read_text())
+        jobs = []
+        for row in payload['plans']:
+            path = Path(row['plan_path']).expanduser()
+            if not path.is_absolute(): path = manifest.parent / path
+            plan = read_contact_edit_plan(path)
+            jobs.append((path, Path(args.output_motion_dir).expanduser() / f"{plan.plan_id}.npz"))
+        if len({out.resolve() for _, out in jobs}) != len(jobs):
+            raise ValueError("Batch plans have duplicate output identities")
+    for path, output in jobs:
+        plan = read_contact_edit_plan(path)
+        from .generation.contract import validate_generation_metadata
+        validate_generation_metadata(plan.metadata)
+        result = generate_contact_aware_pyroki_preview(
+            plan, output_motion_path=output,
+            source_contact_layer=args.source_contact_layer,
+            overwrite=args.overwrite, allow_draft=args.allow_draft,
+            allow_free=args.allow_free, intermediate_dir=args.intermediate_dir,
+            ik_conda_env=args.ik_conda_env, ik_max_nfev=args.ik_max_nfev,
+            ik_q_acceleration_weight=args.ik_q_acceleration_weight,
+        )
+        expected = plan.metadata['augmentation_objective']
+        if result.diagnostics.get('augmentation_objective') != expected:
+            raise ValueError('Generated IK objective does not match its plan')
+        if bool(result.diagnostics.get('free_surface_contacts')) != bool(plan.metadata.get('free_surface_contacts')):
+            raise ValueError('Generated IK surface tasks do not match its plan')
+        receipt = dict(plan=str(path.resolve()), plan_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+            motion=str(result.output_motion_path.resolve()),
+            taskspace=str(result.taskspace_spec_path.resolve()),
+            ik_artifact=str(result.ik_output_path.resolve()),
+            diagnostics=result.diagnostics, training_ready=False,
+            status='requires_native_validation',
+            backend='contact_aware_rollout_authority')
+        output.with_suffix('.generation.json').write_text(json.dumps(receipt, indent=2))
+        print(f"generated contact-aware candidate {result.output_motion_path}; Newton validation required")
 
 
 def _cmd_generate_contact_jitter_plans(args: argparse.Namespace) -> None:
@@ -1039,55 +855,6 @@ def _cmd_generate_contact_jitter_plans(args: argparse.Namespace) -> None:
     )
     if results:
         print(f"manifest: {Path(args.output_dir).expanduser() / 'manifest.json'}")
-
-
-def _cmd_generate_augmentations(args: argparse.Namespace) -> None:
-    run_augmentation_queue(
-        AugmentationRunConfig(
-            plan_manifest=args.plan_manifest,
-            start_index=args.start_index,
-            limit=args.limit,
-            output_motion_dir=args.output_motion_dir,
-            motion_version_prefix=args.motion_version_prefix,
-            source_contact_layer=args.source_contact_layer,
-            state_path=args.state_path,
-            accepted_manifest=args.accepted_manifest,
-            max_attempts=args.max_attempts,
-            max_proxy_contact_error_m=args.max_proxy_contact_error_m,
-            max_environment_anchor_error_m=args.max_environment_anchor_error_m,
-            allow_draft=args.allow_draft,
-            allow_free=args.allow_free,
-            fullbody_solver=args.fullbody_solver,
-            contact_laplacian_iters=args.contact_laplacian_iters,
-            contact_laplacian_damping=args.contact_laplacian_damping,
-            contact_laplacian_trust=args.contact_laplacian_trust,
-            edit_contact_weight=args.edit_contact_weight,
-            fixed_contact_weight=args.fixed_contact_weight,
-            temporal_laplacian_weight=args.temporal_laplacian_weight,
-            body_relative_weight=args.body_relative_weight,
-            q_prior_weight=args.q_prior_weight,
-            q_smooth_weight=args.q_smooth_weight,
-            mesh_laplacian_weight=args.mesh_laplacian_weight,
-            overwrite=args.overwrite,
-            register_motion_version=args.register_motion_version,
-            build_canonical=args.build_canonical,
-            dry_run=args.dry_run,
-            continue_on_error=args.continue_on_error,
-            lte_repo_root=args.lte_repo_root,
-            ik_script=args.ik_script,
-            ik_conda_env=args.ik_conda_env,
-            ik_max_nfev=args.ik_max_nfev,
-            ik_q_prior_weight=args.ik_q_prior_weight,
-            ik_q_smooth_weight=args.ik_q_smooth_weight,
-            intermediate_dir=args.intermediate_dir,
-        )
-    )
-
-
-def _cmd_batch_generate_lte_augmentations(args: argparse.Namespace) -> None:
-    """Compatibility alias for the dataset-level augmentation queue."""
-
-    _cmd_generate_augmentations(args)
 
 
 def _cmd_register_motion_asset(args: argparse.Namespace) -> None:
@@ -1315,54 +1082,44 @@ def _cmd_edit_splice(args: argparse.Namespace) -> None:
 
 
 def _cmd_export_manifest(args: argparse.Namespace) -> None:
-    if args.source and args.motion_version_id:
-        raise ValueError("export-manifest accepts either --source or --motion-version-id, not both")
-    if args.motion_version_id:
-        version = read_motion_version(args.motion_version_id)
-        segments = read_canonical_segments(args.motion_version_id)
-        output = export_motion_version_manifest(args.output, version=version, segments=segments)
-    else:
-        if not args.source:
-            raise ValueError("export-manifest requires --source or --motion-version-id")
-        segments = _load_source_segments(args.source)
-        output = export_motion_manifest(args.output, segments)
+    if getattr(args, "source", None) is not None:
+        raise ValueError("Legacy --source export is retired; use --motion-version-id")
+    version = read_motion_version(args.motion_version_id)
+    segments = read_canonical_segments(args.motion_version_id)
+    output = export_motion_version_manifest(args.output, version=version, segments=segments)
     print(f"wrote manifest {output}")
 
 
 def _cmd_export_split_npz(args: argparse.Namespace) -> None:
-    if args.motion_version_id:
-        version = read_motion_version(args.motion_version_id)
-        segments = read_canonical_segments(args.motion_version_id)
-        if args.status:
-            segments = [segment for segment in segments if segment.status == args.status]
-        token_by_segment = {}
-        if version.token_catalog_path:
-            try:
-                token_by_segment = {token.segment_id: token.token_id for token in read_token_catalog(args.motion_version_id, version.token_catalog_path)}
-            except FileNotFoundError:
-                print(f"warning: token catalog not found: {version.token_catalog_path}")
-        hardened_segments = []
-        for segment in segments:
-            metadata = dict(segment.metadata)
-            metadata["motion_version_id"] = args.motion_version_id
-            token_id = token_by_segment.get(segment.segment_id)
-            if token_id:
-                metadata["token_id"] = token_id
-            hardened_segments.append(
-                replace(
-                    segment,
-                    motion_path=segment.motion_path or segment.clip_npz or version.motion_path,
-                    clip_npz=segment.clip_npz or segment.motion_path or version.motion_path,
-                    metadata=metadata,
-                )
+    if getattr(args, "source", None) is not None:
+        raise ValueError("Legacy --source export is retired; use --motion-version-id")
+    version = read_motion_version(args.motion_version_id)
+    segments = read_canonical_segments(args.motion_version_id)
+    if args.status:
+        segments = [segment for segment in segments if segment.status == args.status]
+    token_by_segment = {}
+    if version.token_catalog_path:
+        try:
+            token_by_segment = {token.segment_id: token.token_id for token in read_token_catalog(args.motion_version_id, version.token_catalog_path)}
+        except FileNotFoundError:
+            print(f"warning: token catalog not found: {version.token_catalog_path}")
+    hardened_segments = []
+    for segment in segments:
+        metadata = dict(segment.metadata)
+        metadata["motion_version_id"] = args.motion_version_id
+        token_id = token_by_segment.get(segment.segment_id)
+        if token_id:
+            metadata["token_id"] = token_id
+        hardened_segments.append(
+            replace(
+                segment,
+                motion_path=segment.motion_path or segment.clip_npz or version.motion_path,
+                clip_npz=segment.clip_npz or segment.motion_path or version.motion_path,
+                metadata=metadata,
             )
-        segments = hardened_segments
-        default_output_name = args.motion_version_id if args.status is None else f"{args.motion_version_id}_{args.status}"
-    else:
-        if not args.source:
-            raise ValueError("export-split-npz requires --source or --motion-version-id")
-        segments = _load_source_segments(args.source)
-        default_output_name = args.source.replace("/", "_")
+        )
+    segments = hardened_segments
+    default_output_name = args.motion_version_id if args.status is None else f"{args.motion_version_id}_{args.status}"
     if args.motion_id or args.segment_id or args.index is not None:
         segments = filter_segments(
             segments,
@@ -1373,43 +1130,6 @@ def _cmd_export_split_npz(args: argparse.Namespace) -> None:
     output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else EXPORTS_ROOT / "split_npz" / default_output_name
     written = export_split_npz(output_dir, segments)
     print(f"wrote {len(written)} split npz files to {output_dir}")
-
-
-def _cmd_import_lte_catalog(args: argparse.Namespace) -> None:
-    motions, segments = import_lte_catalog(args.catalog, layer_name=args.layer_name)
-    print(f"imported LTE catalog motions={motions} full_motion_segments={segments} layer=candidates/{args.layer_name}")
-
-
-def _cmd_curate(args: argparse.Namespace) -> None:
-    _warn_legacy_layer_workflow("mark-segment-status")
-    segments = _load_source_segments(args.source)
-    selected = filter_segments(
-        segments,
-        motion_id=args.motion_id,
-        segment_ids=set(args.segment_id or []) if args.segment_id else None,
-        indices=set(args.index or []) if args.index is not None else None,
-    )
-    out = write_status_layer(args.status, args.layer_name, selected)
-    print(f"wrote {len(selected)} {args.status} segments to {out}")
-
-
-def _cmd_list_layer(args: argparse.Namespace) -> None:
-    segments = _load_source_segments(args.source)
-    if args.motion_id:
-        segments = [segment for segment in segments if segment.motion_id == args.motion_id]
-    by_motion = {}
-    for segment in segments:
-        by_motion.setdefault(segment.motion_id, []).append(segment)
-    total = 0
-    for motion_id, items in sorted(by_motion.items()):
-        print(f"{motion_id}: {len(items)}")
-        for index, segment in enumerate(sorted(items, key=lambda s: (s.start_frame, s.end_frame))[: args.limit]):
-            print(
-                f"  {index:03d} {segment.start_frame:5d}->{segment.end_frame:<5d} "
-                f"{segment.segment_id} source={segment.source} status={segment.status}"
-            )
-        total += len(items)
-    print(f"total={total}")
 
 
 def _cmd_list_contact_layer(args: argparse.Namespace) -> None:
@@ -1456,91 +1176,17 @@ def _cmd_list_contact_layer(args: argparse.Namespace) -> None:
     )
 
 
-def _cmd_workbench_action(args: argparse.Namespace) -> None:
-    ensure_data_dirs()
-    segments = load_workbench_segments(args.source)
-    selected = select_segment(
-        segments,
-        motion_id=args.motion_id,
-        segment_id=args.segment_id,
-        index=args.index,
-    )
-
-    if args.action == "trim":
-        if args.start_frame is None or args.end_frame is None:
-            raise ValueError("trim requires --start-frame and --end-frame")
-        replacements = [trim_segment(selected, start_frame=args.start_frame, end_frame=args.end_frame)]
-        destination = args.output_source or "manual/workbench_tmp"
-        output_segments = replace_segment(segments, selected.segment_id, replacements)
-    elif args.action == "split":
-        if args.frame is None:
-            raise ValueError("split requires --frame")
-        replacements = list(split_segment(selected, frame=args.frame))
-        destination = args.output_source or "manual/workbench_tmp"
-        output_segments = replace_segment(segments, selected.segment_id, replacements)
-    elif args.action in {"accept", "reject"}:
-        _warn_legacy_layer_workflow("mark-segment-status")
-        status = "accepted" if args.action == "accept" else "rejected"
-        replacements = [curate_segment(selected, status=status)]  # type: ignore[arg-type]
-        destination = args.output_source or f"{status}/{args.layer_name}"
-        output_segments = replacements
-    else:
-        raise ValueError(f"unsupported workbench action: {args.action}")
-
-    print(
-        f"{args.action}: selected={selected.segment_id} "
-        f"replacements={','.join(segment.segment_id for segment in replacements)} "
-        f"destination={destination}"
-    )
-    if args.dry_run:
-        print("dry-run: no files written")
-        return
-    if args.action in {"accept", "reject"}:
-        out = upsert_workbench_segments(destination, output_segments)
-    else:
-        out = write_workbench_segments(destination, output_segments)
-    print(f"wrote {len(output_segments)} workbench segments to {out}")
-
-
-def _cmd_workbench(args: argparse.Namespace) -> None:
-    ensure_data_dirs()
-    session = WorkbenchSession(
-        source=args.source,
-        motion_path=args.motion,
-        motion_id=args.motion_id,
-        selected_segment_id=args.segment_id,
-        selected_index=args.index,
-        current_frame=args.current_frame,
-        output_source=args.output_source,
-        layer_name=args.layer_name,
-        dry_run=args.dry_run,
-    )
-    print(f"source={args.source} motion_id={session.selected().motion_id} selected={session.selected().segment_id}")
-    if args.once:
-        print(session.state())
-        return
-    server = make_workbench_server(session, host=args.host, port=args.port)
-    print(f"workbench api: http://{args.host}:{args.port}/api/state")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="motion-edit",
-        description="Contact-centric motion curation: register motion, bind contacts, edit in contact-editor, then generate lte_fullbody motion.",
+        description="Contact-centric motion curation: register motion, bind contacts, edit in contact-editor, then generate a contact-aware candidate.",
     )
     public_commands = (
         "init,register-motion,register-motion-asset,list-motions,show-motion,"
         "import-asset-manifest,import-force-proto,bind-contact-surfaces,summarize-surface-bindings,"
         "export-surface-binding-report,export-surface-binding-overlay,"
         "contact-editor,validate-contact-edit-plan,generate-ref,"
-        "force-retarget,"
-        "generate-contact-jitter-plans,generate-augmentations,"
+        "generate-contact-jitter-plans,"
         "register-motion-version,build-canonical-segmentation,build-token-catalog,"
         "export-manifest,export-split-npz"
     )
@@ -1574,16 +1220,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--verify-hashes", action=argparse.BooleanOptionalAction, default=True)
     p.set_defaults(func=_cmd_import_asset_manifest)
 
-    p = add_hidden_parser("import-manual-cuts")
-    p.add_argument("--segments-dir", required=True)
-    p.add_argument("--layer-name", default="default")
-    p.set_defaults(func=_cmd_import_manual_cuts)
-
-    p = add_hidden_parser("export-cutter-segments")
-    p.add_argument("--source", required=True, help="Layer path relative to data/layers, e.g. candidates/force_contact")
-    p.add_argument("--output-dir", default=None)
-    p.add_argument("--install-to", default=None)
-    p.set_defaults(func=_cmd_export_cutter_segments)
 
     p = add_hidden_parser("export-contact-overlay")
     p.add_argument("--source", required=True, help="Contact layer path relative to data/layers, e.g. contact/force_contact")
@@ -1706,99 +1342,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=_cmd_validate_contact_edit_plan)
 
     p = sub.add_parser("generate-ref")
-    p.add_argument("--plan", required=True)
-    p.add_argument("--output-motion", required=True)
-    p.add_argument("--output-motion-version-id", default=None)
-    p.add_argument("--output-contact-layer", default=None)
-    p.add_argument("--output-segment-layer", default=None)
+    source = p.add_mutually_exclusive_group(required=True)
+    source.add_argument("--plan")
+    source.add_argument("--plan-manifest", help="JSON plans list; uses the same contact-aware backend")
+    p.add_argument("--output-motion")
+    p.add_argument("--output-motion-dir")
     p.add_argument("--source-contact-layer", default=None)
     p.add_argument("--allow-draft", action="store_true")
     p.add_argument("--allow-free", action="store_true")
-    p.add_argument("--contact-laplacian-iters", type=int, default=8)
-    p.add_argument("--contact-laplacian-damping", type=float, default=1.0e-4)
-    p.add_argument("--contact-laplacian-trust", type=float, default=0.05)
-    p.add_argument("--edit-contact-weight", type=float, default=1000.0)
-    p.add_argument("--fixed-contact-weight", type=float, default=1000.0)
-    p.add_argument("--temporal-laplacian-weight", type=float, default=40.0)
-    p.add_argument("--body-relative-weight", type=float, default=10.0)
-    p.add_argument("--q-prior-weight", type=float, default=0.02)
-    p.add_argument("--q-smooth-weight", type=float, default=0.0)
-    p.add_argument("--mesh-laplacian-weight", type=float, default=1.0)
-    p.add_argument("--fps", type=float, default=50.0)
     p.add_argument("--overwrite", action="store_true")
-    p.add_argument("--register-motion-version", action="store_true")
-    p.add_argument("--build-canonical", action="store_true")
-    p.add_argument("--dry-run", action="store_true")
-    p.add_argument("--lte-repo-root", default=None, help=argparse.SUPPRESS)
-    p.add_argument("--ik-script", default=None, help=argparse.SUPPRESS)
-    p.add_argument("--ik-conda-env", default="env_somaforge", help=argparse.SUPPRESS)
-    p.add_argument("--ik-max-nfev", type=int, default=None, help=argparse.SUPPRESS)
-    p.add_argument("--ik-q-prior-weight", type=float, default=12.0, help=argparse.SUPPRESS)
-    p.add_argument("--ik-q-smooth-weight", type=float, default=60.0, help=argparse.SUPPRESS)
+    p.add_argument("--ik-conda-env", default="env_somaforge")
+    p.add_argument("--ik-max-nfev", type=int, default=None)
+    p.add_argument("--ik-q-acceleration-weight", type=float, default=None)
     p.add_argument("--intermediate-dir", default=None)
     p.set_defaults(func=_cmd_generate_ref)
 
-    p = sub.add_parser("force-retarget", help="match an edited trajectory to a real Newton 8-part force rollout")
-    p.add_argument("--initial-motion", required=True, help="Edited PyRoki/Holosoma motion used as the first candidate")
-    p.add_argument("--lte", required=True, help="Contact-Laplacian keypoint NPZ produced by generate-ref")
-    p.add_argument("--target-force-motion", required=True, help="Canonical Newton rollout containing target 8-part force")
-    p.add_argument("--manifest", required=True, help="Canonical base motion/terrain manifest")
-    p.add_argument("--motion-id", required=True)
-    p.add_argument("--checkpoint", required=True, help="WBT checkpoint used to roll out every candidate")
-    p.add_argument("--newton-python", required=True, help="Python executable in the Isaac Lab 3/Newton conda environment")
-    p.add_argument("--output-motion", required=True)
-    p.add_argument("--work-dir", required=True)
-    p.add_argument("--device", default="cuda:0")
-    p.add_argument("--num-envs", type=int, default=16)
-    p.add_argument("--fps", type=float, default=50.0)
-    p.add_argument("--physics-iterations", type=int, default=4)
-    p.add_argument("--pyroki-iterations", type=int, default=25)
-    p.add_argument("--force-weight", type=float, default=1.0)
-    p.add_argument("--tangential-force-weight", type=float, default=0.25)
-    p.add_argument("--unexpected-contact-weight", type=float, default=0.5)
-    p.add_argument("--contact-state-weight", type=float, default=0.25)
-    p.add_argument("--tracking-weight", type=float, default=0.1)
-    p.set_defaults(func=_cmd_force_retarget)
-
-    p = add_hidden_parser("generate-lte-augmentation")
-    p.add_argument("--plan", required=True)
-    p.add_argument("--output-motion", required=True)
-    p.add_argument("--output-motion-version-id", default=None)
-    p.add_argument("--output-contact-layer", default=None)
-    p.add_argument("--output-segment-layer", default=None)
-    p.add_argument("--source-contact-layer", default=None)
-    p.add_argument("--allow-draft", action="store_true")
-    p.add_argument("--allow-free", action="store_true")
-    p.add_argument("--mode", choices=("lte_fullbody",), default="lte_fullbody")
-    p.add_argument("--fullbody-solver", choices=("ik_subprocess", "batch_contact_laplacian"), default="batch_contact_laplacian")
-    p.add_argument("--contact-laplacian-iters", type=int, default=8)
-    p.add_argument("--contact-laplacian-damping", type=float, default=1.0e-4)
-    p.add_argument("--contact-laplacian-trust", type=float, default=0.05)
-    p.add_argument("--edit-contact-weight", type=float, default=1000.0)
-    p.add_argument("--fixed-contact-weight", type=float, default=1000.0)
-    p.add_argument("--temporal-laplacian-weight", type=float, default=40.0)
-    p.add_argument("--body-relative-weight", type=float, default=10.0)
-    p.add_argument("--q-prior-weight", type=float, default=0.02)
-    p.add_argument("--q-smooth-weight", type=float, default=0.0)
-    p.add_argument("--mesh-laplacian-weight", type=float, default=1.0)
-    p.add_argument("--contact-laplacian-proxy-only", action="store_true", help="[debug] write only the body-space contact-Laplacian proxy output; do not run IK")
-    p.add_argument("--falloff-before", type=int, default=20)
-    p.add_argument("--falloff-after", type=int, default=20)
-    p.add_argument("--global-weight", type=float, default=0.35)
-    p.add_argument("--edited-body-weight", type=float, default=1.0)
-    p.add_argument("--fps", type=float, default=50.0)
-    p.add_argument("--overwrite", action="store_true")
-    p.add_argument("--register-motion-version", action="store_true")
-    p.add_argument("--build-canonical", action="store_true")
-    p.add_argument("--dry-run", action="store_true")
-    p.add_argument("--lte-repo-root", default=None, help="[legacy ik_subprocess] external LTE repo root")
-    p.add_argument("--ik-script", default=None, help="[legacy ik_subprocess] fullbody IK script")
-    p.add_argument("--ik-conda-env", default="env_somaforge", help="[legacy ik_subprocess] conda env for external IK")
-    p.add_argument("--ik-max-nfev", type=int, default=None, help="[legacy ik_subprocess] maximum IK evaluations")
-    p.add_argument("--ik-q-prior-weight", type=float, default=12.0)
-    p.add_argument("--ik-q-smooth-weight", type=float, default=60.0)
-    p.add_argument("--intermediate-dir", default=None)
-    p.set_defaults(func=_cmd_generate_lte_augmentation)
 
     p = sub.add_parser("generate-contact-jitter-plans")
     p.add_argument("--cut-summary", required=True)
@@ -1820,60 +1378,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--knee-radius-scale", type=float, default=0.5)
     p.add_argument("--limit-motions", type=int, default=None)
     p.set_defaults(func=_cmd_generate_contact_jitter_plans)
-
-    def add_augmentation_queue_arguments(parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("--plan-manifest", required=True)
-        parser.add_argument("--start-index", type=int, default=0)
-        parser.add_argument("--limit", type=int, default=None)
-        parser.add_argument("--output-motion-dir", default=None)
-        parser.add_argument("--motion-version-prefix", default="")
-        parser.add_argument("--source-contact-layer", default=None)
-        parser.add_argument("--state-path", default=None)
-        parser.add_argument("--accepted-manifest", default=None)
-        parser.add_argument("--max-attempts", type=int, default=2)
-        parser.add_argument("--max-proxy-contact-error-m", type=float, default=5.0e-3)
-        parser.add_argument("--max-environment-anchor-error-m", type=float, default=5.0e-4)
-        parser.add_argument("--allow-draft", action="store_true")
-        parser.add_argument("--allow-free", action="store_true")
-        parser.add_argument(
-            "--fullbody-solver",
-            choices=("batch_contact_laplacian",),
-            default="batch_contact_laplacian",
-            help="compatibility name for one motion's whole-trajectory Contact Laplacian + full-body IK solve",
-        )
-        parser.add_argument("--contact-laplacian-iters", type=int, default=8)
-        parser.add_argument("--contact-laplacian-damping", type=float, default=1.0e-4)
-        parser.add_argument("--contact-laplacian-trust", type=float, default=0.05)
-        parser.add_argument("--edit-contact-weight", type=float, default=1000.0)
-        parser.add_argument("--fixed-contact-weight", type=float, default=1000.0)
-        parser.add_argument("--temporal-laplacian-weight", type=float, default=40.0)
-        parser.add_argument("--body-relative-weight", type=float, default=10.0)
-        parser.add_argument("--q-prior-weight", type=float, default=0.02)
-        parser.add_argument("--q-smooth-weight", type=float, default=0.0)
-        parser.add_argument("--mesh-laplacian-weight", type=float, default=1.0)
-        parser.add_argument("--overwrite", action="store_true")
-        parser.add_argument("--register-motion-version", action="store_true")
-        parser.add_argument("--build-canonical", action="store_true")
-        parser.add_argument("--dry-run", action="store_true")
-        parser.add_argument("--continue-on-error", action="store_true")
-        parser.add_argument("--lte-repo-root", default=None)
-        parser.add_argument("--ik-script", default=None)
-        parser.add_argument("--ik-conda-env", default="env_somaforge")
-        parser.add_argument("--ik-max-nfev", type=int, default=None)
-        parser.add_argument("--ik-q-prior-weight", type=float, default=12.0)
-        parser.add_argument("--ik-q-smooth-weight", type=float, default=60.0)
-        parser.add_argument("--intermediate-dir", default=None)
-
-    p = sub.add_parser(
-        "generate-augmentations",
-        help="run a durable queue of independent ContactEditPlan data augmentations",
-    )
-    add_augmentation_queue_arguments(p)
-    p.set_defaults(func=_cmd_generate_augmentations)
-
-    p = add_hidden_parser("batch-generate-lte-augmentations")
-    add_augmentation_queue_arguments(p)
-    p.set_defaults(func=_cmd_batch_generate_lte_augmentations)
 
     p = sub.add_parser("register-motion-asset")
     p.add_argument("--motion-asset-id", required=True)
@@ -1927,17 +1431,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reason", default=None)
     p.set_defaults(func=_cmd_build_canonical_segmentation)
 
-    p = add_hidden_parser("migrate-layer-to-canonical")
-    p.add_argument("--motion-version-id", required=True)
-    p.add_argument("--motion", required=True)
-    p.add_argument("--motion-id", default=None)
-    p.add_argument("--contact-layer", required=True)
-    p.add_argument("--source", required=True)
-    p.add_argument("--cut-source", default="migrated")
-    p.add_argument("--reset-canonical", action="store_true")
-    p.add_argument("--overwrite", action="store_true")
-    p.add_argument("--reason", default=None)
-    p.set_defaults(func=_cmd_build_canonical_segmentation)
 
     p = sub.add_parser("mark-segment-status", help="[advanced] update canonical segment status")
     p.add_argument("--motion-version-id", required=True)
@@ -1967,14 +1460,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=_cmd_build_token_catalog)
 
     p = sub.add_parser("export-manifest")
-    p.add_argument("--source", default=None, help="Layer path relative to data/layers")
-    p.add_argument("--motion-version-id", default=None)
+    p.add_argument("--motion-version-id", required=True)
     p.add_argument("--output", required=True)
     p.set_defaults(func=_cmd_export_manifest)
 
     p = sub.add_parser("export-split-npz")
-    p.add_argument("--source", default=None, help="Layer path relative to data/layers")
-    p.add_argument("--motion-version-id", default=None)
+    p.add_argument("--motion-version-id", required=True)
     p.add_argument("--status", choices=("candidate", "accepted", "rejected", "manual"), default=None)
     p.add_argument("--output-dir", default=None)
     p.add_argument("--motion-id", default=None)
@@ -1982,32 +1473,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--index", action="append", type=int, default=None)
     p.set_defaults(func=_cmd_export_split_npz)
 
-    p = add_hidden_parser("import-lte-catalog")
-    p.add_argument("--catalog", required=True)
-    p.add_argument("--layer-name", default="lte")
-    p.set_defaults(func=_cmd_import_lte_catalog)
-
-    p = add_hidden_parser("accept")
-    p.add_argument("--source", required=True)
-    p.add_argument("--layer-name", default="default")
-    p.add_argument("--motion-id", default=None)
-    p.add_argument("--segment-id", action="append", default=None)
-    p.add_argument("--index", action="append", type=int, default=None)
-    p.set_defaults(func=lambda args: setattr(args, "status", "accepted") or _cmd_curate(args))
-
-    p = add_hidden_parser("reject")
-    p.add_argument("--source", required=True)
-    p.add_argument("--layer-name", default="default")
-    p.add_argument("--motion-id", default=None)
-    p.add_argument("--segment-id", action="append", default=None)
-    p.add_argument("--index", action="append", type=int, default=None)
-    p.set_defaults(func=lambda args: setattr(args, "status", "rejected") or _cmd_curate(args))
-
-    p = add_hidden_parser("list-layer")
-    p.add_argument("--source", required=True)
-    p.add_argument("--motion-id", default=None)
-    p.add_argument("--limit", type=int, default=20)
-    p.set_defaults(func=_cmd_list_layer)
 
     p = sub.add_parser("list-contact-layer")
     p.add_argument("--source", required=True, help="Contact layer path relative to data/layers, e.g. contact/force_contact")
@@ -2015,19 +1480,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=5)
     p.set_defaults(func=_cmd_list_contact_layer)
 
-    p = add_hidden_parser("workbench-action")
-    p.add_argument("--source", required=True, help="Layer path relative to data/layers")
-    p.add_argument("--motion-id", default=None)
-    p.add_argument("--segment-id", default=None)
-    p.add_argument("--index", type=int, default=None)
-    p.add_argument("--action", required=True, choices=["trim", "split", "accept", "reject"])
-    p.add_argument("--start-frame", type=int, default=None)
-    p.add_argument("--end-frame", type=int, default=None)
-    p.add_argument("--frame", type=int, default=None)
-    p.add_argument("--output-source", default=None, help="Destination layer path relative to data/layers")
-    p.add_argument("--layer-name", default="workbench_tmp", help="Layer name for accept/reject defaults")
-    p.add_argument("--dry-run", action="store_true")
-    p.set_defaults(func=_cmd_workbench_action)
 
     p = sub.add_parser("contact-editor", help="launch the main interactive contact-anchor editor")
     p.add_argument("motion", nargs="?", default=None, help=argparse.SUPPRESS)
@@ -2038,20 +1490,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-browser", action="store_true")
     p.set_defaults(func=_cmd_contact_editor)
 
-    p = add_hidden_parser("workbench")
-    p.add_argument("motion", nargs="?", default=None, help="Optional .npz motion path for state metadata")
-    p.add_argument("--source", required=True, help="Layer path relative to data/layers")
-    p.add_argument("--motion-id", default=None)
-    p.add_argument("--segment-id", default=None)
-    p.add_argument("--index", type=int, default=0)
-    p.add_argument("--current-frame", type=int, default=-1)
-    p.add_argument("--output-source", default="manual/workbench_tmp")
-    p.add_argument("--layer-name", default="workbench_tmp")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=8095)
-    p.add_argument("--dry-run", action="store_true")
-    p.add_argument("--once", action="store_true", help="Build session, print state, and exit without serving")
-    p.set_defaults(func=_cmd_workbench)
 
     p = sub.add_parser("detect-motion", help="[diagnostic] inspect inferred terrain/contact paths for a motion")
     p.add_argument("motion")
@@ -2087,14 +1525,12 @@ def build_parser() -> argparse.ArgumentParser:
         "export-surface-binding-overlay": "write a viewer overlay for surface bindings",
         "contact-editor": "launch the main Contact Editor UI",
         "validate-contact-edit-plan": "validate staged contact-anchor edits",
-        "generate-ref": "generate an edited kinematic candidate for Newton force retargeting",
-        "force-retarget": "match an edited trajectory to target force using repeated Newton rollouts",
+        "generate-ref": "generate a contact-aware candidate requiring fresh Newton validation",
         "generate-contact-jitter-plans": "generate surface-constrained contact jitter plans",
-        "generate-augmentations": "run and validate a resumable ContactEditPlan augmentation queue",
         "register-motion-version": "register an archived source or generated force-ref motion version",
         "build-canonical-segmentation": "initialize the canonical segmentation for a motion version",
         "build-token-catalog": "build tokens from canonical segments",
-        "export-manifest": "export a manifest from legacy layers or a motion version",
+        "export-manifest": "export a manifest from a canonical motion version",
         "export-split-npz": "materialize split npz export cache",
     }
     sub._choices_actions = [  # type: ignore[attr-defined]

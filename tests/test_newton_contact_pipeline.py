@@ -33,8 +33,7 @@ def test_observation_is_not_filtered_by_intention():
     import importlib.util
     import torch
     from types import SimpleNamespace
-    spec=importlib.util.spec_from_file_location('validity','packages/climb00_pipeline/climb00_pipeline/contact_validity.py')
-    mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(mod)
+    from contact_solver import contact_validity as mod
     def provider(q,scene):
         return dict(schema=SCHEMA,parts=PARTS,active=[[0,0,1,0,0,0]],unallocated=[[0]*6],
                     position_w=np.zeros((1,6,3)),surface=[[-1,-1,1,-1,-1,-1]],

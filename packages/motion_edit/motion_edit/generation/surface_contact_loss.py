@@ -175,3 +175,24 @@ def surface_residual(points, references, normals, edges, offsets, sqrt_weight, r
     return xp.concatenate(((signed*sqrt_weight).reshape(-1),
         (tangent*sqrt_weight[:, None]*xp.sqrt(reference_ratio)).reshape(-1),
         (outside*sqrt_weight[:, None]).reshape(-1)))
+
+
+def endpoint_surface_residual(points, references, normals, edges, offsets,
+                              sqrt_weight, support_weight, reference_ratio, *, xp=np):
+    """One normal and one tangent task per sample, plus finite-face containment.
+
+    During support the stronger episode task replaces, rather than adds to,
+    the weak surface reference. This is an optimization residual, not contact
+    activation. Reference clearance and source material motion are preserved.
+    """
+    supported = support_weight > 0
+    normal_weight = xp.where(supported, support_weight, sqrt_weight)
+    tangent_weight = xp.where(supported, support_weight,
+                              sqrt_weight * xp.sqrt(reference_ratio))
+    error = points - references
+    signed = xp.sum(error * normals, axis=-1)
+    tangent = error - signed[:, None] * normals
+    outside = xp.maximum(xp.sum(points[:, None, :] * edges, axis=-1) - offsets, 0.)
+    return xp.concatenate(((signed * normal_weight).reshape(-1),
+                           (tangent * tangent_weight[:, None]).reshape(-1),
+                           (outside * sqrt_weight[:, None]).reshape(-1)))

@@ -1,11 +1,7 @@
-"""Batch contact-Laplacian trajectory solver.
+"""Task-space propagation used by the contact-aware generation backend.
 
-This package contains the full-trajectory least-squares solver used by the
-standard ``generate-ref`` path before force retargeting. The current production
-bridge optimizes semantic ``body_pos_w`` task-space points, feeds IK, and then
-the force writer emits a WBT-ready policy reference. The geometry-only
-``generate-lte-augmentation`` path is diagnostic/hidden and should not be used
-as the force-checkpoint payload.
+This geometry stage is not contact truth; edited candidates require fresh
+Newton verification before any training-data admission.
 """
 
 from .kinematics import BodyPositionTrajectoryKinematicsProvider, KinematicsProvider, LinearPointKinematicsProvider

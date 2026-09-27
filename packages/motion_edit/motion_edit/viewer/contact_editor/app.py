@@ -18,7 +18,7 @@ import numpy as np
 
 from motion_edit.contact import read_contact_surfaces
 from motion_edit.contact.graph import ContactGraph
-from motion_edit.generation import apply_contact_edit_plan_to_motion
+from motion_edit.generation import generate_contact_aware_pyroki_preview
 from motion_edit.contact.plans import ContactEditPlan, read_contact_edit_plan, validate_contact_edit_plan, write_contact_edit_plan
 from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord
 from motion_edit.paths import LAYERS_ROOT, MOTIONS_ROOT, WORKBENCH_ROOT
@@ -991,18 +991,16 @@ def _generate_fullbody_lte_from_session(
 ) -> Any:
     plan_path, _warnings = _validate_session_plan(session, layers_root=layers_root)
     plan = read_contact_edit_plan(plan_path)
-    return apply_contact_edit_plan_to_motion(
+    if register_motion_version:
+        raise ValueError("Generated candidates require native validation before registration")
+    if dry_run:
+        from motion_edit.generation.lte_fullbody import LteGenerationResult
+        return LteGenerationResult(output_motion_path=Path(output_motion),
+            warnings=["Contact-aware generation followed by native validation is required"])
+    return generate_contact_aware_pyroki_preview(
         plan,
         output_motion_path=output_motion,
-        mode="lte_fullbody",
-        source_plan_path=plan_path,
-        output_contact_layer=output_contact_layer,
-        output_segment_layer=output_segment_layer,
-        output_motion_version_id=output_motion_version_id,
         overwrite=overwrite,
-        dry_run=dry_run,
-        register_motion_version=register_motion_version,
-        lte_repo_root=lte_repo_root,
         ik_conda_env=ik_conda_env,
         intermediate_dir=intermediate_dir,
         layers_root=layers_root,

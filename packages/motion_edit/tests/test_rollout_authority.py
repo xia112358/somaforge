@@ -4,17 +4,20 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+from somaforge_core.robot_assets import encode_robot_asset_json
 import pytest
 
 import motion_edit.generation as generation
+import motion_edit.contact.layers as contact_layers
 from motion_edit.contact.plans import ContactEditPlan
 from motion_edit.generation import contact_aware_preview as preview
-from motion_edit.generation.rollout_authority import _load_force_rollout
+from motion_edit.generation.rollout_authority import _load_source_motion
 from motion_edit.generation.taskspace_spec import ContactAwareTaskspaceMotion
 
 
 def _rollout_motion() -> dict[str, np.ndarray]:
     return {
+        "robot_asset_json": np.asarray(encode_robot_asset_json()),
         "fps": np.asarray(50.0),
         "joint_pos": np.asarray([[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]]),
         "joint_vel": np.zeros((1, 7), dtype=np.float64),
@@ -56,7 +59,7 @@ def test_plan_source_is_the_only_rollout_authority(
         return _rollout_motion()
 
     monkeypatch.setattr(preview, "_load_motion_npz", fake_load)
-    motion, path = _load_force_rollout(plan, preview)
+    motion, path = _load_source_motion(plan, preview)
 
     assert motion["joint_pos"].shape == (1, 8)
     assert path == source.resolve()
@@ -69,7 +72,7 @@ def test_generation_uses_one_rollout_source_everywhere(
 ) -> None:
     source_path = tmp_path / "source_motion.npz"
     source_terrain = tmp_path / "source_terrain.obj"
-    target_terrain = tmp_path / "target_terrain.obj"
+    target_terrain = source_terrain
     source_path.touch()
     source = _rollout_motion()
     plan = ContactEditPlan(
@@ -81,6 +84,8 @@ def test_generation_uses_one_rollout_source_everywhere(
         edits=[],
         metadata={
             "contact_force_source_path": str(source_path),
+            "augmentation_objective": "consolidated_v1",
+            "free_surface_contacts": True,
             "source_terrain_mesh": str(source_terrain),
             "target_terrain_mesh": str(target_terrain),
         },
@@ -101,8 +106,8 @@ def test_generation_uses_one_rollout_source_everywhere(
     monkeypatch.setattr(preview, "validate_contact_edit_plan", lambda *args, **kwargs: [])
     monkeypatch.setattr(preview, "_resolve_layers_root", lambda *args, **kwargs: tmp_path)
     monkeypatch.setattr(
-        preview,
-        "read_contact_graph",
+        contact_layers,
+        "read_verified_contact_graph",
         lambda *args, **kwargs: SimpleNamespace(motion_id="motion", anchors=[]),
     )
     monkeypatch.setattr(
@@ -129,11 +134,11 @@ def test_generation_uses_one_rollout_source_everywhere(
     monkeypatch.setattr(preview, "_batch_contact_laplacian_proxy_motion", fake_proxy)
     monkeypatch.setattr(preview, "apply_pose_edits_to_proxy", lambda proxy, edits: (proxy, {}))
 
-    def fake_bind(anchors, motion, **kwargs):
-        captured["binding_motion"] = motion
+    def fake_bind(graph, *, source_motion_path, **kwargs):
+        captured["binding_path"] = Path(source_motion_path).resolve()
         return [], {"warnings": []}
 
-    monkeypatch.setattr(preview, "bind_newton_contact_patches", fake_bind)
+    monkeypatch.setattr(contact_layers, "verified_source_patches", fake_bind)
 
     def fake_build(*, source_motion, contact_pose_motion, semantic_names, semantic_targets_w, **kwargs):
         captured["taskspace_source"] = source_motion
@@ -193,7 +198,7 @@ def test_generation_uses_one_rollout_source_everywhere(
     )
 
     assert captured["proxy_motion"] is source
-    assert captured["binding_motion"] is source
+    assert captured["binding_path"] == source_path.resolve()
     assert captured["taskspace_source"] is source
     assert captured["taskspace_contact_pose"] is source
     assert captured["merge_source"] is source
@@ -205,7 +210,7 @@ def test_generation_uses_one_rollout_source_everywhere(
         "contact_target_pose_source_motion": str(source_path.resolve()),
         "cross_reference_mixing": False,
         "environment_collision_contract": (
-            "source_rollout_soft_signed_distance_similarity"
+            "source_relative_one_sided_penetration"
         ),
         "joint_initializer_source_motion": str(source_path.resolve()),
         "reference_authority": "rollout_source_only",
@@ -213,6 +218,12 @@ def test_generation_uses_one_rollout_source_everywhere(
         "semantic_source_motion": str(source_path.resolve()),
         "source_terrain_mesh": str(source_terrain.resolve()),
         "target_terrain_mesh": str(target_terrain.resolve()),
+        "normalize_contact_group_weights": False,
+        "augmentation_objective": "consolidated_v1",
+        "free_surface_contacts": True,
+        "convex_surface_targets": False,
+        "surface_reference_ratio": 0.01,
+        "support_surface_transforms": [],
     }
     assert output.is_file()
 
