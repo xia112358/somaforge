@@ -15,7 +15,9 @@ These are small enough and useful enough to keep in the repository:
   referenced by the committed manifests.
 - `scripts/*motion_matched*.py`, `scripts/*contact_force*.py`: reproducible
   manifest and contact-force helpers.
-- `packages/climb00_pipeline/`: Predictor and Infiller implementations.
+- `packages/generator/`: Predictor and Infiller implementations.
+- `packages/contact_solver/`: contact optimization and research.
+- `packages/climb00_pipeline/`: import/CLI aliases for historical reproduction only.
 - `baselines/corrected1000/`: saved Predictor entrypoints, configuration and records.
 - `docs/data-policy.md`,
   `docs/cleanup-scope.md`: current project scope and data rules.
@@ -28,8 +30,9 @@ These must remain local, ignored, or stored externally:
   motion datasets.
 - `data/`: generated contact-force demos, motion viewer exports, and rollout
   derived datasets.
-- `tmp/`: experiments, Predictor/Infiller datasets, checkpoints and generated references, diagnostics,
-  plots, CSVs, and scratch scripts.
+- `tmp/`: scratch scripts and diagnostics. Historical datasets and checkpoints still
+  referenced here must be retained until an explicit hash-verified migration.
+- `runtime/current/{motions,models,manifests,generated}/`: formal data and models.
 - `logs/`, `logs_eval/`, `runs/`, `wandb/`: training/eval outputs and videos.
 - `*.npz`, `*.pt`, `*.pth`, `*.ckpt`, `*.onnx`, `*.pdf`: generated arrays,
   checkpoints, model exports, and large copied documents.

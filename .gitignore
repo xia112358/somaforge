@@ -36,8 +36,6 @@ htmlcov/
 /OmniRetarget_Dataset/
 /runtime/*
 !/runtime/README.md
-/packages/gmvq/data
-/packages/gmvq/runs
 /packages/motion_edit/data
 /packages/motion_edit/tmp
 *.npz

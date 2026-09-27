@@ -1,11 +1,12 @@
 # corrected1000 baseline
 
-当前基线：`tmp/full1000_regionfix5000_20260925/main1000/step_1000.pt`。
+历史实验基线：`tmp/full1000_regionfix5000_20260925/main1000/step_1000.pt`。
 目录名中的 5000 是历史命名，本次主训练为 1000 轮。
 初始化：Stage-A → execution adapter 20 → warmup 10 → main 1000。
 开启 region_plan、unified_contact、event_roles，使用持续并行 rollout；无失败重试。
 
-主代码在仓库 `packages/climb00_pipeline` 和 `packages/somaforge_core`。
+当前实现位于 `packages/generator`、`packages/contact_solver` 和 `packages/somaforge_core`。
+此基线的原始导入通过 `climb00_pipeline` 兼容包保留，快照及其校验值不随整理改写。
 本目录 `tmp/` 保存训练、评估、查看器入口及导入依赖的原样快照，另保存实际运行配置、训练进度与新旧 motion8 长递推记录。sha256.json 校验快照及本地基线权重。
 
 ## 恢复入口

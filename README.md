@@ -9,17 +9,19 @@ IsaacLab3/Newton whole-body tracking.
 ```text
 src/holosoma/               WBT training, evaluation, and simulator integration
 src/holosoma_retargeting/   Retargeting tools (separate environment)
-packages/motion_edit/       Contact Editor and force-reference generation
+packages/motion_edit/       Contact editing and validated kinematic candidates
 packages/generator/         Predictor, Infiller, datasets and generation training
 packages/contact_solver/    Contact objectives, collision gradients and projection
 packages/climb00_pipeline/  Legacy import and module CLI compatibility
 packages/somaforge_core/    Shared assets, FK, contracts and Newton contact semantics
 OmniRetarget_Dataset/       Imported preprocessing tools
 runtime/current/            Outputs made with the canonical robot asset
-runtime/legacy_wrong_urdf/  Quarantined old data; never use for training
 configs/assets_manifest.json Manifest-first registry for every runtime asset
 configs/training_pipeline_manifest.json Shared training data contract
 ```
+
+See [repository maintenance](docs/repository-maintenance.md) for active entrypoints,
+historical compatibility, data retention and validation commands.
 
 ## Canonical assets
 
@@ -107,7 +109,7 @@ current robot state + actual contact observation + terrain
 ```
 
 Predictor and Infiller replace the retired GMVQ/HyAR module. Their code lives in
-`packages/climb00_pipeline/`. The current corrected1000 Predictor experiment is
+`packages/generator/`. The historical corrected1000 Predictor experiment is
 recorded in [baselines/corrected1000](baselines/corrected1000/README.md).
 Its raw recursive evaluation uses Predictor outputs alone; it is not an
 acceptance result for an integrated Predictor + Infiller + WBT deployment.
@@ -245,7 +247,7 @@ WBT acceptance before use as validated references.
 
 See [the corrected1000 baseline](baselines/corrected1000/README.md) for the
 saved Predictor configuration and entrypoints. Model weights and training data
-remain local. See `packages/climb00_pipeline/` for the Infiller implementations;
+remain local. See `packages/generator/` for the Infiller implementations;
 this replacement does not assert a newly validated combined runtime.
 
 ### 5. Train the refined Holosoma WBT policy

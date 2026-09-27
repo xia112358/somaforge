@@ -40,7 +40,11 @@
         "root": "src/holosoma_retargeting/holosoma_retargeting/demo_data/climb"
       },
       "metadata": {
-        "formats": ["urdf", "xml", "obj"]
+        "formats": [
+          "urdf",
+          "xml",
+          "obj"
+        ]
       }
     },
     {
@@ -67,6 +71,23 @@
         "manifest_required": true,
         "robot_asset_required": "robot.g1.spherehand",
         "allow_missing": true
+      }
+    },
+    {
+      "id": "dataset.climb00.contact_archive",
+      "kind": "dataset",
+      "status": "archived_quality_review_required",
+      "files": {
+        "root": "runtime/current/motions/climb00_contact_dataset",
+        "catalog": "runtime/current/motions/climb00_contact_dataset/catalog.json"
+      },
+      "sha256": {
+        "catalog": "2d15032c663a86e656012395ea1193ff7d8dff570ea3d18ce384a82b77b45110"
+      },
+      "metadata": {
+        "robot_asset_id": "robot.g1.spherehand",
+        "training_approved": false,
+        "purpose": "Formal independent archive of source v5, historical207 variants and single-case support-repair candidates; not a replacement training manifest"
       }
     }
   ]

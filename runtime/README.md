@@ -1,9 +1,9 @@
 # Runtime data
 
-`current/` contains outputs created with the canonical G1 sphere-hand asset.
-`legacy_wrong_urdf/` contains preserved data and configuration produced before
-the asset contract was enforced. Legacy artifacts must not be used for
-training, evaluation, Motion Edit generation, or Predictor/Infiller training.
+`current/` holds formal runtime assets and experiments. Directory location alone
+is not certification: every training input still requires the canonical asset,
+current contact semantics and its own acceptance record. Historical wrong-asset
+artifacts remain ineligible even if located here.
 
 The tracked manifest at `configs/assets_manifest.json` is the source of truth
 for robot, terrain, motion, model, and generated-asset locations. New files
@@ -14,9 +14,9 @@ Do not add direct absolute paths to project configs.
 Current categories are `current/motions`, `current/terrains`,
 `current/models`, `current/manifests`, and `current/generated`.
 
-Canonical identity:
+Canonical identity is resolved by `somaforge_core.robot_assets` and recorded in
+`configs/assets_manifest.json`. Do not copy fingerprints into documentation;
+they become stale when the authoritative robot/mesh bundle changes.
 
-- asset: `g1_29dof_spherehand_v1`
-- URDF SHA256: `6d79140d335157ad026d24b79be6fbb161c997c01c3ffc37bcca282dc2240696`
-- XML SHA256: `877ad16b5f32fcc971f21d85f0cfbf9ef3c1d5b67667b68fe2fc871aa872bd62`
-- URDF/mesh bundle SHA256: `d798925cd916e994a47c70ee30ea5f537f000a825c1c66aa914bbe434f60c199`
+`data`, `logs` and `tmp` at the repository root are symlinks into
+`current/holosoma/`. Cleaning their contents changes the actual runtime files.
