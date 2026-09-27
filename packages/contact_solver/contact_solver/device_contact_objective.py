@@ -125,7 +125,7 @@ class DeviceWitnessRows:
         values, groups, valid = [], [], []
         for name in ('body_link0', 'body_link1'):
             link = p[name]
-            values.append((-self.distances).relu())
+            values.append((-self.distances-DEFAULT_ACCEPTANCE.shallow_penetration_m).relu())
             groups.append(self.sample * links + link.clamp_min(0))
             valid.append((p['full_kind'] >= 0) & (p['dist'] < 0) & (link >= 0))
         depth = reduce_groups(torch.cat(values), torch.cat(groups), torch.cat(valid),
@@ -201,9 +201,10 @@ def realization(rows, active, surface, *, invalid_policy='error', audit_path=Non
     matching = p['task_pair'] & wanted & (p['primary_surface'] == surface[sample, part])
     exists = group_any(group, matching, size).reshape(batch, 6)
     realized = group_any(group, matching & p['active'] & p['constraint_allocated'], size).reshape(batch, 6)
-    needed = matching & ~realized[sample, part]
-    pair_cost = reduce_groups((rows.distances-.05*p['includemargin']).relu().square(),
-                             group, needed, size, minimum=True).reshape(batch, 6)
+    # One gap interval: upper violations here, lower violations exactly once
+    # in the full-body safety term. Activation only supplies diagnostics.
+    pair_cost = reduce_groups((rows.distances-p['includemargin']).relu().square(),
+                             group, matching, size, minimum=True).reshape(batch, 6)
     missing = active & ~exists
     unwanted_pairs = p['task_pair'] & p['upward'] & ~wanted
     unwanted = reduce_groups((p['includemargin']-rows.distances).relu().square(),
@@ -235,7 +236,7 @@ def realization(rows, active, surface, *, invalid_policy='error', audit_path=Non
     contact_loss = (normalized*active).sum(-1)/count+(normalized*active).amax(-1)
     normalized_unwanted = unwanted/.02**2
     unwanted_loss = normalized_unwanted.mean(-1)+normalized_unwanted.amax(-1)
-    collision_loss = (depth/.005).square()
+    collision_loss = ((depth-DEFAULT_ACCEPTANCE.shallow_penetration_m).relu()/.005).square()
     body_collision = q.sum(-1) * 0
     if rows.collision_aggregation == 'body_mean_plus_max':
         # Any invalid full-body pair must be visible to safety/advance checks,

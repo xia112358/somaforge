@@ -23,6 +23,15 @@ _EXPORTS = {'G1MechanicalProjector': ('contact_solver.mechanical', 'G1Mechanical
                                   'rollout_dense_collision_loss'),
  'rollout_ground_collision_loss': ('contact_solver.trajectory_projection',
                                    'rollout_ground_collision_loss')}
+_EXPORTS.update({
+    'Residual': ('contact_solver.constraint_learning', 'Residual'),
+    'AugmentedLagrangian': ('contact_solver.constraint_learning', 'AugmentedLagrangian'),
+    'penalty_loss': ('contact_solver.constraint_learning', 'penalty_loss'),
+    'ContactTask': ('contact_solver.constraint_residuals', 'ContactTask'),
+    'PlaneSurface': ('contact_solver.constraint_residuals', 'PlaneSurface'),
+    'FeasibilityFilter': ('contact_solver.feasibility_filter', 'FeasibilityFilter'),
+    'ProtectionRule': ('contact_solver.feasibility_filter', 'ProtectionRule'),
+})
 __all__ = list(_EXPORTS)
 
 def __getattr__(name):

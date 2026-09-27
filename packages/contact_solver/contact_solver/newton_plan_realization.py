@@ -68,11 +68,9 @@ def newton_plan_realization(
         rows,
         intended_contact,
         intended_surface,
-        # Match the interior-point contract that made the verified projector
-        # reliable: approach an inactive pair well inside its own solver
-        # activation interval.  Once active+allocated, selected_contact_cost
-        # returns zero rather than pinning a particular witness depth.
-        activation_buffer_fraction=0.95,
+        # Upper bound of the contact gap interval, independent of activation.
+        # Its lower bound is penalized exactly once by full-body safety below.
+        continuous_gap=True,
     )
     catalogs = observed.get("surface_catalog_by_sample")
     if catalogs is None:
@@ -125,7 +123,7 @@ def newton_plan_realization(
     )
     unwanted_normalized = unwanted / 0.02**2
     unwanted_loss = unwanted_normalized.mean(-1) + unwanted_normalized.amax(-1)
-    collision_loss = (depth / 0.005).square()
+    collision_loss = ((depth-DEFAULT_ACCEPTANCE.shallow_penetration_m).relu() / 0.005).square()
     loss = contact_loss + unwanted_loss + collision_loss
 
     exact = []

@@ -7,7 +7,9 @@
 - `trajectory_projection.py`、`mechanical.py`：轨迹约束与机械可行性检查。
 - `collision_geometry.py`、`part_collision_geometry.py`：权威资产碰撞几何。
 - `device_contact_objective.py`、`newton_plan_realization.py`：接触约束与实际实现检查。
-- `research/`：固定场景的研究代码；[第14帧研究](docs/step14.md)。
+- `constraint_learning.py`、`constraint_residuals.py`：通用有符号约束、固定罚项与 AL；任务和机器人几何由外部提供，[设计与实验](docs/constraint-learning.md)。
+- `feasibility_filter.py`：可配置的逐项保护与实际接触证据筛选，[改进对照与边界](docs/feasibility-filter.md)。
+- `research/`：固定场景的研究代码；[第14帧研究](docs/step14.md)、[SDF/共享面梯度对照](docs/step14-gradient-fields.md)。
 
 ```python
 from contact_solver.newton_witness_loss import full_body_violation, query_local_distances
@@ -24,3 +26,13 @@ efc_address 分配状态，并经 `somaforge_core.contact_face_selection` 选择
 
 研究中的多面 SQP 尚未替换生产梯度，也不代表连续轨迹已满足承重或无滑动。
 研究输出和大文件保留于根目录 `tmp/`。
+
+- [Constraint-aware direction experiments](docs/constraint-direction.md): pose/network-space updates, unchanged Newton acceptance.
+
+- [Training readiness and cost](docs/training-readiness.md): parameter-update integration and explicit separation evidence.
+
+- [接触区间、完整几何与投影求解](docs/contact-geometry-projection.md)：验收一致的穿透梯度、小维度投影和数值可行性检查；独立实验配置，不改生产训练。
+
+普通 batch 接入：[`docs/minibatch-training.md`](docs/minibatch-training.md)。
+`ConstrainedOptimizerStep` 投影实际 optimizer 增量并支持完整拒绝回滚，
+`PredictorConstraintAdapter` 提供当前 G1 box/ground 数据的几何与接触残差。

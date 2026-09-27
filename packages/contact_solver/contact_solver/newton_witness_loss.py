@@ -176,14 +176,19 @@ No cached response is accepted by this API.
     return output, result
 
 
-def selected_contact_cost(q, rows, active, surface, *, activation_buffer_fraction=0.):
+def selected_contact_cost(q, rows, active, surface, *, activation_buffer_fraction=0., continuous_gap=False):
     """Any actual pair can realize a part/face intent; do not pin every point.
 
 Missing target pairs are reported separately, NOT scored as achieved contact.
 Callers supply a separately named demonstrated approach loss for those rows.
+With continuous_gap=True the upper-gap residual is independent of activation;
+the caller must supply the lower bound once through full-body safety. The
+legacy buffered mode remains available for existing projector callers.
 """
     if not 0 <= activation_buffer_fraction < 1:
         raise ValueError('Activation buffer must be a fraction in [0,1)')
+    if continuous_gap and activation_buffer_fraction:
+        raise ValueError('Continuous gap objective uses the actual margin without an interior target')
     active=active.detach().cpu().tolist();surface=surface.detach().cpu().tolist()
     costs = []; missing = []; realized = []
     for i, pairs in enumerate(rows):
@@ -195,7 +200,7 @@ Callers supply a separately named demonstrated approach loss for those rows.
             is_realized = wanted and any(
                 p['constraint_active'] and p['allocated'] for p, _ in matches
             )
-            if wanted and matches and not is_realized:
+            if wanted and matches and (continuous_gap or not is_realized):
                 # Training target only. Actual realized contact ALWAYS comes
                 # from the unchanged solver activation/allocation flags below.
                 # A positive buffer avoids an asymptotic approach to the strict

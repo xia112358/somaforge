@@ -50,3 +50,29 @@ class ProgressWatch:
         if frame is not None and frame>self.frame:self.frame=frame;self.stalled=0
         else:self.stalled+=1
         return 'stalled' if self.stalled>=self.limits.stalled_steps else None
+
+
+def physical_reset_masks(q, penetration_cm, invalid_witnesses, joint_violation_rad,
+                         actual_contact, limits=TerminationLimits()):
+    """Episode failures using already validated primary-face Newton contacts.
+
+    Missing contact evidence is an error, never a geometry/intent fallback.
+    Reasons are mutually exclusive: invalid state, deep penetration, no contact.
+    """
+    import torch
+    if actual_contact is None or actual_contact.dtype != torch.bool or actual_contact.shape != (len(q), 6):
+        raise ValueError('Expected actual Newton primary-face contact mask [B,6]')
+    invalid = (~torch.isfinite(q).all(-1) | ~torch.isfinite(penetration_cm)
+               | ~torch.isfinite(joint_violation_rad) | (invalid_witnesses != 0)
+               | ((q[:,3:7].norm(dim=-1)-1).abs() > 1e-3)
+               | (joint_violation_rad > limits.joint_excess_rad))
+    deep = ~invalid & (penetration_cm > 100*limits.penetration_m)
+    no_contact = ~invalid & ~deep & ~actual_contact.any(-1)
+    reasons = dict(invalid=invalid, severe_penetration=deep, no_contact=no_contact)
+    return ~(invalid | deep | no_contact), reasons
+
+
+def demonstration_loss(value, supervised):
+    """Zero demonstration terms on rows with no remaining demonstration target."""
+    import torch
+    return torch.where(supervised, value, torch.zeros_like(value))

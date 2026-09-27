@@ -486,10 +486,9 @@ def _missing_intent_surface_distance(
     top_normal = rotation[:, :, 2]
     top_center = center + top_normal * half[:, 2:3]
     top_offset = (top_center * top_normal).sum(-1)
-    # Match the repeatedly requeried DLS expert's proven interior target.  A
-    # single frozen-witness update is not expected to reach it; DAgger now
-    # distills a converged training-only expert for that purpose.
-    target_gap = 0.05 * configured_margin
+    # Loss-only approach to the upper gap bound; not a replacement for
+    # Newton activation. Full-body safety handles the lower bound separately.
+    target_gap = configured_margin
     output = qpos.new_zeros((len(qpos), 6))
     names = tuple(dict.fromkeys(shape.link_name for shape in geometry.shapes))
     positions, rotations = model.fk.link_poses(qpos, names)
@@ -531,7 +530,11 @@ def _missing_intent_surface_distance(
                 link_pose_override={name: (positions[indices, link_index[name]], rotations[indices, link_index[name]])
                                     for name in part_names},
             )
-            output[indices, part_index] = residual.square().sum(-1).clamp_min(1.0e-12).sqrt()
+            # Keep finite-face tangential guidance, but do not pull an interior
+            # point back out to the upper boundary of the contact interval.
+            normal_component = (residual * normal).sum(-1, keepdim=True)
+            residual = residual - normal_component.clamp_max(0) * normal
+            output[indices, part_index] = residual.norm(dim=-1)
     return output
 
 

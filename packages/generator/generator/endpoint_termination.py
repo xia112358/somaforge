@@ -3,6 +3,11 @@
 
 def endpoint_failure_reasons(record, *, require_spatial=False, tolerance_cm=4.):
     reasons=[]
+    if 'support_transition_valid' in record:
+        if record['support_transition_valid'] is None:
+            reasons.append('support_evidence_unknown')
+        elif record['support_transition_valid'] is not True:
+            reasons.append('support_lost_or_sliding')
     if not record['task_acceptance']['accepted']:
         reasons.append('task_contact_or_safety')
     if not record.get('own_plan_acceptance', record['task_acceptance'])['accepted']:
