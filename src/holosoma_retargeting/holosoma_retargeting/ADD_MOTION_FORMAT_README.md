@@ -146,7 +146,5 @@ python examples/robot_retarget.py \
   --data_path /path/to/your/data \
   --task-type robot_only \
   --task-name your_sequence_name \
-  --data_format myformat \
-  --retargeter.debug \
-  --retargeter.visualize
+  --data_format myformat
 ```

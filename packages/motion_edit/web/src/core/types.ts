@@ -75,6 +75,7 @@ export type Generation = {
 };
 
 export type Session = {
+  review?: Review;
   motion_id: string;
   read_only: boolean;
   capabilities: {
@@ -119,4 +120,19 @@ export type Session = {
   };
   plan: { path: string; status: string; edit_count: number } | null;
   generation: Generation;
+};
+
+export type ReviewRecord = {
+  label: string; method: string; iteration: string; q: number[];
+  normal_starts: Vec3[]; normals: Vec3[];
+  diagnostics: Record<string, unknown>;
+};
+export type Review = {
+  support_frames?: {part:number;load_known:boolean;load_state:string;normal_force_n:number|null;loaded_speed_cm_s:number|null}[][];
+  support_assessment_schema?: string;
+  actual_support_status?: string;
+  kind: 'motion' | 'report' | 'support_motion' | 'support_slip'; source: string; notice: string;
+  slip_frames?: { part: number; surface: number; body: string; position: Vec3; delta: Vec3; motion_cm: number }[][];
+  reference?: string; records?: ReviewRecord[];
+  phases?: { start: number; end: number; part: string; aggregate: Vec3[]; rollouts: Vec3[][]; aggregate_net_cm: number; rollout_median_net_cm: number }[];
 };

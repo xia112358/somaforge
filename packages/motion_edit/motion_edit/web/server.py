@@ -67,6 +67,11 @@ def _editor_contact_handles(anchors: Any) -> list[Any]:
     )
 
 
+class ReviewRequest(BaseModel):
+    path: str
+    terrain: str | None = None
+
+
 class LoadRequest(BaseModel):
     motion_id: str
 
@@ -131,6 +136,7 @@ class GenerationJob:
 
 @dataclass
 class EditorState:
+    review: dict[str, Any] | None = None
     session: SurfaceEditorSession | None = None
     motion_id: str | None = None
     motion_provenance: str = "source"
@@ -185,6 +191,8 @@ def _require_generation_idle(state: EditorState) -> None:
 
 
 def _require_editable(state: EditorState) -> None:
+    if state.review is not None:
+        raise ValueError("review is read-only")
     if state.read_only:
         raise HTTPException(
             status_code=409,
@@ -445,6 +453,8 @@ def _open_motion(state: EditorState, motion_id: str) -> dict[str, Any]:
 
 
 def _session_payload(state: EditorState) -> dict[str, Any]:
+    if state.review is not None:
+        return state.review
     if state.session is None or state.motion_id is None or state.motion_asset_id is None:
         raise ValueError("no motion is loaded")
     record = read_motion_asset(state.motion_asset_id)
@@ -666,12 +676,35 @@ def _run_generation(
 def create_app(
     *,
     initial_motion_id: str | None = None,
+    review_path: str | None = None,
+    review_terrain: str | None = None,
     reset_recent_on_start: bool = False,
     generation_fn: Callable[..., ContactAwareGenerationResult] = apply_contact_aware_edit_plan_to_motion,
 ) -> FastAPI:
     app = FastAPI(title="Motion Edit Contact Editor")
     state = EditorState()
     app.state.editor_state = state
+
+    def open_review(path: str, terrain: str | None = None) -> dict:
+        from .review import load_review
+        _require_generation_idle(state)
+        payload = load_review(Path(_repo_path(path)), url=_repo_url,
+                              terrain=Path(_repo_path(terrain)) if terrain else None)
+        state.session = None
+        state.motion_id = None
+        state.read_only = True
+        state.review = payload
+        return payload
+
+    @app.post("/api/review/load")
+    def review_load(request: ReviewRequest) -> dict:
+        try:
+            return open_review(request.path, request.terrain)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if review_path:
+        open_review(review_path, review_terrain)
     app.mount("/repo", StaticFiles(directory=str(somaforge_root())), name="repo")
 
     @app.get("/api/motions")
@@ -697,7 +730,13 @@ def create_app(
         try:
             if state.generation_payload()["status"] == "running":
                 raise ValueError("wait for the current generation job to finish before loading another motion")
-            return _open_motion(state, request.motion_id)
+            previous_review = state.review
+            state.review = None
+            try:
+                return _open_motion(state, request.motion_id)
+            except Exception:
+                state.review = previous_review
+                raise
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1015,7 +1054,7 @@ def _port_available(port: int) -> bool:
         return sock.connect_ex(("127.0.0.1", int(port))) != 0
 
 
-def run_contact_editor(*, motion_id: str | None, host: str = "127.0.0.1", port: int = 8094, open_browser: bool = True) -> None:
+def run_contact_editor(*, motion_id: str | None, review_path: str | None = None, review_terrain: str | None = None, host: str = "127.0.0.1", port: int = 8094, open_browser: bool = True) -> None:
     import uvicorn
 
     if not _port_available(port):
@@ -1027,6 +1066,8 @@ def run_contact_editor(*, motion_id: str | None, host: str = "127.0.0.1", port: 
     uvicorn.run(
         create_app(
             initial_motion_id=motion_id,
+            review_path=review_path,
+            review_terrain=review_terrain,
             reset_recent_on_start=True,
         ),
         host=host,

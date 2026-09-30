@@ -296,25 +296,13 @@ class ContactEditPlanTests(unittest.TestCase):
             n_frames=frames,
         )
 
-        np.testing.assert_array_equal(generated["contact_force_part_w"], forces)
-        np.testing.assert_allclose(
-            np.asarray(generated["contact_force_part_position_w"])[1:4, 5],
-            [[0.1, 0.2, 0.0]] * 3,
-        )
-        np.testing.assert_allclose(
-            np.asarray(generated["contact_force_part_position_history_w"])[1:4, :, 5],
-            np.broadcast_to([0.1, 0.2, 0.0], (3, 2, 3)),
-        )
+        np.testing.assert_array_equal(generated["source_reference_contact_force_part_w"], forces)
+        np.testing.assert_array_equal(generated["source_reference_contact_force_part_position_w"], positions)
+        np.testing.assert_array_equal(generated["source_reference_contact_force_part_position_history_w"], position_history)
+        self.assertNotIn("contact_force_part_w", generated)
         self.assertNotIn("raw_contact_point0_w", generated)
-        self.assertEqual(
-            str(generated["contact_force_part_position_source"]),
-            "motion_edit_translated_source_contact_position",
-        )
-        provenance = json.loads(str(generated["contact_force_provenance_json"]))
-        self.assertEqual(
-            provenance["motion_edit_contact_position_translation"][0]["part"],
-            "right_hand",
-        )
+        assessment = json.loads(str(generated["support_assessment_json"]))
+        self.assertEqual(assessment["status"], "unknown")
 
     def test_contact_edit_plan_roundtrip_and_append(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

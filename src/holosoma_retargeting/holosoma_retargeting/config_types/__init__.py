@@ -9,7 +9,6 @@ from holosoma_retargeting.config_types.retargeting import (
 )
 from holosoma_retargeting.config_types.robot import RobotConfig
 from holosoma_retargeting.config_types.task import TaskConfig
-from holosoma_retargeting.config_types.viser import ViserConfig
 
 __all__ = [
     "DataConversionConfig",
@@ -20,5 +19,4 @@ __all__ = [
     "RetargetingConfig",
     "RobotConfig",
     "TaskConfig",
-    "ViserConfig",
 ]

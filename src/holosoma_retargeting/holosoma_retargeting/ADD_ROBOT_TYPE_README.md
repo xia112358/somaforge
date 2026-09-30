@@ -19,7 +19,7 @@ mkdir -p models/myrobot
 ```
 
 Place your robot files in this directory:
-- **URDF file**: `models/myrobot/myrobot_{dof}dof.urdf` (e.g., `myrobot_25dof.urdf`) for viser visualization
+- **URDF file**: `models/myrobot/myrobot_{dof}dof.urdf` (e.g., `myrobot_25dof.urdf`) for registered robot visualization
 - **XML file**: `models/myrobot/myrobot_{dof}dof.xml` for retargeting using MuJoCo
 
 **Note**: The URDF file path follows the pattern `models/{robot_type}/{robot_type}_{dof}dof.urdf`. If your files use a different naming convention, you can override the path via command line using `--robot-config.robot-urdf-file` (e.g., `--robot-config.robot-urdf-file models/myrobot/custom_name.urdf`).
@@ -160,7 +160,5 @@ python examples/robot_retarget.py \
   --task-type robot_only \
   --task-name your_sequence \
   --data_format smplh \
-  --retargeter.debug \
-  --retargeter.visualize \
   --robot myrobot
 ```

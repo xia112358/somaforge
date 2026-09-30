@@ -935,7 +935,7 @@ class IsaacSim(BaseSimulator):
     def get_solver_contact_snapshot(self) -> dict[str, np.ndarray]:
         from isaaclab_newton.physics.newton_manager import NewtonManager
         from holosoma.simulator.isaaclab3_newton.contact_snapshot import snapshot_solver_contacts
-        return snapshot_solver_contacts(NewtonManager._solver, NewtonManager._model)
+        return snapshot_solver_contacts(NewtonManager._solver, NewtonManager._model,include_support=True)
 
     def get_raw_rigid_contacts(self) -> dict[str, np.ndarray] | None:
         """Return Newton raw rigid contacts for the latest physics step, with world-space points."""

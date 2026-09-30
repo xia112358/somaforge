@@ -34,7 +34,8 @@ def constraint_decision(dist, includemargin, kind, address, count, row_count=Non
     return active, active & ((address >= 0) | ~required).all(-1)
 
 
-def snapshot_solver_contacts(solver, model, *, state=None, contacts=None, static_mapping_cache=None):
+def snapshot_solver_contacts(solver, model, *, state=None, contacts=None, static_mapping_cache=None,
+                             include_support=False):
     contact = solver.mjw_data.contact
     values = {k: np.asarray(getattr(contact, attr).numpy()).copy() for k, attr in
               [('dist', 'dist'), ('includemargin', 'includemargin'), ('type', 'type'),
@@ -102,6 +103,9 @@ def snapshot_solver_contacts(solver, model, *, state=None, contacts=None, static
             values[f'geometry_point{side}_w'] = points
         if not covered.all():
             raise ValueError('Missing raw pair for solver contact')
+    if include_support:
+        from .newton_support import snapshot_support
+        values.update(snapshot_support(solver,dict(values,count=count,body0=bodies[:,0],body1=bodies[:,1])))
     return dict(values, count=np.asarray(count, dtype=np.int32), active=active,
                 constraint_allocated=allocated, shape0=shapes[:, 0], shape1=shapes[:, 1],
                 body0=bodies[:, 0], body1=bodies[:, 1])

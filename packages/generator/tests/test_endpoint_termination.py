@@ -21,9 +21,9 @@ def test_spatial_unknown_failure_is_explicit_not_a_contact_redefinition():
 
 
 def test_support_is_mandatory_when_checked_even_if_task_passes():
-    row=event();row['support_transition_valid']=False
-    assert endpoint_failure_reasons(row)==['support_lost_or_sliding']
-    row['support_transition_valid']=True
+    row=event();row['endpoint_contact_retention_valid']=False
+    assert endpoint_failure_reasons(row)==['endpoint_contact_retention_failed']
+    row['endpoint_contact_retention_valid']=True
     assert not endpoint_failure_reasons(row)
-    row['support_transition_valid']=None
-    assert endpoint_failure_reasons(row)==['support_evidence_unknown']
+    row['endpoint_contact_retention_valid']=None
+    assert endpoint_failure_reasons(row)==['endpoint_contact_evidence_unknown']

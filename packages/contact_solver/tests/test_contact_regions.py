@@ -70,8 +70,8 @@ def witness_fixture(depths):
         dist=torch.tensor(depths), geometry_point0_w=point, geometry_point1_w=point,
         normal_w=torch.tensor([[0., 0., 1.]]*2), body_link0=torch.tensor([-1, -1]), body_link1=torch.tensor([0, 1]),
         full_kind=torch.zeros(2, dtype=torch.long), primary_surface=torch.zeros(2, dtype=torch.long),
-        upward=torch.ones(2, dtype=torch.bool), active=torch.ones(2, dtype=torch.bool),
-        constraint_allocated=torch.ones(2, dtype=torch.bool), includemargin=torch.full((2,), .02), eligible=torch.ones(2, dtype=torch.bool))
+        upward=torch.ones(2, dtype=torch.bool), active=torch.tensor(depths)<.02,
+        constraint_allocated=torch.tensor(depths)<.02, includemargin=torch.full((2,), .02), eligible=torch.tensor(depths)<.02)
     observed=dict(schema='newton_device_witness_batch_v1', pairs=p,
         link_names=('left_ankle_roll_link', 'right_ankle_roll_link'), configured_margin=torch.tensor([.02]))
     model=type('Model', (), {'fk':TwoFeet(), 'region_geometry':TestRegions()})()
@@ -93,7 +93,7 @@ def test_unified_contact_remains_repulsive_after_activation_and_both_feet_receiv
 
 
 def test_unified_contact_attracts_above_band_and_allows_unselected_regions_to_lift():
-    q,obs,model,active,regions=witness_fixture([.01,.0005])
+    q,obs,model,active,regions=witness_fixture([.025,.0005])
     loss,_=unified_region_objective(model,DeviceWitnessRows(model.fk,q,obs),active,torch.zeros(1,6,dtype=torch.long),{},regions)
     grad=torch.autograd.grad(loss.sum(),q)[0]
     assert grad[0,2]>0 and grad[0,9]==0
@@ -141,7 +141,7 @@ def test_unknown_penetration_requires_audit_and_has_no_training_gradient(tmp_pat
 
 
 def test_opposite_violations_in_one_region_both_receive_gradients():
-    q, obs, model, active, regions = witness_fixture([.011, -.02])
+    q, obs, model, active, regions = witness_fixture([.03, -.02])
     class IndependentFootLinks:
         def link_poses(self, q, names):
             p = torch.stack([q[:, :3], q[:, 7:10]], 1)
@@ -165,3 +165,44 @@ def test_opposite_violations_in_one_region_both_receive_gradients():
     pieces = metrics['unified_attraction_component']+metrics['unified_separation_component']
     torch.testing.assert_close(pieces, loss)
     torch.testing.assert_close(torch.autograd.grad(pieces.sum(), q)[0], grad)
+
+
+def test_activated_contacts_inside_actual_margin_have_no_attraction_gradient():
+    q, obs, model, active, regions = witness_fixture([.019, .002])
+    loss, metrics = unified_region_objective(model, DeviceWitnessRows(model.fk, q, obs),
+        active, torch.zeros(1, 6, dtype=torch.long), {}, regions)
+    assert metrics['region_plan_realized'].item() == 1
+    assert loss.item() == 0
+    assert torch.autograd.grad(loss.sum(), q)[0].abs().sum() == 0
+
+
+def test_frozen_activated_witness_still_attracts_after_fk_crosses_margin():
+    q, obs, model, active, regions = witness_fixture([.019, .002])
+    rows = DeviceWitnessRows(model.fk, q, obs)
+    # Move a frozen differentiable witness without changing query-time flags.
+    rows.distances = rows.distances + q.new_tensor([.003, 0.])
+    loss, _ = unified_region_objective(model, rows,
+        active, torch.zeros(1, 6, dtype=torch.long), {}, regions)
+    assert obs['pairs']['eligible'][0]
+    assert torch.autograd.grad(loss.sum(), q)[0][0, 2] > 0
+
+
+def test_regional_attraction_uses_each_actual_pair_margin():
+    q, obs, model, active, regions = witness_fixture([.019, .019])
+    obs['pairs']['includemargin'] = torch.tensor([.01, .03])
+    for key in ('active', 'constraint_allocated', 'eligible'):
+        obs['pairs'][key] = torch.tensor([False, True])
+    loss, metrics = unified_region_objective(model, DeviceWitnessRows(model.fk, q, obs),
+        active, torch.zeros(1, 6, dtype=torch.long), {}, regions)
+    gradient = torch.autograd.grad(loss.sum(), q)[0]
+    assert gradient[0, 2] > 0 and gradient[0, 9] == 0
+    assert metrics['region_plan_realized'].item() == 0
+
+
+def test_zero_regional_residual_at_margin_does_not_certify_contact():
+    q, obs, model, active, regions = witness_fixture([.02, .002])
+    loss, metrics = unified_region_objective(model, DeviceWitnessRows(model.fk, q, obs),
+        active, torch.zeros(1, 6, dtype=torch.long), {}, regions)
+    assert loss.item() == 0
+    assert not obs['pairs']['eligible'][0]
+    assert metrics['region_plan_realized'].item() == 0

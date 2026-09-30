@@ -14,6 +14,7 @@ from contact_solver.part_collision_geometry import PartCollisionGeometry
 from somaforge_core.heightmap import HEIGHTMAP_ROWS, HEIGHTMAP_COLS, HEIGHTMAP_FORWARD_MIN_M, HEIGHTMAP_LATERAL_MIN_M, HEIGHTMAP_RESOLUTION_M
 
 
+CONTACT_INTERVAL_SCHEMA = 'native_activation_upper_gap_v1'
 PART_NAMES = ('left_foot', 'right_foot', 'left_hand', 'right_hand', 'left_knee', 'right_knee')
 
 
@@ -131,16 +132,21 @@ class ContactRegions(nn.Module):
                 box_local = torch.einsum('bvi,bij->bvj', delta, scene['box_rotation'])
                 outside = (box_local[..., :2].abs()-scene['box_half_extents'][:, None, :2]).relu().square().sum(-1)
                 gap = torch.where(surface[:, part, None] == 0, ground_gap, box_local[..., 2])
-                cost = (gap-.05*margin[:, None]).relu().square()+(-gap).relu().square()
+                cost = (gap-margin[:, None]).relu().square()+(-gap).relu().square()
                 cost = cost+torch.where(surface[:, part, None] == 0, 0, outside)
                 result[:, part, region] = cost.amin(-1)/(.25*margin).square()
         return result
 
 
-def unified_region_objective(model, rows, active, surface, scene, planned_regions=None, *, audit_path=None):
+def unified_region_objective(model, rows, active, surface, scene, planned_regions=None, *, audit_path=None, release_mask=None):
     """One interval-violation objective across intended regions and all bodies."""
     from contact_solver.device_contact_objective import reduce_groups, group_any
     geometry = model.region_geometry
+    if release_mask is not None:
+        if release_mask.shape != active.shape or release_mask.dtype != torch.bool:
+            raise ValueError('Release mask must be boolean with the contact intent shape')
+        if bool((release_mask & active).any()):
+            raise ValueError('Required contact and release intents conflict')
     p = rows.pair; q = rows.q; batch = len(q); sample = p['sample']
     scale = .25*rows.observed['configured_margin']
     if bool((scale <= 0).any()): raise ValueError('Unified loss needs actual positive configured margins')
@@ -167,7 +173,10 @@ def unified_region_objective(model, rows, active, surface, scene, planned_region
     desired = (geometry.valid[None] & active[..., None] if planned_regions is None else planned_regions & active[..., None])
     # A coarse intended part needs one region; an explicit plan needs every
     # selected region. Neither forces all other regions to touch or lift.
-    upper = ((rows.distances-.05*p['includemargin']).relu()/scale[sample]).square()
+    # Use the same upper boundary as the existing execution interval loss.
+    # Activation/allocation remain native evidence; a zero gap residual alone
+    # neither certifies contact nor turns off a frozen-witness gradient.
+    upper = ((rows.distances-p['includemargin']).relu()/scale[sample]).square()
     near = reduce_groups(upper, region_group, match, batch*24, minimum=True).reshape(batch, 6, 4)
     exists = group_any(region_group, match, batch*24).reshape(batch, 6, 4)
     approach = geometry.missing_region_distance(model.fk, q, surface, scene, rows.observed['configured_margin'])
@@ -188,9 +197,13 @@ def unified_region_objective(model, rows, active, surface, scene, planned_region
         slot = torch.where(lp >= 0, lp*4+rp, 24+link.clamp_min(0))
         # Existing task acceptance permits only shallow extra activations;
         # derive the unwanted-part lower bound from each real pair margin.
-        unwanted = (side == 1) & p['task_pair'] & p['upward'] & ~active[sample, part]
+        released = ~active if release_mask is None else release_mask
+        unwanted = (side == 1) & p['task_pair'] & p['upward'] & released[sample, part]
         from contact_solver.interaction_acceptance import DEFAULT_ACCEPTANCE
-        lower = torch.where(unwanted, (1-DEFAULT_ACCEPTANCE.extra_activation_margin_fraction)*p['includemargin'], 0)
+        # Legacy complete plans tolerate shallow extra activations. An explicit
+        # event release instead targets the actual activation boundary.
+        fraction = 1-DEFAULT_ACCEPTANCE.extra_activation_margin_fraction if release_mask is None else 1.
+        lower = torch.where(unwanted, fraction*p['includemargin'], 0)
         costs.append(((lower-rows.distances).relu()/scale[sample]).square())
         groups.append(sample*groups_per_sample+slot)
         valid.append(relevant & (link >= 0))

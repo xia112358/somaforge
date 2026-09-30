@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 import pytest
 import torch
-from contact_solver.support_transition import support_transition, predicted_support_loss
+from contact_solver.support_transition import endpoint_contact_retention, predicted_contact_retention_loss
 
 class FK:
     def link_poses(self,q,names):
@@ -21,43 +21,43 @@ def rows(q,parts=(0,1),surface=0):
 
 def test_one_stationary_support_allows_other_limb_motion_without_gradient_or_loss():
     a=torch.zeros(1,6);b=torch.tensor([[0.,0.,0.,.2,0.,0.]],requires_grad=True)
-    result=support_transition(FK(),rows(a),rows(b))
-    assert result['support_transition_valid'].item()
-    assert not result['support_displacement_m'].requires_grad
+    result=endpoint_contact_retention(FK(),rows(a),rows(b))
+    assert result['endpoint_contact_retention_valid'].item()
+    assert not result['endpoint_material_displacement_m'].requires_grad
     assert not any('loss' in k for k in result)
 
 def test_rigid_sliding_rejected_even_with_both_contacts_still_active():
     a=torch.zeros(1,6);b=torch.tensor([[.07,0.,0.,.07,0.,0.]])
-    result=support_transition(FK(),rows(a),rows(b))
-    assert not result['support_transition_valid'].item()
-    assert result['support_displacement_m'].item()==pytest.approx(.07)
+    result=endpoint_contact_retention(FK(),rows(a),rows(b))
+    assert not result['endpoint_contact_retention_valid'].item()
+    assert result['endpoint_material_displacement_m'].item()==pytest.approx(.07)
 
 def test_new_witness_cannot_hide_motion_of_initial_material_point():
     a=torch.zeros(1,6);b=torch.full((1,6),.07)
     end=rows(b);end.points[:]=0
-    assert not support_transition(FK(),rows(a),end)['support_transition_valid'].item()
+    assert not endpoint_contact_retention(FK(),rows(a),end)['endpoint_contact_retention_valid'].item()
 
-def test_surface_witness_change_preserves_endpoint():
+def test_surface_transfer_is_not_retention():
     a=torch.zeros(1,6)
-    assert support_transition(FK(),rows(a),rows(a,surface=1))['support_transition_valid'].item()
+    assert not endpoint_contact_retention(FK(),rows(a),rows(a,surface=1))['endpoint_contact_retention_valid'].item()
 
 def test_disappearing_old_support_or_no_initial_contact_is_rejected():
     a=torch.zeros(1,6)
-    assert not support_transition(FK(),rows(a),rows(a,parts=()))['support_transition_valid'].item()
-    assert not support_transition(FK(),rows(a,parts=()),rows(a))['support_transition_valid'].item()
+    assert not endpoint_contact_retention(FK(),rows(a),rows(a,parts=()))['endpoint_contact_retention_valid'].item()
+    assert not endpoint_contact_retention(FK(),rows(a,parts=()),rows(a))['endpoint_contact_retention_valid'].item()
 
 def test_endpoint_allows_internal_support_change():
     a=torch.zeros(1,6);b=torch.tensor([[.03,0.,0.,0.,0.,0.]])
     before=rows(a);after=rows(b)
     before.pair['part'][:]=0;after.pair['part'][:]=0
     # Two witnesses in one endpoint: one retained support point suffices.
-    assert support_transition(FK(),before,after)['support_transition_valid'].item()
+    assert endpoint_contact_retention(FK(),before,after)['endpoint_contact_retention_valid'].item()
 
 def test_vertical_lift_and_unallocated_evidence_not_allowed():
     a=torch.zeros(1,6);b=torch.tensor([[0.,0.,.07,0.,0.,.07]])
-    assert not support_transition(FK(),rows(a),rows(b))['support_transition_valid'].item()
+    assert not endpoint_contact_retention(FK(),rows(a),rows(b))['endpoint_contact_retention_valid'].item()
     bad=rows(a);bad.pair['efc_address'][:]=-1;bad.pair['constraint_allocated'][:]=False
-    with pytest.raises(ValueError,match='Unallocated'):support_transition(FK(),rows(a),bad)
+    with pytest.raises(ValueError,match='Unallocated'):endpoint_contact_retention(FK(),rows(a),bad)
 
 
 def test_destination_region_can_supply_pivot():
@@ -73,16 +73,16 @@ def test_destination_region_can_supply_pivot():
     before=rows(a,parts=(0,));after=rows(b,parts=(0,))
     before.points[0,1]=torch.tensor([0.,0.,0.])
     after.points[0,1]=torch.tensor([.2,0.,0.])
-    result=support_transition(RotatingFK(),before,after)
-    assert result['support_transition_valid'].item()
-    assert result['support_displacement_m'].item()<1e-6
+    result=endpoint_contact_retention(RotatingFK(),before,after)
+    assert result['endpoint_contact_retention_valid'].item()
+    assert result['endpoint_material_displacement_m'].item()<1e-6
 
 
 def test_six_cm_boundary():
     a=torch.zeros(1,6)
     for distance,expected in [(.059,True),(.061,False)]:
         b=a.clone();b[:,0]=distance;b[:,3]=distance
-        assert support_transition(FK(),rows(a),rows(b))['support_transition_valid'].item()==expected
+        assert endpoint_contact_retention(FK(),rows(a),rows(b))['endpoint_contact_retention_valid'].item()==expected
 
 
 def roles(left=2,right=2):
@@ -92,9 +92,9 @@ def roles(left=2,right=2):
 def test_predicted_support_penalizes_each_declared_part_not_only_best_support():
     a=torch.zeros(1,6,requires_grad=True)
     b=torch.tensor([[0.,0.,0.,.12,0.,0.]],requires_grad=True)
-    loss,metrics=predicted_support_loss(FK(),rows(a),rows(b),roles())
+    loss,metrics=predicted_contact_retention_loss(FK(),rows(a),rows(b),roles())
     assert loss.item()==pytest.approx(.5)
-    assert metrics['predicted_support_count'].item()==2
+    assert metrics['predicted_keep_intent_count'].item()==2
     loss.sum().backward()
     assert b.grad[0,3]>0 and b.grad[0,0]==0
     assert a.grad is None
@@ -103,9 +103,9 @@ def test_predicted_support_penalizes_each_declared_part_not_only_best_support():
 def test_disappearing_support_still_receives_gradient():
     a=torch.zeros(1,6)
     b=torch.tensor([[0.,0.,.12,0.,0.,0.]],requires_grad=True)
-    loss,metrics=predicted_support_loss(FK(),rows(a),rows(b,parts=()),roles(2,0))
+    loss,metrics=predicted_contact_retention_loss(FK(),rows(a),rows(b,parts=()),roles(2,0))
     assert loss.item()==pytest.approx(1.)
-    assert metrics['predicted_support_count'].item()==1
+    assert metrics['predicted_keep_intent_count'].item()==1
     loss.sum().backward()
     assert b.grad[0,2]>0
 
@@ -114,7 +114,7 @@ def test_disappearing_support_still_receives_gradient():
 def test_nonpersistent_predicted_roles_do_not_enable_loss(role):
     a=torch.zeros(1,6)
     b=torch.full((1,6),.2,requires_grad=True)
-    loss,_=predicted_support_loss(FK(),rows(a),rows(b),roles(role,role))
+    loss,_=predicted_contact_retention_loss(FK(),rows(a),rows(b),roles(role,role))
     loss.sum().backward()
     assert loss.item()==0 and not b.grad.any()
 
@@ -122,10 +122,10 @@ def test_nonpersistent_predicted_roles_do_not_enable_loss(role):
 def test_no_initial_contact_is_reported_without_fabricating_anchor():
     a=torch.zeros(1,6)
     b=torch.full((1,6),.2,requires_grad=True)
-    loss,metrics=predicted_support_loss(FK(),rows(a,parts=()),rows(b),roles())
+    loss,metrics=predicted_contact_retention_loss(FK(),rows(a,parts=()),rows(b),roles())
     loss.sum().backward()
-    assert not b.grad.any() and metrics['predicted_support_count'].item()==0
-    assert metrics['predicted_support_without_initial_contact'].item()==2
+    assert not b.grad.any() and metrics['predicted_keep_intent_count'].item()==0
+    assert metrics['predicted_keep_without_initial_contact'].item()==2
 
 
 def test_support_loss_tolerance_and_internal_region_minimum():
@@ -135,7 +135,7 @@ def test_support_loss_tolerance_and_internal_region_minimum():
     # Fixture part and link IDs share storage; preserve distinct link IDs.
     before.pair['part']=torch.zeros(2,dtype=torch.long)
     after.pair['part']=torch.zeros(2,dtype=torch.long)
-    loss,_=predicted_support_loss(FK(),before,after,roles(2,0))
+    loss,_=predicted_contact_retention_loss(FK(),before,after,roles(2,0))
     loss.sum().backward()
     assert loss.item()==0 and not b.grad.any()
 
@@ -145,7 +145,7 @@ def test_predicted_role_gate_does_not_backpropagate_to_logits():
     b=torch.full((1,6),.12,requires_grad=True)
     logits=torch.zeros(1,6,4,requires_grad=True)
     with torch.no_grad():logits[:,:,2]=1
-    loss,_=predicted_support_loss(FK(),rows(a),rows(b),logits.argmax(-1))
+    loss,_=predicted_contact_retention_loss(FK(),rows(a),rows(b),logits.argmax(-1))
     loss.sum().backward()
     assert logits.grad is None and b.grad.abs().sum()>0
 
@@ -155,4 +155,4 @@ def test_support_loss_rejects_unallocated_input_contact():
     before=rows(q);before.pair['efc_address'][:]=-1
     before.pair['constraint_allocated'][:]=False
     with pytest.raises(ValueError,match='Unallocated'):
-        predicted_support_loss(FK(),before,rows(q),roles())
+        predicted_contact_retention_loss(FK(),before,rows(q),roles())

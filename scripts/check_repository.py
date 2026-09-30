@@ -10,6 +10,12 @@ import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
+RETIRED_SUPPORT_PATHS = (
+    'scripts/aggregate_force_support.py',
+    'scripts/audit_edited_support.py',
+    'packages/somaforge_core/somaforge_core/support_aggregation.py',
+    'packages/somaforge_core/tests/test_support_aggregation.py',
+)
 
 
 def audit(root: Path = ROOT) -> dict:
@@ -19,6 +25,9 @@ def audit(root: Path = ROOT) -> dict:
     tracked = git('ls-files')
     paths = sorted(set(tracked + git('ls-files', '--others', '--exclude-standard')))
     errors, warnings = [], []
+    for name in RETIRED_SUPPORT_PATHS:
+        if (root / name).exists():
+            errors.append(f'{name}: retired support judgment/aggregation path; use native support evidence')
     binaries, temporary_references = [], []
     python_count = 0
     for name in paths:
@@ -34,6 +43,14 @@ def audit(root: Path = ROOT) -> dict:
             except (SyntaxError, UnicodeError) as exc:
                 errors.append(f'{name}: {exc}')
                 continue
+            for node in ast.walk(tree):
+                modules = ([node.module or ''] if isinstance(node, ast.ImportFrom) else
+                           [a.name for a in node.names] if isinstance(node, ast.Import) else [])
+                if any(m == 'somaforge_core.support_aggregation' for m in modules):
+                    errors.append(f'{name}:{node.lineno}: retired support aggregation import')
+                if name.startswith(('packages/motion_edit/', 'packages/contact_solver/', 'src/holosoma_retargeting/')):
+                    if any(m == 'viser' or m.startswith('viser.') or m == 'viser_utils' for m in modules):
+                        errors.append(f'{name}:{node.lineno}: retired Viser UI; use motion-edit contact-editor')
             # Canonical implementations must not depend on their historical aliases.
             if name.startswith(('packages/generator/generator/', 'packages/contact_solver/contact_solver/',
                                 'packages/somaforge_core/somaforge_core/')):

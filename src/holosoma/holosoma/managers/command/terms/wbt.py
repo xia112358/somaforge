@@ -287,10 +287,12 @@ class MotionLoader:
             num_frames = self._joint_pos.shape[0]
             self._part_order = [str(x) for x in data["part_order"].tolist()] if "part_order" in data else []
             self._has_part_annotations = any(
-                key in data for key in ("active_part_mask", "support_part_mask", "contact_part_mask")
+                key in data for key in ("active_part_mask", "contact_keep_intent_mask", "support_part_mask", "contact_part_mask")
             )
             self._active_part_mask = self._load_part_mask(data, "active_part_mask", num_frames, device)
-            self._support_part_mask = self._load_part_mask(data, "support_part_mask", num_frames, device)
+            # Historical field is a desired role, never measured support truth.
+            keep_key = "contact_keep_intent_mask" if "contact_keep_intent_mask" in data else "support_part_mask"
+            self._support_part_mask = self._load_part_mask(data, keep_key, num_frames, device)
             self._free_part_mask = self._load_part_mask(data, "free_part_mask", num_frames, device)
             self._contact_part_mask = self._load_part_mask(data, "contact_part_mask", num_frames, device)
             contact_force_part_w = self._load_contact_force_part(data, "contact_force_part_w", num_frames, device)
@@ -552,6 +554,7 @@ class MotionLoader:
 
     @property
     def support_part_mask(self) -> torch.Tensor:
+        """Compatibility name for declared contact-keep intent, not measured support."""
         return self._support_part_mask
 
     @property
@@ -840,6 +843,7 @@ class MultiMotionLoader:
 
     @property
     def support_part_mask(self) -> torch.Tensor:
+        """Compatibility name for declared contact-keep intent, not measured support."""
         return self._support_part_mask
 
     @property
@@ -2233,6 +2237,7 @@ class MotionCommand(CommandTermBase):
 
     @property
     def support_part_mask(self) -> torch.Tensor:
+        """Compatibility name for declared contact-keep intent, not measured support."""
         return self.motion.support_part_mask[self.time_steps]
 
     @property
@@ -3060,7 +3065,7 @@ class MotionCommand(CommandTermBase):
             limb_rot_error = body_rot_error[:, limb_idx]
 
             self.metrics["motion/num_active_parts"] = active_count
-            self.metrics["motion/num_support_parts"] = support_count
+            self.metrics["motion/num_contact_keep_intents"] = support_count
             self.metrics["motion/active_limb_error_pos"] = (limb_pos_error * active_mask).sum(dim=1) / active_den
             self.metrics["motion/active_limb_error_rot"] = (limb_rot_error * active_mask).sum(dim=1) / active_den
 
@@ -3068,8 +3073,8 @@ class MotionCommand(CommandTermBase):
             support_contact = self.contact_part_mask[:, : len(A2A_LIMB_REF_BODY_NAMES)].to(support_slip.dtype)
             support_slip = support_slip * support_contact * support_mask
             support_den = support_count.clamp(min=1.0)
-            self.metrics["motion/support_slip_mean"] = support_slip.sum(dim=1) / support_den
-            self.metrics["motion/support_slip_max"] = support_slip.max(dim=1)[0]
+            self.metrics["motion/keep_intent_body_origin_speed_proxy_mean"] = support_slip.sum(dim=1) / support_den
+            self.metrics["motion/keep_intent_body_origin_speed_proxy_max"] = support_slip.max(dim=1)[0]
 
         if hasattr(self, "adaptive_timesteps_sampler"):
             self.adaptive_timesteps_sampler.get_stats()

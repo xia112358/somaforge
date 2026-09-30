@@ -170,6 +170,8 @@ def bake_retargeted_contact_forces_for_motion(
         ),
     )
     output = dict(motion)
+    from somaforge_core.support_evidence import reference_only_support
+    reference_only_support(output, reason='retargeted force reference is a target, not measured execution support')
     if policy_ref_compat == "none":
         output.update(field.to_npz_arrays())
     elif policy_ref_compat == "wbt_contact_force_8part":

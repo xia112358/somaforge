@@ -26,7 +26,7 @@ from generator.unified_interaction import InteractionQInfiller
 使用说明和边界见 [minibatch-training](../contact_solver/docs/minibatch-training.md)。
 
 大批量持续池（`train_full1000_position --parallel-rollouts --gpu-pipeline`）采用验收后提交：
-A → B′ 通过现有任务、几何、支持及已启用的进度验证，才将 B′ 放回输入并推进目标。
+A → B′ 通过现有任务、几何、端点接触保持及已启用的进度验证，才将 B′ 放回输入并推进目标。
 失败输出仍参与本轮 loss/backprop，但下一轮保留本次预测前的完整 A 和目标 B；
 即使 A 来自之前成功的递推，窗口内也原样保留。
 严重穿透、无有效接触等失败同样回退，不把失败 B′ 用于 B′ → B 训练。
@@ -47,16 +47,22 @@ terminal_resets 与 periodic_resamples 分开计数，同时到期只记一次�
 接触真值、loss、验收阈值未改；非并行短 rollout 与独立 eval 保留原有终止规则。
 此修改不解除 `--constraint-training` 暂只支持 reference batch 的限制。
 
-预测支持保持损失：`predicted_support_weight` 默认1，设为0可关闭。
+预测接触保持损失：`predicted_contact_retention_weight` 默认1，设为0可关闭。
 使用模型原始 `prediction.role == 2`（停止梯度），不使用教师替换后的角色。
 只为输入姿态具有实际Newton激活、已分配、主水平面接触的末端建立锚点。
 对每个声明保持的末端，跟踪同一材料点的FK位移，末端内取最小值允许接触区域转换；
 首端点见证始终保留，末端点见证可补充转动支点，因此输出丢失接触不会关闭损失。
-每个启用末端采用 `relu((displacement - support_tolerance_m)/support_tolerance_m)^2`，
+每个启用末端采用 `relu((displacement - endpoint_contact_tolerance_m)/endpoint_contact_tolerance_m)^2`，
 末端间取均值。默认容差仍为6 cm，不改变实际接触判定或硬验收。
-无初始接触的保持声明计入 `predicted_support_without_initial_contact`，不虚构锚点。
+无初始接触的保持声明计入 `predicted_keep_without_initial_contact`，不虚构锚点。
 梯度经过预测姿态的FK，不经过角色选择或输入锚点；当前共享编码器仍会接收执行梯度。
-日志保存原始/加权支持损失、启用末端数、缺失初始接触数及最大位移。
+日志保存原始/加权接触保持损失、启用末端数、缺失初始接触数及最大位移。
+角色2是保持接触的意图，不是实际承重标签。独立的原始执行观测通过
+`support_supervision.py` 按 motion、recording、资产、runtime 和时序绑定加载；
+缺失观测保留 known mask 与 NaN，递推输出不得继承示范载荷。
 
 
-递推支持保持硬验证（endpoint_region_motion_v2）：按末端 part 汇总实际 Newton 地面/顶面接触，允许足跟、前掌、形状和 witness 切换。通过 link FK 跟踪首尾实际接触区域中的同一材料点，取末端内最小位移，至少一个保留接触的末端须不超过 6 cm。容差来自训练集 P90=5.512 cm 向上取整，覆盖 1157/1258 个持续接触区间。失败时独立 eval 终止；持续训练池拒绝该候选并保留输入，不增加 loss 项。仅验证端点位移，不证明路径全程持续接触、无滑移或承重。统计见 `tmp/support_tolerance_training_20260926/endpoint_statistics.json`。
+递推端点接触保持硬验证（endpoint_region_motion_v2）：按末端 part 和同一环境表面汇总实际 Newton 地面/顶面接触，允许足跟、前掌、形状和 witness 切换。通过 link FK 跟踪首尾实际接触区域中的同一材料点，取末端内最小位移，至少一个保留接触的末端须不超过 6 cm。容差来自训练集 P90=5.512 cm 向上取整，覆盖 1157/1258 个持续接触区间。失败时独立 eval 终止；持续训练池拒绝该候选并保留输入。仅验证端点位移，不证明路径全程持续接触、无滑移或承重。配置为 `require_endpoint_contact_retention` 和 `endpoint_contact_tolerance_m`；旧 static-support 参数及旧判断不能作为新证据。统计见 `tmp/support_tolerance_training_20260926/endpoint_statistics.json`。
+
+全链路接触、承重、滑移与保持意图的统一口径见
+[支撑证据](../../docs/support-semantics.md)。网络结构和示范数据不会因附加观测自动改变。

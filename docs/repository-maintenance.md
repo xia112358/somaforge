@@ -114,3 +114,17 @@ Predictor, its compatibility package and corrected1000 snapshots are frozen for
 this retirement pass. File hashes are checked against the pre-change inventory
 under `tmp/retire_nonpredictor_20260928/`. This scope does not remove shared
 geometry/storage helpers required by the active Contact Editor.
+
+### Unified web visualization (2026-09-28)
+
+The supported browser entry is `motion-edit contact-editor`. `--motion-id` opens
+registered editing/playback; `--review` opens canonical NPZ sequences or JSON pose
+comparison reports in the same Three.js page. See
+[Motion Edit playback documentation](../packages/motion_edit/README.md#unified-playback-and-experiment-review).
+Retargeting no longer embeds a Viser process or exposes `retargeter.visualize` /
+`retargeter.debug`. Simulation Kit rendering remains controlled by AppLauncher.
+Historical contact flags in diagnostic reports are explicitly unverified, and
+read-only NPZ playback does not infer contact from distances or force thresholds.
+Seven old viewer/configuration files and three superseded web bundles were moved
+to the system trash after the user confirmed the itemized list. No standalone
+Viser fallback entrypoint remains in maintained source. Predictor code remains frozen.

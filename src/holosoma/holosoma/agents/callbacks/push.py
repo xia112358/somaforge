@@ -4,7 +4,7 @@ Periodically pushes the robot at random body locations with configurable
 force magnitude, duration, and interval. Uses IsaacLab's
 set_external_force_and_torque API to apply forces in the physics simulation.
 
-Push events are optionally recorded for visualization in viser by sharing
+Push events are optionally recorded for offline diagnostics by sharing
 buffer/metadata dicts with EvalRecordingCallback.
 """
 

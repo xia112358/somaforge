@@ -28,3 +28,8 @@ Regression tests cover upper/lower gradient signs, zero gradients inside the
 interval, activation-flag independence, per-pair margins, missing-pair guidance,
 and the scalar right-foot distance recorded at recursive step 2 (24.049 mm).
 These are frozen-witness tests, not an end-to-end network recovery experiment.
+
+The shared regional objective and Motion Edit's missing-region proxies also use
+the actual `includemargin` upper bound (`native_activation_upper_gap_v1`). Their
+penetration lower bound remains zero; this does not change the predictor's
+existing shallow-penetration allowance. There is no regional 1 mm target mode.

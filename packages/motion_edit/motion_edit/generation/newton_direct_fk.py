@@ -287,6 +287,8 @@ def canonicalize_motion_with_direct_newton_fk(
         }
 
     generated = _strip_stale_kinematics(source)
+    from somaforge_core.support_evidence import reference_only_support
+    reference_only_support(generated, reason='FK output is a pose trajectory, not a new physical execution')
     generated.update(
         {
             "fps": np.asarray(fps, dtype=np.float32),

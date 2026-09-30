@@ -1,4 +1,4 @@
-"""Endpoint support retention from actual Newton pairs and material-point FK.
+"""Endpoint contact retention from actual Newton pairs and material-point FK.
 
 Static environment only. This certifies neither load bearing nor the path
 between endpoints. Query witnesses at the destination never replace anchors.
@@ -9,7 +9,7 @@ import torch
 def _eligible(rows):
     p = rows.pair
     required = ('type', 'dist', 'includemargin', 'efc_address', 'constraint_rows',
-                'active', 'constraint_allocated', 'eligible', 'upward', 'task_pair')
+                'active', 'constraint_allocated', 'eligible', 'upward', 'task_pair', 'primary_surface')
     if any(k not in p for k in required):
         raise ValueError('Missing Newton support evidence')
     active = ((p['type'].long() & 1) != 0) & (p['dist'] < p['includemargin'])
@@ -34,7 +34,7 @@ def _eligible(rows):
     return selected
 
 
-def predicted_support_loss(fk, before, after, predicted_role, *, tolerance_m=.06):
+def predicted_contact_retention_loss(fk, before, after, predicted_role, *, tolerance_m=.06):
     """Penalize motion of every self-declared persistent endpoint (role 2).
 
     Only actual initial Newton primary-face contacts enable an endpoint. Final
@@ -72,6 +72,10 @@ def predicted_support_loss(fk, before, after, predicted_role, *, tolerance_m=.06
                                       (after,last,pos1.detach(),rot1.detach())):
             p=rows.pair
             selected=selected & enabled[p['sample'],p['part'].clamp(0,5)]
+            if rows is after:
+                start_keys=torch.stack([before.pair[k][first] for k in ('sample','part','primary_surface')],-1)
+                end_keys=torch.stack([p[k] for k in ('sample','part','primary_surface')],-1)
+                selected=selected & (end_keys[:,None,:]==start_keys[None,:,:]).all(-1).any(-1)
             sample,part,link=p['sample'][selected],p['part'][selected],p['body_link1'][selected]
             anchor=rows.points[selected,1].detach()
             if not bool(torch.isfinite(anchor).all()):
@@ -88,14 +92,14 @@ def predicted_support_loss(fk, before, after, predicted_role, *, tolerance_m=.06
     displacement=torch.where(enabled,best.reshape(len(q),6),zero[:,None])
     penalty=((displacement-tolerance_m).relu()/tolerance_m).square()
     loss=(penalty*enabled).sum(-1)/enabled.sum(-1).clamp_min(1)+zero
-    return loss,dict(predicted_support_loss=loss,
-        predicted_support_count=enabled.sum(-1).to(q),
-        predicted_support_without_initial_contact=(declared & ~initial).sum(-1).to(q),
-        predicted_support_max_displacement_m=displacement.amax(-1))
+    return loss,dict(predicted_contact_retention_loss=loss,
+        predicted_keep_intent_count=enabled.sum(-1).to(q),
+        predicted_keep_without_initial_contact=(declared & ~initial).sum(-1).to(q),
+        predicted_keep_max_material_displacement_m=displacement.amax(-1))
 
 
 @torch.no_grad()
-def support_transition(fk, before, after, *, tolerance_m=.06):
+def endpoint_contact_retention(fk, before, after, *, tolerance_m=.06):
     """Hard endpoint-part retention gate; no loss or gradient modification.
 
     Group by endpoint part, ignoring internal shape/witness switches. Track
@@ -115,13 +119,14 @@ def support_transition(fk, before, after, *, tolerance_m=.06):
     first, last = _eligible(before), _eligible(after)
     q = after.q
     if not bool(first.any()):
-        return dict(support_displacement_m=q.new_zeros(len(q)),
-                    support_transition_valid=torch.zeros(len(q), device=q.device, dtype=torch.bool),
-                    support_initial_present=torch.zeros(len(q), device=q.device, dtype=torch.bool))
+        return dict(endpoint_material_displacement_m=q.new_zeros(len(q)),
+                    actual_support_evidence_known=torch.zeros(len(q), device=q.device, dtype=torch.bool),
+                    endpoint_contact_retention_valid=torch.zeros(len(q), device=q.device, dtype=torch.bool),
+                    initial_contact_present=torch.zeros(len(q), device=q.device, dtype=torch.bool))
     names = tuple(before.observed['link_names'])
     pos0, rot0 = fk.link_poses(before.q.detach(), names)
     pos1, rot1 = fk.link_poses(q.detach(), names)
-    batches, parts, distances, ends = [], [], [], []
+    batches, parts, faces, distances, ends = [], [], [], [], []
     for end, rows, selected, pos, rot, other_pos, other_rot in (
             (0, before, first, pos0, rot0, pos1, rot1),
             (1, after, last, pos1, rot1, pos0, rot0)):
@@ -135,14 +140,14 @@ def support_transition(fk, before, after, *, tolerance_m=.06):
         distance = (moved-anchor).norm(dim=-1)
         if not bool(torch.isfinite(distance).all()):
             raise ValueError('Nonfinite support displacement')
-        batches.append(sample); parts.append(part); distances.append(distance)
+        batches.append(sample); parts.append(part); faces.append(p['primary_surface'][selected]); distances.append(distance)
         ends.append(torch.full_like(sample, end))
-    batch, parts, distances, ends = map(torch.cat, (batches, parts, distances, ends))
+    batch, parts, faces, distances, ends = map(torch.cat, (batches, parts, faces, distances, ends))
     best = q.new_full((len(q),), float('inf'))
     initial = torch.zeros(len(q), device=q.device, dtype=torch.bool)
     initial[before.pair['sample'][first]] = True
     if len(batch):
-        keys, inverse = torch.unique(torch.stack((batch, parts), -1), dim=0, return_inverse=True)
+        keys, inverse = torch.unique(torch.stack((batch, parts, faces), -1), dim=0, return_inverse=True)
         motion = q.new_full((len(keys),), float('inf')).scatter_reduce_(0, inverse, distances, reduce='amin')
         begin = torch.zeros(len(keys), device=q.device, dtype=torch.bool)
         finish = begin.clone()
@@ -150,11 +155,12 @@ def support_transition(fk, before, after, *, tolerance_m=.06):
         finish[inverse[ends == 1]] = True
         retained = begin & finish
         best.scatter_reduce_(0, keys[retained,0], motion[retained], reduce='amin')
-    return dict(support_displacement_m=torch.where(torch.isfinite(best), best, torch.zeros_like(best)),
-                support_transition_valid=best <= tolerance_m, support_initial_present=initial)
+    return dict(endpoint_material_displacement_m=torch.where(torch.isfinite(best), best, torch.zeros_like(best)),
+                actual_support_evidence_known=torch.zeros(len(q), device=q.device, dtype=torch.bool),
+                endpoint_contact_retention_valid=best <= tolerance_m, initial_contact_present=initial)
 
 
-def support_transition_http(fk, q0, q1, observed0, observed1, *, tolerance_m=.06):
+def endpoint_contact_retention_http(fk, q0, q1, observed0, observed1, *, tolerance_m=.06):
     """Adapt current HTTP Newton evidence; selection stays in the shared selector."""
     from types import SimpleNamespace
     from somaforge_core.contact_face_selection import select_contact_pairs
@@ -189,4 +195,4 @@ def support_transition_http(fk, q0, q1, observed0, observed1, *, tolerance_m=.06
         normals=tensor([x['normal_w'] for x in pairs],q.dtype).reshape(n,3)
         valid=torch.isfinite(normals).all(-1)&torch.isclose(normals.norm(dim=-1),torch.ones(n,device=device,dtype=q.dtype),atol=1e-4,rtol=0)
         return SimpleNamespace(q=q, pair=p,points=points,normal_valid=valid,world_frame=None,observed={'link_names':names})
-    return support_transition(fk,rows(q0,selected[0]),rows(q1,selected[1]),tolerance_m=tolerance_m)
+    return endpoint_contact_retention(fk,rows(q0,selected[0]),rows(q1,selected[1]),tolerance_m=tolerance_m)

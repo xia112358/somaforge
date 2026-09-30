@@ -10,6 +10,9 @@ import type { EditHandle, Generation, MotionItem, RecentMotion, Session, Vec3 } 
 import { formatTimelineTime, frameToX, getTimelineMetrics, renderTimeline, xToFrame } from './timeline/renderer';
 import { mountAppShell, refreshIcons } from './ui/app-shell';
 import { byId, setupTabs } from './ui/dom';
+import { Comparison } from './review/comparison';
+import { SupportMotionOverlay } from './review/support-motion';
+import { SupportSlipOverlay } from './review/support-slip';
 import './theme.css';
 
 const app = document.querySelector<HTMLDivElement>('#app');
@@ -41,6 +44,12 @@ const grid = new THREE.GridHelper(14, 28, 0x33404c, 0x1d2730); grid.rotation.x =
 let session: Session | null = null;
 let robot: any = null;
 let terrain: THREE.Object3D | null = null;
+const supportSlip = new SupportSlipOverlay(scene,points=>{
+  const sphere=new THREE.Box3().setFromPoints(points).getBoundingSphere(new THREE.Sphere());
+  const direction=camera.position.clone().sub(controls.target).normalize();
+  controls.target.copy(sphere.center);camera.position.copy(sphere.center).addScaledVector(direction,Math.max(.45,sphere.radius*5));
+  controls.update();
+});
 let surfaceGroup = new THREE.Group(); scene.add(surfaceGroup);
 const contactHandleLayer = new ContactHandleLayer(sceneCanvas, camera);
 scene.add(contactHandleLayer.handles, contactHandleLayer.restoreGhosts);
@@ -54,6 +63,16 @@ let resizingTimeline = false;
 let scrubbingTimeline = false;
 let generationPoll: number | null = null;
 let openingMotion = false;
+const comparison = new Comparison(scene, q => { if(session) { session.qpos = [q]; setFrame(0); } });
+const supportMotion = new SupportMotionOverlay(scene, value => setFrame(value), track => {
+  const points = track.map(p => new THREE.Vector3(...p));
+  const center = new THREE.Box3().setFromPoints(points).getCenter(new THREE.Vector3());
+  const direction = camera.position.clone().sub(controls.target).normalize();
+  const displacement = points.at(-1)!.clone().sub(points[0]); displacement.z = 0;
+  controls.target.copy(center);
+  camera.position.copy(center).addScaledVector(direction, displacement.length() < .05 ? .48 : .95);
+  controls.update();
+});
 const partColors = [0x18b6a4, 0x68d391, 0xf06449, 0xffb547, 0x4f8cff, 0xb678e6, 0x31a7d8, 0xe05a9d];
 const partParent: Record<string, string> = {
   LHEE:'left_foot', LTOE:'left_foot', RHEE:'right_foot', RTOE:'right_foot',
@@ -141,13 +160,16 @@ async function loadMotions() {
 async function applySession(next: Session, rebuildScene = false) {
   const selectedId = selectedHandle?.handle_id;
   session = next; selectedHandle = selectedId ? next.edit_handles.find(handle => handle.handle_id === selectedId) || null : null; frame = Math.min(frame, next.qpos.length - 1);
+  if (rebuildScene && next.review?.kind === 'support_motion' && next.review.phases?.length)
+    frame = next.review.phases[0].start;
+  document.body.classList.toggle('review-mode', Boolean(next.review));
   markRecentMotionActive(next.motion_id);
   const motionLabel = next.motion_id;
   byId('motionLabel').textContent = motionLabel;
   byId('viewportMotion').textContent = motionLabel;
   byId<HTMLInputElement>('fpsInput').value = String(next.fps);
   byId('anchorCount').textContent = next.read_only ? 'Playback only' : `${next.edit_handles.length} handles`;
-  byId('editCount').textContent = next.read_only ? 'No contact layer' : `${next.pending_edit_count} edits`;
+  byId('editCount').textContent = next.read_only ? (next.review ? 'Contact unknown' : 'No contact layer') : `${next.pending_edit_count} edits`;
   byId<HTMLButtonElement>('undoBtn').disabled = !next.can_undo;
   byId<HTMLButtonElement>('redoBtn').disabled = !next.can_redo;
   byId<HTMLInputElement>('planPath').value = next.settings.edit_plan_path || '';
@@ -198,7 +220,12 @@ async function rebuild(data: Session) {
     terrain.traverse((obj: any) => { if (obj.isMesh) obj.material = new THREE.MeshStandardMaterial({ color: 0x596570, roughness: .86, metalness: .03 }); });
     scene.add(terrain);
   }
+  comparison.setup(data.review, robot, terrain, data.joint_names);
+  supportMotion.setup(data.review);
+  supportSlip.setup(data.review);
+  applyRobotFrame();
   buildSurfaces(); buildRootPath(); buildContactSamples(); rebuildHandles(); focusScene();
+  if (data.review?.kind === 'support_motion') supportMotion.focusSelected();
   byId('sceneStatus').classList.add('hidden');
 }
 
@@ -304,6 +331,9 @@ function applyRobotFrame() {
   if (!session || !robot) return; const q = session.qpos[frame];
   robot.position.set(q[0],q[1],q[2]); robot.quaternion.set(q[4],q[5],q[6],q[3]);
   session.joint_names.forEach((name,i) => robot.setJointValue?.(name,q[7+i]));
+  comparison.update();
+  supportMotion.update(frame);
+  supportSlip.update(frame);
 }
 
 function setFrame(value: number) {
@@ -389,7 +419,7 @@ const contactDragController = new ContactDragController({
   },
 });
 
-function focusScene(){const box=new THREE.Box3();if(robot)box.expandByObject(robot);if(terrain)box.expandByObject(terrain);if(box.isEmpty())return;const sphere=box.getBoundingSphere(new THREE.Sphere());controls.target.copy(sphere.center);camera.position.copy(sphere.center).add(new THREE.Vector3(sphere.radius*1.8,-sphere.radius*2.4,sphere.radius*1.35));controls.update();}
+function focusScene(){const box=new THREE.Box3();if(robot)box.expandByObject(robot);if(terrain)box.expandByObject(terrain);comparison.bounds(box);if(box.isEmpty())return;const sphere=box.getBoundingSphere(new THREE.Sphere());controls.target.copy(sphere.center);camera.position.copy(sphere.center).add(new THREE.Vector3(sphere.radius*1.8,-sphere.radius*2.4,sphere.radius*1.35));controls.update();}
 function showStatus(text:string,error=false){const el=byId('sceneStatus');el.textContent=text;el.classList.remove('hidden');el.classList.toggle('error',error);setTimeout(()=>el.classList.add('hidden'),3000);}
 function generationSettings(){return {
   edit_plan_path:byId<HTMLInputElement>('planPath').value,
@@ -441,7 +471,7 @@ byId<HTMLInputElement>('frameInput').onchange=e=>setFrame(Number((e.target as HT
 async function runSessionAction(path:string, body?:unknown){try{const next=await api<Session>(path,{method:'POST',body:body===undefined?undefined:JSON.stringify(body)});await applySession(next);return next;}catch(e){showStatus(String(e),true);return null;}}
 byId('undoBtn').onclick=()=>{void runSessionAction('/api/session/undo');};byId('redoBtn').onclick=()=>{void runSessionAction('/api/session/redo');};
 byId('saveBtn').onclick=async()=>{try{await syncOutputSettings();const result=await api<{output_contact_layer:string;plan:{status:string;edit_count:number}|null}>('/api/session/save',{method:'POST'});if(result.plan)byId('planStatus').textContent=`${result.plan.status} · ${result.plan.edit_count} edits`;showStatus(`Saved ${result.output_contact_layer}`);}catch(e){showStatus(String(e),true);}};
-byId('focusBtn').onclick=focusScene;byId<HTMLInputElement>('terrainToggle').onchange=e=>{if(terrain)terrain.visible=(e.target as HTMLInputElement).checked;surfaceGroup.visible=(e.target as HTMLInputElement).checked;};
+byId('focusBtn').onclick=focusScene;byId<HTMLInputElement>('terrainToggle').onchange=e=>{if(terrain)terrain.visible=(e.target as HTMLInputElement).checked;surfaceGroup.visible=(e.target as HTMLInputElement).checked;comparison.terrainVisible((e.target as HTMLInputElement).checked);};
 byId<HTMLInputElement>('surfaceToggle').onchange=e=>surfaceGroup.visible=(e.target as HTMLInputElement).checked;
 byId<HTMLInputElement>('handleToggle').onchange=e=>contactHandleLayer.setVisible((e.target as HTMLInputElement).checked);byId<HTMLInputElement>('contactSampleToggle').onchange=e=>contactSampleGroup.visible=(e.target as HTMLInputElement).checked;byId<HTMLInputElement>('handleSize').oninput=()=>rebuildHandles();byId<HTMLInputElement>('forceScale').oninput=()=>updateContactSamples();
 byId<HTMLInputElement>('rootPathToggle').onchange=e=>{if(rootPath)rootPath.visible=(e.target as HTMLInputElement).checked;};byId<HTMLInputElement>('guideToggle').onchange=e=>guideGroup.visible=(e.target as HTMLInputElement).checked;
@@ -484,4 +514,5 @@ function updateSelectedHandleProjection(){
   contactHandleLayer.updateProjection(selectedHandle);
 }
 function animate(now:number){requestAnimationFrame(animate);const dt=(now-lastTick)/1000;lastTick=now;if(playing&&session){frameAccumulator+=dt*Number(byId<HTMLInputElement>('fpsInput').value);if(frameAccumulator>=1){const step=Math.floor(frameAccumulator);frameAccumulator-=step;setFrame((frame+step)%session.qpos.length);}}controls.update();updateSelectedHandleProjection();renderer.render(scene,camera);}requestAnimationFrame(animate);
+byId('reviewOpen').onclick=async()=>{try{const next=await api<Session>('/api/review/load',{method:'POST',body:JSON.stringify({path:byId<HTMLInputElement>('reviewPath').value,terrain:byId<HTMLInputElement>('reviewTerrain').value||null})});playing=false;frame=0;await applySession(next,true);}catch(e){showStatus(String(e),true);}};
 loadMotions().catch(e=>showStatus(String(e),true));

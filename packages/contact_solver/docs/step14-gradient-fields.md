@@ -85,10 +85,11 @@ python -m contact_solver.research.step14_gradient_field \
 可视化：
 
 ```bash
-python -m contact_solver.research.step14_field_viewer \
-  --report tmp/step14_gradient_fields_20260925_report/viewer.json \
-  --port 8223 --initial metric_sum_sdf_sum_final
+./motion-edit contact-editor \
+  --review tmp/step14_gradient_fields_20260925_report/viewer.json \
+  --port 8094
 ```
 
 左侧原姿态、右侧试验姿态，绿色箭头为同一足部材料点的真实位移；显示倍率单独标明。
+在同一 Motion Edit 页面按方法和保存迭代选择；旧接触标记只作为历史诊断。
 可选择此前 QP 参照。它仅供比较，没有用于构造本轮损失、梯度或监督目标。

@@ -56,7 +56,17 @@ def take(values: dict[str, torch.Tensor], indices: torch.Tensor) -> dict[str, to
 def prepare(model: ConditionedHeightmapPosePredictor, cfg, device: torch.device):
     payload = torch.load(cfg.data_cache, map_location="cpu", weights_only=False)
     data, samples = payload["data"], payload["samples"]
+    from generator.support_path_acceptance import validate_support_paths
+    support_path_acceptance = validate_support_paths(cfg.manifest, samples)
     with np.load(cfg.q_cache, allow_pickle=False) as cache:
+        if len(cache['target_q']) != len(samples):
+            raise ValueError('Pose cache/sample count mismatch')
+        for key, sample_key in (('motion_ids', 'motion_id'),
+                                ('current_frames', 'current_frame'),
+                                ('target_frames', 'target_frame')):
+            if key not in cache or not np.array_equal(
+                    cache[key], [s[sample_key] for s in samples]):
+                raise ValueError(f'Pose cache/sample boundary mismatch: {key}')
         q = np.asarray(cache["target_q"][:, (0, -1)], dtype=np.float32)
     center, rotation, half, ground = box_obbs(data)
     heightmap = render_root_yaw_box_heightmaps(
@@ -104,6 +114,8 @@ def prepare(model: ConditionedHeightmapPosePredictor, cfg, device: torch.device)
         "current_anchor": tensor(data["current_contacts"]),
         "current_surface": tensor(current_surface, dtype=torch.long),
     }
+    from generator.support_supervision import prepare_support_supervision
+    support_supervision = prepare_support_supervision(cfg.manifest, target, samples)
     from types import SimpleNamespace
     from generator.newton_query_supervision import prepare_query_metadata
     prepare_query_metadata(
@@ -141,6 +153,8 @@ def prepare(model: ConditionedHeightmapPosePredictor, cfg, device: torch.device)
     summary = {
         "schema": "conditioned_pose_stage_a_dataset_v1",
         "samples": len(samples),
+        "support_path_acceptance": support_path_acceptance,
+        "support_supervision": support_supervision,
         "splits": {key: len(value) for key, value in split.items()},
         "condition_contract": "decoder consumes one explicit topology+surface plan",
         "pose_input": "current q + actual contact/anchor + heightmap-derived surface index + 2cm root-yaw heightmap + explicit plan",
@@ -155,4 +169,3 @@ def prepare(model: ConditionedHeightmapPosePredictor, cfg, device: torch.device)
         "projector_required_for_hard_guarantee": True,
     }
     return inputs, target, scene, split, samples, summary
-

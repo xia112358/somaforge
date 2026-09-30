@@ -4,13 +4,13 @@ Events supply contact intent. Only native activation/allocation and full-body
 separation certify the result; absent candidates are failures, never zero error.
 """
 from dataclasses import dataclass
+import copy
 import numpy as np
 import torch
-from contact_solver.newton_witness_loss import (
-    query_local_distances, full_body_violation, selected_contact_activation_deficit,
-)
+from .regional_contact_refinement import EventContactRegions, regional_terms
 
 PARTS = ('left_foot', 'right_foot', 'left_hand', 'right_hand', 'left_knee', 'right_knee')
+REFINEMENT_OBJECTIVE_SCHEMA = 'source_relative_contact_motion_preservation_v7'
 ENDPOINTS = ('left_ankle_roll_link', 'right_ankle_roll_link',
              'left_sphere_hand_link', 'right_sphere_hand_link', 'left_knee_link', 'right_knee_link')
 
@@ -119,10 +119,61 @@ def event_contact_intent(events, frame_count):
     return wanted, face
 
 
+def event_contact_roles(events, frame_count):
+    """Explicit whole-endpoint release intervals, with an exclusive end.
+
+    Legacy touchdown release_frame can span required support on another
+    surface and does not certify a whole-endpoint release interval.
+    """
+    wanted, face = event_contact_intent(events, frame_count)
+    release = np.zeros_like(wanted)
+    for event in events:
+        for interval in event.get('release_events', []):
+            start, stop = int(interval['start_frame']), int(interval['end_frame_exclusive'])
+            part = int(interval['part_index'])
+            if interval.get('scope') != 'whole_endpoint':
+                raise ValueError('Release event must explicitly name whole_endpoint scope')
+            if not 0 <= start < stop <= frame_count or not 0 <= part < len(PARTS):
+                raise ValueError('Invalid event release interval')
+            release[start:stop, part] = True
+    if np.any(wanted & release):
+        raise ValueError('Required contact and release events conflict')
+    return wanted, face, release
+
+
+def joint_continuity_terms(joints, reference):
+    """Match aligned source increments; constant joint offsets are allowed."""
+    if joints.shape != reference.shape or len(joints) < 3:
+        raise ValueError('Continuity reference must align with at least three motion frames')
+    delta = joints-reference
+    velocity = ((delta[1:]-delta[:-1])/.01).square().mean()
+    acceleration = ((delta[2:]-2*delta[1:-1]+delta[:-2])/.01).square().mean()
+    return velocity, acceleration
+
+
+def marker_acceleration_loss(points, scale):
+    """Penalize output acceleration, without copying a candidate's jumps."""
+    return ((points[2:]-2*points[1:-1]+points[:-2])/scale).square().mean()
+
+
+def missing_material_guidance(fk, q, local, target, valid, missing, margin):
+    """Authored material targets guide recovery, never certify contact."""
+    if bool((missing & ~valid).any()):
+        raise ValueError('Missing contact has no event material target')
+    if bool((margin <= 0).any()):
+        raise ValueError('Material guidance requires actual positive configured margin')
+    position, rotation = fk.link_poses(q, ENDPOINTS)
+    point = position+torch.einsum('bpij,bpj->bpi', rotation, local)
+    cost = ((point-target)/(.25*margin[:, None, None])).square().sum(-1)
+    cost = torch.where(cost <= 1, cost, 2*cost.clamp_min(1).sqrt()-1)
+    cost = torch.where(missing, cost, 0)
+    return cost.mean(-1)+cost.amax(-1)
+
+
 @dataclass(frozen=True)
 class RefinementConfig:
-    steps: int = 240
-    learning_rate: float = 2.e-4
+    steps: int = 1200
+    learning_rate: float = 2.e-5
     uniform_batch: int = 64
     priority_batch: int = 32
     audit_every: int = 32
@@ -130,17 +181,28 @@ class RefinementConfig:
 
 
 def refine_trajectory(q_initial, fk, events, query, fingerprint, *,
-                      config=RefinementConfig(), progress=None, approach_tasks=None):
+                      config=RefinementConfig(), progress=None, approach_tasks=None,
+                      continuity_reference=None, event_contract=None, support_reference=None, phase_motion_loss=None):
     """Optimize all frames, preserving reference-relative support and smoothness.
 
-    q_initial uses the canonical FK joint order. query must be a dedicated
-    initialized native scene; a fingerprint mismatch fails closed.
+    q_initial uses the canonical FK joint order. query(q.detach()) must return
+    a complete newton_device_witness_batch_v1 from a dedicated initialized
+    native scene, plus provenance. No reduced HTTP-witness fallback is used;
+    a fingerprint mismatch fails closed.
     """
     reference = q_initial.detach().clone()
+    temporal = reference if continuity_reference is None else continuity_reference.detach().to(reference)
+    if temporal.shape != reference.shape or not bool(torch.isfinite(temporal).all()):
+        raise ValueError('Invalid aligned continuity reference')
+    geometry = EventContactRegions(copy.deepcopy(fk).cpu()).to(reference)
+    if approach_tasks is None:
+        raise ValueError("Unified regional refinement requires event-bound surface tasks")
     n = len(reference)
-    wanted_np, face_np = event_contact_intent(events, n)
+    wanted_np, face_np, release_np = event_contact_roles(events, n)
     wanted = torch.as_tensor(wanted_np, device=reference.device)
     faces = torch.as_tensor(face_np, device=reference.device)
+    release = torch.as_tensor(release_np, device=reference.device)
+    tolerated = torch.zeros_like(wanted)
     lo, hi = fk.joint_lower, fk.joint_upper
     mid, rad = (lo + hi) / 2, (hi - lo) / 2
     initial = reference.clone()
@@ -148,7 +210,7 @@ def refine_trajectory(q_initial, fk, events, query, fingerprint, *,
     state = torch.nn.Parameter(initial)
     optimizer = torch.optim.Adam([state], lr=config.learning_rate)
     scale = config.distance_scale_m
-    if scale <= 0 or config.steps < 1:
+    if scale <= 0 or config.steps < 0:
         raise ValueError('Invalid refinement configuration')
     offsets = reference.new_tensor([[0, 0, 0], [.1, 0, 0], [0, .1, 0], [0, 0, .1]])
 
@@ -157,46 +219,146 @@ def refine_trajectory(q_initial, fk, events, query, fingerprint, *,
         return p[..., None, :] + torch.einsum('...ij,kj->...ki', r, offsets)
 
     reference_markers = markers(reference).detach()
-    if approach_tasks is not None:
-        approach_local, approach_target, approach_valid = [torch.as_tensor(x,device=reference.device) for x in approach_tasks[:3]]
-        approach_domains=approach_tasks[3]
-        approach_local=approach_local.to(reference);approach_target=approach_target.to(reference)
+    approach_local = torch.as_tensor(approach_tasks[0], device=reference.device, dtype=reference.dtype)
+    approach_target = torch.as_tensor(approach_tasks[1], device=reference.device, dtype=reference.dtype)
+    approach_valid = torch.as_tensor(approach_tasks[2], device=reference.device, dtype=torch.bool)
+    approach_domains = approach_tasks[3]
     persistent = wanted[1:] & wanted[:-1] & (faces[1:] == faces[:-1])
+    if support_reference is not None:
+        from .source_support import support_residuals, support_statistics
+        edit_rotations, support_normals = [torch.as_tensor(x, device=reference.device, dtype=reference.dtype)
+                                           for x in support_reference]
+        source_positions, source_rotations = [x.detach() for x in fk.link_poses(temporal, ENDPOINTS)]
+        persistent = persistent & approach_valid[1:] & approach_valid[:-1]
+
+    def source_support(q):
+        positions, rotations = fk.link_poses(q, ENDPOINTS)
+        return support_residuals(positions, rotations, source_positions, source_rotations,
+                                 approach_local, edit_rotations, support_normals, persistent)
+
     severity = np.zeros(n)
     history = []
+    best_support_candidate = None
+    best_support_rank = None
 
     def pose():
         return torch.cat((state[:, :3], torch.nn.functional.normalize(state[:, 3:7], dim=-1),
                           mid + rad * torch.tanh(state[:, 7:])), -1)
 
     def residual(q, indices):
-        rows, native = query_local_distances(fk, q, query=query)
-        if native.get('provenance', {}).get('model_fingerprint') != fingerprint:
+        observed = query(q.detach())
+        if observed.get('provenance', {}).get('model_fingerprint') != fingerprint:
             raise ValueError('Refinement query scene fingerprint mismatch')
-        violation = full_body_violation(fk, q, native['full_robot_separation'])
-        activation, missing, realized = selected_contact_activation_deficit(
-            q, rows, wanted[indices], faces[indices])
-        return violation, activation, missing, wanted[indices] & ~realized, rows
+        domains = [approach_domains[int(i)] for i in indices]
+        intent = wanted[indices] & ~tolerated[indices]
+        value, depth, missing, off, metrics = regional_terms(
+            fk, geometry, q, observed, torch.zeros_like(intent) if config.steps == 0 else intent,
+            faces[indices], domains, release[indices] & ~tolerated[indices])
+        if event_contract is not None:
+            metrics['support_observed'] = observed
+            metrics['event_mask'] = observed['contact_part_mask']
+            metrics['event_surface'] = observed['contact_surface']
+        if config.steps == 0:
+            missing = wanted[indices] & ~metrics['matched_candidate_exists']
+            off = wanted[indices] & ~metrics['matched_contact_realized']
+            guidance = torch.zeros_like(value)
+        else:
+            guidance = missing_material_guidance(fk, q, approach_local[indices], approach_target[indices],
+                approach_valid[indices], missing, observed['configured_margin'])
+        metrics['missing_material_guidance'] = guidance
+        return value+guidance, depth, missing, off, metrics
 
     @torch.no_grad()
     def audit(q, step):
-        depths, deficits, absent, off = [], [], [], []
+        nonlocal best_support_candidate, best_support_rank
+        # Preserve raw diagnostics even when event checks tolerate bounded holes.
+        tolerated.zero_()
+        depths, deficits, absent, off, released = [], [], [], [], []
+        event_mask, event_surface = [], []
+        material_samples = []
+        absolute_steps = np.full((n,6), np.nan)
+        region_distribution = {key:np.full((n,6), np.nan) for key in
+                               ('minimum','pivot','lower_quartile','median','upper_quartile','maximum','count')}
         for start in range(0, n, 128):
             ids = np.arange(start, min(n, start + 128))
-            v, a, m, o, _ = residual(q[ids], ids)
-            depths.extend(v.cpu().tolist()); deficits.extend(a.amax(-1).cpu().tolist())
+            value, v, m, o, metrics = residual(q[ids], ids)
+            depths.extend(v.cpu().tolist()); deficits.extend(value.cpu().tolist())
             absent.extend(m.cpu().numpy()); off.extend(o.cpu().numpy())
-        severity[:] = np.array(depths) / scale + np.array(deficits) + np.array(off).sum(-1)
-        record = dict(step=step, max_penetration_mm=max(depths)*1000,
+            released.extend(metrics['release_violations'].cpu().numpy())
+            if event_contract is not None:
+                from .source_support import native_material_motion, native_material_samples
+                samples = native_material_samples(fk, q, metrics['support_observed'], ids,
+                    wanted_surfaces=phase_motion_loss.surfaces if phase_motion_loss is not None else None)
+                material_samples.append(samples)
+                distribution = native_material_motion(fk, q, metrics['support_observed'], ids, samples)
+                for key,value in distribution.items(): region_distribution[key][ids] = value
+                absolute_steps[ids] = distribution['pivot']
+                event_mask.extend(metrics['event_mask'].cpu().numpy())
+                event_surface.extend(metrics['event_surface'].cpu().numpy())
+        severity[:] = np.array(depths) / scale + np.array(deficits) + np.array(off).sum(-1) + np.array(released).sum(-1)
+        jv, ja = joint_continuity_terms(q[:, 7:], temporal[:, 7:])
+        record = dict(step=step, objective_schema=('action_contact_recovery_v1' if event_contract is not None
+                                                 else 'event_material_recovery_output_smoothness_v1'),
+                      joint_velocity_residual=float(jv), joint_acceleration_residual=float(ja),
+                      max_joint_step_deg=float(torch.rad2deg(torch.diff(q[:, 7:], dim=0)).abs().max()),
+                      release_violations=int(np.sum(released)), release_part_frames=np.argwhere(released).tolist(),
+                      unified_loss_mean=float(np.mean(deficits)), unified_loss_max=float(np.max(deficits)),
+                      max_penetration_mm=max(depths)*1000,
                       penetrating_frames=int(np.count_nonzero(depths)),
                       missing_candidates=int(np.sum(absent)), missing_contacts=int(np.sum(off)),
                       missing_part_frames=np.argwhere(off).tolist())
-        record['passed'] = not (record['penetrating_frames'] or record['missing_candidates'] or record['missing_contacts'])
+        if support_reference is not None:
+            record['source_support'] = support_statistics(*source_support(q), persistent)
+        if phase_motion_loss is not None:
+            record['previous_material_phase_paths_m'] = phase_motion_loss.paths(q).cpu().tolist()
+            if material_samples:
+                phase_motion_loss.refresh(material_samples)
+            record['optimization_material_phase_paths_m'] = phase_motion_loss.paths(q).cpu().tolist()
+            record['material_phase_loss'] = float(phase_motion_loss(q))
+        record['passed'] = not (record['penetrating_frames'] or record['missing_candidates'] or record['missing_contacts'] or record['release_violations'])
+        record['legacy_frame_passed'] = record['passed']
+        if event_contract is not None:
+            from .event_acceptance import audit_events
+            event_report, holes = audit_events(event_contract, np.asarray(event_mask), np.asarray(event_surface))
+            tolerated.copy_(torch.as_tensor(holes, device=reference.device))
+            from .source_support import audit_phase_support
+            record['phase_support'] = audit_phase_support(event_contract, absolute_steps,
+                np.asarray(event_mask), np.asarray(event_surface), distribution=region_distribution,
+                budgets_m=(phase_motion_loss.source_paths()+phase_motion_loss.tolerance_m).detach().cpu().tolist()
+                    if phase_motion_loss is not None else None)
+            if phase_motion_loss is not None:
+                record['phase_support']['source_calibration']=phase_motion_loss.calibration
+                record['phase_support']['budget_semantics']='original motion plus added geometric-motion allowance; not a static-support requirement'
+                record['phase_support']['original_material_paths_m']=phase_motion_loss.source_paths().cpu().tolist()
+            if phase_motion_loss is not None:
+                discrepancies = [abs(p['material_tangent_path_m']-value)
+                    for p,value in zip(record['phase_support']['phases'], record['optimization_material_phase_paths_m'])
+                    if p['measurement_complete']]
+                record['material_metric_max_error_m'] = max(discrepancies, default=0.)
+                if record['material_metric_max_error_m'] > 1.e-5:
+                    raise ValueError('Optimization and audit material-motion metrics disagree')
+            record['event_acceptance'] = event_report
+            record['contact_events_passed'] = event_report['passed']
+            record['geometry_passed'] = record['penetrating_frames'] == 0
+            record['passed'] = (record['contact_events_passed'] and record['geometry_passed']
+                                and (record['phase_support']['passed'] if phase_motion_loss is not None else True))
+            record['trajectory_acceptance'] = 'events_region_motion_geometry_only_force_bearing_support_unknown'
+        if support_reference is not None and event_contract is not None:
+            rank = (record['event_acceptance']['failed_checks'],
+                    sum(not p['passed'] for p in record['phase_support']['phases']),
+                    record['max_penetration_mm'],
+                    record['source_support']['accumulated_drift_max_mm'])
+            if best_support_rank is None or rank < best_support_rank:
+                best_support_rank = rank
+                best_support_candidate = (q.detach().clone(), step)
         history.append(record)
         if progress: progress(record)
         return record['passed']
 
-    if audit(pose(), 0):
+    if config.steps == 0:
+        audit(reference, 0)
+        return reference, history
+    if audit(pose(), 0) and continuity_reference is None:
         return pose().detach(), history
     for step in range(config.steps):
         optimizer.zero_grad()
@@ -204,51 +366,36 @@ def refine_trajectory(q_initial, fk, events, query, fingerprint, *,
         uniform = (np.arange(config.uniform_batch) + step*config.uniform_batch) % n
         priority = np.argsort(-severity)[:config.priority_batch]
         ids = np.unique(np.r_[uniform, priority[severity[priority] > 0]])
-        v, a, missing, off, rows = residual(q[ids], ids)
-        approach_loss = q.sum()*0
-        if missing.any():
-            if approach_tasks is None or (missing & ~approach_valid[ids]).any():
-                raise ValueError('A required contact has no native candidate or demonstrated approach task')
-            p,r=fk.link_poses(q[ids],ENDPOINTS)
-            points=p+torch.einsum('tpij,tpj->tpi',r,approach_local[ids])
-            errors=[]
-            for sample,part in missing.nonzero().cpu().tolist():
-                frame=int(ids[sample]);geometry=approach_domains[frame][part]
-                candidates=[pair for pair,_ in rows[sample] if int(pair['part'])==part]
-                if not candidates:
-                    errors.append(((points[sample,part]-approach_target[frame,part])/scale).square().mean())
-                    continue
-                # A side witness is not promoted to a top contact. Its current
-                # material point instead supplies a fresh tangent derivative
-                # toward the intended face, followed by a new native query.
-                normal=np.asarray(geometry['normal']);goal_reference=approach_target[frame,part].detach().cpu().numpy()
-                goals=[]
-                for pair in candidates:
-                    point=np.asarray(pair['position_w'])
-                    desired=point+normal*np.dot(goal_reference-point,normal)
-                    goal=interior_approach_goal(desired,geometry)
-                    goals.append((float(np.linalg.norm(goal-point)),pair,goal))
-                _,pair,goal=min(goals,key=lambda item:item[0])
-                position,rotation=fk.link_poses(q[frame:frame+1],(pair['body_name'],))
-                position=position[0,0];rotation=rotation[0,0]
-                local=rotation.detach().T@(q.new_tensor(pair['position_w'])-position.detach())
-                moved=position+rotation@local
-                errors.append(((moved-q.new_tensor(goal))/scale).square().mean())
-            approach_loss=torch.stack(errors).mean()
-        severity[ids] = v.detach().cpu().numpy()/scale + a.detach().amax(-1).cpu().numpy() + off.sum(-1).cpu().numpy()
-        normalized = v / scale
-        safety = normalized.square() + normalized
-        correction = markers(q) - reference_markers
+        interval, v, missing, off, metrics = residual(q[ids], ids)
+        severity[ids] = interval.detach().cpu().numpy() + off.sum(-1).cpu().numpy()
+        output_markers = markers(q)
+        correction = output_markers - reference_markers
         velocity = correction[1:] - correction[:-1]
         support = ((velocity/scale).square().mean((-1, -2))*persistent).sum()/persistent.sum().clamp_min(1)
-        smooth = ((correction[2:] - 2*correction[1:-1] + correction[:-2])/scale).square().mean()
+        if support_reference is not None:
+            extra_step, accumulated = source_support(q)
+            denom = persistent.sum().clamp_min(1)
+            support = (extra_step/scale).square().sum()/denom
+            support = support + .01*(accumulated/scale).square().sum()/denom
+        smooth = marker_acceleration_loss(output_markers, scale)
         joint_delta = q[:, 7:] - reference[:, 7:]
-        joint_smooth = ((joint_delta[2:] - 2*joint_delta[1:-1] + joint_delta[:-2])/.01).square().mean()
+        joint_velocity, joint_smooth = joint_continuity_terms(q[:, 7:], temporal[:, 7:])
         prior = (joint_delta/.1).square().mean() + ((q[:, :3]-reference[:, :3])/.01).square().mean()
-        loss = safety.mean() + safety.amax() + 10*(a.mean()+a.amax()) + approach_loss + .1*support + .05*smooth + .2*joint_smooth + .02*prior
+        loss = interval.mean() + .1*support + .05*smooth + .2*joint_smooth + .02*prior
+        if phase_motion_loss is not None:
+            loss = loss + phase_motion_loss(q)
+        if continuity_reference is not None:
+            loss = loss + .05*joint_velocity
         if not torch.isfinite(loss):
             raise ValueError('Nonfinite native trajectory objective')
         loss.backward(); optimizer.step()
         if (step+1) % config.audit_every == 0 or step+1 == config.steps:
-            if audit(pose(), step+1): break
+            if audit(pose(), step+1) and continuity_reference is None: break
+    if best_support_candidate is not None:
+        selected, selected_step = best_support_candidate
+        if selected_step != history[-1]['step']:
+            audit(selected, selected_step)
+        history[-1]['selected_iteration'] = selected_step
+        history[-1]['completed_iterations'] = config.steps
+        return selected, history
     return pose().detach(), history

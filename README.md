@@ -276,3 +276,11 @@ verify that its motion and terrain IDs resolve through the manifests.
 environment because its NumPy constraint conflicts with the main workspace.
 The supported Conda environments and their responsibilities are listed in
 [`docs/environments.md`](docs/environments.md).
+
+Browser playback, contact editing, and saved experiment comparisons share
+`./motion-edit contact-editor`. Use `--motion-id <registered-id>` for registered
+motions or `--review <canonical.npz|diagnostic.json>` for read-only review;
+`--terrain <terrain.obj>` supplies the scene for an NPZ sequence. See
+[the unified playback guide](packages/motion_edit/README.md#unified-playback-and-experiment-review).
+
+接触保持意图、实际载荷与支撑滑移的全链路约定见 [支撑证据](docs/support-semantics.md)。

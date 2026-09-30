@@ -1588,3 +1588,13 @@ select:focus {
     min-height: 43px;
   }
 }
+
+/* Read-only reviews use the same scene and inspector without edit controls. */
+.review-mode #selection, .review-mode .position-offset, .review-mode .anchor-browser { display: none; }
+#reviewPanel { font-size: 12px; line-height: 1.5; }
+#reviewPanel[hidden] { display: none; }
+#reviewPanel .stack-field { margin: 10px 0; }
+#reviewPanel select, #reviewPanel input[type=range] { width: 100%; }
+#reviewPanel select { background: #151e27; color: #dce7ed; border: 1px solid #354450; border-radius: 5px; padding: 7px; }
+#reviewPanel pre { font: inherit; overflow-wrap: anywhere; }
+#reviewPath, #reviewTerrain { width: 100%; margin-top: 6px; }

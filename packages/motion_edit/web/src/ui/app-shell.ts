@@ -46,6 +46,7 @@ const viewport = () => `
 const contactPanel = () => `
   <div class="tab-page active" data-page="contact">
     <div class="page-heading"><strong>Contacts</strong><div class="heading-stats"><span id="anchorCount">0 handles</span><span id="editCount">0 edits</span></div></div>
+    <section id="reviewPanel" hidden></section>
     <div id="selection" class="selection empty">None</div>
     <div class="position-offset disabled" id="positionOffset">
       <div class="panel-title">Position offset</div>
@@ -84,7 +85,7 @@ const inspector = () => `
   <aside class="inspector">
     <div class="inspector-tabs"><button data-tab="contact" class="active">Contact</button><button data-tab="display">Display</button><button data-tab="output">Output</button></div>
     <div class="inspector-pages">${contactPanel()}${displayPanel()}${outputPanel()}</div>
-    <section class="recent-motion-dock" aria-label="Motions opened this session"><div class="recent-motion-head"><span>This session</span><small id="recentMotionCount">0</small></div><div id="recentMotionList" class="recent-motion-list"></div></section>
+    <section class="recent-motion-dock" aria-label="Motions opened this session"><div class="recent-motion-head"><span>This session</span><small id="recentMotionCount">0</small></div><div id="recentMotionList" class="recent-motion-list"></div><details><summary>打开只读回放／实验报告</summary><input id="reviewPath" placeholder="项目内 NPZ / JSON 路径" /><input id="reviewTerrain" placeholder="地形 OBJ 路径（可选）" /><button id="reviewOpen">打开</button></details></section>
   </aside>`;
 
 const timeline = () => `

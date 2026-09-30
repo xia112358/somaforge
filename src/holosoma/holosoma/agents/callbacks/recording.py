@@ -133,6 +133,10 @@ class EvalRecordingCallback(RLEvalCallback):
 
                 model = getattr(NewtonManager, "_model", None)
                 if model is not None:
+                    from somaforge_core.newton_runtime_compat import runtime_provenance
+                    from scripts.serve_newton_contact_queries import inspect_model, native_binding
+                    self._metadata['newton_runtime'] = runtime_provenance()
+                    self._metadata['newton_scene_binding'] = native_binding(model,inspect_model(model))
                     self._metadata["newton_body_labels"] = [str(x) for x in getattr(model, "body_label", [])]
                     self._metadata["newton_shape_labels"] = [str(x) for x in getattr(model, "shape_label", [])]
                     shape_body = getattr(model, "shape_body", None)
@@ -141,6 +145,7 @@ class EvalRecordingCallback(RLEvalCallback):
                             shape_body.numpy(), dtype=np.int32
                         ).tolist()
             except Exception as exc:
+                self._metadata['newton_scene_binding_status'] = dict(status='unknown',reason=str(exc))
                 logger.debug(f"EvalRecordingCallback: Newton contact metadata unavailable: {exc}")
 
         # Static robot properties
@@ -198,8 +203,20 @@ class EvalRecordingCallback(RLEvalCallback):
 
         if self.profile == "full":
             from holosoma.simulator.isaaclab3_newton.contact_snapshot import FIELDS
-            for field in FIELDS:
+            from somaforge_core.newton_support import SUPPORT_FIELDS
+            from somaforge_core.support_semantics import SUPPORT_ASSESSMENT_SCHEMA
+            self._metadata['support_assessment_schema']=SUPPORT_ASSESSMENT_SCHEMA
+            self._metadata['support_judgment_contract']=dict(
+                activation='actual constraint type, includemargin and allocation; shared terrain face selection',
+                load='same-solve per-constraint wrench; zero is unloaded, missing is unknown',
+                motion='relative tangent velocity at actual loaded application points; sliding remains load-bearing',
+                role='declared keep intent is separate from observed load and slip',
+                scope='last physics solve per recorded interval; post-integration pose stored separately')
+            for field in (*FIELDS,*SUPPORT_FIELDS):
                 self._buffers[f"solver_contact_{field}"] = []
+            for field in ('contact_activated','load_known','load_bearing','load_state',
+                          'normal_force_n','loaded_motion_known','rms_tangent_speed_m_s','slip_state'):
+                self._buffers[f'observed_support_{field}'] = []
 
         self._metadata["recording_profile"] = self.profile
         self._metadata["record_initial_state_requested"] = bool(self.config.record_initial_state)
@@ -398,8 +415,18 @@ class EvalRecordingCallback(RLEvalCallback):
                     "raw contacts and forces cannot replace activation labels."
                 )
             snapshot = compact_snapshot(sim.get_solver_contact_snapshot())
+            from somaforge_core.newton_support import SUPPORT_FIELDS
+            if not all(name in snapshot for name in SUPPORT_FIELDS):
+                raise RuntimeError('Full support recording requires same-solve per-contact force and velocity')
             for field, value in snapshot.items():
                 self._buffers[f"solver_contact_{field}"].append(np.asarray(value))
+            from somaforge_core.newton_support import observed_support
+            if 'newton_scene_binding' not in self._metadata or 'newton_body_labels' not in self._metadata:
+                raise RuntimeError('Full support recording requires actual Newton scene/body mapping')
+            support = observed_support(snapshot, self._metadata['newton_scene_binding'],
+                                       self._metadata['newton_body_labels'], env.num_envs)
+            for field, value in support.items():
+                self._buffers[f'observed_support_{field}'].append(np.asarray(value[eid]))
             self._metadata["solver_contact_semantics"] = {
                 "schema": "newton_mjwarp_constraint_snapshot_v1",
                 "activation": "CONSTRAINT type and dist < includemargin",
@@ -409,6 +436,16 @@ class EvalRecordingCallback(RLEvalCallback):
                 "force_is_separate": True,
                 "storage": "valid rows retained in original order; padded to observed maximum count, not solver capacity",
             }
+            from somaforge_core.newton_support import SUPPORT_SCHEMA
+            self._metadata['solver_support_semantics'] = dict(
+                schema=SUPPORT_SCHEMA,
+                force='MJWarp contact_force from actual efc rows, world force/torque on contact body1',
+                position='solver contact position: constraint force application point',
+                local_position='application point in actual mapped Newton body frame, from retained MJWarp xpos/xmat at constraint evaluation; never post-integration pose',
+                velocity='resolved qvel through retained cdof/body ancestry at constraint-evaluation geometry; cvel incoming velocity recorded separately',
+                sampling='same last constraint solve, resolved velocity at pre-integration contact geometry; separate from post-integration motion pose',
+                activation='unchanged constraint type, dist < includemargin and allocation',
+                zero_load='unknown support location; never an automatic static-support certificate')
 
         self._record_motion_and_termination(env, eid, _to_np)
 

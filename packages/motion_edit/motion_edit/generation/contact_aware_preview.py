@@ -338,6 +338,8 @@ def merge_pyroki_preview_motion(
     generated["motion_edit_generation_metadata"] = np.asarray(json.dumps(metadata, sort_keys=True))
     generated["source_contact_edit_plan"] = np.asarray(plan.plan_id)
     generated["source_motion_path"] = np.asarray(plan.source_motion_path)
+    from somaforge_core.support_evidence import reference_only_support
+    reference_only_support(generated, reason='IK preview has not been physically executed')
     return generated
 
 

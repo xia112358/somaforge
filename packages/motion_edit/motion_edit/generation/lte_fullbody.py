@@ -872,7 +872,7 @@ def _dense_taskspace_from_keypoints(motion: dict[str, Any], original: dict[str, 
     }
     if "body_quat_w" in motion:
         arrays["body_quat_w"] = np.asarray(motion["body_quat_w"])[:n_frames]
-    for key in ("part_order", "contact_part_mask", "active_part_mask", "support_part_mask", "free_part_mask"):
+    for key in ("part_order", "contact_part_mask", "active_part_mask", "contact_keep_intent_mask", "support_part_mask", "free_part_mask"):
         if key in motion:
             arr = np.asarray(motion[key])
             arrays[key] = arr[:n_frames] if arr.shape[:1] == (n_frames,) or arr.shape[:1] == (raw_body_pos.shape[0],) else arr
@@ -889,102 +889,12 @@ def _copy_contact_force_payload_with_edits(
     edits: list[ContactAnchorEditRecord],
     n_frames: int,
 ) -> None:
-    """Carry Newton force data forward and translate its bound contact points."""
-
-    source_frame_count = (
-        int(np.asarray(motion["contact_force_part_w"]).shape[0])
-        if "contact_force_part_w" in motion and np.asarray(motion["contact_force_part_w"]).ndim > 0
-        else int(n_frames)
-    )
+    """Preserve unmodified source evidence as audit data, never edited loads."""
+    from somaforge_core.support_evidence import reference_only_support
     for key, value in motion.items():
-        if not key.startswith("contact_force_"):
-            continue
-        source = np.asarray(value)
-        arrays[key] = (
-            source[:n_frames].copy()
-            if key != "contact_force_part_order"
-            and source.ndim > 0
-            and source.shape[0] == source_frame_count
-            else source.copy()
-        )
-    if "contact_force_part_order" not in arrays:
-        return
-    try:
-        part_names = [
-            canonical_contact_part_name(name)
-            for name in _motion_strings(arrays, ("contact_force_part_order",))
-        ]
-    except ValueError:
-        return
-    parent_parts = {
-        "left_foot": ("left_heel", "left_toe"),
-        "right_foot": ("right_heel", "right_toe"),
-    }
-    applied: list[dict[str, Any]] = []
-    for edit in edits:
-        edit_parts = parent_parts.get(str(edit.body), (str(edit.body),))
-        delta = _edit_delta(edit)
-        start, end = _edit_interval(
-            edit,
-            type("ContactForceInterval", (), {"start_frame": 0, "end_frame": n_frames})(),
-        )
-        start = max(0, min(n_frames, int(start)))
-        end = max(start, min(n_frames, int(end)))
-        if end <= start or float(np.linalg.norm(delta)) <= 1.0e-12:
-            continue
-        for part_name in edit_parts:
-            try:
-                canonical_name = canonical_contact_part_name(part_name)
-            except ValueError:
-                continue
-            if canonical_name not in part_names:
-                continue
-            part_index = part_names.index(canonical_name)
-            if "contact_force_part_position_w" in arrays:
-                positions = np.asarray(arrays["contact_force_part_position_w"]).copy()
-                segment = positions[start:end, part_index]
-                valid = (
-                    np.asarray(arrays["contact_force_part_position_valid"], dtype=bool)[start:end, part_index]
-                    if "contact_force_part_position_valid" in arrays
-                    else np.ones(segment.shape[0], dtype=bool)
-                )
-                segment[valid] += delta
-                positions[start:end, part_index] = segment
-                arrays["contact_force_part_position_w"] = positions
-            if "contact_force_part_position_history_w" in arrays:
-                history = np.asarray(arrays["contact_force_part_position_history_w"]).copy()
-                segment = history[start:end, :, part_index]
-                valid = (
-                    np.asarray(arrays["contact_force_part_position_valid_history"], dtype=bool)[
-                        start:end, :, part_index
-                    ]
-                    if "contact_force_part_position_valid_history" in arrays
-                    else np.ones(segment.shape[:2], dtype=bool)
-                )
-                segment[valid] += delta
-                history[start:end, :, part_index] = segment
-                arrays["contact_force_part_position_history_w"] = history
-            applied.append(
-                {
-                    "anchor_id": edit.anchor_id,
-                    "part": canonical_name,
-                    "start_frame": start,
-                    "end_frame": end,
-                    "delta_world": delta.tolist(),
-                }
-            )
-    if applied:
-        arrays["contact_force_part_position_source"] = np.asarray(
-            "motion_edit_translated_source_contact_position"
-        )
-        arrays["motion_edit_contact_position_edits_json"] = _json_npz_value(applied)
-        if "contact_force_provenance_json" in arrays:
-            try:
-                provenance = json.loads(_decode_npz_string(arrays["contact_force_provenance_json"]))
-            except (json.JSONDecodeError, TypeError, ValueError):
-                provenance = {}
-            provenance["motion_edit_contact_position_translation"] = applied
-            arrays["contact_force_provenance_json"] = np.asarray(json.dumps(provenance, sort_keys=True))
+        if key.startswith(('contact_force_', 'solver_contact_', 'observed_support_')):
+            arrays[key] = np.asarray(value).copy()
+    reference_only_support(arrays, reason='edited task-space trajectory has not been physically executed')
 
 
 def _batch_contact_laplacian_proxy_motion(

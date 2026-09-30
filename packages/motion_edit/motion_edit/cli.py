@@ -570,11 +570,15 @@ def _cmd_contact_editor(args: argparse.Namespace) -> None:
     from .web import run_contact_editor
 
     ensure_data_dirs()
+    if getattr(args, "review", None) and (args.motion_id or args.motion_asset_id or args.motion):
+        raise ValueError("--review and motion selection are mutually exclusive")
     motion_id = args.motion_id or args.motion_asset_id
     if args.motion and not motion_id:
         raise ValueError("direct motion paths are no longer accepted by contact-editor; register the Motion first")
     run_contact_editor(
         motion_id=motion_id,
+        review_path=getattr(args, "review", None),
+        review_terrain=getattr(args, "terrain", None),
         host=args.host,
         port=args.port,
         open_browser=not args.no_browser,
@@ -1482,6 +1486,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
     p = sub.add_parser("contact-editor", help="launch the main interactive contact-anchor editor")
+    p.add_argument("--review", help="read-only canonical NPZ or pose-report JSON in the same UI")
+    p.add_argument("--terrain", help="terrain OBJ for read-only review")
     p.add_argument("motion", nargs="?", default=None, help=argparse.SUPPRESS)
     p.add_argument("--motion-id", default=None)
     p.add_argument("--motion-asset-id", default=None, help=argparse.SUPPRESS)

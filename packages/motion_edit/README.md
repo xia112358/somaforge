@@ -622,3 +622,39 @@ See also:
 
 - `docs/contact_laplacian_algorithms.md` for the contact-Laplacian geometry
   backend used inside `generate-ref`.
+
+## Unified playback and experiment review
+
+All maintained G1 motion playback uses the same `contact-editor` Three.js page,
+server, camera, and transport controls. Registered source/edited motions continue
+using `--motion-id`; read-only results and research reports use:
+
+```bash
+./motion-edit contact-editor --review path/to/motion.npz --terrain path/to/terrain.obj
+./motion-edit contact-editor --review path/to/diagnostic.json
+```
+
+The page also accepts these paths under “打开只读回放／实验报告”. No additional
+Viser server, iframe, browser window, or polling bridge is started. Registered
+motions remain available in the session list. Simulation rendering is separate:
+train/eval/replay/run_sim continue using AppLauncher `--visualizer kit`.
+
+Read-only NPZ requires the canonical `robot_asset_json`, complete `joint_names`,
+and `[T, 7 + J]` root-xyz / quaternion-wxyz / joint-angle data. It never fabricates
+contact labels from geometry or contact forces. Unloaded contact evidence is
+explicitly unknown. Optional terrain is an OBJ in the repository/runtime tree.
+Files with missing/wrong robot fingerprints or unrecognized pose layouts fail
+explicitly; do not restamp historical data to bypass the check.
+
+Research JSON uses `robot_asset_json`, `joint_names`, optional `terrain`, and
+`records`, each with unique `label` and `q`. The existing step14 gradient reports
+are accepted directly. Labels ending in `_initial`, `_stepN`, or `_final` are
+grouped by method and saved iteration. The `original` record (or first record)
+is the fixed reference. Both poses, terrain copies, penetration-normal arrows,
+and sampled mesh-material-point displacement share the existing scene. Terrain
+opacity, displacement link, and arrow scale are adjustable. Display offsets do
+not enter the reported physical displacement.
+
+Reports' contact markers and acceptance metrics remain **historical diagnostics**,
+not current Newton/top-face truth. Review never writes MotionVersions, labels,
+edit plans, or training inputs. Predictor training/model code is unaffected.

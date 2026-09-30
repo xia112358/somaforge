@@ -1052,7 +1052,12 @@ def a2a_support_slip(
     include_ang_vel: bool = False,
     normalize: bool = True,
 ) -> torch.Tensor:
-    """Penalize motion of support contact bodies while they are actually in contact."""
+    """Historical reward proxy for desired keep roles, preserving policy behavior.
+
+    Net-force threshold and body-origin speed are reward shaping only. They do
+    not establish native contact activation, actual load-bearing, or patch slip;
+    collection and acceptance use somaforge_core.newton_support instead.
+    """
     groups = _a2a_body_groups(env, part_body_names)
     body_force = torch.norm(env.simulator.contact_forces_history, dim=-1).max(dim=1)[0]
     body_contact = body_force > contact_threshold

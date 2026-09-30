@@ -694,7 +694,6 @@ def _evaluate_single_task(
         object_name=constants.OBJECT_NAME,
         demo_joints=constants.DEMO_JOINTS,
         joints_mapping=constants.JOINTS_MAPPING,
-        visualize=False,
         constants=constants,
     )
     if data_type == "robot_object":

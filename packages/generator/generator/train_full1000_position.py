@@ -108,9 +108,9 @@ class Config:
     constraint_validation: bool = False
     constraint_max_trials: int = 6
     constraint_root_cost: float = 100.
-    require_static_support: bool = True
-    support_tolerance_m: float = .06
-    predicted_support_weight: float = 1.0
+    require_endpoint_contact_retention: bool = True
+    endpoint_contact_tolerance_m: float = .06
+    predicted_contact_retention_weight: float = 1.0
     require_forward_progress: bool = False
     progress_window: int = 3
     progress_minimum_m: float = .03615079075098038
@@ -124,11 +124,11 @@ def main():
     AppLauncher.add_app_launcher_args(parser)
     official, remaining = parser.parse_known_args()
     cfg = tyro.cli(Config, args=remaining)
-    if (cfg.require_static_support or cfg.predicted_support_weight > 0) and not cfg.gpu_pipeline:
-        raise ValueError('Static support retention requires actual Newton GPU witness metadata')
-    if not np.isfinite(cfg.predicted_support_weight) or cfg.predicted_support_weight < 0:
-        raise ValueError('Predicted support weight must be finite and nonnegative')
-    if cfg.support_tolerance_m <= 0:
+    if (cfg.require_endpoint_contact_retention or cfg.predicted_contact_retention_weight > 0) and not cfg.gpu_pipeline:
+        raise ValueError('Endpoint contact retention requires actual Newton GPU witness metadata')
+    if not np.isfinite(cfg.predicted_contact_retention_weight) or cfg.predicted_contact_retention_weight < 0:
+        raise ValueError('Predicted contact-retention weight must be finite and nonnegative')
+    if cfg.endpoint_contact_tolerance_m <= 0:
         raise ValueError('Support tolerance must be positive')
     if cfg.recover_failed_states or cfg.pending_plan_repair:
         raise ValueError('Legacy recovery/plan-repair flags are unsupported; physically continuable raw-state feedback is now automatic.')
@@ -375,7 +375,7 @@ def main():
         _, cell, valid = contact_points_to_observed_heightmap_map(observation['current_q'],
             roles != 0, endpoint_points, observation['heightmap'])
         return {'role': roles, 'contact_cell': cell, 'contact_cell_valid': valid,
-                'endpoint_points_world': endpoint_points, 'persistent_support': persistent}
+                'endpoint_points_world': endpoint_points, 'contact_keep_intent': persistent}
 
     def objective(prediction, observation, indices, labels):
         qlocal = to_local(prediction.qpos, indices)
@@ -406,20 +406,20 @@ def main():
             layout, layout_metrics = relative_contact_layout_loss(model, qlocal, points_local(points_w, indices),
                 prediction.conditioned_contact, surfaces, queried[0], regions=prediction.planned_regions)
         support_loss = prediction.qpos.sum(-1)*0
-        if cfg.require_static_support or cfg.predicted_support_weight > 0:
-            from contact_solver.support_transition import support_transition, predicted_support_loss
+        if cfg.require_endpoint_contact_retention or cfg.predicted_contact_retention_weight > 0:
+            from contact_solver.support_transition import endpoint_contact_retention, predicted_contact_retention_loss
             # Re-query the input: stored/averaged part anchors cannot identify
             # the exact material link or prove current activation/allocation.
             initial_rows, _ = query(observation['current_q'].detach(), indices)
-            if cfg.require_static_support:
-                support_metrics = support_transition(model.fk, initial_rows, queried[0],
-                    tolerance_m=cfg.support_tolerance_m)
+            if cfg.require_endpoint_contact_retention:
+                support_metrics = endpoint_contact_retention(model.fk, initial_rows, queried[0],
+                    tolerance_m=cfg.endpoint_contact_tolerance_m)
                 metrics.update(support_metrics)
-            if cfg.predicted_support_weight > 0:
-                support_loss, support_metrics = predicted_support_loss(model.fk, initial_rows,
-                    queried[0], prediction.role.detach(), tolerance_m=cfg.support_tolerance_m)
+            if cfg.predicted_contact_retention_weight > 0:
+                support_loss, support_metrics = predicted_contact_retention_loss(model.fk, initial_rows,
+                    queried[0], prediction.role.detach(), tolerance_m=cfg.endpoint_contact_tolerance_m)
                 metrics.update(support_metrics)
-        metrics['weighted_predicted_support_loss'] = cfg.predicted_support_weight*support_loss
+        metrics['weighted_predicted_contact_retention_loss'] = cfg.predicted_contact_retention_weight*support_loss
         supervised = labels.get('supervised', torch.ones(len(indices), device=device, dtype=torch.bool))
         with timed('planner_objective'):
             plan_loss, plan_metrics = (relative_plan_objective(prediction, labels, observation['heightmap'])
@@ -458,7 +458,7 @@ def main():
         plan_loss = demonstration_loss(plan_loss, supervised)
         loss = (plan_loss + imitation + execution_loss
             + approach_loss + metrics['safety_loss']
-            + cfg.relative_layout_weight * layout + cfg.predicted_support_weight*support_loss)
+            + cfg.relative_layout_weight * layout + cfg.predicted_contact_retention_weight*support_loss)
         if cfg.gpu_pipeline:
             from generator.next_interaction_heightmap import HEIGHTMAP_RESOLUTION_M
             scale = 2 * HEIGHTMAP_RESOLUTION_M
@@ -552,8 +552,8 @@ def main():
         continuable, reasons = physical_reset_masks(q, depth_cm, invalid,
             metric['joint_violation_rad'], actual_contact,
             TerminationLimits(penetration_m=cfg.recoverable_penetration_m))
-        unsupported = continuable & ~metric['support_transition_valid'] if cfg.require_static_support else torch.zeros_like(continuable)
-        reasons['support_lost_or_sliding'] = unsupported
+        unsupported = continuable & ~metric['endpoint_contact_retention_valid'] if cfg.require_endpoint_contact_retention else torch.zeros_like(continuable)
+        reasons['endpoint_contact_retention_failed'] = unsupported
         return continuable & ~unsupported, reasons
 
     starts = {(s['motion_id'], s['current_frame']): i for i, s in enumerate(samples)}
@@ -580,7 +580,7 @@ def main():
         'execution_only_adaptation': cfg.execution_only,
         'inherited_pretraining': 'shared Stage-A weights were originally trained with IDs; ID modules are omitted, not distilled',
         'samples': len(samples), 'training_samples': len(train), 'validation_samples': len(validation)}
-    dataset['support_transition_contract'] = dict(enabled=cfg.require_static_support, tolerance_m=cfg.support_tolerance_m, semantics='endpoint_region_motion_v2: same endpoint part, internal witness changes allowed; minimum same-material displacement across both endpoint regions; endpoint-only, not load or path certification')
+    dataset['endpoint_contact_retention_contract'] = dict(enabled=cfg.require_endpoint_contact_retention, tolerance_m=cfg.endpoint_contact_tolerance_m, semantics='endpoint_region_motion_v2: same endpoint part AND terrain face, internal witness changes allowed; minimum same-material displacement across both endpoint regions; endpoint-only, not load or path certification')
     dataset['forward_progress_contract'] = dict(enabled=cfg.require_forward_progress,
         window_steps=cfg.progress_window, minimum_m=cfg.progress_minimum_m,
         direction='whole task start-to-end XY; fixed through each episode',
@@ -601,8 +601,8 @@ def main():
         'recovery_penetration_limit_is_not_contact_truth': cfg.recoverable_penetration_m,
         'rollout_steps_initial': cfg.rollout_steps, 'rollout_steps_final': cfg.rollout_steps_final,
         'bptt': False, 'raw_q_feedback': True,
-        'predicted_support_objective': {
-            'weight': cfg.predicted_support_weight, 'tolerance_m': cfg.support_tolerance_m,
+        'predicted_contact_retention_objective': {
+            'weight': cfg.predicted_contact_retention_weight, 'tolerance_m': cfg.endpoint_contact_tolerance_m,
             'gate': 'detached raw predicted role==2 AND actual initial Newton primary-face contact',
             'scope': 'each declared endpoint separately; final contact loss does not disable penalty',
             'teacher_roles_used': False},
@@ -803,15 +803,15 @@ def main():
         depth_outputs = [0] * rollout_depth
         failure_counts = {'own_contact': 0, 'own_safety': 0, 'task_contact': 0, 'joint_limit': 0,
                           'retries_used': 0, 'advances_used': 0, 'stopped': 0,
-                          'severe_penetration_resets': 0, 'no_contact_resets': 0, 'invalid_resets': 0, 'support_lost_or_sliding_resets': 0, 'no_forward_progress_resets': 0}
+                          'severe_penetration_resets': 0, 'no_contact_resets': 0, 'invalid_resets': 0, 'endpoint_contact_retention_failed_resets': 0, 'no_forward_progress_resets': 0}
         if pool is not None:
             failure_counts = {key.replace('_resets', '_rejections'): value for key, value in failure_counts.items()}
         prediction_start=training_predictions
         pool_counts={key:torch.zeros((),device=device,dtype=torch.long) for key in
             ('generated_inputs','advances','retries','resets','terminal_resets','invalid_resets','timeout_resets',
              'periodic_resamples','rollbacks','accepted_transitions','invalid_rejections','severe_penetration_rejections',
-             'no_contact_rejections','support_lost_or_sliding_rejections','no_forward_progress_rejections',
-             'demo_exhausted','autonomous_states','severe_penetration_resets','no_contact_resets','support_lost_or_sliding_resets','no_forward_progress_resets')}
+             'no_contact_rejections','endpoint_contact_retention_failed_rejections','no_forward_progress_rejections',
+             'demo_exhausted','autonomous_states','severe_penetration_resets','no_contact_resets','endpoint_contact_retention_failed_resets','no_forward_progress_resets')}
         if pool is not None:
             from contact_solver.device_contact_objective import acceptance
             age_histogram=torch.zeros(cfg.parallel_episode_limit+1,device=device,dtype=torch.long)
@@ -852,7 +852,7 @@ def main():
                 if cfg.event_endpoint_gate: safe &= rm['event_endpoint_accepted'] > .5
                 if cfg.gpu_pipeline: safe &= rm['event_endpoint_accepted'] > .5
                 if pending is not None: safe &= rm['event_endpoint_accepted'] > .5
-                if cfg.require_static_support: safe &= rm['support_transition_valid']
+                if cfg.require_endpoint_contact_retention: safe &= rm['endpoint_contact_retention_valid']
                 recoverable, reset_reasons = continuation(prediction.qpos, indices, queried, rm)
                 if pending is not None:
                     own_complete = ((rm['newton_generation_accepted'] > .5)
@@ -989,7 +989,7 @@ def main():
                 failure_counts['own_safety'] += statistic((rm['newton_generation_accepted'] <= .5).sum(), integer=True)
                 failure_counts['task_contact'] += statistic(((~accepted) & rsupervised).sum(), integer=True)
                 failure_counts['joint_limit'] += statistic((rm['joint_violation_rad'] > .15).sum(), integer=True)
-                if cfg.require_static_support: safe &= rm['support_transition_valid']
+                if cfg.require_endpoint_contact_retention: safe &= rm['endpoint_contact_retention_valid']
                 keep, reset_reasons = continuation(action.qpos, rindices, queried, rm)
                 for reason, mask in reset_reasons.items():
                     failure_counts[reason+'_resets'] += statistic(mask.sum(), integer=True)

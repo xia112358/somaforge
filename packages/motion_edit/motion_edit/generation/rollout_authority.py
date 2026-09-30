@@ -142,6 +142,7 @@ def generate_contact_aware_pyroki_preview(
     ik_collision_reference_cache: str | Path | None = None,
     semantic_proxy_basis: str | Path | None = None,
     layers_root: Path | None = None,
+    compile_only: bool = False,
 ):
     """Generate every target and initializer from one rollout source motion."""
 
@@ -414,6 +415,8 @@ def generate_contact_aware_pyroki_preview(
         ),
     )
     preview.write_contact_aware_taskspace_motion(taskspace_path, taskspace)
+    if compile_only:
+        return taskspace_path
     preview._run_pyroki_preview_subprocess(
         taskspace_path=taskspace_path,
         source_motion_path=source_path,
