@@ -2,6 +2,14 @@
 
 与 `generator`、`motion_edit`、`somaforge_core` 并列的接触解算包。
 
+当前训练目标及配置统一登记于
+[最新v1基线](../../baselines/predictor_v1_latest_20261010/README.md)。
+正式路径由`unified_region_objective`、`ShapeTargetIntervalProvider`、
+完整实体距离、位置区间及keep材料区域保持组成；共享查询的上下界保留同一材料身份，
+其他实体和自碰撞独立覆盖。罚函数为`log1p(r²)`，经真实几何/FK导数回传。
+接触区间来自实际margin；递推穿透验收5 mm与位置RMS容差4 cm仅是任务验收配置。
+投影、QP教师、AL及形状cap替换等研究入口不属于该基线训练链路。
+
 - `newton_witness_loss.py`：冻结当前 Newton witness 后经 FK 计算距离梯度。
 - `contact_constrained_projector.py`、`heightmap_contact_projector.py`：姿态投影。
 - `trajectory_projection.py`、`mechanical.py`：轨迹约束与机械可行性检查。

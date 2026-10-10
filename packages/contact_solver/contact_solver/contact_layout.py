@@ -2,7 +2,12 @@
 import torch
 import torch.nn.functional as F
 
-from somaforge_core.heightmap import HEIGHTMAP_COLS, HEIGHTMAP_ROWS
+from somaforge_core.heightmap import HEIGHTMAP_COLS, HEIGHTMAP_ROWS, HEIGHTMAP_RESOLUTION_M
+
+
+# Existing endpoint RMS tolerance, shared by the loss and task validation.
+# This is a spatial task tolerance, never a Newton contact distance threshold.
+ENDPOINT_POSITION_TOLERANCE_M = 2 * HEIGHTMAP_RESOLUTION_M
 
 
 def representative_pairs(pairs, active, surfaces):
@@ -42,6 +47,18 @@ def endpoint_position_statistics(actual, intended, observed):
     count = observed.sum(-1)
     delta = torch.where(observed[..., None], actual[..., :2]-intended[..., :2], 0.)
     return delta.square().sum((-1, -2))/count.clamp_min(1), count
+
+
+def endpoint_position_loss(error_squared):
+    """Squared excess outside the accepted endpoint RMS range.
+
+    Average squared part-position errors before applying the existing task
+    tolerance; independently bounding each limb would change task semantics.
+    Zero spatial loss does not certify completeness, activation or safety.
+    Clamping before sqrt keeps the zero-error gradient finite and makes both
+    loss and gradient zero throughout the accepted range, including its edge.
+    """
+    return ((error_squared / ENDPOINT_POSITION_TOLERANCE_M**2).clamp_min(1).sqrt()-1).square()
 
 
 def support_bound_targets(future_points, current_points, current_contact, roles):

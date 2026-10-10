@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 from motion_edit.generation.event_acceptance import build_contract, audit_events, optimization_events
+from motion_edit.generation.event_acceptance import observed_source_contract
 
 
 def action(kind, start=0, end=19):
@@ -87,3 +88,47 @@ def test_same_surface_without_explicit_support_never_becomes_keep():
     assert action_requirements(e)==[]
     del e['persistent_parts']
     with pytest.raises(ValueError,match='Explicit'):action_requirements(e)
+
+
+def test_source_binding_ignores_wrong_authored_roles_and_preserves_clock():
+    mask, faces = evidence(24)
+    mask[:, 0] = False
+    mask[8:, 1] = True
+    faces = np.where(mask, 0, -1)
+    clock = [dict(action('keep', end=12), segment_id='edit_a'),
+             dict(action('establish', start=12, end=23), segment_id='edit_b')]
+    events, contract = observed_source_contract(dict(contact_part_mask=mask, contact_surface=faces, fps=50), clock)
+    assert [(e['segment_id'], e['start_frame'], e['end_frame']) for e in events] == [
+        ('edit_a', 0, 12), ('edit_b', 12, 23)]
+    assert events[0]['touchdown_events'] == [dict(frame=8, part_index=1, part='right_foot', surface=0)]
+    assert events[1]['persistent_parts'] == ['right_foot']
+    assert contract['source_self_audit']['passed']
+    candidate = mask.copy(); candidate[12:, 1] = False
+    assert not audit_events(contract, candidate, np.where(candidate, 0, -1))[0]['passed']
+
+
+def test_source_binding_preserves_removed_blocks_and_absolute_arrival_frames():
+    mask, faces = evidence(24)
+    mask[13:16, 0] = False; faces = np.where(mask, 1, -1)
+    clock = [dict(action('keep', end=8), segment_id='before_cut'),
+             dict(action('keep', start=13, end=23), segment_id='after_cut')]
+    events, contract = observed_source_contract(dict(contact_part_mask=mask, contact_surface=faces, fps=50), clock)
+    assert contract['retained_blocks'] == [(0, 9), (13, 24)]
+    assert events[1]['touchdown_events'][0]['frame'] == 16
+    assert events[1]['persistent_parts'] == []
+    assert len(events) == len(clock)
+
+
+@pytest.mark.parametrize('clock', [[], [dict(start_frame=0, end_frame=12), dict(start_frame=8, end_frame=23)],
+    [dict(start_frame=0, end_frame=12, segment_id='same'), dict(start_frame=12, end_frame=23, segment_id='same')]])
+def test_source_binding_rejects_invalid_clocks(clock):
+    mask, faces = evidence()
+    with pytest.raises(ValueError, match='clock'):
+        observed_source_contract(dict(contact_part_mask=mask, contact_surface=faces, fps=50), clock)
+
+
+def test_source_binding_reports_insufficient_evidence_without_dropping_action():
+    mask, faces = evidence(24); mask[:, 0] = False; mask[-1, 0] = True
+    with pytest.raises(ValueError, match='Source observations'):
+        observed_source_contract(dict(contact_part_mask=mask, contact_surface=np.where(mask, 1, -1), fps=50),
+                                 [dict(start_frame=0, end_frame=23)])

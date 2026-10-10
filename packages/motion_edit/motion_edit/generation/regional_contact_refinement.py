@@ -2,6 +2,7 @@
 import torch
 from contact_solver.contact_regions import ContactRegions, unified_region_objective
 from contact_solver.device_contact_objective import DeviceWitnessRows, group_any
+from contact_solver.contact_surface_interval import finite_face_band_cost, convex_face_tangent_distance
 from .surface_contact_loss import face_edges
 
 
@@ -34,15 +35,16 @@ class EventContactRegions(ContactRegions):
                 cloud = getattr(self, f'cloud_{part}_{region}')
                 points = position[indices, part, None]+torch.einsum('bij,vj->bvi', rotation[indices, part], cloud)
                 gap = (points-origin)@normal
-                cost = (gap-margin[indices, None]).relu().square()+(-gap).relu().square()
+                outside = torch.zeros_like(gap[..., None])
                 if len(edges):
-                    outside = (points@q.new_tensor(edges).T-q.new_tensor(offsets)).relu()
-                    cost = cost+outside.square().sum(-1)
+                    outside = convex_face_tangent_distance(points, normal,
+                        q.new_tensor(geometry['polygon_world']), q.new_tensor(edges), q.new_tensor(offsets))
+                cost = finite_face_band_cost(gap, outside, margin[indices, None])
                 result[indices, part, region] = cost.amin(-1)/(.25*margin[indices]).square()
         return result
 
 
-def regional_terms(fk, geometry, q, observed, wanted, faces, domains, release_mask=None):
+def regional_terms(fk, geometry, q, observed, wanted, faces, domains, release_mask=None, *, solid=None):
     """One exact shared loss; activation/allocation remain separate evidence."""
     from types import SimpleNamespace
     rows = DeviceWitnessRows(fk, q, observed)
@@ -52,6 +54,7 @@ def regional_terms(fk, geometry, q, observed, wanted, faces, domains, release_ma
         raise ValueError('Inconsistent native activation')
     if bool((actual & ~pair['constraint_allocated']).any()):
         raise ValueError('Unallocated native contact')
+    rows.solid = solid
     if release_mask is None:
         release_mask = torch.zeros_like(wanted)
     loss, metrics = unified_region_objective(
@@ -69,4 +72,5 @@ def regional_terms(fk, geometry, q, observed, wanted, faces, domains, release_ma
     depth, invalid = rows.full_body()
     if bool(invalid.any()):
         raise ValueError('Invalid penetrating native normal')
+    depth = torch.maximum(depth, solid.depths().amax(-1))
     return loss, depth, wanted & ~exists, wanted & ~realized, metrics

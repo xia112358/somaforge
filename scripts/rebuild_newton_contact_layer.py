@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 import numpy as np
 import torch
-from climb00_pipeline.neural_infiller import CanonicalG1ForwardKinematics
+from somaforge_core.g1_kinematics import CanonicalG1ForwardKinematics
 from somaforge_core import G1_29DOF_JOINT_ORDER
 from somaforge_core.contact_labels import DEFAULT_POLICY, ContactLabelPolicy
 from somaforge_core.newton_contact_data import load_contact_labels

@@ -2,9 +2,10 @@ from types import SimpleNamespace
 
 import torch
 
-from contact_solver.contact_layout import relative_layout_statistics, relative_plan_objective
+from contact_solver.contact_layout import (relative_layout_statistics, relative_plan_objective,
+    endpoint_position_statistics, endpoint_position_loss, ENDPOINT_POSITION_TOLERANCE_M)
 from generator.next_interaction_heightmap import HEIGHTMAP_ROWS as R, HEIGHTMAP_COLS as C
-from generator.planned_contact_predictor import relative_contact_layout_loss
+from generator.research.frozen_contact_position import frozen_contact_layout_diagnostic
 
 
 def example(shift=0, wrong=False):
@@ -77,10 +78,82 @@ def test_layout_runs_one_fk_for_entire_batch_and_matches_known_gradient():
     surface = torch.zeros(2, 6, dtype=torch.long)
     rows = [[({'part': p, 'surface': 0, 'body_name': str(p), 'dist': 0,
               'position_w': [p*.2, 0, 0]}, None) for p in (0, 1)] for _ in range(2)]
-    loss, _ = relative_contact_layout_loss(SimpleNamespace(fk=fk), q, target, active, surface, rows)
+    loss, _ = frozen_contact_layout_diagnostic(SimpleNamespace(fk=fk), q, target, active, surface, rows)
     assert fk.calls == 1
-    torch.testing.assert_close(loss, torch.full((2,), .1**2/2/.04**2))
+    rms = .1 / 2**.5
+    torch.testing.assert_close(loss, torch.full((2,), (rms/.04-1)**2))
     loss.sum().backward()
-    torch.testing.assert_close(q.grad[:, 0], torch.full((2,), -.1/.04**2))
+    gradient = -.1/.04**2 * (1-.04/rms)
+    torch.testing.assert_close(q.grad[:, 0], torch.full((2,), gradient))
     torch.testing.assert_close(q.grad[:, 7], torch.zeros(2))
-    torch.testing.assert_close(q.grad[:, 8], torch.full((2,), -.1/.04**2))
+    torch.testing.assert_close(q.grad[:, 8], torch.full((2,), gradient))
+
+
+def test_position_loss_has_finite_zero_gradient_inside_and_at_accepted_boundary():
+    tolerance = ENDPOINT_POSITION_TOLERANCE_M
+    error = torch.tensor([0., (tolerance/2)**2, tolerance**2], dtype=torch.float64, requires_grad=True)
+    loss = endpoint_position_loss(error)
+    torch.testing.assert_close(loss, torch.zeros_like(error))
+    loss.sum().backward()
+    torch.testing.assert_close(error.grad, torch.zeros_like(error))
+
+
+def test_position_loss_uses_the_existing_group_rms_instead_of_per_limb_bounds():
+    intended = torch.zeros(1, 2, 3, dtype=torch.float64)
+    actual = intended.clone(); actual[0, 0, 0] = .05
+    actual.requires_grad_(True)
+    error, _ = endpoint_position_statistics(actual, intended, torch.ones(1, 2, dtype=torch.bool))
+    # One limb exceeds 4 cm, but the existing two-limb RMS check accepts 3.54 cm.
+    assert error.item() < ENDPOINT_POSITION_TOLERANCE_M**2
+    loss = endpoint_position_loss(error)
+    assert loss.item() == 0
+    loss.sum().backward()
+    assert actual.grad.abs().sum() == 0
+
+
+def test_position_loss_outside_range_has_correct_finite_difference_gradient():
+    actual = torch.tensor([[[.06, .08, 0.], [.02, .01, 0.]]], dtype=torch.float64, requires_grad=True)
+    intended = torch.zeros_like(actual)
+    observed = torch.ones(1, 2, dtype=torch.bool)
+    def objective(point):
+        return endpoint_position_loss(endpoint_position_statistics(point, intended, observed)[0])
+    assert torch.autograd.gradcheck(objective, (actual,))
+    gradient = torch.autograd.grad(objective(actual).sum(), actual)[0]
+    assert gradient[0, 0, 0] > 0 and gradient[0, 0, 1] > 0
+    assert gradient[..., 2].abs().sum() == 0
+
+
+def test_device_and_ordinary_layout_match_loss_gradient_and_missing_observation():
+    from contact_solver.device_contact_objective import DeviceWitnessRows
+    class FK:
+        def link_poses(self, q, names):
+            return q[:, None, :3], torch.eye(3).to(q).expand(len(q), 1, 3, 3)
+    ordinary_q = torch.zeros(5, 36, dtype=torch.float64, requires_grad=True)
+    device_q = ordinary_q.detach().clone().requires_grad_(True)
+    witnesses = ordinary_q.new_tensor([[0., 0., 0.], [.02, 0., 0.], [.04, 0., 0.], [.08, 0., 0.]])
+    sample = torch.arange(4)
+    observed = dict(schema='newton_device_witness_batch_v1', link_names=('foot',), pairs=dict(
+        sample=sample, part=torch.zeros(4, dtype=torch.long), body_link0=torch.full((4,), -1),
+        body_link1=torch.zeros(4, dtype=torch.long), geometry_point0_w=witnesses.clone(),
+        geometry_point1_w=witnesses.clone(), normal_w=ordinary_q.new_tensor([[0., 0., 1.]]).expand(4, -1),
+        dist=torch.zeros(4), task_pair=torch.ones(4, dtype=torch.bool),
+        primary_surface=torch.zeros(4, dtype=torch.long), eligible=torch.ones(4, dtype=torch.bool)))
+    device = DeviceWitnessRows(FK(), device_q, observed)
+    rows = [[(dict(part=0, surface=0, body_name='foot', position_w=w.tolist()), None)] for w in witnesses]
+    rows.append([])
+    points = ordinary_q.new_zeros(5, 6, 3, requires_grad=True)
+    active = torch.zeros(5, 6, dtype=torch.bool); active[:, 0] = True
+    surfaces = torch.zeros(5, 6, dtype=torch.long)
+    ordinary_loss, ordinary_metrics = frozen_contact_layout_diagnostic(
+        SimpleNamespace(fk=FK()), ordinary_q, points, active, surfaces, rows)
+    device_loss, device_metrics = frozen_contact_layout_diagnostic(
+        SimpleNamespace(fk=FK()), device_q, points, active, surfaces, device)
+    torch.testing.assert_close(ordinary_loss, ordinary_q.new_tensor([0., 0., 0., 1., 0.]))
+    torch.testing.assert_close(device_loss, ordinary_loss)
+    for key in ordinary_metrics:
+        torch.testing.assert_close(device_metrics[key], ordinary_metrics[key])
+    assert ordinary_metrics['relative_layout_observed_parts'].tolist() == [1., 1., 1., 1., 0.]
+    ordinary_loss.sum().backward(); device_loss.sum().backward()
+    torch.testing.assert_close(device_q.grad, ordinary_q.grad)
+    torch.testing.assert_close(ordinary_q.grad[:3], torch.zeros_like(ordinary_q.grad[:3]))
+    assert ordinary_q.grad[3, 0] > 0 and points.grad is None

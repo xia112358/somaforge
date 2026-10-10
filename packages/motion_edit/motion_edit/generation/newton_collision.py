@@ -17,6 +17,7 @@ from motion_edit.generation.newton_collision_filter import (
 
 NEWTON_SHAPE_MARGIN_M = 0.01
 NEWTON_MAX_TRIANGLE_PAIRS = 2_500_000
+COLLISION_WITNESS_SCHEMA = 'newton_geometry_surface_witness_v3'
 _BASE_G1_BUILDERS: dict[str, Any] = {}
 
 
@@ -37,12 +38,31 @@ def _split_transforms(value: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _quat_rotate_xyzw(quat: np.ndarray, vector: np.ndarray) -> np.ndarray:
-    q_xyz = np.asarray(quat, dtype=np.float64)[:3]
-    q_w = float(np.asarray(quat, dtype=np.float64)[3])
+    rotation = np.asarray(quat, dtype=np.float64)
+    q_xyz = rotation[..., :3]
+    q_w = rotation[..., 3, None]
     value = np.asarray(vector, dtype=np.float64)
     uv = np.cross(q_xyz, value)
     uuv = np.cross(q_xyz, uv)
     return value + 2.0 * (q_w * uv + uuv)
+
+
+def _effective_surface_witnesses(point0, point1, normal, thickness0, thickness1,
+                                shape_margin0, shape_margin1):
+    """Recover geometry witnesses without importing inflated solver margins.
+
+    Newton stores support points and radius-plus-margin thickness. Subtracting
+    all thickness produces separation of its inflated solver surfaces. Geometry
+    separation restores the actual model margins; a sphere's center therefore
+    shifts by its radius, while an unrounded mesh witness remains unchanged.
+    All inputs come from the current model/contact arrays, with no guessed radii.
+    """
+    geometry_offset0 = np.asarray(thickness0) - np.asarray(shape_margin0)
+    geometry_offset1 = np.asarray(thickness1) - np.asarray(shape_margin1)
+    surface0 = np.asarray(point0) + np.asarray(normal) * geometry_offset0[:, None]
+    surface1 = np.asarray(point1) - np.asarray(normal) * geometry_offset1[:, None]
+    distance = np.einsum('ij,ij->i', normal, surface1 - surface0)
+    return surface0, surface1, distance
 
 
 @dataclass(frozen=True)
@@ -136,6 +156,10 @@ class DirectNewtonCollisionScene:
             max_triangle_pairs=NEWTON_MAX_TRIANGLE_PAIRS,
         )
         self.contacts = self.pipeline.contacts()
+        self._collision_graph = None
+        self._collision_graph_binding = None
+        self._qpos_query_graph = None
+        self._qpos_query_graph_binding = None
         self.body_names = tuple(_leaf(item) for item in self.model.body_label)
         self.shape_labels = tuple(_leaf(item) for item in self.model.shape_label)
         if len(set(self.body_names)) != len(self.body_names):
@@ -178,6 +202,15 @@ class DirectNewtonCollisionScene:
         self.state.body_q.assign(transforms)
 
     def set_qpos(self, qpos: np.ndarray) -> None:
+        self._assign_qpos(qpos)
+        self.newton.eval_fk(
+            self.model,
+            self.state.joint_q,
+            self.state.joint_qd,
+            self.state,
+        )
+
+    def _assign_qpos(self, qpos: np.ndarray) -> None:
         value = np.asarray(qpos, dtype=np.float32)
         if value.shape != (36,):
             raise ValueError(f"Newton collision qpos must be (36,), got {value.shape}")
@@ -187,12 +220,6 @@ class DirectNewtonCollisionScene:
         joint_q[self.motion_joint_q_indices] = value[7:]
         self.state.joint_q.assign(joint_q)
         self.state.joint_qd.zero_()
-        self.newton.eval_fk(
-            self.model,
-            self.state.joint_q,
-            self.state.joint_qd,
-            self.state,
-        )
 
     def body_poses(
         self,
@@ -208,8 +235,45 @@ class DirectNewtonCollisionScene:
         quaternion_wxyz = quaternion_xyzw[indices][:, [3, 0, 1, 2]]
         return positions[indices].copy(), quaternion_wxyz.copy()
 
+    def prepare_collision_graph(self, *, include_fk: bool = False) -> None:
+        """Capture the same collision kernels, without caching any pose/pair.
+
+        Only opt-in private optimizer scenes use this path. Current state and
+        model buffers are read on every replay, including the contact counters
+        reset and broad phase. Replacing a bound buffer requires recapturing.
+        """
+        self._qpos_query_graph = None
+        self._qpos_query_graph_binding = None
+        with self.wp.ScopedCapture(device=self.device) as capture:
+            self.pipeline.collide(self.state, self.contacts)
+        self._collision_graph = capture.graph
+        self._collision_graph_binding = (self.pipeline, self.state, self.contacts)
+        if include_fk:
+            # Capture the identical FK kernel together with collision kernels
+            # for joint-pose queries. Body-pose queries retain collision-only
+            # replay so externally supplied body transforms are never replaced.
+            with self.wp.ScopedCapture(device=self.device) as capture:
+                self.newton.eval_fk(self.model, self.state.joint_q,
+                                    self.state.joint_qd, self.state)
+                self.pipeline.collide(self.state, self.contacts)
+            self._qpos_query_graph = capture.graph
+            self._qpos_query_graph_binding = self._query_buffer_binding()
+
+    def _query_buffer_binding(self):
+        return (self.model, self.pipeline, self.state, self.contacts,
+                self.state.joint_q, self.state.joint_qd, self.state.body_q)
+
     def collide(self) -> NewtonCollisionContacts:
-        self.pipeline.collide(self.state, self.contacts)
+        if self._collision_graph is None:
+            self.pipeline.collide(self.state, self.contacts)
+        else:
+            if any(current is not captured for current, captured in zip(
+                    (self.pipeline, self.state, self.contacts), self._collision_graph_binding)):
+                raise RuntimeError('Newton collision buffers changed; recapture the query graph')
+            self.wp.capture_launch(self._collision_graph)
+        return self._read_contacts()
+
+    def _read_contacts(self) -> NewtonCollisionContacts:
         self.wp.synchronize_device(self.device)
         count = int(np.asarray(self.contacts.rigid_contact_count.numpy()).reshape(-1)[0])
         count = max(0, min(count, int(self.contacts.rigid_contact_max)))
@@ -235,24 +299,15 @@ class DirectNewtonCollisionScene:
         )
         point0 = local0.copy()
         point1 = local1.copy()
-        for index in range(count):
-            if body0[index] >= 0:
-                body = int(body0[index])
-                point0[index] = body_position[body] + _quat_rotate_xyzw(
-                    body_quat_xyzw[body],
-                    local0[index],
-                )
-            if body1[index] >= 0:
-                body = int(body1[index])
-                point1[index] = body_position[body] + _quat_rotate_xyzw(
-                    body_quat_xyzw[body],
-                    local1[index],
-                )
+        for bodies, local, points in ((body0, local0, point0), (body1, local1, point1)):
+            valid = bodies >= 0
+            selected = bodies[valid]
+            points[valid] = body_position[selected] + _quat_rotate_xyzw(
+                body_quat_xyzw[selected], local[valid])
         normal = np.asarray(
             self.contacts.rigid_contact_normal.numpy()[:count],
             dtype=np.float64,
         )
-        geometry_distance = np.einsum("ij,ij->i", normal, point1 - point0)
         margin0 = np.asarray(
             self.contacts.rigid_contact_margin0.numpy()[:count],
             dtype=np.float64,
@@ -261,33 +316,21 @@ class DirectNewtonCollisionScene:
             self.contacts.rigid_contact_margin1.numpy()[:count],
             dtype=np.float64,
         )
-        constraint_distance = geometry_distance - margin0 - margin1
+        configured_margin = np.asarray(self.model.shape_margin.numpy(), dtype=np.float64)
+        shape_margin0 = configured_margin[shape0]
+        shape_margin1 = configured_margin[shape1]
+        constraint_distance = np.einsum('ij,ij->i', normal, point1-point0) - margin0-margin1
+        point0, point1, geometry_distance = _effective_surface_witnesses(
+            point0, point1, normal, margin0, margin1, shape_margin0, shape_margin1)
 
-        robot_names: list[str] = []
-        robot_indices: list[int] = []
-        robot_points: list[np.ndarray] = []
-        terrain_points: list[np.ndarray] = []
-        outward_normals: list[np.ndarray] = []
-        for index in range(count):
-            first_robot = int(body0[index]) >= 0
-            second_robot = int(body1[index]) >= 0
-            if first_robot == second_robot:
-                continue
-            if first_robot:
-                robot_body = int(body0[index])
-                robot_point = point0[index]
-                terrain_point = point1[index]
-                outward = -normal[index]
-            else:
-                robot_body = int(body1[index])
-                robot_point = point1[index]
-                terrain_point = point0[index]
-                outward = normal[index]
-            robot_names.append(self.body_names[robot_body])
-            robot_indices.append(index)
-            robot_points.append(robot_point)
-            terrain_points.append(terrain_point)
-            outward_normals.append(outward / max(float(np.linalg.norm(outward)), 1.0e-12))
+        robot_indices = np.flatnonzero((body0 >= 0) != (body1 >= 0))
+        first_robot = body0[robot_indices] >= 0
+        robot_bodies = np.where(first_robot, body0[robot_indices], body1[robot_indices])
+        robot_names = tuple(self.body_names[body] for body in robot_bodies)
+        robot_points = np.where(first_robot[:, None], point0[robot_indices], point1[robot_indices])
+        terrain_points = np.where(first_robot[:, None], point1[robot_indices], point0[robot_indices])
+        outward_normals = normal[robot_indices]*np.where(first_robot, -1., 1.)[:, None]
+        outward_normals /= np.maximum(np.linalg.norm(outward_normals, axis=-1, keepdims=True), 1.e-12)
         return NewtonCollisionContacts(
             shape0=shape0,
             shape1=shape1,
@@ -309,6 +352,13 @@ class DirectNewtonCollisionScene:
         )
 
     def query_qpos(self, qpos: np.ndarray) -> NewtonCollisionContacts:
+        if self._qpos_query_graph is not None:
+            if any(current is not captured for current, captured in zip(
+                    self._query_buffer_binding(), self._qpos_query_graph_binding)):
+                raise RuntimeError('Newton FK/collision buffers changed; recapture the query graph')
+            self._assign_qpos(qpos)
+            self.wp.capture_launch(self._qpos_query_graph)
+            return self._read_contacts()
         self.set_qpos(qpos)
         return self.collide()
 

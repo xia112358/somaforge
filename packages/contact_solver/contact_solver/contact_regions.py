@@ -11,11 +11,21 @@ from torch import nn
 from somaforge_core import CONTACT_BODY_NAMES_BY_PART
 from somaforge_core.motion_contracts import BODY_NAMES
 from contact_solver.part_collision_geometry import PartCollisionGeometry
+from contact_solver.constraint_penalty import constraint_penalty
+from contact_solver.contact_surface_interval import finite_face_band_cost, SurfaceIntervalBounds
 from somaforge_core.heightmap import HEIGHTMAP_ROWS, HEIGHTMAP_COLS, HEIGHTMAP_FORWARD_MIN_M, HEIGHTMAP_LATERAL_MIN_M, HEIGHTMAP_RESOLUTION_M
 
 
 CONTACT_INTERVAL_SCHEMA = 'native_activation_upper_gap_v1'
 PART_NAMES = ('left_foot', 'right_foot', 'left_hand', 'right_hand', 'left_knee', 'right_knee')
+
+
+def interval_penalty_components(lower,upper):
+    """One target-query penalty with exactly additive bound diagnostics."""
+    total=lower+upper
+    penalty=constraint_penalty(total)
+    ratio=torch.where(total>0,penalty/total.clamp_min(torch.finfo(total.dtype).tiny),1)
+    return lower*ratio,upper*ratio
 
 
 class ContactRegions(nn.Module):
@@ -26,6 +36,7 @@ class ContactRegions(nn.Module):
 
     def __init__(self, fk):
         super().__init__()
+        self.material_skin = None
         source = PartCollisionGeometry(fk)
         # Fixed, actual surface samples provide compact regional landmarks.
         # Spheres use 26 analytical surface directions, not an enclosing box.
@@ -116,8 +127,11 @@ class ContactRegions(nn.Module):
     def missing_region_distance(self, fk, q, surface, scene, margin):
         """Loss-only finite-face approach proxy, never a contact label.
 
-        Uses each region's full mesh vertices and analytical sphere surface
-        samples. Exact actual Newton witnesses replace this proxy on arrival.
+        Uses fixed training Newton contact materials when bound. Unobserved
+        regions retain the canonical asset proxy and are reported separately.
+        Material geometry remains in the scalar loss after native candidates
+        appear, including during deep embedding. It never replaces contact
+        truth or complete-solid clearance.
         """
         position, rotation = fk.link_poses(q, BODY_NAMES[1:7])
         top_normal = scene['box_rotation'][:, :, 2]
@@ -130,15 +144,18 @@ class ContactRegions(nn.Module):
                 ground_gap = point[..., 2]-scene['ground_height'][:, None]
                 delta = point-top_center[:, None]
                 box_local = torch.einsum('bvi,bij->bvj', delta, scene['box_rotation'])
-                outside = (box_local[..., :2].abs()-scene['box_half_extents'][:, None, :2]).relu().square().sum(-1)
+                outside = (box_local[..., :2].abs()-scene['box_half_extents'][:, None, :2]).relu()
                 gap = torch.where(surface[:, part, None] == 0, ground_gap, box_local[..., 2])
-                cost = (gap-margin[:, None]).relu().square()+(-gap).relu().square()
-                cost = cost+torch.where(surface[:, part, None] == 0, 0, outside)
+                outside = torch.where((surface[:, part, None] == 0)[..., None], 0, outside)
+                cost = finite_face_band_cost(gap, outside, margin[:, None])
                 result[:, part, region] = cost.amin(-1)/(.25*margin).square()
+        if self.material_skin is not None:
+            result = self.material_skin.region_distance(fk, q, surface, scene, margin, result)
         return result
 
 
-def unified_region_objective(model, rows, active, surface, scene, planned_regions=None, *, audit_path=None, release_mask=None):
+def unified_region_objective(model, rows, active, surface, scene, planned_regions=None, *, audit_path=None, release_mask=None,
+                             surface_interval=None):
     """One interval-violation objective across intended regions and all bodies."""
     from contact_solver.device_contact_objective import reduce_groups, group_any
     geometry = model.region_geometry
@@ -148,6 +165,12 @@ def unified_region_objective(model, rows, active, surface, scene, planned_region
         if bool((release_mask & active).any()):
             raise ValueError('Required contact and release intents conflict')
     p = rows.pair; q = rows.q; batch = len(q); sample = p['sample']
+    solid = getattr(rows, 'solid', None)
+    if solid is None:
+        raise ValueError('Unified collision loss requires complete realized solid distances; triangle penetration gradients are unsupported')
+    solid_distance = solid.distances
+    if not bool(torch.isfinite(solid_distance).all() & torch.isfinite(solid.points).all()):
+        raise ValueError('Undefined complete-solid distance/geometry; no substitute gradient')
     scale = .25*rows.observed['configured_margin']
     if bool((scale <= 0).any()): raise ValueError('Unified loss needs actual positive configured margins')
     relevant = (p['full_kind'] >= 0)
@@ -155,12 +178,12 @@ def unified_region_objective(model, rows, active, surface, scene, planned_region
     invalid_counts = torch.zeros(batch, device=q.device).scatter_add(0, sample, invalid.float())
     if bool(invalid.any()):
         if audit_path is None:
-            raise ValueError('Invalid penetrating full-body normal requires explicit audit and sample rejection')
+            raise ValueError('Invalid native penetrating normal requires explicit audit and rollout rejection')
         import json
         ids=(invalid_counts > 0).nonzero().flatten()
         with open(audit_path, 'a') as stream:
-            stream.write(json.dumps({'schema':'newton_unknown_region_gradient_v1',
-                'action':'whole_sample_excluded_from_training_and_rollout',
+            stream.write(json.dumps({'schema':'newton_unknown_region_gradient_v2',
+                'action':'invalid_native_distance_rows_excluded; complete_solid_and_other_gradients_retained; rollout_rejected',
                 'q':q[ids].detach().cpu().tolist(), 'sample_indices':ids.cpu().tolist(),
                 'link_names':list(rows.observed['link_names']),
                 'world_frame':None if rows.world_frame is None else [x[ids].detach().cpu().tolist() for x in rows.world_frame],
@@ -169,7 +192,7 @@ def unified_region_objective(model, rows, active, surface, scene, planned_region
     part = p['part'].clamp(0, 5)
     region = geometry.witness_regions(model.fk, q, sample, part, rows.points[:, 1])
     region_group = (sample*6+part)*4+region
-    match = p['task_pair'] & p['upward'] & (p['primary_surface'] == surface[sample, part])
+    match = p['task_pair'] & p['upward'] & rows.normal_valid & (p['primary_surface'] == surface[sample, part])
     desired = (geometry.valid[None] & active[..., None] if planned_regions is None else planned_regions & active[..., None])
     # A coarse intended part needs one region; an explicit plan needs every
     # selected region. Neither forces all other regions to touch or lift.
@@ -179,18 +202,54 @@ def unified_region_objective(model, rows, active, surface, scene, planned_region
     upper = ((rows.distances-p['includemargin']).relu()/scale[sample]).square()
     near = reduce_groups(upper, region_group, match, batch*24, minimum=True).reshape(batch, 6, 4)
     exists = group_any(region_group, match, batch*24).reshape(batch, 6, 4)
-    approach = geometry.missing_region_distance(model.fk, q, surface, scene, rows.observed['configured_margin'])
-    near = torch.where(exists, near, approach)
+    field_lower=q.new_zeros(batch,6,4)
+    bounds=None
+    if surface_interval is None:
+        approach = geometry.missing_region_distance(model.fk, q, surface, scene, rows.observed['configured_margin'])
+    else:
+        # Both sides of an interval come from one finite-face geometry query.
+        # Complete terrain and self clearances below remain independent;
+        # only an identical selected affine material query can be deduplicated.
+        bounds=surface_interval if isinstance(surface_interval,SurfaceIntervalBounds) else None
+        value=surface_interval if bounds is None else bounds.cost
+        if value.shape != (batch,6,4):
+            raise ValueError('Shape/surface interval must retain anatomical region identity')
+        needed = geometry.valid[None] & active[...,None]
+        parts=(value,) if bounds is None else (bounds.lower,bounds.upper)
+        if any(v.shape!=value.shape or not bool(torch.isfinite(v[needed]).all() & (v[needed]>=0).all()) for v in parts):
+            raise ValueError('Undefined realized shape/surface interval; no geometric fallback')
+        if bounds is not None and bounds.scalar is not None:
+            if bounds.scalar.shape!=value.shape or not bool(torch.isfinite(bounds.scalar[needed]).all() & (bounds.scalar[needed]>=0).all()):
+                raise ValueError('Undefined coherent interval scalar')
+            if not bool(torch.isclose(bounds.scalar[needed],(bounds.lower+bounds.upper)[needed],
+                rtol=32*torch.finfo(value.dtype).eps,atol=64*torch.finfo(value.dtype).tiny).all()):
+                raise ValueError('Interval scalar must equal its coherent lower/upper geometry')
+        approach = torch.where(needed,value,0)/scale[:,None,None].square()
+        if bounds is not None:
+            field_lower=torch.where(needed,bounds.lower,0)/scale[:,None,None].square()
+    # A triangle candidate does not make an embedded material leave the
+    # requested face interval. Retain the field on both sides of the band;
+    # native upper bounds can add evidence but cannot switch it off.
+    native_upper = torch.where(exists, near, 0)
+    material_query_selected = approach > native_upper
+    near = torch.maximum(native_upper, approach)
     if planned_regions is None:
         best = near.masked_fill(~geometry.valid, torch.inf).argmin(-1)
         desired = torch.nn.functional.one_hot(best, 4).bool() & active[..., None]
     near = torch.where(desired, near, 0)
+    field_lower=torch.where(desired,field_lower,0)
     # Contact regions share groups across all attached shapes. Other body
     # links retain independent groups; every raw terrain/self pair is audited.
     link_names = rows.observed['link_names']; groups_per_sample = 24+len(link_names)
     mapping = {name:i for i,key in enumerate(PART_NAMES) for name in CONTACT_BODY_NAMES_BY_PART[key]}
     link_part = torch.tensor([mapping.get(n, -1) for n in link_names], device=q.device)
-    costs, groups, valid = [], [], []
+    costs, groups, valid, target_valid = [], [], [], []
+    target_mask=None if bounds is None else bounds.solid_target_mask
+    if target_mask is not None:
+        if target_mask.shape!=(len(solid.sample),2) or target_mask.dtype!=torch.bool:
+            raise ValueError('Interval/solid identity binding must match pair sides')
+        if bool((target_mask & (solid.pair['full_kind']==1)[:,None]).any()):
+            raise ValueError('Self collision cannot be deduplicated as a target surface interval')
     for side in (0, 1):
         link = p[f'body_link{side}']; lp = link_part[link.clamp_min(0)]
         rp = geometry.witness_regions(model.fk, q, sample, lp.clamp_min(0), rows.points[:, side])
@@ -204,19 +263,57 @@ def unified_region_objective(model, rows, active, surface, scene, planned_region
         # event release instead targets the actual activation boundary.
         fraction = 1-DEFAULT_ACCEPTANCE.extra_activation_margin_fraction if release_mask is None else 1.
         lower = torch.where(unwanted, fraction*p['includemargin'], 0)
-        costs.append(((lower-rows.distances).relu()/scale[sample]).square())
+        # Native rows continue to supervise explicit release/extra activation.
+        # Penetration itself uses complete solids below, never a two-sided
+        # terrain triangle's local exit branch.
+        costs.append(torch.where(unwanted, ((lower-rows.distances).relu()/scale[sample]).square(), 0))
         groups.append(sample*groups_per_sample+slot)
-        valid.append(relevant & (link >= 0))
-    lower_cost = reduce_groups(torch.cat(costs), torch.cat(groups), torch.cat(valid), batch*groups_per_sample).reshape(batch, groups_per_sample)
+        valid.append(relevant & (link >= 0) & unwanted & rows.normal_valid)
+        target_valid.append(torch.zeros_like(valid[-1]))
+    sp = solid.pair; ss = sp['sample']
+    for side in (0, 1):
+        link = sp[f'body_link{side}']; lp = link_part[link.clamp_min(0)]
+        region = geometry.witness_regions(model.fk, q, ss, lp.clamp_min(0), solid.points[:, side])
+        slot = torch.where(lp >= 0, lp*4+region, 24+link.clamp_min(0))
+        costs.append(((-solid_distance).relu()/scale[ss]).square())
+        groups.append(ss*groups_per_sample+slot)
+        valid.append(link >= 0)
+        belongs=torch.zeros_like(link,dtype=torch.bool)
+        if target_mask is not None:
+            if bool((target_mask[:,side] & ((link<0)|(lp<0))).any()):
+                raise ValueError('Target interval binding refers to a noncontact or static body')
+            from contact_solver.contact_surface_interval import same_interval_query
+            belongs=(target_mask[:,side] & desired[ss,lp.clamp_min(0),region]
+                & material_query_selected[ss,lp.clamp_min(0),region]
+                & same_interval_query(solid,bounds.query,link_names,lp,region,side,bounds=bounds))
+        target_valid.append(belongs)
+    flat_cost,flat_group,flat_valid=torch.cat(costs),torch.cat(groups),torch.cat(valid)
+    lower_cost = reduce_groups(flat_cost,flat_group,flat_valid,batch*groups_per_sample).reshape(batch,groups_per_sample)
+    # Entity/region matches are only candidates for duplicate evidence. Merge
+    # only the SAME affine material query selected by the coherent interval.
+    # Different physical features and unselected evidence remain independent.
+    field_lower=torch.cat((field_lower.flatten(1),q.new_zeros(batch,len(link_names))),-1)
+    independent_lower=None
+    if bounds is not None:
+        matched=torch.cat(target_valid)
+        target_lower=reduce_groups(flat_cost,flat_group,flat_valid & matched,batch*groups_per_sample).reshape(batch,groups_per_sample)
+        independent_lower=reduce_groups(flat_cost,flat_group,flat_valid & ~matched,batch*groups_per_sample).reshape(batch,groups_per_sample)
+        # Every qualified lower witness is already covered by that interval.
+        # Do not fuse a physical feature with another material's upper bound.
     upper_cost = torch.cat((near.flatten(1), q.new_zeros(batch, len(link_names))), -1)
-    # The same robust interval penalty applies on both sides. A far missing
-    # contact must not dominate all near-surface clearances quadratically.
-    def penalty(cost):
-        return torch.where(cost <= 1, cost, 2*cost.clamp_min(1).sqrt()-1)
-    lower_penalty, upper_penalty = penalty(lower_cost), penalty(upper_cost)
-    # Different witnesses in one anatomical region can violate opposite
-    # bounds (e.g. top-face separation and a side/self penetration). Keep
-    # both derivatives instead of hiding the smaller cost behind max().
+    # Robustify each complete query once. A native candidate and a material
+    # query are alternatives here; taking bounds from different queries
+    # would invent a new residual and alter their derivatives.
+    if bounds is not None:
+        # Only the actually bound target entity shares this interval. Self,
+        # other static components and release constraints remain independent;
+        # their derivative cannot disappear behind a large recovery bound.
+        lower_penalty=constraint_penalty(independent_lower)
+        upper_penalty=constraint_penalty(upper_cost)
+    else:
+        lower_penalty, upper_penalty = constraint_penalty(lower_cost), constraint_penalty(upper_cost)
+    # Different witnesses in a region can violate opposite bounds. Both
+    # remain in the scalar; neither bound hides the other behind max().
     error = lower_penalty+upper_penalty
     # Fixed anatomical normalization: adding a new small collision must not
     # lower the average by increasing a count of currently violating groups.
@@ -228,15 +325,25 @@ def unified_region_objective(model, rows, active, surface, scene, planned_region
     dominant = (dominant/dominant.sum(-1, keepdim=True)).detach()
     attraction = upper_penalty.sum(-1)/group_count.clamp_min(1)+(upper_penalty*dominant).sum(-1)
     separation = lower_penalty.sum(-1)/group_count.clamp_min(1)+(lower_penalty*dominant).sum(-1)
-    valid_sample = invalid_counts == 0
-    loss = loss*valid_sample
+    # Complete-solid distances have independent, verified material derivatives.
+    # An unusable native triangle normal cannot erase those or other FK losses.
+    # Native unknowns remain audited and reject rollout; they are not repaired
+    # by relabeling a geometric approach residual as an actual contact.
     actual = geometry.actual_mask(model.fk, rows, surface)
     realized = ((actual | ~desired).all((-1, -2)) & active.any(-1))
+    solid_depth = solid.depths()
+    skin = getattr(geometry, 'material_skin', None)
+    material_missing = (desired & ~skin.known[None]).sum((-1, -2)).float() if skin is not None else q.new_zeros(batch)
     return loss, dict(unified_region_loss=loss, region_plan_realized=realized.float(),
-        unified_attraction_component=attraction*valid_sample,
-        unified_separation_component=separation*valid_sample,
+        region_approach_material_unknown=material_missing,
+        solid_penetration_cm=100*solid_depth.amax(-1),
+        solid_terrain_penetration_cm=100*solid_depth[:, 0], solid_self_penetration_cm=100*solid_depth[:, 1],
+        unified_attraction_component=attraction,
+        unified_separation_component=separation,
+        unified_contact_interval_component=attraction,
+        unified_physical_clearance_component=separation,
         region_missing_count=(desired & ~actual).sum((-1, -2)).float(),
         region_lower_bound_violating_groups=(lower_cost > 0).sum(-1).float(),
-        region_gradient_valid=valid_sample.float(), region_invalid_penetrating_normals=invalid_counts,
+        region_gradient_valid=q.new_ones(batch), region_invalid_penetrating_normals=invalid_counts,
         region_invalid_nonpenetrating_normals=torch.zeros(batch, device=q.device).scatter_add(0, sample,
             (relevant & (p['dist'] >= 0) & ~rows.normal_valid).float()))

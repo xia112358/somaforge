@@ -1,4 +1,4 @@
-"""Loss-only observed support metadata; contact roles remain planner intentions."""
+"""Independent observed support metadata; contact roles remain intentions."""
 import json
 import hashlib
 from pathlib import Path
@@ -8,6 +8,7 @@ import torch
 
 from somaforge_core.support_evidence import load_support_observations
 from somaforge_core.support_semantics import SUPPORT_ASSESSMENT_SCHEMA
+from somaforge_core.loaded_material_motion import unknown_material_path
 
 
 def prepare_support_supervision(manifest_path, target, samples):
@@ -53,4 +54,5 @@ def prepare_support_supervision(manifest_path, target, samples):
         observed_endpoint_samples=int(arrays['reference_target_observed_load_known'].all(-1).sum()),
         unknown_endpoint_samples=int((~arrays['reference_target_observed_load_known'].all(-1)).sum()),
         scope='same-solve observations; separate sampling from endpoint pose and contact query',
-        predicted_support_status='unknown_until_actual_execution')
+        predicted_support_status='unknown_until_actual_execution',
+        predicted_material_motion=unknown_material_path())

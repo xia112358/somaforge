@@ -18,6 +18,16 @@ def box_obbs(data: dict[str, np.ndarray]) -> tuple[np.ndarray, ...]:
     polygon = data["box_edge_start"]
     if polygon.ndim != 3 or polygon.shape[1:] != (4, 2):
         raise ValueError(f"box top polygons must have shape [N,4,2], got {polygon.shape}")
+    basis = np.asarray(data['box_basis'])
+    height = np.asarray(data['box_height'])
+    origin = np.asarray(data['box_origin'])
+    if (basis.shape != (len(polygon), 3, 3) or origin.shape != (len(polygon), 3)
+            or height.shape != (len(polygon),) or not all(np.isfinite(v).all()
+                for v in (polygon, basis, origin, height)) or np.any(height <= 0)):
+        raise ValueError('Invalid cached box geometry; rebuild predictor cache')
+    if (not np.allclose(basis[:, :, 2], [0., 0., 1.], atol=1e-6, rtol=0)
+            or not np.allclose(basis.transpose(0, 2, 1) @ basis, np.eye(3), atol=1e-6, rtol=0)):
+        raise ValueError('Cached box top must be horizontal and upward; rebuild predictor cache')
 
     # Surface tangent coordinates are an arbitrary orthonormal chart; they are
     # not guaranteed to align with the rectangular terrain edges.  Taking UV
@@ -57,8 +67,11 @@ def prepare(model: ConditionedHeightmapPosePredictor, cfg, device: torch.device)
     payload = torch.load(cfg.data_cache, map_location="cpu", weights_only=False)
     data, samples = payload["data"], payload["samples"]
     from generator.support_path_acceptance import validate_support_paths
+    from somaforge_core.contact_dataset import validate_contact_cache
     support_path_acceptance = validate_support_paths(cfg.manifest, samples)
+    validate_contact_cache(payload["summary"], cfg.manifest)
     with np.load(cfg.q_cache, allow_pickle=False) as cache:
+        validate_contact_cache(cache, cfg.manifest)
         if len(cache['target_q']) != len(samples):
             raise ValueError('Pose cache/sample count mismatch')
         for key, sample_key in (('motion_ids', 'motion_id'),
@@ -118,18 +131,19 @@ def prepare(model: ConditionedHeightmapPosePredictor, cfg, device: torch.device)
     support_supervision = prepare_support_supervision(cfg.manifest, target, samples)
     from types import SimpleNamespace
     from generator.newton_query_supervision import prepare_query_metadata
-    prepare_query_metadata(
-        cfg.manifest,
-        inputs,
-        target,
-        [SimpleNamespace(**sample) for sample in samples],
-    )
     scene = {
         "box_center": tensor(center),
         "box_rotation": tensor(rotation),
         "box_half_extents": tensor(half),
         "ground_height": tensor(ground),
     }
+    query_metadata = prepare_query_metadata(
+        cfg.manifest,
+        inputs,
+        target,
+        [SimpleNamespace(**sample) for sample in samples],
+        scene=scene,
+    )
     split = {
         name: torch.tensor([
             index for index, sample in enumerate(samples)
@@ -151,10 +165,11 @@ def prepare(model: ConditionedHeightmapPosePredictor, cfg, device: torch.device)
             raise ValueError(f"overfit motion {motion_id} is not in the training split")
         split["overfit"] = torch.tensor(overfit, device=device)
     summary = {
-        "schema": "conditioned_pose_stage_a_dataset_v1",
+        "schema": "predictor_demonstration_dataset_v1",
         "samples": len(samples),
         "support_path_acceptance": support_path_acceptance,
         "support_supervision": support_supervision,
+        "query_scene_validation": query_metadata,
         "splits": {key: len(value) for key, value in split.items()},
         "condition_contract": "decoder consumes one explicit topology+surface plan",
         "pose_input": "current q + actual contact/anchor + heightmap-derived surface index + 2cm root-yaw heightmap + explicit plan",

@@ -329,6 +329,10 @@ def generate_contact_aware_pyroki_preview(
         }
     )
     plan_metadata = dict(plan.metadata or {})
+    if 'source_loaded_material_reference' in plan_metadata:
+        taskspace_metadata['source_loaded_material_reference'] = plan_metadata['source_loaded_material_reference']
+    if 'environment_depth_residual_scale_m' in plan_metadata:
+        taskspace_metadata['environment_depth_residual_scale_m'] = plan_metadata['environment_depth_residual_scale_m']
     if "release_witnesses" in plan_metadata:
         taskspace_metadata["release_witnesses"] = plan_metadata["release_witnesses"]
     if "native_hard_release" in plan_metadata:
@@ -342,7 +346,7 @@ def generate_contact_aware_pyroki_preview(
         taskspace_metadata["support_surface_transforms"] = list(plan.surface_transforms)
         if "support_residual_scale" in plan_metadata:
             taskspace_metadata["support_residual_scale"] = plan_metadata["support_residual_scale"]
-        for key in ("support_rotation_policy", "support_origin_policy", "support_approach_seconds", "support_approach_orientation", "augmentation_objective"):
+        for key in ("support_rotation_policy", "support_origin_policy", "augmentation_objective"):
             if key in plan_metadata:
                 taskspace_metadata[key] = plan_metadata[key]
         offsets = plan_metadata.get("free_surface_reference_offsets")
@@ -368,9 +372,9 @@ def generate_contact_aware_pyroki_preview(
                               "free_surface_reference_offset_world": offset[indices[0]].tolist()}))
         taskspace = preview.replace(taskspace, contacts=tuple(contacts))
         if plan_metadata.get("stable_contact_material_samples"):
-            from .stable_contact_material import stabilize_contact_material_samples
+            from .stable_contact_material import stabilize_contact_material_samples, MATERIAL_SAMPLE_SCHEMA
             taskspace = stabilize_contact_material_samples(taskspace, source_motion)
-            taskspace_metadata["optimization_sample_contract"] = "fixed_material_set_per_active_episode_v1"
+            taskspace_metadata["optimization_sample_contract"] = MATERIAL_SAMPLE_SCHEMA
         taskspace_metadata["free_surface_contacts"] = True
         taskspace_metadata["convex_surface_targets"] = bool(plan_metadata.get("convex_surface_targets", False))
         taskspace_metadata["surface_reference_ratio"] = float(source_reference_weight)

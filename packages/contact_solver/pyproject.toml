@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "contact-solver"
 version = "0.1.0"
 requires-python = ">=3.10"
-dependencies = ['numpy', 'torch', 'somaforge-core', 'motion-edit']
+dependencies = ['numpy', 'torch', 'somaforge-core[solid]', 'motion-edit']
 
 [project.optional-dependencies]
 research = ["scipy", "osqp", "trimesh"]

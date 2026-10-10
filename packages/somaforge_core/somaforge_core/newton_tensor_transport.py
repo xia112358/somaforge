@@ -6,6 +6,7 @@ own GPU stream. Only explicit diagnostics/metadata travel as CPU objects.
 from multiprocessing.connection import Client, Listener
 import torch
 import torch.multiprocessing  # Registers CUDA tensor reductions for Connection.
+from .contact_source_geometry import SOURCE_NORMAL_FAN_SCHEMA
 
 
 def _disable_nagle(connection):
@@ -16,14 +17,23 @@ def _disable_nagle(connection):
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
 
+def native_geometry_metadata(query, link_names):
+    """Shared initialized geometry metadata for tensor and HTTP consumers."""
+    catalog = {int(f['surface']): f for faces in query.shape_surface.values() for f in faces}
+    metadata = dict(link_names=tuple(link_names), surface_catalog=list(catalog.values()),
+        configured_margin=min(query.configured_terrain_includemargins), worlds=query.worlds,
+        provenance=query.provenance, schema='newton_cuda_ipc_stage_query_v1',
+        surface_attribution_schema=SOURCE_NORMAL_FAN_SCHEMA)
+    if getattr(query, 'solid_geometry', None) is not None:
+        metadata['solid_geometry'] = query.solid_geometry
+    return metadata
+
+
 def serve_tensor_queries(query, port, authkey):
     from .newton_contact_tensors import NewtonContactTensorReader
     reader = NewtonContactTensorReader(query.model, query.solver, query.body_env, query.shape_surface)
     query.tensor_reader = reader
-    catalog = {int(f['surface']): f for faces in query.shape_surface.values() for f in faces}
-    metadata = dict(link_names=reader.link_names, surface_catalog=list(catalog.values()),
-        configured_margin=min(query.configured_terrain_includemargins), worlds=query.worlds,
-        provenance=query.provenance, schema='newton_cuda_ipc_stage_query_v1')
+    metadata = native_geometry_metadata(query, reader.link_names)
     import json
     with Listener(('127.0.0.1', port), authkey=authkey) as listener:
         print(json.dumps(dict(ready=True, port=port, transport='cuda_ipc')), flush=True)
@@ -68,6 +78,8 @@ class TensorSceneClient:
         self.metadata = self.connection.recv()
         if self.metadata.get('schema') != 'newton_cuda_ipc_stage_query_v1':
             raise ValueError('Unknown device query transport')
+        if self.metadata.get('surface_attribution_schema') != SOURCE_NORMAL_FAN_SCHEMA:
+            raise ValueError('Device query lacks current source-witness face attribution')
 
     def query(self, q, *, audit=False):
         if not q.is_cuda:
@@ -139,7 +151,7 @@ class TensorSceneRouter:
             face_normal[idx, :len(normal)] = normal
             face_offset[idx, :len(offset)] = offset
             face_surface[idx, :len(surface)] = surface
-        return dict(schema='newton_device_witness_batch_v1',
+        return dict(schema='newton_device_witness_batch_v1', surface_attribution_schema=SOURCE_NORMAL_FAN_SCHEMA,
             pairs={key: torch.cat([row[key] for row in rows]) for key in rows[0]},
             **outputs, configured_margin=configured, link_names=self.link_names,
             face_normal=face_normal, face_offset=face_offset, face_surface=face_surface)

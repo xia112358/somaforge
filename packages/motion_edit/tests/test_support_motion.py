@@ -22,43 +22,6 @@ def test_temporal_terms_need_real_history():
                                   [[0,0],[1,0],[1,1],[1,1]])
 
 
-def test_orientation_approach_uses_landing_axes_and_continuous_target():
-    from scipy.spatial.transform import Rotation
-    from motion_edit.generation.support_motion import (
-        compile_support_approach, compile_approach_orientation, blend_orientation_target)
-    c,p,r,n=fixture(); c.contact_link_indices[:]=0; c.contact_weights[:4]=0
-    episodes=[dict(endpoint='left_foot',start=4,stop=6)]
-    approach=compile_support_approach(c,['left_ankle_roll_link','right_ankle_roll_link'],
-        p,r,np.eye(3),p[:,0:1],episodes,4)
-    projectors=np.zeros((6,1,3,3));projectors[4:]=np.eye(3)
-    targets,axes=compile_approach_orientation(approach,c,episodes,r,np.eye(3),projectors)
-    np.testing.assert_allclose(axes[:4,0],np.broadcast_to(np.eye(3),(4,3,3)))
-    assert not axes[4:].any()
-    initial=Rotation.from_euler('z',170,degrees=True)
-    np.testing.assert_allclose(blend_orientation_target(targets[0,0],initial.as_rotvec(),0),initial.as_matrix())
-    np.testing.assert_allclose(blend_orientation_target(targets[0,0],initial.as_rotvec(),1),np.eye(3))
-    # Rolling contacts must not acquire an orientation lock in approach.
-    _,axes=compile_approach_orientation(approach,c,episodes,r,np.eye(3),np.zeros_like(projectors))
-    assert not axes.any()
-
-
-def test_approach_preserves_clearance_without_changing_contact_activation():
-    from motion_edit.generation.support_motion import compile_support_approach
-    c,p,r,n=fixture()
-    c.contact_link_indices[:]=0
-    c.contact_weights[:4]=0
-    p[:,0,2]=np.arange(6)[::-1]*.02
-    original=c.contact_weights.copy()
-    targets=p[:,0:1].copy()+np.array([.1,0,0])
-    indices,points,goals,weights,identities,phases=compile_support_approach(c,['left_ankle_roll_link','right_ankle_roll_link'],p,r,
-        np.eye(3),targets,[dict(endpoint='left_foot',start=4,stop=6)],4)
-    np.testing.assert_array_equal(c.contact_weights,original)
-    np.testing.assert_allclose(goals[:4,0],targets[:4,0])
-    assert weights[0,0]==0 and 0<weights[1,0]<weights[2,0]<weights[3,0]<1
-    assert not weights[4:].any()
-    assert len(set(identities[:4,0]))==1 and (identities[4:]==-1).all()
-
-
 def test_shape_switch_keeps_one_endpoint_edit_and_source_motion():
     c,p,r,n=fixture()
     target,mask,episodes=compile_support_motion(c,['left_ankle_roll_link','left_ankle_roll_sphere_1_link'],p,r,np.eye(3),n)

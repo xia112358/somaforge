@@ -2,7 +2,6 @@ import inspect
 
 import torch
 
-from generator.conditioned_pose_predictor import ConditionedHeightmapPosePredictor
 from generator.full1000_position_predictor import Full1000PositionPredictor
 from generator.next_interaction_heightmap import HEIGHTMAP_ROWS, HEIGHTMAP_COLS
 
@@ -45,15 +44,11 @@ def test_event_roles_require_teacher_roles_and_reload_exactly():
     torch.testing.assert_close(model(**obs).qpos, other(**obs).qpos, rtol=0, atol=0)
 
 
-def test_migration_keeps_all_shared_weights_and_has_no_face_parameters_or_input():
+def test_scratch_predictor_has_no_partial_weight_loading_or_face_input():
     model, _ = setup()
-    base = ConditionedHeightmapPosePredictor(width=24, layers=1)
-    loaded, fresh = model.load_stage_a(base.state_dict())
-    assert loaded and fresh
+    assert not hasattr(model, 'load_stage_a')
     assert not any('surface' in key for key in model.state_dict())
     assert not any('surface' in key for key in inspect.signature(model.forward).parameters)
-    for key in loaded:
-        torch.testing.assert_close(model.state_dict()[key], base.state_dict()[key], rtol=0, atol=0)
 
 
 def test_network_executes_explicit_position_plan_and_ignores_inactive_location():
@@ -152,6 +147,52 @@ def test_region_planning_and_execution_have_disjoint_gradients():
     assert model.shared.layers[0].linear1.weight.grad.abs().sum() > 0
     assert model.norm.weight.grad.abs().sum() > 0
     assert model.region_geometry_encoder[-1].weight.grad.abs().sum() > 0
+
+
+def test_complete_teacher_regions_replace_only_teacher_rows_and_keep_plan_gradients_isolated():
+    _, obs = setup()
+    obs = {key: value.expand(2, *value.shape[1:]).clone() for key, value in obs.items()}
+    model = Full1000PositionPredictor(24, 1, 8, region_plan=True, event_roles=True).eval()
+    with torch.no_grad():
+        model.role_head.bias[1] = 10
+        model.region_plan_encoder.weight.normal_()
+    autonomous = model(**obs)
+    regions = torch.zeros(2, 6, 4, dtype=torch.bool)
+    regions[:, :, 0] = True
+    regions[:, :2, 1] = True
+    mask = torch.tensor([True, False])
+    out = model(**obs, teacher_mask=mask, teacher_contact=torch.ones(2, 6, dtype=torch.bool),
+        teacher_cell=torch.zeros(2, 6, dtype=torch.long), teacher_role=torch.ones(2, 6, dtype=torch.long),
+        teacher_regions=regions)
+    assert torch.equal(out.planned_regions[0], regions[0])
+    assert torch.equal(out.planned_regions[1], autonomous.planned_regions[1])
+    torch.testing.assert_close(out.region_logits, autonomous.region_logits, rtol=0, atol=0)
+    altered = regions.clone(); altered[0, 0, 0] = False
+    changed = model(**obs, teacher_mask=mask, teacher_contact=torch.ones(2, 6, dtype=torch.bool),
+        teacher_cell=torch.zeros(2, 6, dtype=torch.long), teacher_role=torch.ones(2, 6, dtype=torch.long),
+        teacher_regions=altered)
+    assert not torch.equal(changed.qpos[0], out.qpos[0])
+    torch.testing.assert_close(changed.qpos[1], out.qpos[1], rtol=0, atol=0)
+    out.qpos.square().sum().backward()
+    assert all(p.grad is None for p in model.training_parameter_groups()['planner'])
+    assert model.region_plan_encoder.weight.grad.abs().sum() > 0
+
+
+def test_regional_teacher_requires_complete_native_evidence_without_silent_fallback():
+    import pytest
+    _, obs = setup()
+    model = Full1000PositionPredictor(24, 1, 8, region_plan=True).eval()
+    kwargs = dict(teacher_mask=torch.ones(1, dtype=torch.bool),
+        teacher_contact=torch.ones(1, 6, dtype=torch.bool), teacher_cell=torch.zeros(1, 6, dtype=torch.long))
+    with pytest.raises(ValueError, match='requires actual demonstrated regions'):
+        model(**obs, **kwargs)
+    regions = torch.zeros(1, 6, 4, dtype=torch.bool); regions[:, :, 0] = True
+    regions[:, 0] = False
+    with pytest.raises(ValueError, match='missing native regional evidence'):
+        model(**obs, **kwargs, teacher_regions=regions)
+    regions[:, :, 0] = True; regions[:, 2, 3] = True
+    with pytest.raises(ValueError, match='invalid anatomical region'):
+        model(**obs, **kwargs, teacher_regions=regions)
 
 
 def test_legacy_migration_copies_norm_and_resets_only_new_residuals():

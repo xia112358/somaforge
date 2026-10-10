@@ -55,13 +55,13 @@ def test_anchored_single_contact_can_pass_and_global_shift_is_free():
     rows.pair={'geometry_point1_w':points[0].clone()}
     rows.spatial_representatives=lambda points,active,surface,actual=False,regions=None: (torch.arange(6)[None],active)
     surface=torch.zeros(1,6,dtype=torch.long)
-    error,complete,count=rows.anchored_layout(points,active,surface,actual=True)
+    error,complete,count=rows.witness_position_statistics(points,active,surface,actual=True)
     assert complete.item() and count.item()==1 and error.item()==0
     rows.pair['geometry_point1_w']+=3
-    error,complete,_=rows.anchored_layout(points+3,active,surface,actual=True)
+    error,complete,_=rows.witness_position_statistics(points+3,active,surface,actual=True)
     assert complete.item() and error.item()==0
     displaced=points+3;displaced[:,0,0]+=.2
-    error,_,_=rows.anchored_layout(displaced,active,surface,actual=True)
+    error,_,_=rows.witness_position_statistics(displaced,active,surface,actual=True)
     assert error.item()>.03
 
 

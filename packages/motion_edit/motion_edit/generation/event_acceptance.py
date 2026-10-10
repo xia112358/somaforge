@@ -12,6 +12,13 @@ PARTS = ('left_foot', 'right_foot', 'left_hand', 'right_hand', 'left_knee', 'rig
 STABLE_FRAMES = 3
 
 
+class SourceEventEvidenceError(ValueError):
+    """Expose source-clock diagnostics without weakening prepared-source checks."""
+    def __init__(self, report, contract):
+        self.report, self.contract = report, contract
+        super().__init__(f'Source observations do not satisfy event evidence policy: {report["failures"]}')
+
+
 def runs(mask):
     edges = np.diff(np.r_[False, np.asarray(mask, bool), False].astype(int))
     return list(zip(np.flatnonzero(edges == 1).tolist(), np.flatnonzero(edges == -1).tolist()))
@@ -72,13 +79,62 @@ def build_contract(mask, surface, events, fps):
         truth='unchanged_native_activation_and_allocation',endpoint='whole_part_same_surface'))
 
 
+def observed_source_contract(data, intervals):
+    """Bind roles to immutable source observations, preserving the edit clock.
+
+    Removed standing intervals separate retained blocks. Each block uses the
+    same event materializer as predictor demonstrations; evidence cannot cross
+    a removed interval. Authored IDs identify edits, never contact requirements.
+    """
+    from somaforge_core.demonstration_events import materialize
+    blocks = []
+    frame_count = len(data['contact_part_mask'])
+    identities = set()
+    for index, row in enumerate(intervals):
+        a, b = int(row['start_frame']), int(row['end_frame'])
+        identity = row.get('segment_id', str(index))
+        if not 0 <= a < b < frame_count or identity in identities:
+            raise ValueError('Invalid or duplicate source action clock')
+        identities.add(identity)
+        if blocks and a < int(blocks[-1][-1]['end_frame']):
+            raise ValueError('Overlapping or unordered source action clock')
+        if not blocks or a != int(blocks[-1][-1]['end_frame']):
+            blocks.append([])
+        blocks[-1].append(dict(row, segment_id=identity))
+    if not blocks:
+        raise ValueError('No source action clock')
+    events = []
+    for block in blocks:
+        start, stop = int(block[0]['start_frame']), int(block[-1]['end_frame']) + 1
+        evidence = {key: np.asarray(data[key])[start:stop]
+                    for key in ('contact_part_mask', 'contact_surface')}
+        evidence['fps'] = data['fps']
+        clock = [dict(start_frame=int(row['start_frame'])-start,
+                      end_frame=int(row['end_frame'])-start) for row in block]
+        observed, _ = materialize(evidence, clock)
+        for row, source in zip(observed, block):
+            row.update(segment_id=source['segment_id'],
+                       start_frame=row['start_frame']+start, end_frame=row['end_frame']+start)
+            for touchdown in row['touchdown_events']:
+                touchdown['frame'] += start
+            events.append(row)
+    contract = build_contract(data['contact_part_mask'], data['contact_surface'], events, data['fps'])
+    contract['event_binding'] = dict(schema='own_native_source_event_binding_v1',
+        materializer='somaforge_core.demonstration_events.materialize',
+        old_contact_requirements_used=False, boundary_shifts=0,
+        action_count=len(events), authored_ids_used='edit_clock_identity_only')
+    source_audit, _ = audit_events(contract, data['contact_part_mask'], data['contact_surface'])
+    if not source_audit['passed']:
+        raise SourceEventEvidenceError(source_audit, contract)
+    contract['source_self_audit'] = source_audit
+    return events, contract
+
+
 def materialize_contract(motion, labels, event_path, support_phases=None):
-    from somaforge_core.newton_contact_data import load_contact_labels
-    data = load_contact_labels(motion, labels)
-    with np.load(motion, allow_pickle=False) as z:
-        fps = float(z['fps'].reshape(-1)[0])
-    events = [json.loads(line) for line in Path(event_path).read_text().splitlines() if line.strip()]
-    contract = build_contract(data['contact_part_mask'], data['contact_surface'], events, fps)
+    from somaforge_core.demonstration_events import observations
+    data = observations(motion, labels)
+    intervals = [json.loads(line) for line in Path(event_path).read_text().splitlines() if line.strip()]
+    _, contract = observed_source_contract(data, intervals)
     contract['provenance'] = {key: dict(path=str(Path(path).resolve()),
         sha256=hashlib.sha256(Path(path).read_bytes()).hexdigest())
         for key, path in [('motion', motion), ('labels', labels), ('events', event_path)]}

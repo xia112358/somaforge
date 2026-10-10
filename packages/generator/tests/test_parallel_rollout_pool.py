@@ -178,3 +178,36 @@ def test_disabled_post_demo_resamples_only_after_accepted_final_target():
     assert pool.indices.item()==0 and pool.attempts.item()==pool.age.item()==0
     assert torch.equal(pool.observation['current_q'],bank['current_q'][:1])
     assert pool.state_dict()['allow_post_demo'] is False
+
+
+def test_trainer_counts_autonomous_inputs_before_feedback_without_reading_pool_field():
+    """Exercise the trainer's accounting with real pool commits and rollbacks."""
+    import ast
+    from pathlib import Path
+    from generator import parallel_rollout_pool
+
+    path = Path(parallel_rollout_pool.__file__).with_name('train_full1000_position.py')
+    tree = ast.parse(path.read_text())
+    accumulation = next(node for node in ast.walk(tree)
+        if isinstance(node, ast.For) and isinstance(node.iter, ast.Name)
+        and node.iter.id == 'pool_counts')
+    code = compile(ast.Module(body=[accumulation], type_ignores=[]), str(path), 'exec')
+    pool = ParallelRolloutPool(reference(2), torch.arange(2), torch.full((2,), -1), 2)
+    pool.indices[:] = torch.arange(2)
+    pool.observation = {k:v.clone() for k,v in pool.reference.items()}
+    counts = {'generated_inputs': torch.tensor(0), 'autonomous_inputs': torch.tensor(0)}
+    for completed in (torch.tensor([True, False]), torch.tensor([False, False])):
+        slots, ids, inputs = pool.batch(2)
+        counts['generated_inputs'] += (pool.age[slots] > 0).sum()
+        counts['autonomous_inputs'] += (~pool.supervised[slots]).sum()
+        feedback = pool.update(slots, inputs['current_q'] + 1,
+            {'contact':torch.ones(2,1,dtype=torch.bool)}, completed,
+            torch.ones(2,dtype=torch.bool), observed)
+        for key in feedback:
+            counts.setdefault(key, torch.tensor(0))
+        exec(code, {'pool_counts': counts, 'feedback': feedback})
+    assert counts['autonomous_inputs'] == 1  # The exhausting input was still supervised.
+    assert counts['generated_inputs'] == 1
+    assert counts['autonomous_states'] == 2  # Post-commit states, a different measure.
+    assert counts['accepted_transitions'] == 1
+    assert counts['rollbacks'] == 3

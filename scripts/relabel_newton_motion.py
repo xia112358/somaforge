@@ -63,6 +63,7 @@ def relabel(motion, scene, output, batch_size=128):
             contact_position_w=np.concatenate([c['position_w'] for c in chunks]),
             contact_surface=np.concatenate([c['surface'] for c in chunks]),
             unallocated_active_contact=np.concatenate([c['unallocated'] for c in chunks]),
+            full_robot_separation_json=np.array(json.dumps([r for c in chunks for r in c['full_robot_separation']])),
             contact_pairs_json=np.array(json.dumps([p for c in chunks for p in c['pairs']])),
             source_path=np.array(str(args.motion.resolve())),
             source_sha256=np.array(hashlib.sha256(args.motion.read_bytes()).hexdigest()),

@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 import numpy as np
 
 from .newton_contacts import SCHEMA, PARTS, reduce_snapshot, snapshot_solver_contacts
+from .contact_source_geometry import SOURCE_NORMAL_FAN_SCHEMA
 
 _provider = None
 
@@ -417,6 +418,9 @@ class DedicatedNewtonSceneQuery:
                     if pair['contact_source'].get('support_vertices_w') is not None:
                         pair['contact_source']['support_vertices_w'] = ((np.asarray(
                             pair['contact_source']['support_vertices_w'])-translation)@transform).tolist()
+                    if pair['contact_source'].get('source_feature_projection_w') is not None:
+                        pair['contact_source']['source_feature_projection_w'] = ((np.asarray(
+                            pair['contact_source']['source_feature_projection_w'])-translation)@transform).tolist()
                 pair['normal_w'] = (np.asarray(pair['normal_w'])@transform).tolist()
             rows.append(reduced)
             if self.audit_device_reader:
@@ -438,7 +442,7 @@ class DedicatedNewtonSceneQuery:
                 if self.source_capture is not None else None),
             source_capture_contract=('single_collision_pass_raw_to_solver_verified_v2'
                 if self.source_capture is not None else None),
-            surface_attribution_schema=('newton_source_triangle_normal_fan_v1'
+            surface_attribution_schema=(SOURCE_NORMAL_FAN_SCHEMA
                 if self.source_capture is not None else 'legacy_nearest_face'),
             configured_terrain_includemargins=self.configured_terrain_includemargins,
             configured_margin_source='realized_mjwarp_contact_params_margin_sum_v2',

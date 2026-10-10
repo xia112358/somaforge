@@ -11,11 +11,13 @@ import socket
 import subprocess
 import sys
 import time
+from somaforge_core.contact_source_geometry import SOURCE_NORMAL_FAN_SCHEMA
 
 
 def main():
     from motion_edit.generation.native_contact_refinement import (
         RefinementConfig, REFINEMENT_OBJECTIVE_SCHEMA)
+    from somaforge_core.loaded_material_motion import DEFAULT_MATERIAL_RESIDUAL_SCALE_M
     defaults = RefinementConfig()
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('motion', 'events', 'taskspace', 'checkpoint', 'manifest', 'binding', 'output'):
@@ -25,6 +27,11 @@ def main():
     parser.add_argument('--query-worlds', type=int, default=1)
     parser.add_argument('--cpu-threads', type=int, default=2)
     parser.add_argument('--verification-evidence', type=Path)
+    parser.add_argument('--source-loaded-sites', type=Path, required=True)
+    parser.add_argument('--source-observations', type=Path, required=True)
+    parser.add_argument('--material-motion-residual-scale-m', type=float,
+        default=DEFAULT_MATERIAL_RESIDUAL_SCALE_M,
+        help='Loss normalization only; does not change activation or material motion allowance')
     parser.add_argument('--support-phases', type=Path, required=True)
     parser.add_argument('--event-reference-contacts', type=Path, required=True,
                         help='Verified Newton labels of the aggregate continuity reference')
@@ -41,7 +48,7 @@ def main():
     from somaforge_core.g1_kinematics import CanonicalG1ForwardKinematics
     from somaforge_core.newton_tensor_transport import TensorSceneClient, TensorSceneRouter
     from motion_edit.generation.native_contact_refinement import (
-        refine_trajectory, RefinementConfig, demonstrated_approach_tasks)
+        refine_trajectory, RefinementConfig, demonstrated_approach_tasks, require_material_task_coverage)
     from motion_edit.generation.taskspace_spec import read_contact_aware_taskspace_motion
     from contact_solver.contact_regions import CONTACT_INTERVAL_SCHEMA
     from motion_edit.generation.newton_direct_fk import canonicalize_motion_with_direct_newton_fk
@@ -64,7 +71,6 @@ def main():
             raise ValueError('Continuity reference must have the same frame count and sampling rate')
         original_order = [original_names.index(name) for name in G1_29DOF_JOINT_ORDER]
         temporal = np.concatenate((original['joint_pos'][:, :7], original['joint_pos'][:, 7:][:, original_order]), -1)
-    events = [json.loads(line) for line in args.events.read_text().splitlines() if line.strip()]
     from motion_edit.generation.event_acceptance import materialize_contract, optimization_events
     event_contract = materialize_contract(args.continuity_reference, args.event_reference_contacts, args.events, args.support_phases)
     (args.output/'event_contract.json').write_text(json.dumps(event_contract, indent=2))
@@ -76,13 +82,17 @@ def main():
     if spec.frame_count != len(q):
         raise ValueError('Taskspace and motion frame counts differ')
     approach = demonstrated_approach_tasks(spec, events, fk, tensor, binding['surface_catalog'])
+    require_material_task_coverage(events, len(q), approach)
     support_reference = None
     if args.source_support:
         from motion_edit.generation.source_support import build_support_reference
         support_reference = build_support_reference(spec, approach[3], approach[2])
     from motion_edit.generation.source_support import SourcePhaseMotion
+    from motion_edit.generation.loaded_material_reference import read_loaded_reference
+    loaded_reference = read_loaded_reference(args.continuity_reference, args.source_loaded_sites,
+        args.source_observations, args.support_phases)
     phase_motion = SourcePhaseMotion(fk, torch.as_tensor(temporal, device=tensor.device, dtype=tensor.dtype),
-                                     args.event_reference_contacts, event_contract)
+                                     loaded_reference, event_contract, residual_scale_m=args.material_motion_residual_scale_m)
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
     auth = args.output / 'query.auth'
@@ -92,7 +102,8 @@ def main():
                '--checkpoint', str(args.checkpoint), '--motion-manifest', str(args.manifest),
                '--binding', str(args.binding), '--inspection-output', str(args.output/'model.json'),
                '--port', str(port), '--query-nconmax', '2048', '--query-njmax', '16384',
-               '--query-worlds', str(args.query_worlds), '--capture-contact-sources', '--tensor-auth', str(auth), '--device', 'cuda:0']
+               '--query-worlds', str(args.query_worlds), '--capture-contact-sources', '--solid-geometry',
+               '--tensor-auth', str(auth), '--device', 'cuda:0']
     client = None
     with (args.output/'worker.log').open('w') as log:
         worker = subprocess.Popen(command, cwd=somaforge_root(), stdout=log, stderr=subprocess.STDOUT)
@@ -123,6 +134,10 @@ def main():
                     (args.output/f'{label}_same_pass_audit.json').write_text(json.dumps(records, indent=2))
             audit_frames(tensor, 'initial')
             router = TensorSceneRouter({0: client})
+            from contact_solver.solid_witness_loss import SolidSceneRouter
+            solid_router = SolidSceneRouter({0: client.metadata['solid_geometry']}, router.link_names)
+            def solid_query(fk, q):
+                return solid_router(fk, q, torch.zeros(len(q), dtype=torch.long, device=q.device))
             if args.verification_evidence is not None:
                 checked = 0
                 for evidence_path in sorted(args.verification_evidence.glob('native_evidence_*.npz')):
@@ -159,7 +174,8 @@ def main():
             result, history = refine_trajectory(tensor, fk, events, query, fingerprint,
                 config=RefinementConfig(steps=0 if args.audit_only else args.steps, learning_rate=args.learning_rate), approach_tasks=approach, progress=progress,
                 continuity_reference=torch.as_tensor(temporal, dtype=tensor.dtype, device=tensor.device),
-                event_contract=event_contract, support_reference=support_reference, phase_motion_loss=phase_motion)
+                event_contract=event_contract, support_reference=support_reference, phase_motion_loss=phase_motion,
+                solid_query=solid_query)
             audit_frames(result, 'final')
             pose = result.cpu().numpy()
             seed['joint_pos'] = np.concatenate((pose[:, :7], pose[:, 7:][:, np.argsort(order)]), -1)
@@ -169,9 +185,12 @@ def main():
                 initial=history[0], final=history[-1], source=str(args.motion.resolve()),
                 source_initializer=initializer, objective_schema=REFINEMENT_OBJECTIVE_SCHEMA, contact_interval_schema=CONTACT_INTERVAL_SCHEMA, model_fingerprint=fingerprint,
                 query_worlds=args.query_worlds, learning_rate=args.learning_rate, source_support_enabled=args.source_support, audit_only=args.audit_only, event_contract_schema=event_contract['schema'],
+                loaded_material_reference=dict(sites=str(args.source_loaded_sites), observations=str(args.source_observations),
+                    residual_scale_m=args.material_motion_residual_scale_m),
                 continuity_reference=str(args.continuity_reference.resolve()),
                 query_schema='newton_device_witness_batch_v1',
-                surface_attribution_schema='newton_source_triangle_normal_fan_v1',
+                collision_distance_objective=solid_router.contract(),
+                surface_attribution_schema=SOURCE_NORMAL_FAN_SCHEMA,
                 event_file=str(args.events.resolve()), training_ready=False), indent=2))
         finally:
             if client is not None:

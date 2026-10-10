@@ -26,7 +26,7 @@ def terrain_text(source, scale):
     return '\n'.join(lines)+'\n'
 
 class Workers:
-    def __init__(self, root, heights, device, *, query_worlds=1, tensor_transport=False, checkpoint, source_manifest, source_model):
+    def __init__(self, root, heights, device, *, query_worlds=1, tensor_transport=False, solid_geometry=False, checkpoint, source_manifest, source_model):
         self.checkpoint = str(checkpoint)
         self.source_manifest = Path(source_manifest)
         self.source_model = Path(source_model)
@@ -34,6 +34,7 @@ class Workers:
         self.root, self.heights, self.device = root, heights, device
         self.query_worlds = query_worlds
         self.tensor_transport = tensor_transport
+        self.solid_geometry = solid_geometry
         self.tensor_clients = {}
 
     def __enter__(self):
@@ -61,6 +62,8 @@ class Workers:
                     with os.fdopen(os.open(auth_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'wb') as stream:
                         stream.write(key)
                     args += ['--tensor-auth', str(auth_path)]
+                if self.solid_geometry:
+                    args += ['--solid-geometry']
                 process = subprocess.Popen(args,stdout=log,stderr=subprocess.STDOUT)
                 self.processes.append(process)
                 self.entries[h] = dict(folder=folder,endpoint=f'http://127.0.0.1:{port}', port=port)
@@ -95,6 +98,12 @@ class Workers:
                         )
             from somaforge_core.newton_scene_router import NewtonSceneRouter
             self.router = NewtonSceneRouter({e['fp']:e['endpoint'] for e in self.entries.values()},workers=3)
+            for index,entry in enumerate(self.entries.values()):entry['scene_id']=index
+            if self.solid_geometry:
+                from contact_solver.native_contact_position import NativeContactPositionRouter
+                self.position_router=NativeContactPositionRouter({index:json.loads(
+                    (entry['folder']/'contact_position_metadata.json').read_text())
+                    for index,entry in enumerate(self.entries.values())})
             if self.tensor_transport:
                 from somaforge_core.newton_tensor_transport import TensorSceneClient, TensorSceneRouter
                 for index, (height, entry) in enumerate(self.entries.items()):
@@ -104,6 +113,10 @@ class Workers:
                     self.tensor_clients[index] = client
                     entry['scene_id'] = index
                 self.tensor_router = TensorSceneRouter(self.tensor_clients)
+                if self.solid_geometry:
+                    from contact_solver.solid_witness_loss import SolidSceneRouter
+                    self.solid_router = SolidSceneRouter({index: client.metadata['solid_geometry']
+                        for index, client in self.tensor_clients.items()}, self.tensor_router.link_names)
             return self
         except Exception:
             self.__exit__(None,None,None); raise
@@ -116,3 +129,14 @@ class Workers:
             if p.poll() is None: p.terminate()
         for p in self.processes: p.wait(timeout=30)
         for log in self.logs: log.close()
+
+    def target_interval_provider(self):
+        if not self.tensor_transport or not self.solid_geometry:
+            raise ValueError('Coherent target intervals require actual tensor and complete-solid scenes')
+        if not hasattr(self,'_target_interval_provider'):
+            from contact_solver.shape_target_interval import ShapeTargetIntervalProvider
+            self._target_interval_provider=ShapeTargetIntervalProvider(self.position_router.metadata,self.solid_router)
+        return self._target_interval_provider
+
+    def target_interval(self,model,rows,active,surface,scene,scene_ids):
+        return self.target_interval_provider()(model,rows,active,surface,scene,scene_ids)

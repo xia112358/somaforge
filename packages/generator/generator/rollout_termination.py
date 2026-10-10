@@ -72,6 +72,38 @@ def physical_reset_masks(q, penetration_cm, invalid_witnesses, joint_violation_r
     return ~(invalid | deep | no_contact), reasons
 
 
+def native_continuation_masks(q, metrics, actual_contact, *, pair=None,
+                              limits=TerminationLimits()):
+    """Use actual contacts and complete penetration distances for boundaries.
+
+    A conservative shape/box support-plane bound is not a penetration depth.
+    Its negative value must not veto an otherwise valid native pose query.
+    """
+    import torch
+    required = ('newton_penetration_cm', 'newton_invalid_fullbody_witnesses',
+                'joint_violation_rad')
+    if any(key not in metrics for key in required):
+        raise ValueError('Missing actual Newton continuation metrics')
+    invalid = metrics['newton_invalid_fullbody_witnesses'].clone()
+    if pair is not None:
+        required_pair = ('type', 'dist', 'includemargin', 'active',
+                         'constraint_allocated', 'sample')
+        if any(key not in pair for key in required_pair):
+            raise ValueError('Missing actual Newton activation/allocation fields')
+        active = ((pair['type'].long() & 1) != 0) & (pair['dist'] < pair['includemargin'])
+        if not torch.equal(active, pair['active']):
+            raise ValueError('Newton activation metadata mismatch')
+        bad = active & ~pair['constraint_allocated']
+        invalid.scatter_add_(0, pair['sample'], bad.to(invalid))
+    depth = metrics['newton_penetration_cm']
+    if 'solid_penetration_cm' in metrics:
+        # Signed GJK/EPA on the enabled native solids is an actual depth,
+        # unlike the old conservative support-plane diagnostic.
+        depth = torch.maximum(depth, metrics['solid_penetration_cm'])
+    return physical_reset_masks(q, depth, invalid,
+        metrics['joint_violation_rad'], actual_contact, limits)
+
+
 def demonstration_loss(value, supervised):
     """Zero demonstration terms on rows with no remaining demonstration target."""
     import torch

@@ -1,0 +1,9 @@
+{
+  "baselines/predictor_control500_20261009/README.md": "c631884332e5a0c515fe275266e8cabcc256d62bd8daf46a3a1764e869c48e44",
+  "baselines/predictor_control500_20261009/analysis.md": "c404ea9be6017b92856118100e5970f37e4240f44dee278fc3aa3792e0a524ba",
+  "baselines/predictor_control500_20261009/architecture_decision.json": "a525bdbe0142bd4089124e42ec58f625fe1e4ab883798e3f119f88a077911646",
+  "baselines/predictor_control500_20261009/baseline.json": "4ac2e71239c0c4d7a72398a040a807131f17c97868534d1765e5980e8ebf08f8",
+  "baselines/predictor_control500_20261009/height_comparison.json": "63d24d5dac5bc41ae225553cc70b328372cd7c557eca544684b17220b1a136db",
+  "baselines/predictor_control500_20261009/training_config.json": "59285780874378de5d67531de4b1a0bd5695126093355dda4f92379ca4ec6709",
+  "baselines/predictor_control500_20261009/ARCHIVED.md": "e8b2e89e481b6271beb3f4a5c0d4cc5077268c4f2a83c70b74f7178f4e543fd5"
+}

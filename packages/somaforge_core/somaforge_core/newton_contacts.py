@@ -257,7 +257,7 @@ def reduce_snapshot(snapshot, *, body_labels, body_env, shape_surface, env_id=0,
             if 'source_key' in snapshot:
                 from .newton_contact_sources import source_face_metadata
                 contact_source = source_face_metadata(snapshot['source_key'][row],shape,
-                    snapshot['shape0'][row],snapshot['shape1'][row],binding,normal)
+                    snapshot['shape0'][row],snapshot['shape1'][row],binding,normal,terrain_point)
                 if contact_source['status'] != 'mesh_triangle':
                     raise ValueError('Unsupported actual contact source; no nearest-face fallback')
                 by_surface = {int(face['surface']):face for face in binding}
@@ -299,7 +299,7 @@ def reduce_snapshot(snapshot, *, body_labels, body_env, shape_surface, env_id=0,
                 pair['surface_attribution']=matching[0].get('attribution_schema','legacy_exact_plane')
                 if contact_source is not None:
                     pair['contact_source'] = dict(contact_source)
-                    pair['surface_attribution'] = 'newton_source_triangle_normal_fan_v1'
+                    pair['surface_attribution'] = contact_source['normal_fan_schema']
             if include_candidates:candidate_pairs.append(dict(pair,constraint_active=bool(actual[row])))
             if not actual[row]:continue
             pairs.append(pair)

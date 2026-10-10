@@ -109,11 +109,32 @@ current robot state + actual contact observation + terrain
 ```
 
 Predictor and Infiller replace the retired GMVQ/HyAR module. Their code lives in
-`packages/generator/`. The historical corrected1000 Predictor experiment is
-recorded in [baselines/corrected1000](baselines/corrected1000/README.md).
+`packages/generator/`. The current Predictor baseline is
+[`predictor.v1_latest.20261010`](baselines/predictor_v1_latest_20261010/baseline.json):
+the v1 shared-observation architecture, coherent shape/target interval loss,
+loaded-material207_joint_v12 data, and keep-patch weight 1. Its frozen reference
+is the 2026-10-09 scratch run's step1000 checkpoint, selected as the latest saved
+result rather than by a single validation peak. The recipe uses 100 demonstration
+warmup intervals plus 1000 feedback intervals with continuous demonstration
+training and autonomous post-demonstration feedback. The observed run reached
+1002 intervals and has no completion report; it did not complete all 1100.
+Configuration, checkpoint and dependency hashes, stage-wide validation statistics
+and reproduction commands are registered in the baseline directory and
+`configs/assets_manifest.json`. Static endpoints and a training-case recursion
+do not establish held-out recursive generalization or executed support/load/slip.
+The previous pretrained Predictor recipe and its entrypoints have been retired.
 Its raw recursive evaluation uses Predictor outputs alone; it is not an
 acceptance result for an integrated Predictor + Infiller + WBT deployment.
 The older [pairwise48 report](docs/climb00-pairwise48-production.md) is historical.
+
+Previous Predictor recipes and comparison checkpoints are
+[archived in place](baselines/README.md), including scratch_recipe.20261002,
+source550 and control500. Historical weights, data and source snapshots remain
+available for explicit comparisons; current defaults use the latest baseline.
+The overall structured v2 architecture replacement is recorded as
+[failed and not adopted](baselines/predictor_control500_20261009/architecture_decision.json).
+The latest baseline designation does not claim an independently measured gain
+from the coherent-query refactor or continuous physical execution acceptance.
 
 ### 1. Bootstrap and validate assets
 
@@ -245,7 +266,7 @@ next contact plan and endpoint pose; Infiller learns the trajectory between
 endpoints. Generated trajectories require independent contact, collision and
 WBT acceptance before use as validated references.
 
-See [the corrected1000 baseline](baselines/corrected1000/README.md) for the
+See [the latest v1 baseline](baselines/predictor_v1_latest_20261010/baseline.json) for the
 saved Predictor configuration and entrypoints. Model weights and training data
 remain local. See `packages/generator/` for the Infiller implementations;
 this replacement does not assert a newly validated combined runtime.

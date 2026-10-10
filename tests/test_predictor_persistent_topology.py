@@ -1,14 +1,14 @@
 import types
 import torch
-from climb00_pipeline.next_interaction_surface import contact_terms
-from climb00_pipeline.next_interaction import NextInteraction
-import climb00_pipeline.newton_witness_loss as witness
+from generator.next_interaction_surface import contact_terms
+from generator.next_interaction import NextInteraction
+import contact_solver.newton_witness_loss as witness
 
 
 class FK:
     def __call__(self,q):
-        positions=q[...,:3,None].transpose(-1,-2).expand(len(q),1,7,3)
-        rotation=q.new_tensor([1,0,0,0,1,0]).expand(len(q),1,7,6)
+        positions=q[...,None,:3].expand(*q.shape[:-1],7,3)
+        rotation=q.new_tensor([1,0,0,0,1,0]).expand(*q.shape[:-1],7,6)
         return positions,rotation
 
 
@@ -23,7 +23,7 @@ def setup(monkeypatch,missing=False):
     pairs=[(dict(part=p,surface=0,includemargin=.02,dist=.01,position_w=[0,0,0],constraint_active=True,allocated=True),q.sum()*0+.01)
            for p in ([1] if missing else [0,1])]
     monkeypatch.setattr(witness,'query_local_distances',lambda *a,**kw:([pairs],dict(
-        surface_attribution_schema='newton_source_triangle_normal_fan_v1',
+        surface_attribution_schema='newton_source_triangle_witness_normal_fan_v2',
         full_robot_separation=[dict(worst_terrain=None,worst_self=None)],pairs=[[p for p,_ in pairs]],
         surface_catalog=[dict(surface=0,normal_w=[0,0,1])])) )
     return types.SimpleNamespace(fk=FK()),pred,target

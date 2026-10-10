@@ -1,12 +1,12 @@
+from generator.research.frozen_contact_position import frozen_contact_layout_diagnostic, point_target_approach_diagnostic
 import torch
 import math
 
 from generator.contact_location_predictor import HeightmapContactLocationPredictor
 from generator.planned_contact_predictor import (
     PlannedHeightmapContactPredictor, contact_plan_objective,
-    plan_points_in_pose_frame, spatial_contact_realization_loss, audit_intended_surfaces,
+    plan_points_in_pose_frame, audit_intended_surfaces,
     translated_observed_plan_cells,
-    relative_contact_layout_loss,
 )
 from test_contact_location_predictor import observation
 from generator.contact_location_predictor import contact_points_to_observed_heightmap_map
@@ -105,12 +105,12 @@ def test_spatial_approach_has_pose_gradient_without_any_gt_contact_plan():
     active[:, 2] = True  # Require the hand, independently of any demonstration.
     points = torch.zeros(1, 6, 3, requires_grad=True)
     points.data[:, 2, :2] = torch.tensor([0.5, 0.2])
-    loss, _ = spatial_contact_realization_loss(net, q, points, active, torch.tensor([0.017]))
+    loss, _ = point_target_approach_diagnostic(net, q, points, active, torch.tensor([0.017]))
     assert loss.item() > 0
     loss.sum().backward()
     assert torch.isfinite(q.grad).all() and q.grad.abs().sum() > 0
     assert points.grad is None  # Decoder must realize the fixed intent.
-    inactive, _ = spatial_contact_realization_loss(net, q, points, ~torch.ones_like(active), torch.tensor([0.017]))
+    inactive, _ = point_target_approach_diagnostic(net, q, points, ~torch.ones_like(active), torch.tensor([0.017]))
     assert inactive.item() == 0
 
 
@@ -151,14 +151,14 @@ def test_spatial_realization_is_invariant_to_world_yaw_and_translation():
     points[:, 0, :2] = torch.tensor([0.15, 0.08])
     active = torch.tensor([[True, False, False, False, False, False]])
     margin = torch.tensor([0.023])
-    base, _ = spatial_contact_realization_loss(net, q, points, active, margin)
+    base, _ = point_target_approach_diagnostic(net, q, points, active, margin)
     moved = q.clone()
     moved[:, 3] = math.cos(0.37 / 2)
     moved[:, 6] = math.sin(0.37 / 2)
     moved[:, 0:2] = torch.tensor([0.7, -0.4])
     basis, _ = _root_yaw_basis(moved)
     shifted = torch.einsum("bij,bpj->bpi", basis, points) + torch.tensor([0.7, -0.4, 0.0])
-    rotated, _ = spatial_contact_realization_loss(net, moved, shifted, active, margin, cell_basis=basis)
+    rotated, _ = point_target_approach_diagnostic(net, moved, shifted, active, margin, cell_basis=basis)
     torch.testing.assert_close(base, rotated, atol=1e-4, rtol=1e-5)
 
 
@@ -196,12 +196,12 @@ def test_scene_layout_is_translation_equivariant_but_penalizes_sliding():
         return [[({"part": part, "surface": 7, "body_name": name, "dist": 0.001,
                    "position_w": [x + shift[0], shift[1], 0]}, None)
                  for part, name, x in ((0, "left", 0), (1, "right", 0.2))]]
-    loss, _ = relative_contact_layout_loss(net, q, points, active, surfaces, rows((0, 0)))
+    loss, _ = frozen_contact_layout_diagnostic(net, q, points, active, surfaces, rows((0, 0)))
     moved = q.detach().clone()
     moved[:, :2] = torch.tensor([2., -3.])
     translated_points = points + points.new_tensor([2., -3., 0.])
-    translated, _ = relative_contact_layout_loss(net, moved, translated_points, active, surfaces, rows((2, -3)))
-    slid, _ = relative_contact_layout_loss(net, moved, points, active, surfaces, rows((2, -3)))
+    translated, _ = frozen_contact_layout_diagnostic(net, moved, translated_points, active, surfaces, rows((2, -3)))
+    slid, _ = frozen_contact_layout_diagnostic(net, moved, points, active, surfaces, rows((2, -3)))
     assert slid.item() > loss.item()
     torch.testing.assert_close(loss, translated)
     loss.sum().backward()
@@ -211,6 +211,6 @@ def test_scene_layout_is_translation_equivariant_but_penalizes_sliding():
 
 def test_missing_newton_pairs_are_not_fabricated_for_relative_layout():
     q = torch.zeros(1, 36, requires_grad=True)
-    loss, metrics = relative_contact_layout_loss(None, q, torch.zeros(1, 6, 3),
+    loss, metrics = frozen_contact_layout_diagnostic(None, q, torch.zeros(1, 6, 3),
         torch.ones(1, 6, dtype=torch.bool), torch.zeros(1, 6, dtype=torch.long), [[]])
     assert loss.item() == 0 and metrics["relative_layout_observed_parts"].item() == 0

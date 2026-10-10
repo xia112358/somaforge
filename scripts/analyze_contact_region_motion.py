@@ -1,7 +1,8 @@
 """Audit stepwise motion of verified native contacts on canonical trajectories.
 
-Uses the same region statistic as Motion Edit refinement and acceptance. It
-does not classify contact, infer force support, or change the input trajectory.
+Reports geometric region statistics only. Motion acceptance instead uses the
+original loaded-material RMS phase metric. This tool does not classify contact,
+infer force support, or change the input trajectory.
 """
 import argparse
 import json

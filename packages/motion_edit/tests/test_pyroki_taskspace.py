@@ -64,6 +64,9 @@ def test_collision_reference_cache_roundtrip_and_identity_guard(
         )
         is None
     )
+    assert _load_collision_reference_cache(cache_path, expected_metadata={**metadata,
+        'optimization_geometry_schema': 'native_model_defined_convex_and_exact_sphere_distance_v2',
+        'convex_distance_schema': 'native_model_f64_gjk_epa_witnesses_v1'}) is None
 
 
 def test_contact_capable_bodies_receive_priority_environment_barrier() -> None:
@@ -128,6 +131,19 @@ def test_collision_body_names_resolve_to_force_weight_parts() -> None:
     assert _contact_part_for_body_name("left_knee_link") == "LK"
     assert _contact_part_for_body_name("right_hip_roll_link") == "RHIP"
     assert _contact_part_for_body_name("pelvis") is None
+
+
+def test_native_task_paths_and_collision_leaf_names_share_contact_parts() -> None:
+    prefix = "/World/envs/env_0/Robot/Geometry/pelvis/left_knee_link/"
+    for body, part in (("left_ankle_roll_link", "LF"),
+                       ("left_ankle_roll_sphere_1_link", "LF"),
+                       ("right_sphere_hand_link", "RH"),
+                       ("left_knee_link", "LK"),
+                       ("right_hip_roll_link", "RHIP"),
+                       ("pelvis", None)):
+        assert _contact_part_for_body_name(prefix + body) == part
+    assert _is_contact_reference_body(prefix + "left_knee_link", "LK")
+    assert not _is_contact_reference_body(prefix + "left_ankle_roll_sphere_1_link", "LF")
 
 
 def test_reference_distances_are_paired_by_body_and_surface() -> None:
@@ -294,6 +310,50 @@ def test_stable_material_preserves_activation_and_source_motion():
     assert a.points_local.shape == (1, 3)  # source observations untouched
     gap = stabilize_contact_material_samples(replace(spec, contacts=(a, replace(b, frames=np.array([12])))), source)
     assert [list(c.frames) for c in gap.contacts] == [[10], [12]]
+
+
+def test_stable_sampling_cannot_discard_observed_rigid_orientation():
+    from motion_edit.generation.stable_contact_material import observed_rigid_material_basis
+    line = np.array([[-.02, 0., 0.], [.02, 0., 0.]])
+    observed = np.vstack((line, [0., 0., .04]))
+    basis, additions = observed_rigid_material_basis(line, observed, roundoff=4.e-6)
+    assert len(additions) == 1
+    assert np.linalg.matrix_rank(basis-basis[0]) == 2
+    assert all(any(np.array_equal(p, original) for original in observed) for p in basis)
+    # Rotating around the former two-point line was invisible to the task.
+    # Retaining the third observed point restores that original information.
+    from scipy.spatial.transform import Rotation
+    rotated = Rotation.from_euler('x', 20, degrees=True)
+    np.testing.assert_allclose(rotated.apply(line), line)
+    assert np.linalg.norm(rotated.apply(basis)-basis) > .01
+
+
+def test_added_observed_basis_point_keeps_shape_identity_and_source_frame():
+    from dataclasses import replace
+    from motion_edit.generation.stable_contact_material import stabilize_contact_material_samples
+    spec = _spec()
+    metadata = {'target_surface_id': 'top', 'target_contract': 'unrotated_demonstration_weak_reference'}
+    a = replace(spec.contacts[0], frames=np.array([10]), points_local=np.array([[0., .1, -.05]]),
+        target_points_w=np.zeros((1, 1, 3)), metadata=metadata)
+    b = replace(a, frames=np.array([11]), shape_labels=('left_sole', 'left_sole'),
+        points_local=np.array([[-.1, 0., -.05], [.1, 0., -.05]]), target_points_w=np.zeros((1, 2, 3)))
+    source = dict(body_names=np.array(['left_ankle_roll_link']), body_pos_w=np.zeros((13, 1, 3)),
+                  body_quat_w=np.tile([1., 0., 0., 0.], (13, 1, 1)))
+    stable = stabilize_contact_material_samples(replace(spec, contacts=(a, b)), source)
+    stable.validate()
+    contact = stable.contacts[0]
+    assert len(contact.points_local) == len(contact.shape_labels) == 3
+    assert contact.metadata['material_basis_source_frames'] == [11, 11, 10]
+    np.testing.assert_allclose(contact.target_points_w[0], contact.points_local)
+
+
+def test_sampling_keeps_true_contact_line_and_ignores_float32_roundoff():
+    from motion_edit.generation.stable_contact_material import observed_rigid_material_basis
+    line = np.array([[-.02, 0., 0.], [.02, 0., 0.]])
+    pool = np.vstack((line, [0., 0., 1.e-7], [.04, 0., -1.e-7]))
+    basis, additions = observed_rigid_material_basis(line, pool, roundoff=4.e-6)
+    np.testing.assert_array_equal(basis, line)
+    assert additions == []
 
 
 def test_compile_pyroki_taskspace_uses_rolling_local_points_by_frame() -> None:

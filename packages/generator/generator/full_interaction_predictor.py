@@ -46,20 +46,6 @@ class FullHeightmapInteractionPredictor(ConditionedHeightmapPosePredictor):
         self.role_head = nn.Linear(width, 4)
         self.next_surface_head = nn.Linear(width, 2)
 
-    def load_stage_a(self, state: dict[str, Tensor]) -> tuple[list[str], list[str]]:
-        incompatible = self.load_state_dict(state, strict=False)
-        unexpected = list(incompatible.unexpected_keys)
-        missing = sorted(incompatible.missing_keys)
-        expected = sorted((
-            "role_head.weight", "role_head.bias",
-            "next_surface_head.weight", "next_surface_head.bias",
-        ))
-        if unexpected or missing != expected:
-            raise ValueError(
-                f"invalid Stage-A warm start: missing={missing}, unexpected={unexpected}"
-            )
-        return sorted(state), missing
-
     def forward(
         self,
         current_q: Tensor,
@@ -162,7 +148,7 @@ def full_interaction_objective(
     )
     # A wrong autonomous plan has no compatible pose target.  In particular,
     # Newton realization/safety gradients from that plan must not rewrite the
-    # Stage-A motion prior.  Such samples train only the categorical heads;
+    # demonstrated pose prior. Such samples train only the categorical heads;
     # pose supervision is supplied by a separate GT-conditioned pass.
     loss = (
         role

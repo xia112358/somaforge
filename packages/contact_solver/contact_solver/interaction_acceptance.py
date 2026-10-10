@@ -18,10 +18,23 @@ class InteractionAcceptance:
 DEFAULT_ACCEPTANCE = InteractionAcceptance()
 
 
-def acceptance_contract():
-    return dict(schema="newton_task_acceptance_v1", **asdict(DEFAULT_ACCEPTANCE),
+def acceptance_contract(limits=DEFAULT_ACCEPTANCE):
+    return dict(schema="newton_task_acceptance_v1", **asdict(limits),
                 contact_truth="unchanged Newton active+allocated primary-face pairs",
                 intended_contacts="all required limb/surface pairs must exist")
+
+
+def configured_acceptance(config, *, penetration_m=None):
+    """Runtime acceptance only; never alter the optimization's default limits."""
+    depth = config.get('acceptance_penetration_m', DEFAULT_ACCEPTANCE.shallow_penetration_m)
+    return InteractionAcceptance(shallow_penetration_m=depth if penetration_m is None else penetration_m)
+
+
+def generation_acceptance_mask(contact_accepted, depth_m, invalid_witnesses, *, limits=DEFAULT_ACCEPTANCE):
+    """Tensor counterpart of penetration_accepted over native query evidence."""
+    import torch
+    return (contact_accepted.bool() & torch.isfinite(depth_m) & (depth_m >= 0)
+            & (depth_m <= limits.shallow_penetration_m) & (invalid_witnesses == 0))
 
 
 def contact_acceptance(pairs, intended_contact, intended_surface,

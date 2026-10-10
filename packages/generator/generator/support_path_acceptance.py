@@ -1,14 +1,16 @@
-"""Bind whole-demonstration-path acceptance to cached predictor samples.
+"""Bind predictor samples to complete, self-observed demonstration events.
 
-This certifies recorded reference paths, never an unobserved predicted path.
-Legacy manifests remain explicitly uncertified; a declared certificate fails
-closed on stale evidence, rejected events, or changed frame boundaries.
+Integrity validation checks evidence identity and frame correspondence. It
+does not impose contact goals or decide which demonstrations deserve training.
+Old filtered-event manifests must be explicitly rebuilt.
 """
 import hashlib
 import json
 from pathlib import Path
 
-SCHEMA = 'predictor_event_contact_evidence_v3'
+from somaforge_core.demonstration_events import SCHEMA as EVENT_SCHEMA
+
+SCHEMA = 'predictor_demonstration_observation_evidence_v1'
 
 
 def file_evidence(path):
@@ -19,64 +21,64 @@ def file_evidence(path):
 def validate_support_paths(manifest_path, samples):
     manifest_path = Path(manifest_path)
     manifest = json.loads(manifest_path.read_text())
-    declarations = manifest.get('support_path_acceptance')
+    declarations = manifest.get('demonstration_event_evidence')
     if declarations is None:
-        return dict(status='legacy_unchecked', scope='no_whole_path_certificate')
+        raise ValueError('Rebuild predictor labels from each demonstration; old filtered event manifests are unsupported')
     if not declarations:
-        raise ValueError('Empty support-path certificate declaration')
-    accepted = set()
-    verified = []
+        raise ValueError('Empty demonstration evidence declaration')
+    observed, motion_ids, verified = set(), set(), []
+    def resolve(value):
+        path = Path(value)
+        return path if path.is_absolute() else manifest_path.parent / path
     for declaration in declarations:
-        path = Path(declaration['path'])
-        if not path.is_absolute():
-            path = manifest_path.parent / path
+        path = resolve(declaration['path'])
         if file_evidence(path)['sha256'] != declaration['sha256']:
-            raise ValueError('Stale support-path certificate')
+            raise ValueError('Stale demonstration certificate')
         certificate = json.loads(path.read_text())
         if certificate.get('schema') != SCHEMA:
-            raise ValueError('Unknown support-path acceptance schema')
-        from somaforge_core.support_semantics import SUPPORT_ASSESSMENT_SCHEMA
-        if certificate.get('support_assessment_schema') != SUPPORT_ASSESSMENT_SCHEMA:
-            raise ValueError('Missing unified support assessment schema; re-materialize labels')
+            raise ValueError('Unknown demonstration observation schema')
         for evidence in certificate['evidence'].values():
             if file_evidence(evidence['path'])['sha256'] != evidence['sha256']:
-                raise ValueError('Stale support-path evidence')
+                raise ValueError('Stale demonstration evidence')
         motion_id = int(declaration['motion_id'])
+        if motion_id in motion_ids or not 0 <= motion_id < len(manifest['motion_files']):
+            raise ValueError('Duplicate or invalid demonstration motion ID')
+        motion_ids.add(motion_id)
         entry = manifest['motion_files'][motion_id]
-        for field, evidence_key in (('motion_file','motion'), ('newton_contact_file','labels')):
-            candidate = Path(entry[field])
-            if not candidate.is_absolute(): candidate = manifest_path.parent / candidate
-            if file_evidence(candidate)['sha256'] != certificate['evidence'][evidence_key]['sha256']:
-                raise ValueError('Certificate does not belong to manifest motion/contact entry')
-        observation = entry.get('support_observations_file')
-        if observation is not None:
-            observation_path = Path(observation)
-            if not observation_path.is_absolute(): observation_path = manifest_path.parent / observation_path
-            evidence = certificate['evidence'].get('support_observations', {})
-            digest = file_evidence(observation_path)['sha256']
-            if digest != evidence.get('sha256') or digest != entry.get('support_observations_sha256'):
-                raise ValueError('Support observations do not belong to the path certificate')
-        for row in certificate['segments']:
-            if row['accepted']:
-                key = (motion_id, int(row['start_frame']), int(row['end_frame']))
-                if key in accepted:
-                    raise ValueError('Duplicate certified sample boundary')
-                accepted.add(key)
-        event_path = Path(entry['event_segments_file'])
-        if not event_path.is_absolute(): event_path = manifest_path.parent / event_path
+        for field, evidence_key in (('motion_file', 'motion'), ('newton_contact_file', 'labels'),
+                                    ('event_segments_file', 'events')):
+            if file_evidence(resolve(entry[field]))['sha256'] != certificate['evidence'][evidence_key]['sha256']:
+                raise ValueError('Certificate does not belong to manifest motion/contact/event entry')
+        event_path = resolve(entry['event_segments_file'])
         if file_evidence(event_path)['sha256'] != entry['event_segments_sha256']:
-            raise ValueError('Stale accepted event table')
-        for line in event_path.read_text().splitlines():
-            if line.strip():
-                event = json.loads(line)
-                key = (motion_id,int(event['start_frame']),int(event['end_frame']))
-                if key not in accepted:
-                    raise ValueError('Manifest event includes a rejected or uncertified path')
+            raise ValueError('Stale observed event table')
+        events = [json.loads(line) for line in event_path.read_text().splitlines() if line.strip()]
+        if events != certificate['segments']:
+            raise ValueError('Event table differs from demonstration certificate')
+        clock = json.loads(Path(certificate['evidence']['action_clock']['path']).read_text())['intervals']
+        boundaries = [dict(start_frame=e['start_frame'], end_frame=e['end_frame']) for e in events]
+        if clock != boundaries:
+            raise ValueError('Observed events do not preserve the demonstration action clock')
+        if (not events or events[0]['start_frame'] != 0
+                or events[-1]['end_frame'] != certificate['frame_count']-1
+                or any(a['end_frame'] != b['start_frame'] for a, b in zip(events, events[1:]))):
+            raise ValueError('Incomplete demonstration action chain')
+        for event in events:
+            if event.get('schema') != EVENT_SCHEMA or 'accepted' in event:
+                raise ValueError('Old intent or accepted/rejected event semantics are unsupported')
+            key = (motion_id, int(event['start_frame']), int(event['end_frame']))
+            if key in observed or not 0 <= key[1] < key[2] < certificate['frame_count']:
+                raise ValueError('Duplicate or invalid demonstration interval')
+            observed.add(key)
         verified.append(str(path.resolve()))
+    if motion_ids != set(range(len(manifest['motion_files']))):
+        raise ValueError('Missing demonstration evidence for manifest motion')
     for sample in samples:
         key = tuple(int(sample[k]) for k in ('motion_id', 'current_frame', 'target_frame'))
-        if key not in accepted:
-            raise ValueError(f'Predictor sample lacks accepted whole-path evidence: {key}')
-    return dict(status='verified_reference_contact_paths', samples=len(samples),
-                certificates=verified, predicted_path_status='not_observed',
-                force_bearing_slip_status='unknown_without_same_solve_loads')
+        if key not in observed:
+            raise ValueError(f'Predictor sample lacks matching demonstration observation: {key}')
+    return dict(status='verified_demonstration_observations', samples=len(samples),
+        event_count=len(observed), certificates=verified,
+        scope='identity and complete action clock, no quality filtering',
+        predicted_path_status='not_observed',
+        force_bearing_slip_status='unknown_without_same_solve_loads')

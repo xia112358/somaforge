@@ -4,6 +4,11 @@
 `somaforge_core.support_semantics`，原始求解器证据读取于
 `somaforge_core.newton_support`。
 
+有效接触的表面归属版本为 `newton_source_triangle_witness_normal_fan_v2`：
+实际地形 witness 在其来源三角形上的几何特征必须属于被选主表面。
+侧面内部点不能因三角形含有顶面顶点就被提升为顶面接触；真实棱边仍可按
+Newton 法线归属相邻面。CPU/GPU 共用该几何规则，保留原始点对、激活与分配。
+
 ## 分开判断的四件事
 
 | 判断 | 所需证据 | 不能替代它的东西 |
@@ -32,27 +37,46 @@
    采集是被动读取，不改已训练 policy、资产、margin、gap 或运动。
 2. **聚合与切分**：持续激活不能自动新增固定支撑角色。
    保留来源 execution、事件映射和原始载荷转移。几何运动诊断不代替承重证据。
-   `prepare_predictor_event_paths.py` 的 v3 证书分别保存接触事件验收、几何诊断、
-   可选的实际载荷覆盖，旧 v2 证书不能冒充新判断。
-   附加实际载荷观测不自动改变事件验收。单帧卸载保留为诊断；只有任务显式启用
-   `--require-observed-load-coverage` 时，才要求每个已记录求解样本都有正载荷贡献。
-   这个额外要求也不证明无滑移或未记录子步的完整支撑。
+   `prepare_predictor_event_paths.py` 仅从动作时间表读取起止帧，其余旧接触目标、
+   建立／保持角色和排除标记全部忽略。标签来自该条示范自身的当前 Newton 观测。
+   所有动作段保留，不再生成 accepted/rejected 分区，也不移动切分边界。
+   新证书只校验示范、观测、动作时间表及缓存的对应关系，不判定示范质量。
+   原 v3 筛选证书不能用于新的训练入口，必须重新物化。
 3. **编辑与增广**：改姿态、IK、镜像或拼接后，原载荷只能作为 source reference。
    `reference_only_support` 保留审计数据，令输出实际支撑为未知。
    裁剪后的帧需要重新绑定原生录制；拼接和再次编辑保留 keep 意图，不能继承实际支撑。
    有意生成的力参考可以用于目标设计，但其 provenance 必须是 diagnostic，
    不能是输出轨迹实际执行的受力证据。重新静态查询只能验证接触，不能补出动力学载荷。
-   增广的阶段运动项改为相对原始轨迹新增的几何运动；不再用整个 keep 段的绝对
-   运动量迫使原始卸载、转动和支撑转移变静止。目标版本为 v7，旧优化缓存不可直接复用。
-4. **训练监督**：角色 2 表示接触保持意图。
+   增广与整段修正共用受力材料点切向 RMS，再按显式 keep 阶段累计。
+   **6 cm 阶段累计运动预算**用于该几何参考的运动验收与超预算罚项；既不固定末端原点，
+   也不惩罚受力点不动的转动。已知卸载区间不计入；未知证据不能自动通过。
+   相对源轨迹新增运动只作软正则与诊断，不能单独判定验收失败。正增量逐区间累计，
+   其余量为源步长中位数加三倍 MAD，软项权重为 0.1；不是接触阈值或物理无滑移标准。
+   顺序 IK 目标为 `loaded_material_phase_budget_source_regularizer_v2`，整段修正为
+   `source_relative_acceleration_loaded_material_budget_v10`，生成缓存为
+   `native_observed_source_loaded_material_budget_edit_v8`。接触前软引导及目标偏移混合已移除，
+   接触任务只作用于源观测区间；带引导的旧优化缓存不可直接复用。
+4. **训练监督**：新数据的角色 2 来自该动作段内持续激活的同部位／同表面接触，
+   角色 1 来自该段内开始并延续至终点的实际接触 episode。二者用于接触计划监督，
+   不表示承重或静止支撑；帧间点对、脚跟／脚尖变化不另切动作段。
    `support_supervision.py` 只读取绑定 motion hash、原 recording hash、权威资产、
    当前 Newton runtime 和原生帧时序的独立观测文件。
    `reference_start/target_observed_*` 是示范观测；递推生成状态不能继承这些原始载荷。
    缺失证据使用 known mask 和 NaN，不能自动把持续接触填成支撑。
-5. **预测与递推**：`endpoint_contact_retention` 仅检查端点接触和材料点运动，
-   分组包含部位与环境表面。预测姿态缺少实际执行证据时，支撑及路径滑移为未知。
-   `endpoint_failure_reasons(..., require_observed_support=True)` 会拒绝未知或未经验证的实际支撑；
-   单独通过端点 gate 不等于通过这项物理验收。
+5. **运动指标与预测**：`somaforge_core.loaded_material_motion`统一计算原始受力材料点
+   在相邻姿态下的切向运动，按原始载荷做RMS，再按阶段累计，版本为
+   `source_loaded_tangent_material_motion_v1`。6 cm是几何参考路径预算，不是物理滑移真值。
+   已知卸载不虚构静止点；缺失载荷或已删除区间的相邻求解证据必须标为未知。
+   编辑和软拼接后按新姿态、新帧映射重新计算，不沿用完整轨迹的旧审计冒充裁剪结果。
+   当前predictor只输出事件端点，路径及实际支撑均未知，不施加路径loss/gate。
+   `keep_patch_loss`另作接触保持意图的端点几何正则：从当前真实、已分配且通过主表面
+   筛选的Newton接触绑定材料点，经FK计算该材料区域的最小切向运动。
+   使用材料区域凸包允许区域内支点转动，不固定任意单个witness或link原点。
+   网络预测为keep才启用；建立／释放不套用。容许量来自对应动作示范自身的材料区域
+   运动；预测角色与示范不同时，使用训练集keep样本的部位中位数，无样本则报告未知。
+   该loss既不是实际受力支撑判定，也不是6cm路径预算或递推验收gate。
+   旧首尾6 cm位移loss、训练池拒绝及递推gate已退役；实际Newton接触和安全检查保留。
+   `endpoint_failure_reasons(..., require_observed_support=True)`仍拒绝未知或未经验证的实际支撑。
 6. **可视化**：几何箭头和实际载荷／受力点速度分开显示。
    最低几何运动点不标成已确认支撑。支持独立观测文件的 hash 校验。
 
@@ -83,8 +107,20 @@
 - 实际求解样本分析：`scripts/analyze_recorded_support.py`。
 - 原始执行观测物化：`scripts/materialize_recorded_support.py`。
 - 几何接触区域运动：`scripts/analyze_contact_region_motion.py`，仅作几何诊断。
-- 事件切分与证书：`scripts/prepare_predictor_event_paths.py`，接触事件、几何诊断、
-  实际载荷分别保存；旧证书必须显式重新物化。
+- 示范动作标签与证据：`scripts/prepare_predictor_event_paths.py --motion ... --labels ...
+  --intervals ... --output ...`。只使用动作时间切分，输出自身观测标签与完整性证书。
+- 全量训练缓存：`scripts/prepare_predictor_training_data.py --collection ... --output ...`。
+  当前默认数据为 `training/predictor_demo_observed207_geometry_v2_20261002`，包含 207 条示范的
+  3,105 个动作样本；不存在逐段质量筛选或旧语义继承。
+  箱顶与地面必须由共享 `ground_top_catalog` 选择，不能取第一个非地面表面。
+  缓存生成及训练启动都校验箱顶高度和轮廓与保存的实际 Newton 主表面三角形一致。
+  缓存身份包含编辑计划和表面目录内容；旧侧面几何缓存不得继续训练。
+- 全量原始执行增广：`scripts/expand_source_preserving_augmentations.py`，要求显式
+  提供原始 motion、Newton labels、support observations、original state、事件与编辑计划。
+  不接受旧 dataset/archive 默认入口，也不继承旧增广姿态。完整及裁剪输出各自重新查询
+  Newton；原受力材料点的运动对比只是几何审计，编辑后的实际支撑仍需重新执行验证。
+  具体切口和生成参数见
+  [全量编辑契约](../packages/motion_edit/docs/support-preserving-generation.md#native-execution-edit-collection-2026-10-01)。
 
 旧几何支撑聚合优化器、专用聚合材料点模块及重复的逐帧审计入口已移到系统回收站。
 不能再通过它们改写原始执行或把逐帧接触一致性当成支撑判断。

@@ -18,7 +18,7 @@ These are small enough and useful enough to keep in the repository:
 - `packages/generator/`: Predictor and Infiller implementations.
 - `packages/contact_solver/`: contact optimization and research.
 - `packages/climb00_pipeline/`: import/CLI aliases for historical reproduction only.
-- `baselines/corrected1000/`: saved Predictor entrypoints, configuration and records.
+- `baselines/predictor_scratch_recipe_20261002/`: current scratch Predictor recipe and recorded results.
 - `docs/data-policy.md`,
   `docs/cleanup-scope.md`: current project scope and data rules.
 

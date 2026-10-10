@@ -8,6 +8,7 @@ from contact_solver.surface_geometry import nearest_face
 from generator.next_interaction import objective as reference_objective
 from generator.next_interaction_joint import prepare_supervision as prepare_margins
 from somaforge_core.g1_kinematics import _matrix_from_rotation6d
+from somaforge_core.contact_source_geometry import SOURCE_NORMAL_FAN_SCHEMA
 from contact_solver.surface_contact_proxy import primary_face_cost
 
 SCHEMA = 'surface_region_newton_contact_topology_fullbody_v9_structural_pose'
@@ -64,7 +65,7 @@ def contact_terms(model, prediction, target, scene, *, invalid_witness_policy='e
         rows, observed = query_override
         if len(rows) != len(q) or len(observed.get('pairs', ())) != len(q):
             raise ValueError('Closed-loop Newton query batch mismatch')
-    if observed.get('surface_attribution_schema') != 'newton_source_triangle_normal_fan_v1':
+    if observed.get('surface_attribution_schema') != SOURCE_NORMAL_FAN_SCHEMA:
         raise ValueError('Predictor loss requires source-aware Newton workers (--capture-contact-sources); '
                          'legacy nearest-face labels cannot silently substitute')
     if 'full_robot_separation' not in observed:raise ValueError('Full-body Newton separation is required')

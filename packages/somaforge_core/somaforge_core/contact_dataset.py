@@ -27,6 +27,15 @@ def contact_dataset_fingerprint(manifest_path):
         if entry.get('event_segments_file'):
             rows[-1]['event_segments_sha256'] = hashlib.sha256(resolve(entry['event_segments_file']).read_bytes()).hexdigest()
             rows[-1]['event_contract'] = manifest['event_contract']
+        if entry.get('edit_plan_file'):
+            plan_path = resolve(entry['edit_plan_file'])
+            plan = json.loads(plan_path.read_text())
+            catalog = Path(plan['metadata']['target_surface_catalog'])
+            if not catalog.is_absolute(): catalog = plan_path.parent/catalog
+            rows[-1]['scene_geometry'] = dict(
+                schema='primary_horizontal_upward_faces_v1',
+                plan_sha256=hashlib.sha256(plan_path.read_bytes()).hexdigest(),
+                surface_catalog_sha256=hashlib.sha256(catalog.read_bytes()).hexdigest())
     terrain = [(t['terrain_id'],hashlib.sha256(resolve(t['terrain_file']).read_bytes()).hexdigest())
                for t in manifest['terrains']]
     payload = dict(schema='somaforge_contact_dataset_identity_v1',rows=rows,terrains=terrain)

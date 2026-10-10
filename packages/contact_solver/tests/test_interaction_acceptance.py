@@ -47,3 +47,25 @@ def test_penetration_boundaries_and_unknown_geometry():
     assert not penetration_accepted(.00101)
     assert not penetration_accepted(float('nan'))
     assert not penetration_accepted(0, invalid_witnesses=1)
+
+
+def test_runtime_tolerance_is_independent_of_optimization_and_native_contacts():
+    import torch
+    from contact_solver.interaction_acceptance import (
+        DEFAULT_ACCEPTANCE, configured_acceptance, generation_acceptance_mask, acceptance_contract)
+    loose = configured_acceptance({'acceptance_penetration_m': .005})
+    depth = torch.tensor([.002, .005, .00501, float('nan'), 0., -.001, 0.])
+    contact = torch.tensor([True, True, True, True, True, True, False])
+    invalid = torch.tensor([0, 0, 0, 0, 1, 0, 0])
+    tensor = generation_acceptance_mask(contact, depth, invalid, limits=loose)
+    scalar = [bool(c and penetration_accepted(float(d), int(i), limits=loose))
+              for c, d, i in zip(contact, depth, invalid)]
+    assert tensor.tolist() == scalar == [True, True, False, False, False, False, False]
+    assert DEFAULT_ACCEPTANCE.shallow_penetration_m == .001
+    assert not generation_acceptance_mask(contact, depth, invalid)[0]
+    assert acceptance_contract(loose)['shallow_penetration_m'] == .005
+    assert configured_acceptance({}).shallow_penetration_m == .001  # Historical checkpoints.
+    assert configured_acceptance({}, penetration_m=.005) == loose
+    # Relaxing geometric penetration does not waive missing/extra actual contacts.
+    assert not contact_acceptance([], CONTACT, SURFACE, loose)['contact_accepted']
+    assert not contact_acceptance([pair(0), pair(1, overlap=.002)], CONTACT, SURFACE, loose)['contact_accepted']

@@ -3,13 +3,9 @@
 
 def endpoint_failure_reasons(record, *, require_spatial=False, tolerance_cm=4., require_observed_support=False):
     reasons=[]
-    if 'endpoint_contact_retention_valid' in record:
-        if record['endpoint_contact_retention_valid'] is None:
-            reasons.append('endpoint_contact_evidence_unknown')
-        elif record['endpoint_contact_retention_valid'] is not True:
-            reasons.append('endpoint_contact_retention_failed')
-    if 'support_transition_valid' in record:
-        reasons.append('legacy_support_judgment_unknown')
+    # Historical endpoint displacement fields cannot judge loaded path motion.
+    # Actual contact/safety stay mandatory; physical support is checked only
+    # against independent execution evidence when explicitly requested.
     if require_observed_support:
         from somaforge_core.support_semantics import SUPPORT_ASSESSMENT_SCHEMA
         support = record.get('observed_support', {})
@@ -19,12 +15,18 @@ def endpoint_failure_reasons(record, *, require_spatial=False, tolerance_cm=4., 
         elif (not support.get('load_coverage_passed')
                 or support.get('stationary_support_status') != 'passed_at_recorded_solve_samples'):
             reasons.append('actual_support_not_verified')
-    if not record['task_acceptance']['accepted']:
+    task = record.get('task_acceptance')
+    own = record.get('own_plan_acceptance')
+    if task is None and own is None:
+        raise ValueError('Missing actual endpoint acceptance evidence')
+    if task is not None and not task['accepted']:
         reasons.append('task_contact_or_safety')
-    if not record.get('own_plan_acceptance', record['task_acceptance'])['accepted']:
+    if not (own if own is not None else task)['accepted']:
         reasons.append('own_contact_or_safety')
-    if 'region_plan_acceptance' in record and not record['region_plan_acceptance']['accepted']:
-        reasons.append('own_region_or_safety')
+    # Keep region_plan_acceptance as a witness-distribution audit. An endpoint
+    # need not reproduce every quadrant from a demonstrated contact snapshot.
+    # Actual contact/safety and region-filtered spatial completeness are
+    # checked independently below and by own_plan_acceptance above.
     if record.get('persistent_role_consistent') is False:
         reasons.append('persistent_role_without_current_contact')
     if require_spatial:

@@ -35,6 +35,7 @@ class Config:
     query_repeats: int = 3
     audit_device_reader: bool = False
     tensor_auth: Path | None = None
+    solid_geometry: bool = False
 
 
 def inspect_model(model):
@@ -75,6 +76,18 @@ def inspect_model(model):
         result['terrain_mesh_bounds'].append(dict(shape=i, minimum=vertices.min(0).tolist(),
             maximum=vertices.max(0).tolist(), z_levels=np.unique(np.round(vertices[:,2],5)).tolist()))
     return result
+
+
+def write_verified_inspection(path, info):
+    """Reuse an identical inspection for binding export and batch queries."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        if json.loads(path.read_text()) != info:
+            raise ValueError('Existing inspection belongs to different realized model evidence')
+        return
+    with path.open('x') as stream:
+        json.dump(info, stream, indent=2)
 
 
 def native_binding(model, info):
@@ -227,9 +240,7 @@ def main():
                     active=int(snapshot['active'].sum()),allocated=int(snapshot['constraint_allocated'].sum()),
                     q_unchanged=True))
             info['fixed_q_probe']=dict(motion=str(cfg.probe_motion),coordinate_convention='input world coordinates unchanged',rows=rows)
-        cfg.inspection_output.parent.mkdir(parents=True, exist_ok=True)
-        with cfg.inspection_output.open('x') as stream:
-            json.dump(info, stream, indent=2)
+        write_verified_inspection(cfg.inspection_output, info)
         if cfg.create_native_binding:
             with cfg.binding.open('x') as stream:
                 json.dump(native_binding(model,info),stream,indent=2)
@@ -260,6 +271,17 @@ def main():
             joint_q_indices=indices[0] if cfg.query_worlds == 1 else indices,
             root_q_start=roots[0] if cfg.query_worlds == 1 else roots, model_provenance=info,
             capture_contact_sources=cfg.capture_contact_sources, audit_device_reader=cfg.audit_device_reader)
+        if cfg.solid_geometry:
+            from somaforge_core.solid_distance import export_solid_geometry
+            query.solid_geometry = export_solid_geometry(model, info)
+            # Preserve the exact native solids for offline audit/evaluation;
+            # this file never substitutes for actual contact observations.
+            (cfg.inspection_output.parent/'solid_geometry.json').write_text(
+                json.dumps(query.solid_geometry, indent=2))
+            from somaforge_core.newton_tensor_transport import native_geometry_metadata
+            names=sorted({shape['body'] for shape in query.solid_geometry['shapes'] if shape['body'] is not None})
+            (cfg.inspection_output.parent/'contact_position_metadata.json').write_text(
+                json.dumps(native_geometry_metadata(query,names),indent=2))
         if cfg.tensor_auth is not None:
             from somaforge_core.newton_tensor_transport import serve_tensor_queries
             serve_tensor_queries(query, cfg.port, cfg.tensor_auth.read_bytes())

@@ -223,8 +223,9 @@ def _source_contact(plan: dict, frame_count: int) -> np.ndarray:
 
 def _local_box(plan: dict, origin: np.ndarray, world_to_local: np.ndarray) -> tuple[np.ndarray, ...]:
     records = [json.loads(line) for line in Path(plan["metadata"]["target_surface_catalog"]).read_text().splitlines()]
-    top = next(record for record in records if record["surface_id"] != "terrain_ground_z0")
-    ground = next(record for record in records if record["surface_id"] == "terrain_ground_z0")
+    from somaforge_core.contact_face_selection import ground_top_catalog
+    selected = ground_top_catalog(records)
+    ground, top = selected[0], selected[1]
     polygon = np.asarray(top["metadata"]["polygon_world"], dtype=np.float64)
     first_edge = polygon[1] - polygon[0]
     second_edge = polygon[2] - polygon[1]

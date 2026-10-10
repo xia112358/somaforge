@@ -28,10 +28,10 @@ def test_device_realized_layout_uses_world_points_even_when_fk_is_local():
     active = torch.tensor([[True, True, False, False, False, False]])
     rows.spatial_representatives = lambda points, active, surface, actual=False, regions=None: (torch.arange(6)[None], active.clone())
     surface = torch.zeros(1, 6, dtype=torch.long)
-    error, complete, count = rows.realized_layout(world, active, surface)
+    error, complete, count = rows.actual_witness_position_statistics(world, active, surface)
     assert endpoint_layout_pass(error, complete, count, .04).item()
     local = torch.zeros_like(world); local[0, 1, 0] = .2
-    error, complete, count = rows.realized_layout(local, active, surface)
+    error, complete, count = rows.actual_witness_position_statistics(local, active, surface)
     assert not endpoint_layout_pass(error, complete, count, .04).item()
 
 from generator.full1000_training_variants import (event_consistent_roles, recovery_transition,
@@ -69,3 +69,58 @@ def test_teacher_visibility_and_autonomous_inputs_do_not_modify_state():
     assert teacher_mask_for_batch(1.,contact,visible).tolist() == [True,False,True]
     assert not teacher_mask_for_batch(0.,contact,visible).any()
     assert contact.tolist() == [[True,False],[True,True],[False,False]]
+
+
+def test_teacher_region_evidence_is_required_only_for_active_parts():
+    contact = torch.tensor([[True, False], [True, True], [False, False]])
+    known = torch.tensor([[True, False], [True, False], [False, False]])
+    assert teacher_mask_for_batch(1., contact, torch.ones_like(contact), region_known=known).tolist() == [True, False, True]
+
+
+def test_demonstration_batches_keep_teacher_conditions_after_autonomous_schedule_ends():
+    from generator.full1000_training_variants import reference_batch_teacher_probability
+    for probability in (1., .5, 0.):
+        assert reference_batch_teacher_probability(probability, parallel_feedback=True,
+            continuous_demonstrations=True) == 1.
+        assert reference_batch_teacher_probability(probability, parallel_feedback=True,
+            continuous_demonstrations=False) == probability
+        assert reference_batch_teacher_probability(probability, parallel_feedback=False,
+            continuous_demonstrations=True) == probability
+
+
+def test_reference_warmup_preserves_full_teacher_course_after_transition():
+    from generator.full1000_training_variants import training_course
+    assert training_course(100, reference_warmup_steps=100, fixed=0.) == (True, 1.)
+    assert training_course(101, reference_warmup_steps=100) == (False, 1.)
+    assert training_course(550, reference_warmup_steps=100) == (False, .5)
+    assert training_course(800, reference_warmup_steps=100) == (False, 0.)
+    assert training_course(101, reference_warmup_steps=100, fixed=0.) == (False, 0.)
+    for step in (1, 200, 450, 700, 1000):
+        assert training_course(step) == (False, teacher_probability(step))
+
+
+def test_post_demo_commit_ignores_stale_demonstration_but_checks_own_feasibility():
+    from contact_solver.interaction_acceptance import configured_acceptance
+    from generator.full1000_training_variants import endpoint_feedback_mask
+    metrics = dict(newton_contact_accepted=torch.ones(2), newton_penetration_cm=torch.full((2,), .2),
+        newton_invalid_fullbody_witnesses=torch.zeros(2), joint_violation_rad=torch.zeros(2),
+        region_plan_realized=torch.ones(2), own_endpoint_layout_accepted=torch.ones(2),
+        persistent_role_accepted=torch.ones(2), task_endpoint_layout_accepted=torch.tensor([0., float('nan')]))
+    limits = configured_acceptance({'acceptance_penetration_m': .005})
+    supervised = torch.tensor([True, False])
+    assert endpoint_feedback_mask(metrics, torch.zeros(2, dtype=torch.bool), supervised,
+                                  limits=limits).tolist() == [False, True]
+    # The source event does not require reproducing every quadrant witness;
+    # actual contact and region-filtered position checks still apply.
+    partial = {k:v.clone() for k,v in metrics.items()}
+    partial['region_plan_realized'].zero_()
+    assert endpoint_feedback_mask(partial, torch.zeros(2, dtype=torch.bool), supervised,
+                                  limits=limits).tolist() == [False, True]
+    for key, value in [('newton_contact_accepted', 0.), ('newton_penetration_cm', .501),
+                       ('newton_invalid_fullbody_witnesses', 1.), ('joint_violation_rad', .151),
+                       ('own_endpoint_layout_accepted', 0.),
+                       ('persistent_role_accepted', 0.)]:
+        changed = {k:v.clone() for k,v in metrics.items()}
+        changed[key][1] = value
+        assert not endpoint_feedback_mask(changed, torch.zeros(2, dtype=torch.bool), supervised,
+                                           limits=limits).any(), key

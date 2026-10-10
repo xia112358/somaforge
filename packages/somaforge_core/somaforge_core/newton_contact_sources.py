@@ -5,6 +5,8 @@ The currently validated path is unsorted, without contact matching. Other
 layouts are rejected until their permutations have an audited mapping.
 """
 import numpy as np
+from .contact_source_geometry import (SOURCE_NORMAL_FAN_SCHEMA, project_source_triangle,
+                                      incident_witness_faces)
 
 SCHEMA = 'newton_narrow_phase_same_pass_source_v2'
 
@@ -161,7 +163,7 @@ def attach_solver_sources(snapshot, solver, contacts, keys):
     snapshot['source_key'] = output
 
 
-def source_face_metadata(key, terrain_shape, shape0, shape1, binding, normal=None):
+def source_face_metadata(key, terrain_shape, shape0, shape1, binding, normal=None, terrain_point=None):
     decoded = decode_mesh_triangle_key(key,shape0,shape1)
     result = dict(schema=SCHEMA,**decoded,terrain_shape=int(terrain_shape),
                   source_surface=None,status='unsupported_source_path')
@@ -184,29 +186,40 @@ def source_face_metadata(key, terrain_shape, shape0, shape1, binding, normal=Non
     result.update(status='mesh_triangle',source_surface=int(face['surface']),
                   source_triangle_w=triangle.tolist(),edge_adjacent_surfaces=sorted(set(adjacent)))
     if normal is not None:
-        result.update(source_normal_fan(triangle,face,binding,normal))
+        result.update(source_normal_fan(triangle,face,binding,normal,terrain_point))
     return result
 
 
-def source_normal_fan(triangle,source_face,binding,normal):
+def source_normal_fan(triangle,source_face,binding,normal,terrain_point):
     """Task-face ownership from a source triangle's local normal fan.
 
-Support vertices of the actual source triangle in the Newton normal direction
-identify incident mesh faces; choose their normal alignment. Edge ownership
-may differ from the emitting triangle. This is NOT new contact activation.
-No contact-distance threshold or search over unrelated faces.
+Support vertices identify candidate incident mesh faces. Only faces containing
+the actual source witness feature may compete by normal alignment. A side
+interior cannot acquire a remote top because its triangle has a top vertex.
+Raw witnesses, activation and allocation remain unchanged.
 """
     triangle=np.asarray(triangle,np.float64);normal=np.asarray(normal,np.float64)
     if normal.shape!=(3,) or not np.isfinite(normal).all() or np.linalg.norm(normal)==0:
         raise ValueError('Missing/invalid Newton source normal')
+    if terrain_point is None:
+        raise ValueError('Missing actual source-triangle terrain witness')
+    projected = project_source_triangle(terrain_point, triangle)
     score=(triangle-triangle[0])@normal
     support={tuple(v) for v in triangle[score==score.max()]}
     candidates=[source_face]
     for face in binding:
         if face['surface']==source_face['surface']:continue
         if any(support & {tuple(v) for v in t} for t in face['triangles_w']):candidates.append(face)
+    normals = np.asarray([face['normal_w'] for face in candidates])
+    vertices = [np.asarray(face['triangles_w']).reshape(-1, 3) for face in candidates]
+    offsets = np.asarray([v[0]@n for v,n in zip(vertices,normals)])
+    extents = np.asarray([np.ptp(v,axis=0).max() for v in vertices])
+    candidates = [face for face,keep in zip(candidates,incident_witness_faces(projected,normals,offsets,extents)) if keep]
+    if not candidates:
+        raise ValueError('Actual source witness belongs to no incident native face')
     candidates.sort(key=lambda face:(-float(np.dot(normal,face['normal_w'])),int(face['surface'])))
-    return dict(normal_fan_schema='newton_source_triangle_normal_fan_v1',
+    return dict(normal_fan_schema=SOURCE_NORMAL_FAN_SCHEMA,
         primary_surface=int(candidates[0]['surface']),
         incident_surface_candidates=[int(face['surface']) for face in candidates],
-        support_vertices_w=[list(v) for v in sorted(support)])
+        support_vertices_w=[list(v) for v in sorted(support)],
+        source_feature_projection_w=projected.tolist())

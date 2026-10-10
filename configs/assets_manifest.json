@@ -74,6 +74,31 @@
       }
     },
     {
+      "id": "predictor.scratch_recipe.20261002",
+      "kind": "training_recipe",
+      "status": "archived",
+      "files": {
+        "baseline": "baselines/predictor_scratch_recipe_20261002/baseline.json",
+        "training_config": "baselines/predictor_scratch_recipe_20261002/training_config.json",
+        "reproduction_command": "baselines/predictor_scratch_recipe_20261002/reproduction_command.json"
+      },
+      "sha256": {
+        "baseline": "ae0b573a4603c156d8d49196dc07b755b27e5feaef70e9c3c846503bade1f11c",
+        "training_config": "07a1ede62da45ef906065f3184bf8a111a2dee449634a351aa1a207a9d035512",
+        "reproduction_command": "7770407a0321aeb94d865324e7502462a5f689685238022634d28316eeae88ca"
+      },
+      "metadata": {
+        "robot_asset_id": "robot.g1.spherehand",
+        "initialization": "scratch",
+        "reference_warmup_intervals": 100,
+        "feedback_intervals": 1000,
+        "total_intervals": 1100,
+        "inherits_predictor_checkpoint": false,
+        "purpose": "Archived historical recipe; not current defaults",
+        "superseded_by": "predictor.v1_latest.20261010"
+      }
+    },
+    {
       "id": "dataset.climb00.contact_archive",
       "kind": "dataset",
       "status": "archived_quality_review_required",
@@ -88,6 +113,76 @@
         "robot_asset_id": "robot.g1.spherehand",
         "training_approved": false,
         "purpose": "Formal independent archive of source v5, historical207 variants and single-case support-repair candidates; not a replacement training manifest"
+      }
+    },
+    {
+      "id": "predictor.v1_latest.20261010",
+      "kind": "training_recipe",
+      "status": "current_training_and_analysis_baseline",
+      "files": {
+        "baseline": "baselines/predictor_v1_latest_20261010/baseline.json",
+        "training_config": "baselines/predictor_v1_latest_20261010/training_config.json",
+        "reproduction_command": "baselines/predictor_v1_latest_20261010/reproduction_command.json",
+        "checkpoint": "runtime/current/models/generator/v1_shared_interval_scratch1100_20261009/step_1000.pt"
+      },
+      "metadata": {
+        "robot_asset_id": "robot.g1.spherehand",
+        "architecture_schema": "full1000_position_predictor_v1",
+        "initialization": "scratch",
+        "reference_warmup_intervals": 100,
+        "feedback_intervals": 1000,
+        "planned_total_intervals": 1100,
+        "observed_intervals": 1002,
+        "checkpoint_interval": 1000,
+        "observed_training_complete": false,
+        "inherits_predictor_checkpoint": false,
+        "dataset_asset_id": "dataset.climb00.loaded_material207_joint_v12.20261004",
+        "purpose": "User-designated latest baseline; not a claim of independent loss gain or dynamic execution acceptance"
+      },
+      "sha256": {
+        "baseline": "92580fef62a8a12d3a46922f7132bbcdd20d1e6cda8393b9667accf9f22f5dac",
+        "training_config": "589d303ef2598caf94f975c8b1e2e46136f9dffdb7a6dd7ad813492f5ae96b4b",
+        "reproduction_command": "5fc7ebdee9f9b292f67c54addb5cf6de6d9c2d9b2e45e987af4ffe717dd1b744",
+        "checkpoint": "b50df5dc0271717dc592875289fd54c93b0502073f5b61781a21ccc860ff1a8b"
+      }
+    },
+    {
+      "id": "dataset.climb00.loaded_material207_joint_v12.20261004",
+      "kind": "dataset",
+      "status": "current_baseline_input",
+      "files": {
+        "manifest": "runtime/current/motions/climb00_contact_dataset/training/predictor_loaded_material207_joint_v12_20261004/manifest.json",
+        "data_cache": "runtime/current/motions/climb00_contact_dataset/training/predictor_loaded_material207_joint_v12_20261004/data.pt",
+        "q_cache": "runtime/current/motions/climb00_contact_dataset/training/predictor_loaded_material207_joint_v12_20261004/q_cache_64.npz"
+      },
+      "sha256": {
+        "manifest": "c58a8ba027458a95d5b5385eac44fd80128cc0990e0a5c16ff0efe7b6eed0339",
+        "data_cache": "aac4bd5106462c8275936c4d099d448cf23c479619fc319dfcf0ad139edc4233",
+        "q_cache": "95553c106bacf8eb4e0a7ca25ba345d3483da9a19a1cd5a922cd29b739f9912b"
+      },
+      "metadata": {
+        "robot_asset_id": "robot.g1.spherehand",
+        "used_by_baseline": "predictor.v1_latest.20261010",
+        "train_rows": 1470,
+        "validation_rows": 780,
+        "test_rows": 855,
+        "source_independent_generalization_established": false,
+        "purpose": "Exact dataset used by the user-designated current baseline; not approval of other archived variants"
+      }
+    },
+    {
+      "id": "predictor.control500.20261009",
+      "kind": "model",
+      "status": "archived",
+      "files": {
+        "baseline": "baselines/predictor_control500_20261009/baseline.json"
+      },
+      "sha256": {
+        "baseline": "4ac2e71239c0c4d7a72398a040a807131f17c97868534d1765e5980e8ebf08f8"
+      },
+      "metadata": {
+        "superseded_by": "predictor.v1_latest.20261010",
+        "purpose": "Historical source550 plus500 low-LR updates and architecture comparison evidence"
       }
     }
   ]

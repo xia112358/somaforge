@@ -88,6 +88,9 @@ def test_generation_uses_one_rollout_source_everywhere(
             "free_surface_contacts": True,
             "source_terrain_mesh": str(source_terrain),
             "target_terrain_mesh": str(target_terrain),
+            "environment_depth_residual_scale_m": .003,
+            "support_approach_seconds": .3,
+            "support_approach_orientation": True,
         },
     )
     output = tmp_path / "output.npz"
@@ -218,6 +221,7 @@ def test_generation_uses_one_rollout_source_everywhere(
         "semantic_source_motion": str(source_path.resolve()),
         "source_terrain_mesh": str(source_terrain.resolve()),
         "target_terrain_mesh": str(target_terrain.resolve()),
+        "environment_depth_residual_scale_m": .003,
         "normalize_contact_group_weights": False,
         "augmentation_objective": "consolidated_v1",
         "free_surface_contacts": True,

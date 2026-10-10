@@ -1,6 +1,7 @@
 """Device contact observations from the actual fixed-q Newton/MJWarp pass.
 
-No distance threshold, projection, integration, or predicted intent is used.
+No distance threshold, pose projection, integration, or predicted intent is used.
+Source-feature projection only attributes a witness to its actual incident face.
 The caller must check ``errors`` before consuming observations. Tensor views
 of solver fields are valid only until the next query; derived tensors own data.
 """
@@ -8,6 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 import torch
+from .contact_source_geometry import project_source_triangles_tensor, incident_witness_faces_tensor
 
 
 class NewtonContactTensorReader:
@@ -40,6 +42,9 @@ class NewtonContactTensorReader:
         self.surface_ids = torch.tensor([f['surface'] for f in self.faces], device=self.device)
         normals = np.asarray([f['normal_w'] for f in self.faces], dtype=np.float64)
         self.normals = torch.tensor(normals, device=self.device)
+        vertices_by_face = [np.asarray(f['triangles_w']).reshape(-1, 3) for f in self.faces]
+        self.face_offsets = torch.tensor([v[0]@n for v,n in zip(vertices_by_face,normals)], device=self.device)
+        self.face_extents = torch.tensor([np.ptp(v,axis=0).max() for v in vertices_by_face], device=self.device)
         self.upward = torch.tensor(upward_face_mask(normals), device=self.device)
         ntri = max(i for f in self.faces for i in f['triangle_indices'])+1
         triangles = np.zeros((ntri, 3, 3), np.float64)
@@ -151,6 +156,10 @@ class NewtonContactTensorReader:
         score = ((triangle-triangle[:, :1])*normal[:, None]).sum(-1)
         support = score == score.amax(-1, keepdim=True)
         candidates = (self.incident[ti] & support[:, :, None]).any(1) | self.source_face[ti]
+        if not geometry_points:
+            raise ValueError('Actual terrain geometry witness required for source-feature face attribution')
+        projected, feature_valid = project_source_triangles_tensor(geometry_points[0].double(), triangle)
+        candidates &= incident_witness_faces_tensor(projected,self.normals,self.face_offsets,self.face_extents)
         alignment = normal @ self.normals.T
         face = alignment.masked_fill(~candidates, -torch.inf).argmax(-1)
         surface = self.surface_ids[face]
@@ -163,6 +172,7 @@ class NewtonContactTensorReader:
             source=source_error.any() | (emitted & ~cid_valid).any() | (valid & (coverage[:-1] != 1)).any(),
             raw_mapping=(emitted & (raw_shapes != shapes[cid.clamp(0, len(dist)-1)]).any(-1)).any(),
             triangle=(task & (~triangle_valid | ~self.present[ti] | ~torch.isfinite(normal).all(-1) | (normal.norm(dim=-1) == 0))).any(),
+            source_feature=(task & (~feature_valid | ~candidates.any(-1))).any(),
             cross_world=(terrain_pair & ~same_world).any(),
             unknown_external=(valid & ((kind & 1) != 0) & (robot.sum(-1) == 1) &
                 ~((shapes[:, 0] == self.terrain_shape) & robot[:, 1])).any())

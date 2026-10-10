@@ -1,12 +1,31 @@
 """Small, explicit training ablations; never redefine Newton contact truth."""
 import torch
+from contact_solver.interaction_acceptance import DEFAULT_ACCEPTANCE, generation_acceptance_mask
+
+
+def endpoint_feedback_mask(metrics, task_contact_accepted, supervised, *, limits=DEFAULT_ACCEPTANCE):
+    """Commit own feasible intent; require demonstration targets only while supervised."""
+    own = generation_acceptance_mask(metrics['newton_contact_accepted'],
+        metrics['newton_penetration_cm']/100, metrics['newton_invalid_fullbody_witnesses'], limits=limits)
+    own &= metrics['joint_violation_rad'] <= .15
+    # Endpoint events require actual part/surface contacts. The observed
+    # quadrant distribution is an audit of solver witnesses, not a second
+    # conjunction of required contacts. Spatial completeness still uses the
+    # intended regions and independent actual Newton evidence.
+    for key in ('own_endpoint_layout_accepted', 'persistent_role_accepted'):
+        if key in metrics:
+            own &= metrics[key] > .5
+    task = task_contact_accepted.bool()
+    if 'task_endpoint_layout_accepted' in metrics:
+        task = task & (metrics['task_endpoint_layout_accepted'] > .5)
+    return own & (~supervised | task)
 
 
 def endpoint_layout_pass(error_squared, complete, count, tolerance_m):
     """Spatial endpoint check, NOT proof of lift-off/touchdown between poses.
 
-    Scene-fixed positions also constrain a single actual Newton witness.
-    Missing/underdetermined observations must never count as successful layout.
+    The caller supplies the native part-surface position error and independent
+    actual Newton completeness. Geometry alone cannot establish contact.
     """
     if tolerance_m <= 0:
         raise ValueError('Spatial layout tolerance must be positive')
@@ -21,10 +40,33 @@ def teacher_probability(step, *, execution_only=False, fixed=None):
     return 1. if execution_only else max(0., min(1., (700-step)/500))
 
 
-def teacher_mask_for_batch(probability, contact, cell_valid):
+def teacher_mask_for_batch(probability, contact, cell_valid, *, region_known=None):
     """Only use teacher plans whose required locations are actually visible."""
     visible = (cell_valid | ~contact).all(-1)
+    if region_known is not None:
+        if region_known.dtype != torch.bool or region_known.shape != contact.shape:
+            raise ValueError('Native region availability must be bool with the contact shape')
+        visible &= (region_known | ~contact).all(-1)
     return (torch.rand(len(contact), device=contact.device) < probability) & visible
+
+
+def reference_batch_teacher_probability(probability, *, parallel_feedback, continuous_demonstrations):
+    """Reference examples keep complete teacher conditions as feedback grows.
+
+    The autonomous rollout schedule is unchanged. Reference examples never
+    commit a pose to the rollout pool and retain their demonstrated target.
+    """
+    return 1.0 if parallel_feedback and continuous_demonstrations else probability
+
+
+def training_course(step, *, reference_warmup_steps=0, execution_only=False, fixed=None):
+    """Prepend reference-only warmup without consuming the autonomous-plan schedule."""
+    if step < 1 or reference_warmup_steps < 0:
+        raise ValueError('Invalid training course interval')
+    if step <= reference_warmup_steps:
+        return True, 1.
+    return False, teacher_probability(step-reference_warmup_steps,
+        execution_only=execution_only, fixed=fixed)
 
 
 def event_consistent_roles(reference_role, observed_contact):

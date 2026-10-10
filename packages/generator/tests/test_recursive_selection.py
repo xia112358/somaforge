@@ -41,6 +41,39 @@ def test_scene_fixed_selection_uses_endpoint_error_not_centered_diagnostic(contr
         recursive_selection(data)
 
 
+def test_native_interval_selection_uses_verified_endpoint_error():
+    from contact_solver.native_contact_position import CONTACT_POSITION_SCHEMA
+    data = report([True, True], [True, True])
+    data['contract'].update(failure_policy='stop_on_first_failure',
+        trained_relative_layout_contract=CONTACT_POSITION_SCHEMA,
+        relative_layout_contract='historical_centered_witness_diagnostic_only',
+        endpoint_position_contract={'schema': CONTACT_POSITION_SCHEMA})
+    data['summary']['planned_events'] = 3
+    data['events'][0].update(endpoint_accepted=True, own_endpoint_position_rms_cm=2.,
+        relative_layout_complete=False, relative_layout_rms_cm=99.)
+    data['events'][1].update(endpoint_accepted=False, own_endpoint_position_rms_cm=None)
+    result = recursive_selection(data)
+    assert result['endpoint_position_accuracy_used']
+    assert not result['relative_layout_accuracy_used']
+    assert result['metrics']['task_and_own_safe_prefix'] == 1
+    assert result['metrics']['negative_safe_endpoint_position_rms_cm'] == -2.
+    data['events'][0]['own_endpoint_position_rms_cm'] = None
+    with pytest.raises(ValueError, match='lacks actual spatial error'):
+        recursive_selection(data)
+
+
+def test_native_position_contract_cannot_fall_back_to_historical_layout():
+    from contact_solver.native_contact_position import CONTACT_POSITION_SCHEMA
+    data = report([True], [True])
+    data['contract'].update(trained_relative_layout_contract=CONTACT_POSITION_SCHEMA,
+        relative_layout_contract='newton_representative_witness_xy_v1')
+    with pytest.raises(ValueError, match='missing native endpoint position contract'):
+        recursive_selection(data)
+    data['contract']['endpoint_position_contract'] = {'schema': 'unknown'}
+    with pytest.raises(ValueError, match='unknown native endpoint position contract'):
+        recursive_selection(data)
+
+
 def report(task, own):
     return {
         "contract": {

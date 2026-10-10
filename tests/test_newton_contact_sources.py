@@ -53,15 +53,29 @@ def test_edge_from_side_triangle_can_be_top_owned_but_true_side_stays_side():
     top=dict(surface=1,normal_w=[0,0,1],triangles_w=[[[0,0,1],[1,0,1],[0,1,1]]])
     floor=dict(surface=0,normal_w=[0,0,1],triangles_w=[[[0,0,0],[1,0,0],[0,1,0]]])
     faces=[side,top,floor]
-    r=source_normal_fan(side['triangles_w'][0],side,faces,[0,-.1,.99])
+    r=source_normal_fan(side['triangles_w'][0],side,faces,[0,-.1,.99],[.5,0,1])
     assert r['primary_surface']==1 and 0 not in r['incident_surface_candidates']
-    assert source_normal_fan(side['triangles_w'][0],side,faces,[0,-1,0])['primary_surface']==9
+    assert source_normal_fan(side['triangles_w'][0],side,faces,[0,-1,0],[.3,0,.4])['primary_surface']==9
 
 
 def test_normal_fan_cannot_select_unrelated_parallel_plane():
     side=dict(surface=9,normal_w=[0,-1,0],triangles_w=[[[0,0,1],[1,0,1],[0,0,0]]])
     distant=dict(surface=1,normal_w=[0,0,1],triangles_w=[[[0,0,5],[1,0,5],[0,1,5]]])
-    assert source_normal_fan(side['triangles_w'][0],side,[side,distant],[0,-.1,.99])['primary_surface']==9
+    assert source_normal_fan(side['triangles_w'][0],side,[side,distant],[0,-.1,.99],[.5,0,1])['primary_surface']==9
+
+
+def test_inward_side_witness_cannot_acquire_remote_top():
+    side=dict(surface=9,normal_w=[0,-1,0],triangle_indices=[7],
+              triangles_w=[[[0,0,1],[1,0,1],[0,0,0]]])
+    top=dict(surface=1,normal_w=[0,0,1],triangle_indices=[4],
+             triangles_w=[[[0,0,1],[1,0,1],[0,1,1]]])
+    witness=np.array([.2,0,.3])
+    r=source_face_metadata(key(0,73,7),0,0,73,[side,top],[0,1,1e-7],witness)
+    assert r['primary_surface']==9
+    assert r['incident_surface_candidates']==[9]
+    np.testing.assert_array_equal(witness,[.2,0,.3])
+    with pytest.raises(ValueError,match='Missing actual'):
+        source_face_metadata(key(0,73,7),0,0,73,[side,top],[0,1,1e-7])
 
 
 def test_reducer_uses_source_and_normal_without_changing_activation_or_witness():
@@ -79,7 +93,7 @@ def test_reducer_uses_source_and_normal_without_changing_activation_or_witness()
     r=reduce_snapshot(raw,body_labels=['left_knee_link'],body_env={0:0},shape_surface={0:faces})
     assert r.active[4] and r.surface[4]==1 and not r.unallocated.any()
     assert r.pairs[0]['contact_source']['source_surface']==9
-    assert r.pairs[0]['surface_attribution']=='newton_source_triangle_normal_fan_v1'
+    assert r.pairs[0]['surface_attribution']=='newton_source_triangle_witness_normal_fan_v2'
     assert r.pairs[0]['dist']==.017
     np.testing.assert_array_equal(raw['geometry_point0_w'],point)
 

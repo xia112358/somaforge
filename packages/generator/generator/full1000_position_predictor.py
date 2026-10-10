@@ -1,5 +1,4 @@
-"""Full1000 backbone with observed contact positions instead of surface IDs."""
-from dataclasses import dataclass
+"""V1 control architecture for explicit scratch training and checkpoint reading."""
 import copy
 
 import torch
@@ -7,17 +6,8 @@ from torch import nn
 
 from generator.conditioned_pose_predictor import ConditionedHeightmapPosePredictor
 from somaforge_core.g1_kinematics import _matrix_from_rotation6d, _rotation6d
-from somaforge_core.heightmap import heightmap_grid, HEIGHTMAP_ROWS, HEIGHTMAP_COLS, HEIGHTMAP_FORWARD_MIN_M, HEIGHTMAP_LATERAL_MIN_M, HEIGHTMAP_RESOLUTION_M
 from somaforge_core.heightmap import _root_yaw_basis
-from generator.planned_contact_predictor import PlannedContactPrediction
-
-
-@dataclass(frozen=True)
-class Full1000PositionPrediction(PlannedContactPrediction):
-    teacher_conditioned: torch.Tensor
-    region_logits: torch.Tensor | None = None
-    planned_regions: torch.Tensor | None = None
-    conditioned_role: torch.Tensor | None = None
+from generator.position_plan import Full1000PositionPrediction, select_position_plan
 
 
 class Full1000PositionPredictor(ConditionedHeightmapPosePredictor):
@@ -27,7 +17,7 @@ class Full1000PositionPredictor(ConditionedHeightmapPosePredictor):
     hard planned point is an observed grid sample; no semantic face category
     exists in either the model parameters or the forward interface.
     """
-    NEW_PREFIXES = ('role_head.', 'location_query.', 'location_key.', 'plan_position_encoder.')
+    schema = 'full1000_position_predictor_v1'
     EXECUTION_PREFIXES = ('execution_', 'plan_position_encoder.', 'region_plan_encoder.',
                           'plan_fusion.', 'pose_terrain.', 'interaction_decoder.', 'pose_head.')
     PLAN_HEAD_PREFIXES = ('role_head.', 'location_query.', 'location_key.', 'region_head.', 'region_prior')
@@ -36,6 +26,8 @@ class Full1000PositionPredictor(ConditionedHeightmapPosePredictor):
                  region_plan=False, unified_contact=False, execution_plan_gradients=False, event_roles=False,
                  execution_observation_gradients=False):
         super().__init__(width, layers)
+        self.width, self.layers, self.location_width = width, layers, location_width
+        self.unified_contact = unified_contact
         if execution_plan_gradients:
             raise ValueError('Execution gradients into planning are disabled by the isolated contract')
         if body_geometry and part_geometry:
@@ -116,6 +108,16 @@ class Full1000PositionPredictor(ConditionedHeightmapPosePredictor):
                     state_dict[name] = torch.zeros_like(value)
         return super().load_state_dict(state_dict, strict=strict, assign=assign)
 
+    def architecture_contract(self):
+        return dict(schema=self.schema, width=self.width, layers=self.layers,
+            location_width=self.location_width, body_geometry=self.body_geometry,
+            part_geometry=self.part_geometry, region_plan=self.region_plan,
+            unified_contact=self.unified_contact, event_roles=self.event_roles,
+            independent_observation_encoders=False,
+            execution_plan_gradients=self.execution_plan_gradients,
+            execution_observation_gradients=self.execution_observation_gradients,
+            readout='legacy root+part mean')
+
     def training_parameter_groups(self):
         groups = {'planner': [], 'executor': []}
         if self.execution_observation_gradients:
@@ -139,48 +141,8 @@ class Full1000PositionPredictor(ConditionedHeightmapPosePredictor):
                 for name, parameters in self.training_parameter_groups().items()}
 
     def geometry_features(self, current_q, heightmap, basis):
-        """Per-link collision extent and observed terrain clearance features.
-
-        All points come from the canonical collision asset. Height differences
-        are observation features only, never a contact predicate. Out-of-view
-        points are explicitly masked rather than assigned a border height.
-        """
-        points, _ = self.geometry(self.fk, current_q)
-        local = torch.einsum('bij,bpj->bpi', basis.transpose(1, 2), points-current_q[:, None, :3])
-        b, _, _ = local.shape
-        n = len(self.body_geometry_names)
-        idx = self.body_geometry_point_link[None, :, None].expand(b, -1, 3)
-        low = local.new_full((b, n, 3), torch.inf).scatter_reduce(1, idx, local, reduce='amin', include_self=True)
-        high = local.new_full((b, n, 3), -torch.inf).scatter_reduce(1, idx, local, reduce='amax', include_self=True)
-        total = local.new_zeros(b, n, 3).scatter_add(1, idx, local)
-        ids = self.body_geometry_point_link[None].expand(b, -1)
-        count = local.new_zeros(b, n).scatter_add(1, ids, torch.ones_like(local[..., 0]))
-        mean = total/count[..., None]
-        x = (local[..., 0]-HEIGHTMAP_FORWARD_MIN_M)/HEIGHTMAP_RESOLUTION_M
-        y = (local[..., 1]-HEIGHTMAP_LATERAL_MIN_M)/HEIGHTMAP_RESOLUTION_M
-        visible = (x >= 0) & (x <= HEIGHTMAP_ROWS-1) & (y >= 0) & (y <= HEIGHTMAP_COLS-1)
-        cell = x.round().long().clamp(0, HEIGHTMAP_ROWS-1)*HEIGHTMAP_COLS+y.round().long().clamp(0, HEIGHTMAP_COLS-1)
-        gap = local[..., 2]-heightmap.flatten(1).gather(1, cell)
-        observed = local.new_zeros(b, n).scatter_add(1, ids, visible.to(local))
-        gap_mean = local.new_zeros(b, n).scatter_add(1, ids, torch.where(visible, gap, 0))/observed.clamp_min(1)
-        gap_min = local.new_full((b, n), torch.inf).scatter_reduce(1, ids,
-            torch.where(visible, gap, torch.inf), reduce='amin', include_self=True)
-        gap_max = local.new_full((b, n), -torch.inf).scatter_reduce(1, ids,
-            torch.where(visible, gap, -torch.inf), reduce='amax', include_self=True)
-        gap_min = torch.where(observed > 0, gap_min, 0)
-        gap_max = torch.where(observed > 0, gap_max, 0)
-        return torch.cat((mean, low, high, gap_mean[..., None], gap_min[..., None],
-                          gap_max[..., None], (observed/count)[..., None]), -1)
-
-    def load_stage_a(self, state):
-        kept = {name: value for name, value in state.items()
-                if not name.startswith(('surface_embedding.', 'plan_surface_embedding.'))}
-        incompatible = self.load_state_dict(kept, strict=False)
-        expected = sorted(name for name in self.state_dict()
-                          if name.startswith(self.NEW_PREFIXES) or name.startswith(('body_geometry_', 'part_geometry_', 'region_')))
-        if incompatible.unexpected_keys or sorted(incompatible.missing_keys) != expected:
-            raise ValueError('incompatible full1000 Stage-A backbone')
-        return sorted(kept), expected
+        from generator.observation_geometry import body_geometry_features
+        return body_geometry_features(self, current_q, heightmap, basis)
 
     def _encode_points(self, current_q, current_contact, current_anchor, heightmap):
         geometry_features = None
@@ -219,65 +181,15 @@ class Full1000PositionPredictor(ConditionedHeightmapPosePredictor):
         return terrain, basis, yaw, self.norm(encoded[:, :1]), self.norm(encoded[:, 1:]), geometry_features
 
     def forward(self, current_q, current_contact, current_anchor, heightmap, *,
-                teacher_contact=None, teacher_cell=None, teacher_mask=None, teacher_role=None,
+                teacher_contact=None, teacher_cell=None, teacher_mask=None, teacher_role=None, teacher_regions=None,
                 repair_mask=None, repair_role=None, repair_points_world=None, repair_regions=None):
         terrain, basis, yaw, body, part, geometry_features = self._encode_points(current_q, current_contact, current_anchor, heightmap)
-        grid = torch.as_tensor(heightmap_grid(), device=heightmap.device, dtype=heightmap.dtype).reshape(-1, 2)
-        geometry = torch.cat((grid[None].expand(len(current_q), -1, -1), heightmap.flatten(1)[..., None]), -1)
-        # Hard plan heads remain supervised only by planning losses.
-        role = self.role_head(part)
-        keys = self.location_key(geometry)
-        logits = torch.einsum('bpd,bnd->bpn', self.location_query(part), keys) / keys.shape[-1] ** .5
-        contact, cell = role.argmax(-1) != 0, logits.argmax(-1)
-        conditioned_role = role.argmax(-1)
-        predicted_points = geometry.gather(1, cell[..., None].expand(-1, -1, 3))
-        if teacher_mask is None:
-            teacher_mask = torch.zeros(len(current_q), dtype=torch.bool, device=current_q.device)
-        if teacher_mask.shape != (len(current_q),) or teacher_mask.dtype != torch.bool:
-            raise ValueError('teacher mask must be boolean [B]')
-        if bool(teacher_mask.any()):
-            if self.event_roles:
-                if teacher_role is None or teacher_role.shape != contact.shape:
-                    raise ValueError('Event-role conditioning requires explicit teacher roles')
-                if teacher_role.dtype != torch.long or bool(((teacher_role < 0) | (teacher_role > 3)).any()):
-                    raise ValueError('Teacher roles must be long values in [0,3]')
-                if teacher_contact is None or not torch.equal((teacher_role != 0)[teacher_mask], teacher_contact[teacher_mask]):
-                    raise ValueError('Teacher role/contact mismatch')
-                conditioned_role = torch.where(teacher_mask[:, None], teacher_role, conditioned_role)
-            if teacher_contact is None or teacher_cell is None:
-                raise ValueError('teacher samples require observed contact and cell labels')
-            if teacher_contact.dtype != torch.bool or teacher_contact.shape != contact.shape or teacher_cell.shape != cell.shape:
-                raise ValueError('teacher contact/cell shape mismatch')
-            contact = torch.where(teacher_mask[:, None], teacher_contact, contact)
-            cell = torch.where(teacher_mask[:, None], teacher_cell, cell)
-        points = geometry.gather(1, cell[..., None].expand(-1, -1, 3))
-        region_logits, planned_regions = None, None
-        if self.region_plan:
-            region_logits = (self.region_head(part)+self.region_prior).masked_fill(~self.region_geometry.valid_subsets, -1e4)
-            subsets = self.region_geometry.subsets.to(part)
-            hard = subsets[region_logits.argmax(-1)]
-            planned_regions = hard.bool() & contact[..., None]
-
-        if repair_mask is not None:
-            if not self.event_roles or repair_mask.dtype != torch.bool or repair_mask.shape != (len(current_q),):
-                raise ValueError('Plan repair requires event roles and a boolean batch mask')
-            if bool(repair_mask.any()):
-                if repair_role is None or repair_points_world is None:
-                    raise ValueError('Repair requires the previously issued role and world points')
-                if repair_role.shape != contact.shape or repair_role.dtype != torch.long or repair_points_world.shape != points.shape:
-                    raise ValueError('Invalid stored plan shapes/dtypes')
-                if bool(((repair_role < 0) | (repair_role > 3)).any()) or not bool(torch.isfinite(repair_points_world).all()):
-                    raise ValueError('Invalid stored plan values')
-                local = torch.einsum('bji,bpj->bpi', basis,
-                    repair_points_world.detach()-current_q[:, None, :3])
-                conditioned_role = torch.where(repair_mask[:, None], repair_role, conditioned_role)
-                contact = conditioned_role != 0
-                points = torch.where(repair_mask[:, None, None], local, points)
-                cell = torch.where(repair_mask[:, None], -1, cell)
-                if self.region_plan:
-                    if repair_regions is None or repair_regions.shape != planned_regions.shape or repair_regions.dtype != torch.bool:
-                        raise ValueError('Regional repair requires stored regional intent')
-                    planned_regions = torch.where(repair_mask[:, None, None], repair_regions, planned_regions)
+        selected = select_position_plan(self, current_q, heightmap, basis, part,
+            teacher_contact=teacher_contact, teacher_cell=teacher_cell, teacher_mask=teacher_mask,
+            teacher_role=teacher_role, teacher_regions=teacher_regions, repair_mask=repair_mask,
+            repair_role=repair_role, repair_points_world=repair_points_world, repair_regions=repair_regions)
+        contact, points = selected.conditioned_contact, selected.conditioned_points_local
+        conditioned_role, planned_regions = selected.conditioned_role, selected.planned_regions
 
         # Share observation learning when enabled, while keeping explicit
         # contact/position/role/region intent detached below.
@@ -302,5 +214,4 @@ class Full1000PositionPredictor(ConditionedHeightmapPosePredictor):
         interaction = self.interaction_decoder(interaction)
         pooled = self.execution_norm(interaction[:, 0] + interaction[:, 1:].mean(1))
         qpos = self._decode_pose(self.pose_head(pooled), current_q, basis, yaw)
-        return Full1000PositionPrediction(qpos, role, logits, predicted_points,
-                                         contact, cell, points, teacher_mask, region_logits, planned_regions, conditioned_role)
+        return selected.prediction(qpos)

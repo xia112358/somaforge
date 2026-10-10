@@ -15,17 +15,17 @@ import socket
 import sys
 import traceback
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
 from somaforge_core.contact_schema import (
     CONTACT_FORCE_PART_BODY_NAMES,
     CONTACT_FORCE_PART_ORDER,
     canonical_contact_part_id,
 )
-from somaforge_core.robot_assets import canonical_g1_urdf_path
+from somaforge_core.robot_assets import canonical_g1_urdf_path, encode_robot_asset_json
 
 from motion_edit.generation.pyroki_taskspace import (
     CompiledPyrokiTaskspace,
@@ -39,7 +39,7 @@ from motion_edit.generation.pyroki_taskspace import (
     resolve_link_index,
     world_body_poses_from_pyroki_fk,
 )
-from motion_edit.generation.newton_collision import DirectNewtonCollisionScene
+from motion_edit.generation.newton_collision import DirectNewtonCollisionScene, COLLISION_WITNESS_SCHEMA
 from motion_edit.generation.pyroki_trajectory_optimizer import (
     EnvironmentContactAnchors,
     ForceLinearization,
@@ -48,7 +48,7 @@ from motion_edit.generation.taskspace_spec import ContactAwareTaskspaceMotion
 
 
 DEFAULT_ROBOT_URDF = canonical_g1_urdf_path()
-COLLISION_REFERENCE_CACHE_SCHEMA = "newton_collision_reference_v1"
+COLLISION_REFERENCE_CACHE_SCHEMA = "newton_closed_solid_reference_geometry_surfaces_v4"
 TARGET_LINK_ALIASES = SEMANTIC_LINK_ALIASES
 TARGET_WEIGHTS = SEMANTIC_DEFAULT_WEIGHTS
 _PYROKI_ROBOT_CACHE: dict[
@@ -747,9 +747,9 @@ def _terrain_surface_key(
         if body0 < 0
         else int(contacts.shape1[index])
     )
-    shape_labels = tuple(str(item) for item in contacts.shape_labels)
+    shape_labels = contacts.shape_labels
     shape_label = (
-        shape_labels[terrain_shape]
+        str(shape_labels[terrain_shape])
         if 0 <= terrain_shape < len(shape_labels)
         else f"shape:{terrain_shape}"
     )
@@ -879,9 +879,15 @@ def _collision_reference_cache_metadata(
     reference_qpos: np.ndarray,
     robot_urdf: str | Path,
 ) -> dict[str, Any]:
+    from motion_edit.generation.optimization_geometry import OPTIMIZATION_GEOMETRY_SCHEMA
+    from motion_edit.generation.convex_geometry_distance import CONVEX_DISTANCE_SCHEMA
+
     qpos = np.ascontiguousarray(reference_qpos, dtype=np.float64)
     return {
         "schema": COLLISION_REFERENCE_CACHE_SCHEMA,
+        "optimization_geometry_schema": OPTIMIZATION_GEOMETRY_SCHEMA,
+        "convex_distance_schema": CONVEX_DISTANCE_SCHEMA,
+        "sphere_distance_schema": "native_convex_sphere_geometry_v1",
         "source_terrain_mesh": str(
             Path(source_terrain_mesh).expanduser().resolve()
         ),
@@ -972,7 +978,9 @@ def _write_collision_reference_cache(
 
 
 def _contact_part_for_body_name(body_name: str) -> str | None:
-    value = str(body_name).lower()
+    # Task anchors carry native USD paths; collision queries carry leaf names.
+    # Resolve the actual body, rather than matching its enclosing limb path.
+    value = str(body_name).rstrip("/").rsplit("/", 1)[-1].lower()
     side = "L" if value.startswith("left_") else "R" if value.startswith("right_") else ""
     if not side:
         return None
@@ -994,13 +1002,24 @@ def _is_contact_reference_body(
     """Keep the mature six-part depth tracking contract unchanged."""
 
     expected = CONTACT_REFERENCE_BODY_BY_PART.get(str(part_name))
-    return expected == str(body_name)
+    return expected == str(body_name).rstrip("/").rsplit("/", 1)[-1].lower()
 
 
-def solve_pyroki_fullbody_ik(
+@dataclass
+class FullbodyIKProblem:
+    """Compiled original objective; all trajectory/history poses remain variables."""
+    joint: Any
+    rows: list
+    initial: np.ndarray
+    lower: np.ndarray
+    upper: np.ndarray
+    refresh: Any
+    context: dict[str, Any]
+
+
+def assemble_pyroki_fullbody_problem(
     *,
     lte_path: str | Path,
-    output_path: str | Path,
     robot_urdf: str | Path = DEFAULT_ROBOT_URDF,
     source_motion_path: str | Path | None = None,
     max_nfev: int = 25,
@@ -1016,12 +1035,20 @@ def solve_pyroki_fullbody_ik(
     collision_max_refinements: int = 1,
     self_collision_weight: float = 20_000.0,
     collision_reference_cache_path: str | Path | None = None,
-) -> Path:
+) -> FullbodyIKProblem:
     import jax
     import jax.numpy as jnp
     import pyroki
     import yourdfpy
+    from motion_edit.generation.optimization_geometry import optimizer_scene, source_geometry_distances
+    from motion_edit.generation.convex_geometry_distance import ConvexGeometryDistance
+    from motion_edit.generation.native_sphere_distance import NativeSphereDistance
+    from motion_edit.generation.continuous_ik import JointResidual, NativeCollisionRows
 
+    # SciPy solves in float64. Evaluating tightly scaled material residuals
+    # in float32 can stop on rounded steps while their gradients remain large.
+    # Use the same precision for FK, residuals and Jacobians in every IK path.
+    jax.config.update('jax_enable_x64', True)
     payload = _load_npz(lte_path)
     if "contact_aware_taskspace_json" not in payload:
         raise ValueError("Legacy LTE keypoints are no longer supported; regenerate with generate-ref")
@@ -1036,9 +1063,6 @@ def solve_pyroki_fullbody_ik(
     if "contact_aware_taskspace_json" in payload:
         collision_spec = ContactAwareTaskspaceMotion.from_arrays(payload)
         collision_metadata = dict(collision_spec.metadata)
-        if (collision_metadata.get('native_hard_release') or {}).get('geometry_file'):
-            # Set precision before source FK as well, independent of CLI env.
-            jax.config.update('jax_enable_x64', True)
         raw_terrain_mesh = collision_metadata.get("target_terrain_mesh")
         if raw_terrain_mesh:
             collision_terrain_mesh = str(
@@ -1234,17 +1258,27 @@ def solve_pyroki_fullbody_ik(
         if not 0 <= surface_reference_ratio < 1:
             raise ValueError("Surface reference must be weaker than normal contact constraint")
         surface_normals_w, surface_edges_w, surface_offsets_w = compile_surface_faces(collision_spec, compiled, link_names)
+    from motion_edit.generation.loaded_material_reference import read_loaded_reference, SequentialLoadedMotion
+    from somaforge_core.loaded_material_motion import tangent_material_rms
+    loaded_motion = None
+    loaded_contract = collision_spec.metadata.get('source_loaded_material_reference')
+    if loaded_contract is not None:
+        for key in ('sites', 'observations', 'phases'):
+            if _sha256_file(loaded_contract[key]) != loaded_contract['sha256'][key]:
+                raise ValueError('Loaded material reference changed: '+key)
+        if int(collision_spec.frame_start) != 0:
+            raise ValueError('Loaded material editing requires the complete source clock')
+        loaded_reference = read_loaded_reference(source_motion_path, loaded_contract['sites'],
+            loaded_contract['observations'], loaded_contract['phases'])
+        if len(loaded_reference['source_steps'])+1 != n_frames:
+            raise ValueError('Loaded material reference and IK clocks differ')
+        from somaforge_core.loaded_material_motion import DEFAULT_MATERIAL_RESIDUAL_SCALE_M
+        loaded_motion = SequentialLoadedMotion(loaded_reference, list(link_names),
+            residual_scale_m=loaded_contract.get('residual_scale_m', DEFAULT_MATERIAL_RESIDUAL_SCALE_M))
     support_mask = np.zeros_like(compiled.contact_weights, dtype=bool)
     support_orientation_projectors = np.zeros((*support_mask.shape,3,3))
     support_episodes = []
     support_orientation_targets = None
-    support_approach_seconds = float(collision_spec.metadata.get('support_approach_seconds', 0.0)) if free_surface_contacts else 0.0
-    if not np.isfinite(support_approach_seconds) or support_approach_seconds < 0:
-        raise ValueError('Support approach duration must be finite and nonnegative')
-    approach_data = (np.zeros((n_frames,1),np.int32), np.zeros((n_frames,1,3)), np.zeros((n_frames,1,3)), np.zeros((n_frames,1)), np.full((n_frames,1),-1), np.zeros((n_frames,1)))
-    approach_start_offsets = {}
-    approach_start_rotation_offsets = {}
-    approach_orientation_enabled = bool(collision_spec.metadata.get("support_approach_orientation", True)) if free_surface_contacts else False
     support_rotation_policy = collision_spec.metadata.get('support_rotation_policy', 'episode_yaw') if free_surface_contacts else None
     support_origin_policy = collision_spec.metadata.get('support_origin_policy', 'median') if free_surface_contacts else None
     if free_surface_contacts and support_rotation_policy not in ('episode_yaw', 'authored_surface'):
@@ -1275,18 +1309,7 @@ def solve_pyroki_fullbody_ik(
         compiled.contact_targets_w[:] = support_targets
         support_orientation_projectors = orientation_completion_projectors(
             compiled, link_names, source_world_position, source_world_rotation, support_mask)
-        from motion_edit.generation.support_motion import compile_support_approach
-        approach_data = compile_support_approach(compiled, link_names, source_world_position,
-            source_world_rotation, support_edit_rotations, support_targets, support_episodes,
-            round(support_approach_seconds*fps))
-    from motion_edit.generation.support_motion import (
-        compile_approach_orientation, blend_orientation_target, temporal_history_mask)
-    approach_rotations = np.broadcast_to(np.eye(3), (*approach_data[0].shape, 3, 3)).copy()
-    approach_projectors = np.zeros_like(approach_rotations)
-    if free_surface_contacts and approach_orientation_enabled:
-        approach_rotations, approach_projectors = compile_approach_orientation(
-            approach_data, compiled, support_episodes, source_world_rotation,
-            support_edit_rotations, support_orientation_projectors)
+    from motion_edit.generation.support_motion import temporal_history_mask
     # The consolidated surface task already enforces the finite footprint;
     # a second set of per-frame landing coordinates is unnecessary.
     convex_mode = False  # Endpoint surface tasks replace the retired convex-variable objective.
@@ -1294,38 +1317,17 @@ def solve_pyroki_fullbody_ik(
         # Preserve the baseline temporal coefficient when eliminating only
         # its auxiliary landing coordinates.
         q_acceleration_weight = max(float(q_acceleration_weight), 2.0)
-    from motion_edit.generation.surface_contact_loss import compile_bounded_face_targets, bounded_face_targets as convex_targets, contact_previous_slots, contact_temporal_residual
     cfg_stop = root_dofs + actuated_count
     coefficient_count = 0
-    if convex_mode:
-        convex_vertices_w, convex_valid, convex_finite, initial_logits = compile_bounded_face_targets(collision_spec, compiled)
-        coefficient_shape = initial_logits.shape[1:]
-        coefficient_count = int(np.prod(coefficient_shape))
-        solved_logits = np.zeros_like(initial_logits[:n_frames])
-        previous_slots = contact_previous_slots(collision_spec, compiled)
-        solved_target_corrections_w = np.zeros((*convex_finite[:n_frames].shape,3))
-        # Reuse the existing demonstration-relative joint acceleration residual.
-        # Free landing points add freedom at contact transitions; retain posture
-        # continuity there without extending contact activation into flight.
-        q_acceleration_weight = max(float(q_acceleration_weight), 2.0)
     solve_attempts = []
     from motion_edit.generation.release_witness_loss import compile_release_witnesses, release_residual
     release_data = compile_release_witnesses(
         collision_spec.metadata if collision_spec is not None else {}, list(link_names), n_frames)
-    hard_release = collision_spec.metadata.get('native_hard_release') if collision_spec else None
-    hard_mask = None
-    hard_query_calls = 0
+    if collision_spec.metadata.get('native_hard_release'):
+        raise ValueError('Per-frame hard-release optimization is retired; regenerate surface/release tasks')
+    hard_release = False
+    hard_query_calls = geometry_jacobian_calls = 0
     release_geometry = None
-    geometry_jacobian_calls = 0
-    if hard_release:
-        from somaforge_core.newton_contact_data import load_contact_labels
-        hard_labels = load_contact_labels(Path(source_path), Path(hard_release['source_labels']))
-        hard_mask = hard_labels['contact_part_mask']
-        if hard_mask.shape != (n_frames, 6):raise ValueError('Hard release source frame mismatch')
-        if np.any(release_data[-1]):raise ValueError('Hard release cannot consume feedback witnesses')
-        if hard_release.get('geometry_file'):
-            from motion_edit.generation.native_geometry_release import GeometryRelease
-            release_geometry = GeometryRelease(hard_release['geometry_file'], hard_release['model_fingerprint'], list(link_names))
 
     def quat_apply_jax(quat: Any, vector: Any) -> Any:
         qvec = quat[..., 1:4]
@@ -1380,24 +1382,36 @@ def solve_pyroki_fullbody_ik(
         release_weights: Any,
         support_weight: Any,
         support_orientation: Any,
-        approach_indices: Any,
-        approach_points: Any,
-        approach_targets: Any,
-        approach_weights: Any,
-        approach_orientation: Any,
         history_mask: Any,
+        loaded_links: Any,
+        loaded_local: Any,
+        loaded_previous_points: Any,
+        loaded_normals: Any,
+        loaded_weights: Any,
+        loaded_source_step: Any,
+        loaded_remaining: Any,
+        loaded_scale: Any,
+        fk_override: Any = None,
     ) -> Any:
         root_state = solve_state[:root_dofs]
         root_delta = root_state[:3]
         q_cfg = solve_state[root_dofs:cfg_stop]
-        fk = robot.forward_kinematics(q_cfg)
-        if yaw_enabled:
+        fk = robot.forward_kinematics(q_cfg) if fk_override is None else fk_override
+        if yaw_enabled and fk_override is None:
             half = root_state[3] * .5
             yaw_q = jnp.concatenate((jnp.cos(half)[None], root_yaw_axis_base * jnp.sin(half)))
             original_q = fk[:, :4]
             w = yaw_q[0] * original_q[:, :1] - jnp.sum(yaw_q[1:] * original_q[:, 1:], axis=-1, keepdims=True)
             xyz = yaw_q[0] * original_q[:, 1:] + original_q[:, :1] * yaw_q[1:] + jnp.cross(yaw_q[1:], original_q[:, 1:])
             fk = jnp.concatenate((w, xyz, quat_apply_jax(yaw_q, fk[:, 4:7])), axis=-1)
+        loaded_pose = fk[loaded_links]
+        loaded_points = loaded_pose[..., 4:7]+quat_apply_jax(loaded_pose[..., :4], loaded_local)+root_delta
+        loaded_rms = tangent_material_rms(loaded_points-loaded_previous_points,
+            loaded_normals, loaded_weights, xp=jnp)
+        loaded_extra = jnp.maximum(loaded_rms-loaded_source_step, 0.)
+        loaded_res = jnp.stack((jnp.maximum(loaded_extra-loaded_remaining[0], 0.),
+                               jnp.maximum(loaded_rms-loaded_remaining[1], 0.)))*loaded_scale
+        loaded_res = loaded_res.reshape(-1)
         semantic_pos = fk[semantic_indices_jax, 4:7] + root_delta
         semantic_res = ((semantic_pos - semantic_target_base) * semantic_sqrt_weight[:, None]).reshape(-1)
 
@@ -1414,36 +1428,10 @@ def solve_pyroki_fullbody_ik(
             contact_res = endpoint_surface_residual(contact_pred, contact_target_base, surface_normals_base,
                 surface_edges_base, surface_offsets_base, contact_sqrt_weight, support_weight,
                 surface_reference_ratio, xp=jnp)
-        if convex_mode:
-            target, _ = convex_targets(solve_state[cfg_stop:].reshape(coefficient_shape),
-                                       convex_vertices_base, convex_valid_frame, xp=jnp)
-            # Normal reference clearance remains the verified Newton source's.
-            # Only the surface footprint is parametrized by convex coefficients.
-            error = contact_pred-target
-            tangent = error-jnp.sum(error*surface_normals_base,axis=-1)[:,None]*surface_normals_base
-            landing_weight = contact_sqrt_weight * convex_finite_frame
-            landing_weight = landing_weight * (support_weight <= 0)
-            contact_res = jnp.concatenate((contact_res,
-                (tangent*landing_weight[:,None]).reshape(-1)))
-            correction = target-contact_target_base
-            correction = correction-jnp.sum(correction*surface_normals_base,axis=-1)[:,None]*surface_normals_base
             # Landing-point continuity is a weak tie-breaker, not a persistent
             # pin that stores posture error until contact release. Joint-space
             # demonstration-relative smoothness remains the primary temporal term.
 
-        approach_pose = fk[approach_indices]
-        approach_pred = approach_pose[:,4:7]+quat_apply_jax(approach_pose[:,:4], approach_points)+root_delta
-        approach_res = ((approach_pred-approach_targets)*approach_weights[:,None]).reshape(-1)
-        approach_q = approach_pose[:, :4]
-        approach_target_q = approach_orientation[:, :4]
-        approach_rotation_error = (
-            approach_target_q[:, :1] * approach_q[:, 1:]
-            - approach_q[:, :1] * approach_target_q[:, 1:]
-            - jnp.cross(approach_target_q[:, 1:], approach_q[:, 1:]))
-        approach_rotation_free = jnp.einsum('nij,nj->ni',
-            approach_orientation[:, 4:].reshape(-1, 3, 3), approach_rotation_error)
-        approach_res = jnp.concatenate((approach_res,
-            (2.0 * approach_rotation_free * approach_weights[:, None]).reshape(-1)))
         # A single material point leaves rotation unconstrained, notably for
         # spherical hands. Keep the demonstrated rigid endpoint orientation
         # during support as well; do not apply this term in flight.
@@ -1554,30 +1542,16 @@ def solve_pyroki_fullbody_ik(
         # Four responsibilities: endpoint tasks, pose reference, correction
         # continuity, and collision. No duplicate support XYZ, absolute
         # motion penalty, or attraction to collision witness planes.
-        endpoint_res = jnp.concatenate((contact_res, approach_res, support_orientation_res))
+        endpoint_res = jnp.concatenate((contact_res, support_orientation_res))
         pose_res = jnp.concatenate((semantic_res, prior_res, foot_orientation_res, root_delta_prior_res))
         temporal_res = jnp.concatenate((velocity_res, acceleration_res,
-                                        root_delta_velocity_res, root_delta_acceleration_res))
+                                        root_delta_velocity_res, root_delta_acceleration_res, loaded_res))
         safety_res = jnp.concatenate((collision_deeper_res, self_collision_res, release_res))
         return jnp.concatenate((endpoint_res, pose_res, temporal_res, safety_res))
 
-    residual_compiled = jax.jit(residual_jax)
-    jac_compiled = jax.jit(jax.jacfwd(residual_jax, argnums=0))
-
-    def native_projection(x, indices, local_points, normals, yaw_axis):
-        fk = robot.forward_kinematics(x[root_dofs:cfg_stop])[indices]
-        points = fk[:,4:7]+quat_apply_jax(fk[:,:4],local_points)
-        if yaw_enabled:
-            half=x[3]*.5
-            rotation=jnp.concatenate((jnp.cos(half)[None],yaw_axis*jnp.sin(half)))
-            points=quat_apply_jax(rotation,points)
-        return jnp.sum((points+x[:3])*normals,axis=-1)
-    native_projection_jac=jax.jit(jax.jacfwd(native_projection,argnums=0))
-    if release_geometry is not None:
-        geometry_fk = jax.jit(lambda cfg: robot.forward_kinematics(cfg))
-        geometry_jac_capacity = int(release_geometry.allowed.size)
-
-    out_cfg = np.zeros((n_frames, actuated_count), dtype=np.float64)
+    # Exact shared-FK derivative layout for the complete trajectory.
+    residual_jax.continuous_temporal_weights = (float(q_velocity_weight), float(q_acceleration_weight))
+    out_cfg = cfg_source.copy()
     out_root_delta_base = np.zeros((n_frames, root_dofs), dtype=np.float64)
     q_previous = cfg_source[0]
     q_previous_previous = cfg_source[0]
@@ -1603,7 +1577,10 @@ def solve_pyroki_fullbody_ik(
     )
     collision_similarity_weight_value = float(collision_similarity_weight)
     collision_similarity_weight_value = 0.0
-    collision_deeper_weight_value = 100.0
+    depth_scale = float(collision_spec.metadata.get('environment_depth_residual_scale_m', .1)) if collision_spec is not None else .1
+    if not np.isfinite(depth_scale) or depth_scale <= 0:
+        raise ValueError('Environment depth residual normalization must be positive')
+    collision_deeper_weight_value = 1./depth_scale**2
     collision_max_refinements_value = int(collision_max_refinements)
     self_collision_weight_value = float(self_collision_weight)
     if collision_similarity_weight_value < 0.0:
@@ -1623,12 +1600,9 @@ def solve_pyroki_fullbody_ik(
         # Existing translation limits unchanged; yaw is an additional radian DOF.
         solve_lower = np.concatenate((solve_lower[:3], [-np.pi], lower))
         solve_upper = np.concatenate((solve_upper[:3], [np.pi], upper))
-    if convex_mode:
-        solve_lower = np.r_[solve_lower, np.zeros(coefficient_count)]
-        solve_upper = np.r_[solve_upper, np.ones(coefficient_count)]
     normal_solve_lower, normal_solve_upper = solve_lower.copy(), solve_upper.copy()
     collision_scene = (
-        _cached_newton_collision_scene(
+        optimizer_scene(
             collision_terrain_mesh,
             device="cpu",
         )
@@ -1661,19 +1635,13 @@ def solve_pyroki_fullbody_ik(
             collision_reference_signed_distances = cached
             collision_reference_cache_hit = True
         else:
-            collision_reference_scene = _cached_newton_collision_scene(
+            collision_reference_scene = optimizer_scene(
                 collision_source_terrain_mesh,
                 device="cpu",
             )
-            for frame in range(n_frames):
-                reference_contacts = collision_reference_scene.query_qpos(
-                    collision_reference_qpos[frame]
-                )
-                collision_reference_signed_distances.append(
-                    _robot_min_geometry_distance_by_body_surface(
-                        reference_contacts
-                    )
-                )
+            collision_reference_signed_distances = source_geometry_distances(
+                collision_reference_scene, link_names, collision_reference_qpos,
+                robot, robot_joint_names)
             if collision_reference_cache_path is not None:
                 _write_collision_reference_cache(
                     collision_reference_cache_path,
@@ -1698,26 +1666,6 @@ def solve_pyroki_fullbody_ik(
         collision_reference_signed_distances = [
             {} for _ in range(n_frames)
         ]
-    collision_initial_active_frames = 0
-    collision_final_active_frames = 0
-    collision_initial_raw_max_m = 0.0
-    collision_final_raw_max_m = 0.0
-    collision_initial_excess_max_m = 0.0
-    collision_final_excess_max_m = 0.0
-    collision_initial_similarity_error_max_m = 0.0
-    collision_final_similarity_error_max_m = 0.0
-    collision_initial_similarity_errors: list[float] = []
-    collision_final_similarity_errors: list[float] = []
-    collision_refinement_solve_count = 0
-    self_collision_initial_active_frames = 0
-    self_collision_final_active_frames = 0
-    self_collision_initial_max_m = 0.0
-    self_collision_final_max_m = 0.0
-    self_collision_initial_pairs: set[tuple[str, str]] = set()
-    self_collision_final_pairs: set[tuple[str, str]] = set()
-    link_index_by_name = {
-        name: index for index, name in enumerate(link_names)
-    }
     active_contact_surface_weight: list[
         dict[tuple[str, str], float]
     ] = [dict() for _ in range(n_frames)]
@@ -1745,37 +1693,32 @@ def solve_pyroki_fullbody_ik(
                     weight,
                 )
 
+    rows = []
     for frame in range(n_frames):
-        if hard_release and frame % 100 == 0:
-            mode='geometry-release' if release_geometry is not None else 'native-hard-release'
-            print(f'{mode} frame={frame}/{n_frames} evaluations={hard_query_calls}',flush=True)
         root = root_source[frame].copy()
         root_rotation = _quat_wxyz_to_rotation(root[3:7])
         root_yaw_axis_base = root_rotation.inv().apply([0., 0., 1.])
+        loaded_previous_positions = loaded_previous_rotations = None
+        if loaded_motion is not None:
+            if frame > 0:
+                prior_root = root_source[frame-1].copy()
+                prior_rotation = _quat_wxyz_to_rotation(prior_root[3:7])
+                prior_root[:3] += prior_rotation.apply(out_root_delta_base[frame-1, :3])
+                if yaw_enabled:
+                    prior_root[3:7] = (Rotation.from_rotvec([0., 0., out_root_delta_base[frame-1, 3]])*prior_rotation).as_quat()[[3,0,1,2]]
+                prior_fk = np.asarray(robot.forward_kinematics(jnp.asarray(out_cfg[frame-1:frame])), dtype=np.float64)
+                pp, pq = world_body_poses_from_pyroki_fk(prior_root[None], prior_fk)
+                loaded_previous_positions = pp[0]
+                loaded_previous_rotations = Rotation.from_quat(pq[0][:, [1,2,3,0]]).as_matrix()
+            loaded_args = loaded_motion.frame_args(frame, loaded_previous_positions, loaded_previous_rotations, root[:3], root_rotation.as_matrix())
+        else:
+            loaded_args = (np.zeros((6,1),np.int32), np.zeros((6,1,3)), np.zeros((6,1,3)),
+                np.zeros((6,1,3)), np.zeros((6,1)), np.zeros(6), np.zeros((2,6)), np.zeros((2,6)))
+
         surface_args = (np.zeros((1, 3)), np.zeros((1, 1, 3)), np.zeros((1, 1)))
         convex_args = (np.zeros((1,3,3)),np.ones((1,3),bool),np.zeros(1,bool))
         coefficient_initial = np.empty(0)
         temporal_args = (np.zeros((1,3)),np.zeros((1,3)),np.zeros(1),np.zeros(1))
-        if convex_mode:
-            convex_args = (root_rotation.inv().apply((convex_vertices_w[frame]-root[:3]).reshape(-1,3)).reshape(convex_vertices_w[frame].shape),
-                           convex_valid[frame],convex_finite[frame])
-            warm = initial_logits[frame].copy()
-            previous_correction = np.zeros((len(warm),3)); previous_previous_correction = previous_correction.copy()
-            velocity_mask = np.zeros(len(warm)); acceleration_mask = velocity_mask.copy()
-            if frame > 0:
-                for slot, old in enumerate(previous_slots[frame]):
-                    if old < 0 or not convex_finite[frame,slot] or not convex_finite[frame-1,old]: continue
-                    if not np.array_equal(convex_vertices_w[frame,slot],convex_vertices_w[frame-1,old]):
-                        raise ValueError('Persistent contact changed face parameterization')
-                    warm[slot] = solved_logits[frame-1,old]
-                    previous_correction[slot] = solved_target_corrections_w[frame-1,old]
-                    velocity_mask[slot] = 1.
-                    older = previous_slots[frame-1,old]
-                    if frame > 1 and older >= 0 and convex_finite[frame-2,older]:
-                        previous_previous_correction[slot] = solved_target_corrections_w[frame-2,older]
-                        acceleration_mask[slot] = 1.
-            coefficient_initial = warm.reshape(-1)
-            temporal_args = (root_rotation.inv().apply(previous_correction),root_rotation.inv().apply(previous_previous_correction),velocity_mask,acceleration_mask)
         if free_surface_contacts:
             surface_args = (
                 root_rotation.inv().apply(surface_normals_w[frame]),
@@ -1793,39 +1736,6 @@ def solve_pyroki_fullbody_ik(
         )
         semantic_sqrt_weight = np.sqrt(np.maximum(compiled.semantic_weights[frame], 0.0))
         contact_sqrt_weight = np.sqrt(np.maximum(compiled.contact_weights[frame], 0.0))
-        approach_goals = approach_data[2][frame].copy()
-        approach_rotation_goals = approach_rotations[frame].copy()
-        if np.any(approach_data[4][frame] >= 0):
-            previous_frame = max(0,frame-1)
-            previous_root = root_source[previous_frame].copy()
-            previous_rotation = _quat_wxyz_to_rotation(previous_root[3:7])
-            previous_root[:3] += previous_rotation.apply(root_delta_previous[:3])
-            if yaw_enabled:
-                previous_root[3:7] = (Rotation.from_rotvec([0.,0.,root_delta_previous[3]])*previous_rotation).as_quat()[[3,0,1,2]]
-            previous_fk = np.asarray(robot.forward_kinematics(jnp.asarray(q_previous)))
-            previous_positions,previous_quaternions = world_body_poses_from_pyroki_fk(previous_root[None],previous_fk[None])
-            for slot,identity in enumerate(approach_data[4][frame]):
-                if identity < 0:
-                    continue
-                if identity not in approach_start_offsets:
-                    link = approach_data[0][frame,slot]
-                    actual = previous_positions[0,link]+quat_apply_wxyz(previous_quaternions[0,link],approach_data[1][frame,slot])
-                    approach_start_offsets[identity] = actual-approach_goals[slot]
-                approach_goals[slot] += (1.-approach_data[5][frame,slot])*approach_start_offsets[identity]
-                if identity not in approach_start_rotation_offsets:
-                    link = approach_data[0][frame,slot]
-                    actual_rotation = _quat_wxyz_to_rotation(previous_quaternions[0,link]).as_matrix()
-                    approach_start_rotation_offsets[identity] = Rotation.from_matrix(
-                        actual_rotation @ approach_rotation_goals[slot].T).as_rotvec()
-                approach_rotation_goals[slot] = blend_orientation_target(
-                    approach_rotation_goals[slot], approach_start_rotation_offsets[identity],
-                    approach_data[5][frame,slot])
-
-        approach_target_base = root_rotation.inv().apply(approach_goals-root[:3])
-        approach_orientation_frame = np.column_stack((
-            Rotation.from_matrix(root_rotation.as_matrix().T @ approach_rotation_goals).as_quat()[:, [3,0,1,2]],
-            approach_projectors[frame].reshape(-1,9)))
-
         active_surface_weight = active_contact_surface_weight[frame]
         prior_scale = (
             float(q_prior_weight) * np.maximum(source_reference[frame], 0.0)
@@ -1834,17 +1744,10 @@ def solve_pyroki_fullbody_ik(
         q_prior = cfg_source[frame]
         q_prior_previous = cfg_source[max(frame - 1, 0)]
         q_prior_previous_previous = cfg_source[max(frame - 2, 0)]
-        x0 = np.clip(
-            np.concatenate(
-                (
-                    root_delta_previous,
-                    q_previous if frame > 0 else q_prior,
-                    coefficient_initial,
-                )
-            ),
-            solve_lower,
-            solve_upper,
-        )
+        q_previous = q_prior_previous
+        q_previous_previous = q_prior_previous_previous
+        root_delta_previous = np.zeros(root_dofs, dtype=np.float64)
+        root_delta_previous_previous = np.zeros(root_dofs, dtype=np.float64)
 
         args = (
             np.asarray(semantic_target_base, dtype=np.float64),
@@ -1877,719 +1780,219 @@ def solve_pyroki_fullbody_ik(
             release_data[4][frame],
             support_residual_scale * contact_sqrt_weight * support_mask[frame],
             np.column_stack((support_orientation_targets[frame] if free_surface_contacts else source_fk[frame, compiled.contact_link_indices[frame], :4], support_orientation_projectors[frame].reshape(-1,9))),
-            approach_data[0][frame], approach_data[1][frame],
-            approach_target_base,
-            support_residual_scale*approach_data[3][frame],
-                approach_orientation_frame, temporal_history_mask(frame),
+            temporal_history_mask(frame), *loaded_args,
         )
 
-        args_jax = tuple(jnp.asarray(value) for value in args)
+        rows.append(args)
 
-        def fun(x: np.ndarray) -> np.ndarray:
-            return np.asarray(residual_compiled(jnp.asarray(x), *args_jax))
+    joint = JointResidual(residual_jax, robot, root_source, root_dofs, loaded_motion)
+    initial = np.column_stack((np.zeros((n_frames, root_dofs)), cfg_source))
+    refresh = (None if collision_scene is None else NativeCollisionRows(joint, collision_scene,
+        link_names, collision_reference_signed_distances, active_contact_surface_weight,
+        depth_weight=collision_deeper_weight_value, self_weight=self_collision_weight_value,
+        sphere_geometry=NativeSphereDistance(collision_scene, link_names),
+        convex_geometry=ConvexGeometryDistance(collision_scene, link_names)))
+    return FullbodyIKProblem(joint, rows, initial, normal_solve_lower,
+                             normal_solve_upper, refresh, {
+        'active_contact_surface_weight': active_contact_surface_weight,
+        'cfg_source': cfg_source,
+        'collision_deeper_weight_value': collision_deeper_weight_value,
+        'collision_max_refinements_value': collision_max_refinements_value,
+        'collision_reference_cache_hit': collision_reference_cache_hit,
+        'collision_reference_cache_path': collision_reference_cache_path,
+        'collision_reference_max_m': collision_reference_max_m,
+        'collision_reference_motion_path': collision_reference_motion_path,
+        'collision_reference_proximity_frames': collision_reference_proximity_frames,
+        'collision_reference_qpos': collision_reference_qpos,
+        'collision_reference_scene': collision_reference_scene,
+        'collision_reference_signed_distances': collision_reference_signed_distances,
+        'collision_scene': collision_scene,
+        'collision_similarity_weight_value': collision_similarity_weight_value,
+        'collision_source_terrain_mesh': collision_source_terrain_mesh,
+        'collision_spec': collision_spec,
+        'collision_terrain_mesh': collision_terrain_mesh,
+        'compiled': compiled,
+        'convex_mode': convex_mode,
+        'depth_scale': depth_scale,
+        'foot_orientation_indices': foot_orientation_indices,
+        'foot_orientation_weight': foot_orientation_weight,
+        'fps': fps,
+        'free_surface_contacts': free_surface_contacts,
+        'geometry_jacobian_calls': geometry_jacobian_calls,
+        'hard_query_calls': hard_query_calls,
+        'hard_release': hard_release,
+        'input_schema': input_schema,
+        'jnp': jnp,
+        'link_names': link_names,
+        'loaded_motion': loaded_motion,
+        'lte_path': lte_path,
+        'n_frames': n_frames,
+        'normal_solve_lower': normal_solve_lower,
+        'normal_solve_upper': normal_solve_upper,
+        'objective_version': objective_version,
+        'q_acceleration_weight': q_acceleration_weight,
+        'q_velocity_weight': q_velocity_weight,
+        'release_data': release_data,
+        'release_geometry': release_geometry,
+        'residual_jax': residual_jax,
+        'robot': robot,
+        'robot_joint_names': robot_joint_names,
+        'robot_path': robot_path,
+        'root_delta_limit_m': root_delta_limit_m,
+        'root_dofs': root_dofs,
+        'root_source': root_source,
+        'self_collision_weight_value': self_collision_weight_value,
+        'source_joint_names': source_joint_names,
+        'source_path': source_path,
+        'support_episodes': support_episodes,
+        'support_mask': support_mask,
+        'support_origin_policy': support_origin_policy,
+        'support_residual_scale': support_residual_scale,
+        'support_rotation_policy': support_rotation_policy,
+        'surface_reference_ratio': surface_reference_ratio,
+        'yaw_condition': yaw_condition,
+        'yaw_enabled': yaw_enabled
+    })
 
-        def jac(x: np.ndarray) -> np.ndarray:
-            return np.asarray(jac_compiled(jnp.asarray(x), *args_jax))
+def solve_pyroki_fullbody_ik(
+    *,
+    lte_path: str | Path,
+    output_path: str | Path,
+    robot_urdf: str | Path = DEFAULT_ROBOT_URDF,
+    source_motion_path: str | Path | None = None,
+    max_nfev: int = 25,
+    q_prior_weight: float = 0.25,
+    q_smooth_weight: float = 0.5,
+    boundary_pin_weight: float = 2.0,
+    edited_contact_weight: float = 100.0,
+    fixed_contact_weight: float = 80.0,
+    foot_orientation_weight: float = 20.0,
+    q_velocity_weight: float = 2.0,
+    q_acceleration_weight: float = 1.0,
+    collision_similarity_weight: float = 25.0,
+    collision_max_refinements: int = 1,
+    self_collision_weight: float = 20_000.0,
+    collision_reference_cache_path: str | Path | None = None,
+) -> Path:
+    from motion_edit.generation.continuous_ik import solve_joint_trajectory
+    from motion_edit.generation.continuous_factored_ik import FactoredJointProblem
+    problem = assemble_pyroki_fullbody_problem(
+        lte_path=lte_path,
+        robot_urdf=robot_urdf,
+        source_motion_path=source_motion_path,
+        max_nfev=max_nfev,
+        q_prior_weight=q_prior_weight,
+        q_smooth_weight=q_smooth_weight,
+        boundary_pin_weight=boundary_pin_weight,
+        edited_contact_weight=edited_contact_weight,
+        fixed_contact_weight=fixed_contact_weight,
+        foot_orientation_weight=foot_orientation_weight,
+        q_velocity_weight=q_velocity_weight,
+        q_acceleration_weight=q_acceleration_weight,
+        collision_similarity_weight=collision_similarity_weight,
+        collision_max_refinements=collision_max_refinements,
+        self_collision_weight=self_collision_weight,
+        collision_reference_cache_path=collision_reference_cache_path)
+    def progress(row, states):
+        if row['kind'] == 'solve_finished':
+            print('joint-trajectory '+json.dumps(row, sort_keys=True), flush=True)
+    result = solve_joint_trajectory(problem.joint, problem.rows, problem.initial,
+        problem.lower, problem.upper, max_nfev=max_nfev,
+        refinements=collision_max_refinements, refresh=problem.refresh,
+        progress=progress, problem_class=FactoredJointProblem)
+    if problem.refresh is not None:
+        problem.refresh(result.states, problem.rows)
+    return _write_fullbody_joint_result(problem, result, output_path)
 
-        frame_fixed_coefficients = None
-        active_solve_indices = np.arange(len(x0))
-        if convex_mode:
-            active_coefficients = np.flatnonzero(np.repeat(convex_finite[frame],coefficient_shape[-1]))
-            active_solve_indices = np.r_[np.arange(cfg_stop), cfg_stop+active_coefficients]
 
-        def solve_frame(start):
-            nonlocal frame_fixed_coefficients
-            if not convex_mode:
-                # Keep the established solver path, including Jacobian layout,
-                # untouched when the new landing-point variables are disabled.
-                return least_squares(fun,start,jac=jac,bounds=(solve_lower,solve_upper),
-                    max_nfev=int(max_nfev),xtol=1.e-5,ftol=1.e-5,gtol=1.e-5)
-            original_start = start.copy()
-            total_nfev = 0
-            for attempt in range(0 if frame_fixed_coefficients is not None else (4 if convex_mode else 1)):
-                template = start.copy()
-                def expand(value):
-                    full = template.copy(); full[active_solve_indices] = value
-                    return full
-                solved = least_squares(lambda value:fun(expand(value)),start[active_solve_indices],
-                    jac=lambda value:jac(expand(value))[:,active_solve_indices],
-                    bounds=(solve_lower[active_solve_indices],solve_upper[active_solve_indices]),
-                    max_nfev=int(max_nfev),xtol=1.e-5,ftol=1.e-5,gtol=1.e-5)
-                solved.x = expand(solved.x)
-                total_nfev += int(solved.nfev)
-                if convex_mode:
-                    solve_attempts.append(dict(frame=frame,attempt=attempt,success=bool(solved.success),
-                        status=int(solved.status),cost=float(solved.cost),nfev=int(solved.nfev)))
-                if solved.success: break
-                start = solved.x
-            if convex_mode and (frame_fixed_coefficients is not None or not solved.success):
-                # Reuse the established fixed-target pose solve. Never freeze q,
-                # silently accept failure, or project the generated posture.
-                if frame_fixed_coefficients is None:
-                    frame_fixed_coefficients = original_start[cfg_stop:].copy()
-                def reduced_fun(value):return fun(np.r_[value, frame_fixed_coefficients])
-                def reduced_jac(value):return jac(np.r_[value, frame_fixed_coefficients])[:,:cfg_stop]
-                reduced_start = original_start[:cfg_stop]
-                for attempt in range(4):
-                    reduced = least_squares(reduced_fun,reduced_start,jac=reduced_jac,
-                        bounds=(solve_lower[:cfg_stop],solve_upper[:cfg_stop]),max_nfev=int(max_nfev),
-                        xtol=1.e-5,ftol=1.e-5,gtol=1.e-5)
-                    total_nfev += int(reduced.nfev)
-                    solve_attempts.append(dict(frame=frame,attempt=attempt,mode='fixed_target_fallback',
-                        success=bool(reduced.success),status=int(reduced.status),cost=float(reduced.cost),nfev=int(reduced.nfev)))
-                    if reduced.success:break
-                    reduced_start = reduced.x
-                reduced.x = np.r_[reduced.x, frame_fixed_coefficients]
-                solved = reduced
-            if convex_mode and (not solved.success or not np.isfinite(solved.x).all()):
-                raise RuntimeError(f'Frame {frame}: convex contact solve did not converge after retries; refusing trajectory output')
-            solved.nfev = total_nfev
-            return solved
+def _write_fullbody_joint_result(problem, result, output_path):
+    collision_deeper_weight_value = problem.context['collision_deeper_weight_value']
+    collision_max_refinements_value = problem.context['collision_max_refinements_value']
+    collision_reference_cache_hit = problem.context['collision_reference_cache_hit']
+    collision_reference_cache_path = problem.context['collision_reference_cache_path']
+    collision_reference_max_m = problem.context['collision_reference_max_m']
+    collision_reference_motion_path = problem.context['collision_reference_motion_path']
+    collision_reference_proximity_frames = problem.context['collision_reference_proximity_frames']
+    collision_scene = problem.context['collision_scene']
+    collision_similarity_weight_value = problem.context['collision_similarity_weight_value']
+    collision_source_terrain_mesh = problem.context['collision_source_terrain_mesh']
+    collision_spec = problem.context['collision_spec']
+    collision_terrain_mesh = problem.context['collision_terrain_mesh']
+    compiled = problem.context['compiled']
+    convex_mode = problem.context['convex_mode']
+    depth_scale = problem.context['depth_scale']
+    foot_orientation_indices = problem.context['foot_orientation_indices']
+    foot_orientation_weight = problem.context['foot_orientation_weight']
+    fps = problem.context['fps']
+    free_surface_contacts = problem.context['free_surface_contacts']
+    geometry_jacobian_calls = problem.context['geometry_jacobian_calls']
+    hard_query_calls = problem.context['hard_query_calls']
+    hard_release = problem.context['hard_release']
+    input_schema = problem.context['input_schema']
+    jnp = problem.context['jnp']
+    link_names = problem.context['link_names']
+    loaded_motion = problem.context['loaded_motion']
+    lte_path = problem.context['lte_path']
+    n_frames = problem.context['n_frames']
+    objective_version = problem.context['objective_version']
+    q_acceleration_weight = problem.context['q_acceleration_weight']
+    q_velocity_weight = problem.context['q_velocity_weight']
+    release_data = problem.context['release_data']
+    release_geometry = problem.context['release_geometry']
+    robot = problem.context['robot']
+    robot_joint_names = problem.context['robot_joint_names']
+    robot_path = problem.context['robot_path']
+    root_delta_limit_m = problem.context['root_delta_limit_m']
+    root_dofs = problem.context['root_dofs']
+    root_source = problem.context['root_source']
+    self_collision_weight_value = problem.context['self_collision_weight_value']
+    source_joint_names = problem.context['source_joint_names']
+    source_path = problem.context['source_path']
+    support_episodes = problem.context['support_episodes']
+    support_mask = problem.context['support_mask']
+    support_origin_policy = problem.context['support_origin_policy']
+    support_residual_scale = problem.context['support_residual_scale']
+    support_rotation_policy = problem.context['support_rotation_policy']
+    surface_reference_ratio = problem.context['surface_reference_ratio']
+    yaw_condition = problem.context['yaw_condition']
+    yaw_enabled = problem.context['yaw_enabled']
 
-        if hard_release:
-            from scipy.optimize import minimize, OptimizeResult
-            from somaforge_core.motion_schema import G1_29DOF_JOINT_ORDER
-            from motion_edit.generation.native_release_constraint import NativeReleaseConstraint
-            canonical_slots=[robot_joint_names.index(n) for n in G1_29DOF_JOINT_ORDER]
-
-            def hard_candidate_root(x):
-                value=root.copy()
-                value[:3]+=root_rotation.apply(x[:3])
-                if yaw_enabled:value[3:7]=(Rotation.from_rotvec([0.,0.,x[3]])*root_rotation).as_quat()[[3,0,1,2]]
-                return value
-
-            def state_to_q(x):
-                return np.r_[hard_candidate_root(x),x[root_dofs:cfg_stop][canonical_slots]]
-
-            def native_witness_jac(x, pairs, model):
-                fk=np.asarray(robot.forward_kinematics(jnp.asarray(x[root_dofs:cfg_stop])))
-                bp,bq=world_body_poses_from_pyroki_fk(hard_candidate_root(x)[None,:],fk[None,...])
-                indices=np.zeros(6,np.int32);local=np.zeros((6,3));normals=np.zeros((6,3))
-                for p,pair in enumerate(pairs):
-                    if pair is None:continue
-                    if 'normal_w' not in pair:raise ValueError('Native normal missing; no witness fallback')
-                    body=model['body_labels'][pair['body']].rsplit('/',1)[-1]
-                    i=link_names.index(body);indices[p]=i
-                    normal=np.asarray(pair['normal_w'])
-                    point=np.asarray(pair['solver_position_w'])+.5*pair['dist']*normal
-                    local[p]=_quat_wxyz_to_rotation(bq[0,i]).inv().apply(point-bp[0,i])
-                    normals[p]=root_rotation.inv().apply(normal)
-                return np.asarray(native_projection_jac(jnp.asarray(x),jnp.asarray(indices),
-                    jnp.asarray(local),jnp.asarray(normals),jnp.asarray(root_yaw_axis_base)),dtype=np.float64)
-
-            native_constraint=NativeReleaseConstraint(hard_mask[frame],hard_release['model_fingerprint'],state_to_q,native_witness_jac)
-            if release_geometry is not None:
-                from motion_edit.generation.native_geometry_release import FastFrameGeometryConstraint
-                def geometry_forward_vertices(x, shapes):
-                    fk=np.asarray(geometry_fk(jnp.asarray(x[root_dofs:cfg_stop])))[release_geometry.indices[shapes]]
-                    local=release_geometry.vertices[shapes]
-                    q=fk[:,None,:4]; uv=np.cross(q[...,1:],local)
-                    points=local+2.*(q[...,:1]*uv+np.cross(q[...,1:],uv))+fk[:,None,4:7]
-                    if yaw_enabled:
-                        rotation=Rotation.from_rotvec(root_yaw_axis_base*x[3])
-                        points=rotation.apply(points.reshape(-1,3)).reshape(points.shape)
-                    return root_rotation.apply((points+x[:3]).reshape(-1,3)).reshape(points.shape)+root[:3]
-
-                def geometry_support_jac(x, indices, local, normals):
-                    # One static executable; only cfg/root columns, never face
-                    # coordinates. Inactive rows have zero derivative normals.
-                    count=len(indices); capacity=geometry_jac_capacity
-                    ii=np.zeros(capacity,np.int32);pp=np.zeros((capacity,3));nn=np.zeros((capacity,3))
-                    ii[:count]=indices;pp[:count]=local
-                    nn[:count]=root_rotation.inv().apply(normals)
-                    return np.asarray(native_projection_jac(jnp.asarray(x),jnp.asarray(ii),
-                        jnp.asarray(pp),jnp.asarray(nn),jnp.asarray(root_yaw_axis_base)),np.float64)[:count]
-
-                native_constraint=FastFrameGeometryConstraint(release_geometry,hard_mask[frame],
-                    cfg_stop,geometry_forward_vertices,geometry_support_jac)
-            constraint_name='geometry-release' if release_geometry is not None else 'native-hard-release'
-            unconstrained_solve_frame=solve_frame
-
-            def solve_frame(start):
-                initial=unconstrained_solve_frame(start)
-                if native_constraint.feasible(initial.x):return initial
-                slots=active_solve_indices
-                template=np.asarray(initial.x,dtype=np.float64).copy()
-                def expand(v):
-                    full=template.copy();full[slots]=v;return full
-                objective_cache={}
-                def objective(v):
-                    if 'v' not in objective_cache or not np.array_equal(v,objective_cache['v']):
-                        x=expand(v);r=fun(x)
-                        objective_cache.clear()
-                        objective_cache.update(v=v.copy(),x=x,r=r,value=float(.5*np.dot(r,r)))
-                    return objective_cache['value']
-                def objective_jac(v):
-                    objective(v)
-                    if 'gradient' not in objective_cache:
-                        objective_cache['gradient']=np.asarray(jac(objective_cache['x'])[:,slots].T@objective_cache['r'],dtype=np.float64)
-                    return objective_cache['gradient']
-                solved=minimize(objective,template[slots],jac=objective_jac,method='SLSQP',
-                    bounds=list(zip(solve_lower[slots],solve_upper[slots])),
-                    # Express separation in millimetres for SQP conditioning;
-                    # this does not change the native activation boundary.
-                    constraints=[dict(type='ineq',fun=lambda v:1000.*native_constraint.fun(expand(v)),
-                        jac=lambda v:1000.*native_constraint.jac(expand(v))[:,slots])],
-                    options=dict(maxiter=int(hard_release.get('sqp_maxiter', 150)),ftol=1.e-6))
-                full=expand(solved.x)
-                if not solved.success or not native_constraint.feasible(full):
-                    # A native mesh nearest-feature switch can invalidate an
-                    # SQP derivative. Continue this same constrained solve with
-                    # a derivative-free method, never a generated-rollout loop.
-                    print(f'{constraint_name} derivative-free frame={frame}',flush=True)
-                    solved=minimize(objective,solved.x,method='COBYLA',
-                        bounds=list(zip(solve_lower[slots],solve_upper[slots])),
-                        constraints=[dict(type='ineq',fun=lambda v:1000.*native_constraint.fun(expand(v)))],
-                        options=dict(maxiter=int(hard_release.get('cobyla_maxiter', 1500)),rhobeg=.002,tol=1.e-5,catol=1.e-9))
-                    full=expand(solved.x)
-                if not solved.success and native_constraint.feasible(full):
-                    # COBYLA can find a feasible point before exhausting its
-                    # objective budget. Refine from it with derivatives; do
-                    # not equate feasibility with objective convergence.
-                    solved=minimize(objective,solved.x,jac=objective_jac,method='SLSQP',
-                        bounds=list(zip(solve_lower[slots],solve_upper[slots])),
-                        constraints=[dict(type='ineq',fun=lambda v:1000.*native_constraint.fun(expand(v)),
-                            jac=lambda v:1000.*native_constraint.jac(expand(v))[:,slots])],
-                        options=dict(maxiter=int(hard_release.get('sqp_maxiter', 150)),ftol=1.e-6))
-                    full=expand(solved.x)
-                if not solved.success or not native_constraint.feasible(full):
-                    raise RuntimeError(f'Frame {frame}: {constraint_name} infeasible/unconverged: {solved.message}; constraint_feasible={native_constraint.feasible(full)} gap={native_constraint.fun(full).tolist()} cost={solved.fun}; refusing output')
-                return OptimizeResult(x=full,success=True,nfev=initial.nfev+solved.nfev,
-                    cost=float(solved.fun),message=solved.message)
-
-        result = solve_frame(x0)
-        frame_nfev = int(result.nfev)
-        frame_success = bool(result.success)
-        candidate_root_delta = np.clip(
-            result.x[:root_dofs],
-            solve_lower[:root_dofs],
-            solve_upper[:root_dofs],
-        )
-        candidate_cfg = np.clip(result.x[root_dofs:cfg_stop], lower, upper)
-
-        def active_collision_contacts(
-            q_cfg: np.ndarray,
-            root_delta_base: np.ndarray,
-        ) -> tuple[
-            Any | None,
-            list[
-                tuple[
-                    int,
-                    int,
-                    float,
-                    float,
-                    float,
-                    float,
-                    float,
-                    float,
-                ]
-            ],
-            float,
-            float,
-            list[float],
-        ]:
-            if collision_scene is None:
-                return None, [], 0.0, 0.0, []
-            query_root = root.copy()
-            query_root[:3] += root_rotation.apply(root_delta_base[:3])
-            if yaw_enabled:
-                query_root[3:7] = (Rotation.from_rotvec([0., 0., root_delta_base[3]]) * root_rotation).as_quat()[[3, 0, 1, 2]]
-            qpos_query = np.concatenate([query_root, q_cfg], axis=0)
-            contacts = collision_scene.query_qpos(qpos_query)
-            reference_signed_by_body_surface = (
-                collision_reference_signed_distances[frame]
-            )
-            closest_target_by_body_surface: dict[
-                tuple[str, str],
-                tuple[int, int, float],
-            ] = {}
-            raw_max = 0.0
-            excess_max = 0.0
-            for local_index, contact_index in enumerate(
-                contacts.robot_body_indices.tolist()
-            ):
-                signed_distance = float(
-                    contacts.geometry_distance_m[int(contact_index)]
-                )
-                body_name = contacts.robot_body_names[local_index]
-                surface_key = _terrain_surface_key(
-                    contacts,
-                    local_index=local_index,
-                    contact_index=int(contact_index),
-                )
-                body_surface_key = (body_name, surface_key)
-                surface_class = _surface_class(surface_key)
-                depth = max(0.0, -signed_distance)
-                raw_max = max(raw_max, depth)
-                previous_contact = closest_target_by_body_surface.get(
-                    body_surface_key
-                )
-                if (
-                    previous_contact is None
-                    or signed_distance < previous_contact[2]
-                ):
-                    closest_target_by_body_surface[body_surface_key] = (
-                        local_index,
-                        int(contact_index),
-                        signed_distance,
-                    )
-            selected: list[
-                tuple[
-                    int,
-                    int,
-                    float,
-                    float,
-                    float,
-                    float,
-                    float,
-                    float,
-                ]
-            ] = []
-            similarity_errors: list[float] = []
-            for (body_name, surface_key), (
-                local_index,
-                contact_index,
-                signed_distance,
-            ) in closest_target_by_body_surface.items():
-                if body_name not in link_index_by_name:
-                    continue
-                part_name = _contact_part_for_body_name(body_name)
-                reference_signed = reference_signed_by_body_surface.get(
-                    (body_name, surface_key)
-                )
-                is_active_contact = (
-                    surface_class is not None
-                    and (part_name, surface_class)
-                    in active_surface_weight
-                    and reference_signed is not None
-                    and part_name is not None
-                    and _is_contact_reference_body(
-                        body_name,
-                        part_name,
-                    )
-                )
-                similarity_weight = 0.0
-                target_signed = 0.0
-                if is_active_contact:
-                    assert reference_signed is not None
-                    assert part_name is not None
-                    target_signed = float(reference_signed)
-                    force_curve = collision_reference_force_confidence.get(
-                        part_name
-                    )
-                    force_confidence = (
-                        float(force_curve[frame])
-                        if force_curve is not None
-                        else 0.5
-                    )
-                    similarity_weight = (
-                        collision_similarity_weight_value
-                        * force_confidence
-                    )
-                    similarity_errors.append(
-                        abs(signed_distance - target_signed)
-                    )
-                depth = max(0.0, -signed_distance)
-                reference_depth = max(0.0, -target_signed)
-                excess_depth = max(0.0, depth - reference_depth)
-                excess_max = max(excess_max, excess_depth)
-                if not is_active_contact and depth <= 0.0:
-                    continue
-                selected.append(
-                    (
-                        local_index,
-                        contact_index,
-                        signed_distance,
-                        target_signed,
-                        similarity_weight,
-                        _environment_deeper_weight_for_body(
-                            body_name,
-                            collision_deeper_weight_value,
-                            is_active_contact=is_active_contact,
-                        ),
-                        abs(signed_distance - target_signed),
-                        excess_depth,
-                    )
-                )
-            return (
-                contacts,
-                selected,
-                raw_max,
-                excess_max,
-                similarity_errors,
-            )
-
-        def active_self_collision_contacts(
-            contacts: Any | None,
-        ) -> tuple[list[tuple[int, str, str, float]], float]:
-            if contacts is None:
-                return [], 0.0
-            closest_by_pair: dict[
-                tuple[str, str],
-                tuple[int, str, str, float],
-            ] = {}
-            for contact_index in range(len(contacts.geometry_distance_m)):
-                body_a = int(contacts.body0[contact_index])
-                body_b = int(contacts.body1[contact_index])
-                if body_a < 0 or body_b < 0 or body_a == body_b:
-                    continue
-                name_a = collision_scene.body_names[body_a]
-                name_b = collision_scene.body_names[body_b]
-                if (
-                    name_a not in link_index_by_name
-                    or name_b not in link_index_by_name
-                ):
-                    continue
-                signed_distance = float(
-                    contacts.geometry_distance_m[contact_index]
-                )
-                if signed_distance >= 0.0:
-                    continue
-                key = tuple(sorted((name_a, name_b)))
-                previous = closest_by_pair.get(key)
-                if previous is None or signed_distance < previous[3]:
-                    closest_by_pair[key] = (
-                        contact_index,
-                        name_a,
-                        name_b,
-                        signed_distance,
-                    )
-            selected = sorted(
-                closest_by_pair.values(),
-                key=lambda item: item[3],
-            )
-            maximum = max(
-                (-item[3] for item in selected),
-                default=0.0,
-            )
-            return selected, maximum
-
-        (
-            initial_contacts,
-            active_contacts,
-            initial_raw_max,
-            initial_excess_max,
-            initial_similarity_errors,
-        ) = active_collision_contacts(
-            candidate_cfg,
-            candidate_root_delta,
-        )
-        active_self_contacts, initial_self_max = (
-            active_self_collision_contacts(initial_contacts)
-        )
-        self_collision_initial_max_m = max(
-            self_collision_initial_max_m,
-            initial_self_max,
-        )
-        if active_self_contacts:
-            self_collision_initial_active_frames += 1
-            self_collision_initial_pairs.update(
-                tuple(sorted((item[1], item[2])))
-                for item in active_self_contacts
-            )
-        collision_initial_raw_max_m = max(
-            collision_initial_raw_max_m,
-            initial_raw_max,
-        )
-        collision_initial_excess_max_m = max(
-            collision_initial_excess_max_m,
-            initial_excess_max,
-        )
-        collision_initial_similarity_errors.extend(
-            initial_similarity_errors
-        )
-        collision_initial_similarity_error_max_m = max(
-            collision_initial_similarity_error_max_m,
-            max(initial_similarity_errors, default=0.0),
-        )
-        final_raw_max = initial_raw_max
-        final_excess_max = initial_excess_max
-        final_similarity_errors = initial_similarity_errors
-        final_self_max = initial_self_max
-        if active_contacts:
-            collision_initial_active_frames += 1
-
-        for _ in range(collision_max_refinements_value):
-            if initial_contacts is None or (
-                not active_contacts and not active_self_contacts
-            ):
-                break
-            collision_link_indices = np.zeros(
-                collision_slots,
-                dtype=np.int32,
-            )
-            collision_points_local = np.zeros(
-                (collision_slots, 3),
-                dtype=np.float64,
-            )
-            collision_normals_base = np.zeros(
-                (collision_slots, 3),
-                dtype=np.float64,
-            )
-            collision_terrain_points_base = np.zeros(
-                (collision_slots, 3),
-                dtype=np.float64,
-            )
-            collision_similarity_weight = np.zeros(
-                collision_slots,
-                dtype=np.float64,
-            )
-            collision_deeper_weight = np.zeros(
-                collision_slots,
-                dtype=np.float64,
-            )
-            self_collision_link_a = np.zeros(
-                collision_slots,
-                dtype=np.int32,
-            )
-            self_collision_point_a_local = np.zeros(
-                (collision_slots, 3),
-                dtype=np.float64,
-            )
-            self_collision_link_b = np.zeros(
-                collision_slots,
-                dtype=np.int32,
-            )
-            self_collision_point_b_local = np.zeros(
-                (collision_slots, 3),
-                dtype=np.float64,
-            )
-            self_collision_normals_base = np.zeros(
-                (collision_slots, 3),
-                dtype=np.float64,
-            )
-            self_collision_sqrt_weight = np.zeros(
-                collision_slots,
-                dtype=np.float64,
-            )
-
-            fk_frame = np.asarray(
-                robot.forward_kinematics(jnp.asarray(candidate_cfg)),
-                dtype=np.float64,
-            )
-            candidate_root = root.copy()
-            candidate_root[:3] += root_rotation.apply(
-                candidate_root_delta[:3]
-            )
-            if yaw_enabled:
-                candidate_root[3:7] = (Rotation.from_rotvec([0., 0., candidate_root_delta[3]]) * root_rotation).as_quat()[[3, 0, 1, 2]]
-            body_position_w, body_quaternion_w = (
-                world_body_poses_from_pyroki_fk(
-                    candidate_root[None, :],
-                    fk_frame[None, ...],
-                )
-            )
-            for slot, (
-                local_index,
-                _contact_index,
-                _signed_distance,
-                target_signed_distance,
-                similarity_weight,
-                deeper_weight,
-                _similarity_error,
-                _excess_depth,
-            ) in enumerate(active_contacts[:collision_slots]):
-                body_name = initial_contacts.robot_body_names[local_index]
-                link_index = link_index_by_name[body_name]
-                link_rotation = _quat_wxyz_to_rotation(
-                    body_quaternion_w[0, link_index]
-                )
-                point_local = link_rotation.inv().apply(
-                    initial_contacts.robot_points_w[local_index]
-                    - body_position_w[0, link_index]
-                )
-                normal_base = root_rotation.inv().apply(
-                    initial_contacts.outward_normals_w[local_index]
-                )
-                terrain_point_base = root_rotation.inv().apply(
-                    initial_contacts.terrain_points_w[local_index]
-                    - root[:3]
-                )
-                # The shifted witness plane makes zero residual correspond to
-                # the source rollout's signed geometry distance. A finite
-                # weight encourages similarity without imposing equality.
-                terrain_point_base = (
-                    terrain_point_base
-                    + target_signed_distance * normal_base
-                )
-                collision_link_indices[slot] = int(link_index)
-                collision_points_local[slot] = point_local
-                collision_normals_base[slot] = normal_base
-                collision_terrain_points_base[slot] = terrain_point_base
-                collision_similarity_weight[slot] = _least_squares_sqrt_weight(
-                    similarity_weight
-                )
-                collision_deeper_weight[slot] = _least_squares_sqrt_weight(
-                    deeper_weight
-                )
-
-            for slot, (
-                contact_index,
-                body_a_name,
-                body_b_name,
-                _signed_distance,
-            ) in enumerate(active_self_contacts[:collision_slots]):
-                link_a = link_index_by_name[body_a_name]
-                link_b = link_index_by_name[body_b_name]
-                rotation_a = _quat_wxyz_to_rotation(
-                    body_quaternion_w[0, link_a]
-                )
-                rotation_b = _quat_wxyz_to_rotation(
-                    body_quaternion_w[0, link_b]
-                )
-                self_collision_link_a[slot] = int(link_a)
-                self_collision_link_b[slot] = int(link_b)
-                self_collision_point_a_local[slot] = rotation_a.inv().apply(
-                    initial_contacts.point0_w[contact_index]
-                    - body_position_w[0, link_a]
-                )
-                self_collision_point_b_local[slot] = rotation_b.inv().apply(
-                    initial_contacts.point1_w[contact_index]
-                    - body_position_w[0, link_b]
-                )
-                self_collision_normals_base[slot] = (
-                    root_rotation.inv().apply(
-                        initial_contacts.normal_a_to_b_w[contact_index]
-                    )
-                )
-                self_collision_sqrt_weight[slot] = np.sqrt(
-                    self_collision_weight_value
-                )
-
-            args = (
-                np.asarray(semantic_target_base, dtype=np.float64),
-                np.asarray(semantic_sqrt_weight, dtype=np.float64),
-                np.asarray(
-                    compiled.contact_link_indices[frame],
-                    dtype=np.int32,
-                ),
-                np.asarray(
-                    compiled.contact_points_local[frame],
-                    dtype=np.float64,
-                ),
-                np.asarray(contact_target_base, dtype=np.float64),
-                np.asarray(contact_sqrt_weight, dtype=np.float64),
-                np.asarray(q_prior, dtype=np.float64),
-                np.asarray(q_previous, dtype=np.float64),
-                np.asarray(q_previous_previous, dtype=np.float64),
-                np.asarray(q_prior_previous, dtype=np.float64),
-                np.asarray(
-                    q_prior_previous_previous,
-                    dtype=np.float64,
-                ),
-                np.asarray(prior_scale, dtype=np.float64),
-                np.asarray(
-                    source_foot_orientations[frame],
-                    dtype=np.float64,
-                ),
-                collision_link_indices,
-                collision_points_local,
-                collision_normals_base,
-                collision_terrain_points_base,
-                collision_similarity_weight,
-                collision_deeper_weight,
-                self_collision_link_a,
-                self_collision_point_a_local,
-                self_collision_link_b,
-                self_collision_point_b_local,
-                self_collision_normals_base,
-                self_collision_sqrt_weight,
-                np.asarray(root_delta_previous, dtype=np.float64),
-                np.asarray(
-                    root_delta_previous_previous,
-                    dtype=np.float64,
-                ),
-                np.asarray(root_yaw_axis_base, dtype=np.float64),
-                *surface_args,
-                *convex_args,
-                *temporal_args,
-                release_data[0][frame],
-                release_data[1][frame],
-                root_rotation.inv().apply(release_data[2][frame] - root[:3]),
-                root_rotation.inv().apply(release_data[3][frame]),
-                release_data[4][frame],
-                support_residual_scale * contact_sqrt_weight * support_mask[frame],
-                np.column_stack((support_orientation_targets[frame] if free_surface_contacts else source_fk[frame, compiled.contact_link_indices[frame], :4], support_orientation_projectors[frame].reshape(-1,9))),
-                approach_data[0][frame], approach_data[1][frame],
-                approach_target_base,
-                support_residual_scale*approach_data[3][frame],
-                approach_orientation_frame, temporal_history_mask(frame),
-            )
-            args_jax = tuple(jnp.asarray(value) for value in args)
-            candidate_state = np.concatenate(
-                (candidate_root_delta, candidate_cfg, result.x[cfg_stop:])
-            )
-            refined = solve_frame(candidate_state)
-            collision_refinement_solve_count += 1
-            frame_nfev += int(refined.nfev)
-            frame_success = frame_success and bool(refined.success)
-            candidate_root_delta = np.clip(
-                refined.x[:root_dofs],
-                solve_lower[:root_dofs],
-                solve_upper[:root_dofs],
-            )
-            candidate_cfg = np.clip(refined.x[root_dofs:cfg_stop], lower, upper)
-            result = refined
-            (
-                initial_contacts,
-                active_contacts,
-                final_raw_max,
-                final_excess_max,
-                final_similarity_errors,
-            ) = active_collision_contacts(
-                candidate_cfg,
-                candidate_root_delta,
-            )
-            active_self_contacts, final_self_max = (
-                active_self_collision_contacts(initial_contacts)
-            )
-
-        collision_final_raw_max_m = max(
-            collision_final_raw_max_m,
-            final_raw_max,
-        )
-        collision_final_excess_max_m = max(
-            collision_final_excess_max_m,
-            final_excess_max,
-        )
-        collision_final_similarity_errors.extend(final_similarity_errors)
-        collision_final_similarity_error_max_m = max(
-            collision_final_similarity_error_max_m,
-            max(final_similarity_errors, default=0.0),
-        )
-        if active_contacts:
-            collision_final_active_frames += 1
-        self_collision_final_max_m = max(
-            self_collision_final_max_m,
-            final_self_max,
-        )
-        if active_self_contacts:
-            self_collision_final_active_frames += 1
-            self_collision_final_pairs.update(
-                tuple(sorted((item[1], item[2])))
-                for item in active_self_contacts
-            )
-        q_previous_previous = q_previous
-        if hard_release:
-            if not native_constraint.feasible(result.x):raise RuntimeError(f'Frame {frame}: final hard release violated')
-            hard_query_calls+=native_constraint.calls
-            if release_geometry is not None:
-                geometry_jacobian_calls+=native_constraint.jacobian_calls
-        q_previous = candidate_cfg
-        root_delta_previous_previous = root_delta_previous
-        root_delta_previous = candidate_root_delta
-        out_cfg[frame] = q_previous
-        out_root_delta_base[frame] = root_delta_previous
-        if convex_mode:
-            solved_logits[frame] = result.x[cfg_stop:].reshape(coefficient_shape)
-            chosen,_ = convex_targets(solved_logits[frame],convex_vertices_w[frame],convex_valid[frame])
-            correction = chosen-compiled.contact_targets_w[frame]
-            normal = surface_normals_w[frame]
-            solved_target_corrections_w[frame] = correction-np.sum(correction*normal,axis=-1)[:,None]*normal
-        success.append(frame_success)
-        nfev.append(frame_nfev)
-        costs.append(float(result.cost))
-
+    out_root_delta_base = result.states[:, :root_dofs]
+    out_cfg = result.states[:, root_dofs:]
+    success = [row['success'] for row in result.solves]
+    nfev = [row['nfev'] for row in result.solves]
+    costs = [row['cost'] for row in result.solves]
+    audits = [] if problem.refresh is None else problem.refresh.audits
+    initial_audit = audits[0] if audits else {}
+    final_audit = audits[-1] if audits else {}
+    collision_initial_active_frames = initial_audit.get('terrain_frames', 0)
+    collision_final_active_frames = final_audit.get('terrain_frames', 0)
+    collision_initial_raw_max_m = initial_audit.get('terrain_max_m', 0.)
+    collision_final_raw_max_m = final_audit.get('terrain_max_m', 0.)
+    collision_initial_excess_max_m = initial_audit.get('terrain_excess_max_m', 0.)
+    collision_final_excess_max_m = final_audit.get('terrain_excess_max_m', 0.)
+    self_collision_initial_active_frames = initial_audit.get('self_frames', 0)
+    self_collision_final_active_frames = final_audit.get('self_frames', 0)
+    self_collision_initial_max_m = initial_audit.get('self_max_m', 0.)
+    self_collision_final_max_m = final_audit.get('self_max_m', 0.)
+    self_collision_initial_pairs = {tuple(p) for p in initial_audit.get('self_pairs', [])}
+    self_collision_final_pairs = {tuple(p) for p in final_audit.get('self_pairs', [])}
+    collision_initial_similarity_error_max_m = collision_final_similarity_error_max_m = 0.
+    collision_initial_similarity_errors = collision_final_similarity_errors = []
+    # Geometry is now refreshed inside one constrained trajectory solve;
+    # its SQP iterations are not separate outer refinement solves.
+    collision_refinement_solve_count = 0 if problem.refresh is not None else max(len(result.solves)-1, 0)
+    if loaded_motion is not None:
+        fk = np.asarray(problem.joint.poses(problem.joint.jnp.asarray(result.states)))
+        rotations = np.asarray(problem.joint.rotations)
+        positions = root_source[:, None, :3]+np.einsum('tij,tnj->tni', rotations,
+            fk[..., 4:7]+result.states[:, None, :3])
+        body_rotations = rotations[:, None] @ Rotation.from_quat(
+            fk[..., [1,2,3,0]].reshape(-1,4)).as_matrix().reshape(*fk.shape[:2],3,3)
+        # Reporting only: the objective used live poses and the exact phase prefix.
+        for frame in range(n_frames):
+            loaded_motion.commit(frame, None if frame == 0 else positions[frame-1],
+                None if frame == 0 else body_rotations[frame-1], positions[frame], body_rotations[frame])
     solved_root = root_source[:n_frames].copy()
     solved_root[:, :3] += np.stack(
         [
@@ -2646,7 +2049,30 @@ def solve_pyroki_fullbody_ik(
         )
         root_quaternion_error = float(np.max(quat_delta))
 
+    from motion_edit.generation.continuous_ik import SOLVER_SCHEMA
+    from motion_edit.generation.optimization_geometry import OPTIMIZATION_GEOMETRY_SCHEMA
+    from motion_edit.generation.native_sphere_distance import SPHERE_DISTANCE_SCHEMA
+    from motion_edit.generation.convex_geometry_distance import CONVEX_DISTANCE_SCHEMA
     diagnostics = {
+        "ik_solver_schema": SOLVER_SCHEMA,
+        "optimization_geometry_schema": OPTIMIZATION_GEOMETRY_SCHEMA,
+        "sphere_distance_schema": SPHERE_DISTANCE_SCHEMA,
+        "convex_distance_schema": CONVEX_DISTANCE_SCHEMA,
+        "optimizer_distance_backend": (None if problem.refresh is None or problem.refresh.convex_geometry is None
+            else problem.refresh.convex_geometry.backend),
+        "per_frame_optimization_calls": 0,
+        "least_squares_unit": "complete_trajectory",
+        "joint_trajectory_solves": result.solves,
+        "ik_solver_converged": bool(result.solves[-1]['success']),
+        "ik_termination": result.solves[-1].get('termination', 'least_squares'),
+        "joint_trajectory_geometry_audits": problem.refresh.audits if problem.refresh is not None else [],
+        "joint_trajectory_geometry_query_count": len(audits),
+        "joint_trajectory_value_evaluation_count": int(sum(nfev)),
+        "environment_collision_witness_schema": COLLISION_WITNESS_SCHEMA,
+        "optimization_sample_contract": collision_spec.metadata.get('optimization_sample_contract'),
+        "ik_residual_dtype": str(result.residuals.dtype),
+        "loaded_material_motion": loaded_motion.report() if loaded_motion is not None else
+            dict(status='unknown', reason='no_original_loaded_execution_reference', optimization_enabled=False),
         "input_schema": input_schema,
         "frame_count": int(n_frames),
         "semantic_names": list(compiled.semantic_names),
@@ -2669,7 +2095,6 @@ def solve_pyroki_fullbody_ik(
         "least_squares_cost": _stats(np.asarray(costs, dtype=np.float64)),
         "augmentation_objective": objective_version,
         "temporal_history_contract": "velocity_from_frame1_acceleration_from_frame2",
-        "support_approach_orientation": approach_orientation_enabled,
         "objective_groups": ["endpoint", "pose_reference", "correction_continuity", "collision"],
         "source_foot_orientation_weight": float(foot_orientation_weight),
         "source_foot_orientation_link_count": len(foot_orientation_indices),
@@ -2682,8 +2107,6 @@ def solve_pyroki_fullbody_ik(
         "support_origin_policy": support_origin_policy,
         "support_motion_episodes": support_episodes,
         "support_residual_scale": support_residual_scale,
-        "support_approach_seconds": support_approach_seconds,
-        "support_approach_is_contact_truth": False,
         "support_target_error_m": _stats(contact_error_all[support_mask[:n_frames]]),
         "support_target_sample_count": int(support_mask[:n_frames].sum()),
         "support_target_is_contact_truth": False,
@@ -2695,7 +2118,6 @@ def solve_pyroki_fullbody_ik(
         "inactive_contact_variables_removed": convex_mode,
         "convex_contact_temporal_contract": "shape_face_matched_demonstration_relative_correction" if convex_mode else None,
         "convex_contact_temporal_residual_scale": 0.1 if convex_mode else None,
-        "convex_solve_attempts": solve_attempts if convex_mode else None,
         "surface_reference_ratio": surface_reference_ratio if free_surface_contacts else None,
         "root_yaw_condition": yaw_condition,
         "root_yaw_delta_rad": _stats(out_root_delta_base[:, 3]) if yaw_enabled else None,
@@ -2710,7 +2132,7 @@ def solve_pyroki_fullbody_ik(
             * float(fps) ** 2
         ),
         "environment_collision_backend": (
-            "newton_soft_signed_distance_integrated_frame_ik"
+            "native_closed_solid_geometry_joint_trajectory_ik"
             if collision_terrain_mesh is not None
             else "disabled"
         ),
@@ -2790,6 +2212,7 @@ def solve_pyroki_fullbody_ik(
         "environment_collision_deeper_weight": float(
             collision_deeper_weight_value
         ),
+        "environment_depth_residual_scale_m": depth_scale,
         "environment_collision_fullbody_deeper_weight_multiplier": float(
             FULLBODY_DEEPER_WEIGHT_MULTIPLIER
         ),
@@ -2808,7 +2231,7 @@ def solve_pyroki_fullbody_ik(
         ),
         "environment_collision_fixed_distance_tolerance_m": None,
         "self_collision_backend": (
-            "newton_filtered_geometry_soft_barrier"
+            "newton_filtered_geometry_joint_trajectory_barrier"
             if collision_scene is not None
             else "disabled"
         ),
@@ -2844,20 +2267,15 @@ def solve_pyroki_fullbody_ik(
     output = Path(output_path).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
     convex_output = {}
-    if convex_mode:
-        chosen, coefficients = convex_targets(solved_logits, convex_vertices_w[:n_frames], convex_valid[:n_frames])
-        convex_output = dict(optimized_surface_targets_w=chosen,
-            optimized_surface_target_weights=coefficients, optimized_surface_target_mask=convex_finite[:n_frames],
-            optimized_surface_target_vertices_w=convex_vertices_w[:n_frames])
     np.savez_compressed(
         output,
         **convex_output,
         fps=np.asarray(float(fps)),
         joint_pos=qpos.astype(np.float32),
         joint_vel=qvel.astype(np.float32),
-        joint_names=np.asarray(robot_joint_names, dtype=object),
-        source_joint_names=np.asarray(source_joint_names, dtype=object),
-        body_names=np.asarray(link_names, dtype=object),
+        joint_names=np.asarray(robot_joint_names, dtype=str),
+        source_joint_names=np.asarray(source_joint_names, dtype=str),
+        body_names=np.asarray(link_names, dtype=str),
         body_pos_w=body_pos_w.astype(np.float32),
         body_quat_w=body_quat_w.astype(np.float32),
         body_lin_vel_w=body_lin_vel_w.astype(np.float32),
@@ -2867,10 +2285,11 @@ def solve_pyroki_fullbody_ik(
         kinematics_backend=np.asarray("pyroki_urdf_fk_preview"),
         newton_canonicalization_required=np.asarray(True),
         robot_urdf=np.asarray(str(robot_path)),
-        target_names=np.asarray(compiled.semantic_names, dtype=object),
+        robot_asset_json=np.asarray(encode_robot_asset_json()),
+        target_names=np.asarray(compiled.semantic_names, dtype=str),
         source_motion=np.asarray(source_path or ""),
         taskspace_input=np.asarray(str(Path(lte_path).expanduser())),
-        ik_diagnostics_json=np.asarray(json.dumps(diagnostics, sort_keys=True), dtype=object),
+        ik_diagnostics_json=np.asarray(json.dumps(diagnostics, sort_keys=True)),
     )
     return output
 

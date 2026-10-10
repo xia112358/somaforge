@@ -4,8 +4,11 @@ These are optimization/slide diagnostics, never a contact classifier.
 """
 import numpy as np
 import torch
+from somaforge_core.loaded_material_motion import (
+    DEFAULT_MATERIAL_RESIDUAL_SCALE_M, DEFAULT_MATERIAL_PATH_BUDGET_M,
+    DEFAULT_SOURCE_ADDED_MOTION_WEIGHT, phase_material_paths)
 from somaforge_core.contact_motion import (
-    CONTACT_MOTION_SCHEMA, contact_region_statistics,same_material_tangent_motion,calibrate_pivot_budgets)
+    CONTACT_MOTION_SCHEMA, contact_region_statistics,same_material_tangent_motion)
 
 
 def build_support_reference(spec, domains, valid):
@@ -135,7 +138,7 @@ def native_material_steps(fk, q, observed, indices, samples=None):
     return native_material_motion(fk,q,observed,indices,samples)['pivot']
 
 
-def audit_phase_support(contract, steps, mask, surfaces, tolerance_m=None, distribution=None, budgets_m=None):
+def audit_geometric_phase_motion(contract, steps, mask, surfaces, tolerance_m=None, distribution=None, budgets_m=None):
     """Report absolute stage motion; never allow contact dropout to erase it."""
     rows=[]
     for action in contract['actions']:
@@ -174,115 +177,85 @@ def audit_phase_support(contract, steps, mask, surfaces, tolerance_m=None, distr
 
 
 class SourcePhaseMotion:
-    """Geometric preservation budget for motion ADDED to the original source.
+    """Frozen original loaded-site reference for whole-trajectory refinement.
 
-    Samples start from verified source contacts and refresh from current native
-    witnesses at each audit. Missing groups retain source guidance; only native
-    evidence can certify geometric motion coverage or contact. Keep intent does
-    not require freezing the original motion or establish measured support.
+    Fresh static witnesses only certify contact and geometry. They never replace
+    original load sites or weights. The cumulative phase budget is the motion
+    constraint; source-relative positive excess is only a soft regularizer.
     """
-    def __init__(self, fk, source_q, labels_path, contract, tolerance_m=None, residual_scale_m=.001):
-        import json
-        from somaforge_core.contact_face_selection import select_contact_pairs
-        with np.load(labels_path,allow_pickle=False) as z:
-            semantics=json.loads(z['contact_semantics_json'].item())
-            selected=select_contact_pairs(json.loads(z['contact_pairs_json'].item()),semantics['scene']['surface_catalog'])
-        self.fk,self.contract,self.tolerance_m=fk,contract,tolerance_m
-        self.source_q=source_q.detach().clone()
-        self.surfaces=torch.full((len(source_q),6),-1,device=source_q.device,dtype=torch.long)
-        for action in contract['actions']:
-            for req in action['requirements']:
-                if req['kind']!='keep':continue
-                current=self.surfaces[action['start']:action['end'],req['part']]
-                if bool(((current>=0)&(current!=req['surface'])).any()):raise ValueError('Conflicting phase support surface')
-                current[:]=req['surface']
-        if residual_scale_m <= 0:
+    def __init__(self, fk, source_q, reference, contract, residual_scale_m=DEFAULT_MATERIAL_RESIDUAL_SCALE_M):
+        from somaforge_core.loaded_material_motion import source_motion_allowances
+        if not isinstance(reference, dict) or 'sites' not in reference:
+            raise ValueError('Source phase motion requires original loaded execution reference, not static labels')
+        self.fk, self.contract = fk, contract
+        self.source_q = source_q.detach().clone()
+        self.reference = reference
+        self.phase_records = reference['phases']
+        expected = {(a['id'], a['start'], a['end'], r['part'], r['surface'])
+            for a in contract['actions'] for r in a['requirements'] if r['kind'] == 'keep'}
+        actual = {(p['event_id'], p['start'], p['end'], p['part'], p['surface']) for p in self.phase_records}
+        if actual != expected or len(actual) != len(self.phase_records):
+            raise ValueError('Loaded material phases differ from event contract')
+        self.residual_scale_m = float(residual_scale_m)
+        if not np.isfinite(self.residual_scale_m) or self.residual_scale_m <= 0:
             raise ValueError('Material motion residual scale must be positive')
-        self.residual_scale_m=residual_scale_m
-        wanted=self.surfaces.cpu().numpy()
-        records=[(t,p) for t,pairs in enumerate(selected['contact_pairs'][:-1]) for p in pairs
-                 if wanted[t,p['part']]==p['surface']]
-        self.names=sorted({p['body_name'] for _,p in records})
-        self.frames=torch.tensor([t for t,_ in records],device=source_q.device,dtype=torch.long)
-        self.links=torch.tensor([self.names.index(p['body_name']) for _,p in records],device=source_q.device,dtype=torch.long)
-        parts=torch.tensor([p['part'] for _,p in records],device=source_q.device,dtype=torch.long)
-        points=source_q.new_tensor([p['position_w'] for _,p in records]).reshape(-1,3)
+        sites = reference['sites']
+        self.names = sorted(set(sites['body'].astype(str)))
+        self.arguments = dict(frames=sites['frame'], links=[self.names.index(str(n)) for n in sites['body']],
+            parts=sites['part'], local=sites['local'], normals=sites['normal'], loads=sites['weight'], surfaces=sites['surface'])
         with torch.no_grad():
-            if self.names:
-                pos,rot=fk.link_poses(source_q,self.names)
-                self.local=torch.einsum('nji,nj->ni',rot[self.frames,self.links],points-pos[self.frames,self.links])
-            else:
-                self.local=source_q.new_empty((0,3))
-        self.groups=self.frames*6+parts
-        self.normals=source_q.new_tensor([p['normal_w'] for _,p in records]).reshape(-1,3)
-        self.size=(len(source_q)-1)*6
-        self._source=(tuple(self.names),self.frames,self.links,self.local,self.groups,self.normals)
-        self._index_samples()
-        counts=torch.bincount(self.groups,minlength=self.size)
-        self.phases=[(a['start'],a['end'],r['part']) for a in contract['actions']
-                     for r in a['requirements'] if r['kind']=='keep']
-        for a,b,p in self.phases:
-            if not bool((counts.reshape(-1,6)[a:b,p]>0).all()):
-                raise ValueError('Source phase lacks actual material samples')
-        with torch.no_grad():
-            steps=self.steps(source_q)
-            self.calibration=calibrate_pivot_budgets(steps,self.phases)
-        self.tolerance_m=source_q.new_tensor([r['budget_m'] for r in self.calibration]) if tolerance_m is None else tolerance_m
+            self.original_steps = self.steps(self.source_q).detach()
+        # Verify the differentiable FK uses the exact original motion convention.
+        np.testing.assert_allclose(self.original_steps.cpu().numpy(), reference['source_steps'], atol=2.e-6, rtol=1.e-4)
+        self.calibration = source_motion_allowances(reference['source_steps'], self.phase_records,
+            load_known=reference['load_known'], load_bearing=reference['load_bearing'])
+        if any(not p['measurement_complete'] for p in self.calibration):
+            raise ValueError('Source loaded material allowance unknown')
+        self.tolerance_m = source_q.new_tensor([0. if p['allowance_m'] is None else p['allowance_m'] for p in self.calibration])
 
-    def _index_samples(self):
-        counts=torch.bincount(self.groups,minlength=self.size)
-        self.width=max(1,int(counts.max()))
-        self.order=self.groups.argsort()
-        self.sorted_groups=self.groups[self.order]
-        self.slots=torch.arange(len(self.groups),device=self.groups.device)-(counts.cumsum(0)-counts)[self.sorted_groups]
+    def steps(self, q):
+        from somaforge_core.loaded_material_motion import loaded_material_steps
+        if not self.names:
+            return q.new_full((len(q)-1,6),float('nan'))+q.sum()*0
+        pos, rot = self.fk.link_poses(q, self.names)
+        return loaded_material_steps(pos, rot, **self.arguments)
 
-    @torch.no_grad()
-    def refresh(self, chunks):
-        """Use the same witnesses as acceptance, without redefining contact.
-
-        Missing groups retain source samples for guidance only; acceptance
-        independently reports their missing native motion measurements.
-        """
-        names=chunks[0]['names']
-        if any(c['names']!=names for c in chunks):
-            raise ValueError('Native body mapping changed during trajectory audit')
-        frames,parts,links,local,normals=(torch.cat([c[k] for c in chunks])
-                                  for k in ('frames','parts','links','local','normals'))
-        groups=frames*6+parts
-        source_names,sf,sl,sx,sg,sn=self._source
-        missing=torch.bincount(groups,minlength=self.size)[sg]==0
-        remap=torch.tensor([names.index(name) for name in source_names],device=links.device,dtype=torch.long)
-        self.names=names
-        self.frames=torch.cat((frames,sf[missing]))
-        self.links=torch.cat((links,remap[sl[missing]]))
-        self.local=torch.cat((local,sx[missing]))
-        self.groups=torch.cat((groups,sg[missing]))
-        self.normals=torch.cat((normals,sn[missing]))
-        self._index_samples()
-
-    def steps(self,q):
-        if not len(self.frames):
-            return q.new_full((len(q)-1,6),float('nan'))
-        pos,rot=self.fk.link_poses(q,self.names)
-        t,j=self.frames,self.links
-        delta=same_material_tangent_motion(pos,rot,t,j,self.local,self.normals)
-        return contact_region_statistics(delta.norm(dim=-1),self.groups,self.size,
-            width=self.width,validate=False)['pivot'].reshape(-1,6)
-
-    def paths(self,q):
-        if not self.phases:
-            return q.new_empty(0)
-        steps=self.steps(q)
-        return torch.stack([steps[a:b,p].sum() for a,b,p in self.phases])
+    def paths(self, q):
+        paths, complete = phase_material_paths(self.steps(q), self.phase_records,
+            load_known=self.reference['load_known'], load_bearing=self.reference['load_bearing'])
+        if not bool(complete.all()):
+            raise ValueError('Incomplete loaded material evidence in refinement')
+        return paths
 
     def source_paths(self):
-        """Re-evaluate the original motion at the SAME current material sites."""
         return self.paths(self.source_q).detach()
 
-    def __call__(self,q):
-        if not self.phases:
+    def __call__(self, q):
+        from somaforge_core.loaded_material_motion import phase_added_motion
+        values = self.steps(q)
+        extra, complete = phase_added_motion(values, self.original_steps, self.phase_records,
+            load_known=self.reference['load_known'], load_bearing=self.reference['load_bearing'])
+        paths, path_complete = phase_material_paths(values, self.phase_records,
+            load_known=self.reference['load_known'], load_bearing=self.reference['load_bearing'])
+        if not bool((complete & path_complete).all()):
+            raise ValueError('Incomplete loaded material evidence in refinement')
+        if not len(extra):
             return q.sum()*0
-        paths=self.paths(q)
-        # Existing original movement is preserved, not treated as slip to fix.
-        extra=paths-self.source_paths()
-        return ((extra-self.tolerance_m).relu()/self.residual_scale_m).square().mean()
+        budget = ((paths-DEFAULT_MATERIAL_PATH_BUDGET_M).relu()/self.residual_scale_m).square().mean()
+        preservation = ((extra-self.tolerance_m).relu()/self.residual_scale_m).square().mean()
+        return budget+DEFAULT_SOURCE_ADDED_MOTION_WEIGHT*preservation
+
+    @torch.no_grad()
+    def audit(self, q):
+        from .loaded_material_reference import compare_paths
+        from somaforge_core.loaded_material_motion import MATERIAL_MOTION_SCHEMA
+        phases = compare_paths(self.reference['source_steps'], self.steps(q).cpu().numpy(), self.phase_records,
+            load_known=self.reference['load_known'], load_bearing=self.reference['load_bearing'])
+        for row in phases:
+            row['passed'] = row['motion_budget_passed']
+        return dict(schema=MATERIAL_MOTION_SCHEMA, phases=phases,
+            budget_m=DEFAULT_MATERIAL_PATH_BUDGET_M,
+            acceptance_rule='complete_loaded_material_phase_path_within_budget',
+            source_added_motion_role='soft_regularizer_and_diagnostic_only',
+            passed=None if any(p['passed'] is None for p in phases) else all(p['passed'] for p in phases),
+            acceptance_scope='original_loaded_site_geometry_reference_not_execution_truth')

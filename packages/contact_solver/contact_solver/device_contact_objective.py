@@ -1,8 +1,7 @@
 """GPU loss/acceptance adapters for freshly queried actual Newton tensors."""
 import torch
-from contact_solver.contact_layout import endpoint_position_statistics
+from contact_solver.contact_layout import endpoint_position_statistics, endpoint_position_loss
 from contact_solver.interaction_acceptance import DEFAULT_ACCEPTANCE
-from somaforge_core.heightmap import HEIGHTMAP_RESOLUTION_M
 
 
 def reduce_groups(values, groups, valid, size, *, minimum=False):
@@ -150,29 +149,30 @@ class DeviceWitnessRows:
         chosen, present = first_minimum(error, self.group, match, len(self)*6)
         return chosen, present.reshape(len(self), 6)
 
-    def layout(self, points, active, surface, *, regions=None):
+    def frozen_layout_diagnostic(self, points, active, surface, *, regions=None):
         chosen, present = self.spatial_representatives(points, active, surface, regions=regions)
         values = torch.cat((self.moving[:, 1], self.q[:1, :3]*0), 0)
         witnesses = values[chosen].reshape(len(self), 6, 3)
         error, count = endpoint_position_statistics(witnesses, points.detach(), present)
-        return error/(2*HEIGHTMAP_RESOLUTION_M)**2, dict(
+        return endpoint_position_loss(error), dict(
             relative_layout_rms_cm=torch.where(count >= 1, 100*error.clamp_min(1e-16).sqrt(), 0),
             relative_layout_observed_parts=count.to(self.q))
 
-    def realized_layout(self, points, active, surface):
+    def actual_witness_position_statistics(self, points, active, surface):
         chosen, present = self.spatial_representatives(points, active, surface, actual=True)
         values = torch.cat((self.pair['geometry_point1_w'], points.new_zeros(1, 3)), 0)
         witnesses = values[chosen].reshape(len(self), 6, 3)
         error, count = endpoint_position_statistics(witnesses, points, present)
         return error, active.any(-1) & (present | ~active).all(-1), count
 
-    def anchored_layout(self, points_world, active, surface, *, actual=False, regions=None):
+    def witness_position_statistics(self, points_world, active, surface, *, actual=False, regions=None):
         """Issued points relative to the issuing observation, including one contact.
 
         The saved world points are transport coordinates, not world-position
         supervision: shifting the entire observation and plan changes no error.
-        Only actual=True yields an endpoint spatial check; contact/safety are
-        separately validated by Newton. No temporal touchdown claim is made.
+        This is a historical witness-location diagnostic. Production position
+        checks use native_position_statistics over actual part surfaces.
+        It never replaces contact/safety or temporal touchdown verification.
         """
         target = points_world.detach()
         if actual:

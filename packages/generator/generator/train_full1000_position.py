@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reconstruct full1000's curriculum on fixed original event boundaries."""
+"""Train the predictor on complete, self-observed demonstration actions."""
 import argparse
 import atexit
 import copy
@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 import time
 import hashlib
+from typing import Literal
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -18,50 +19,65 @@ import tyro
 from isaaclab.app import AppLauncher
 
 ROOT = Path(__file__).resolve().parents[3]
-from generator.full1000_position_predictor import Full1000PositionPredictor
+from generator.predictor_architecture import build_position_predictor, load_position_predictor, ARCHITECTURE_FIELDS, LEGACY_SCHEMA
+from generator.structured_position_predictor import STRUCTURED_SCHEMA
 from generator.conditioned_pose_predictor import ConditionedPosePrediction, conditioned_pose_objective
 from generator.contact_location_predictor import contact_points_to_observed_heightmap_map
 from generator.planned_contact_predictor import (audit_intended_surfaces, contact_plan_objective,
-    plan_points_in_pose_frame, relative_contact_layout_loss)
+    plan_points_in_pose_frame)
+from contact_solver.native_contact_position import native_position_statistics, CONTACT_POSITION_SCHEMA
 from contact_solver.newton_witness_loss import query_local_distances
-from contact_solver.contact_layout import relative_plan_objective, observed_endpoint_targets, persistent_role_consistent, representative_pairs, relative_layout_statistics
+from contact_solver.contact_layout import (relative_plan_objective, observed_endpoint_targets,
+    persistent_role_consistent,
+    ENDPOINT_POSITION_TOLERANCE_M, endpoint_position_loss)
 from generator.next_interaction_heightmap_v2 import _quaternion_multiply_wxyz, render_root_yaw_box_heightmaps
 from contact_solver.interaction_acceptance import contact_acceptance, DEFAULT_ACCEPTANCE
+from contact_solver.interaction_acceptance import configured_acceptance, generation_acceptance_mask, acceptance_contract
 from somaforge_core.contact_face_selection import select_contact_pairs
 from somaforge_core.robot_assets import encode_robot_asset_json, decode_robot_asset_json
 from somaforge_core.newton_contact_data import require_current_newton_manifest
 from generator.full1000_training_variants import (event_consistent_roles,
-    teacher_probability, teacher_mask_for_batch)
-from generator.rollout_termination import TerminationLimits, physical_reset_masks, demonstration_loss
+    teacher_mask_for_batch, training_course, endpoint_layout_pass, endpoint_feedback_mask,
+    reference_batch_teacher_probability)
+from generator.rollout_termination import TerminationLimits, native_continuation_masks, demonstration_loss
 from generator.parallel_rollout_pool import rollout_transition
 from generator.training_data import prepare, take
+from generator.predictor_initialization import initialize_predictor, initialize_training_joint_bias, state_fingerprint
 from generator.scene_workers import Workers
+from contact_solver.keep_patch_loss import (bind_keep_patch, keep_patch_motion,
+    keep_patch_loss, calibrated_keep_allowance, keep_allowance_for_observation)
+from contact_solver.keep_patch_cache import KeepPatchCache
+from somaforge_core.loaded_material_motion import DEFAULT_MATERIAL_RESIDUAL_SCALE_M
 import somaforge_core.newton_scene_router as router
 
 
 @dataclass
 class Config:
     query_checkpoint: Path = ROOT / 'runtime/current/holosoma/logs/WholeBodyTracking/20260727_085520-g1_29dof_wbt_single_climb00_completionema_horizon50_ncon160_from4k_to10k-locomotion/model_06000.pt'
-    query_source_manifest: Path = ROOT / 'tmp/newton_contact_sources_v1/1789326506727043514/scene_2/manifest.json'
-    query_source_model: Path = ROOT / 'tmp/newton_contact_sources_v1/1789326506727043514/scene_2/model.json'
-    manifest: Path = ROOT / 'tmp/full1000_fixed_timeline_newton_20260922_v3/manifest.json'
-    data_cache: Path = ROOT / 'tmp/full1000_fixed_timeline_newton_20260922_v3/data.pt'
-    q_cache: Path = ROOT / 'tmp/full1000_fixed_timeline_newton_20260922_v3/q_cache_64.npz'
-    output: Path = ROOT / 'tmp/full1000_position_20260922'
-    stage_a_checkpoint: Path = ROOT / 'tmp/conditioned_pose_stage_a_full_v1/best.pt'
+    query_source_manifest: Path = ROOT / 'runtime/current/motions/climb00_contact_dataset/versions/loaded_material_rebuild_20261003/edits207_joint_v12/scenes/0e21fa0c89cb673d/manifest.json'
+    query_source_model: Path = ROOT / 'runtime/current/motions/climb00_contact_dataset/versions/loaded_material_rebuild_20261003/edits207_joint_v12/scenes/0e21fa0c89cb673d/model.json'
+    manifest: Path = ROOT / 'runtime/current/motions/climb00_contact_dataset/training/predictor_loaded_material207_joint_v12_20261004/manifest.json'
+    data_cache: Path = ROOT / 'runtime/current/motions/climb00_contact_dataset/training/predictor_loaded_material207_joint_v12_20261004/data.pt'
+    q_cache: Path = ROOT / 'runtime/current/motions/climb00_contact_dataset/training/predictor_loaded_material207_joint_v12_20261004/q_cache_64.npz'
+    output: Path = ROOT / 'runtime/current/models/generator/v1_shared_interval_new_run'
+    initialization: Literal['scratch'] = 'scratch'
+    architecture: Literal['full1000_position_predictor_v1', 'full1000_position_predictor_v2'] = LEGACY_SCHEMA
+    scratch_joint_mean_bias: bool = True
+    reference_warmup_steps: int = 100
+    continuous_demonstration_training: bool = True
     mode: str = 'full'
     overfit_motion_id: int | None = None
-    steps: int = 20
-    schedule_steps: int = 1000
-    initial_position_checkpoint: Path | None = None
-    query_worlds: int | None = None
-    gpu_pipeline: bool = False
+    steps: int = 1100
+    schedule_steps: int = 1100
+    audit_checkpoint: Path | None = None  # Read-only gradient audit; never training initialization.
+    query_worlds: int | None = 16
+    gpu_pipeline: bool = True
     execution_only: bool = False
     event_roles: bool = True
     event_endpoint_gate: bool = False
     pending_plan_repair: bool = False
     anchored_plan_execution: bool = False
-    relative_plan_supervision: bool = True
+    relative_plan_supervision: bool = False
     profile_components: bool = False
     defer_statistics: bool = True
     reuse_fk: bool = True
@@ -72,48 +88,49 @@ class Config:
     layers: int = 3
     location_width: int = 32
     batch_size: int = 128
-    learning_rate: float = .0003
+    learning_rate: float = 0.0003
     evaluation_every: int = 25
     seed: int = 20260917
     heightmap_supersample: int = 1
-    missing_pair_approach_weight: float = .1
-    relative_layout_weight: float = 1.
+    missing_pair_approach_weight: float = 0.1
+    relative_layout_weight: float = 1.0
+    keep_patch_weight: float = 1.0  # User-designated latest v1 baseline recipe.
     rollout_steps: int = 3
-    rollout_batch_fraction: float = .25
+    rollout_batch_fraction: float = 0.0
     fixed_teacher_probability: float | None = None
     constant_learning_rate: bool = False
     consistent_event_roles: bool = True
     collision_aggregation: str = 'max'
     body_geometry: bool = False
     part_geometry: bool = False
-    region_plan: bool = False
-    unified_contact: bool = False
+    region_plan: bool = True
+    unified_contact: bool = True
+    # Applies to unified-contact; independent training modes keep their loss.
+    shared_shape_target_interval: bool = True
     recover_failed_states: bool = False
     rollout_steps_final: int | None = None
     rollout_curriculum_switch: int = 10
-    recoverable_penetration_m: float = .03
-    parallel_rollouts: bool = False
-    parallel_pool_size: int | None = None
-    parallel_updates_per_step: int | None = None
-    parallel_episode_limit: int = 64  # Per-slot predictions before resampling, including failures.
+    recoverable_penetration_m: float = 0.03
+    acceptance_penetration_m: float = 0.005  # Runtime acceptance; optimization limits stay unchanged.
+    parallel_rollouts: bool = True
+    parallel_pool_size: int | None = 128
+    parallel_updates_per_step: int | None = 10
+    parallel_episode_limit: int = 64
     parallel_retry_limit: int = 8
     parallel_allow_post_demo: bool = True
     training_prediction_budget: int | None = None
     execution_plan_gradients: bool = False
-    execution_observation_gradients: bool = True
+    execution_observation_gradients: bool = True  # V1 control shares observations; explicit v2 uses False.
     pilot_samples: int | None = None
     pilot_visible_only: bool = False
     comparison_batch_order: bool = False
     constraint_training: bool = False
     constraint_validation: bool = False
     constraint_max_trials: int = 6
-    constraint_root_cost: float = 100.
-    require_endpoint_contact_retention: bool = True
-    endpoint_contact_tolerance_m: float = .06
-    predicted_contact_retention_weight: float = 1.0
+    constraint_root_cost: float = 100.0
     require_forward_progress: bool = False
     progress_window: int = 3
-    progress_minimum_m: float = .03615079075098038
+    progress_minimum_m: float = 0.03615079075098038
     static_gradient_audit: bool = False
     static_audit_samples: int = 32
     static_audit_pool: Path | None = None
@@ -124,12 +141,17 @@ def main():
     AppLauncher.add_app_launcher_args(parser)
     official, remaining = parser.parse_known_args()
     cfg = tyro.cli(Config, args=remaining)
-    if (cfg.require_endpoint_contact_retention or cfg.predicted_contact_retention_weight > 0) and not cfg.gpu_pipeline:
-        raise ValueError('Endpoint contact retention requires actual Newton GPU witness metadata')
-    if not np.isfinite(cfg.predicted_contact_retention_weight) or cfg.predicted_contact_retention_weight < 0:
-        raise ValueError('Predicted contact-retention weight must be finite and nonnegative')
-    if cfg.endpoint_contact_tolerance_m <= 0:
-        raise ValueError('Support tolerance must be positive')
+    runtime_acceptance = configured_acceptance(asdict(cfg))
+    if cfg.reference_warmup_steps < 0:
+        raise ValueError('Reference warmup steps must be nonnegative')
+    if cfg.execution_only:
+        raise ValueError('Scratch training requires a trainable planner and executor')
+    if not cfg.static_gradient_audit and cfg.architecture == STRUCTURED_SCHEMA and (cfg.execution_plan_gradients or cfg.execution_observation_gradients):
+        raise ValueError('Structured scratch training forbids shared planner/executor gradients')
+    if cfg.audit_checkpoint is not None and not cfg.static_gradient_audit:
+        raise ValueError('An audit checkpoint cannot initialize or resume training')
+    if cfg.reference_warmup_steps and cfg.constraint_training:
+        raise ValueError('Reference warmup is unsupported with constrained optimizer training')
     if cfg.recover_failed_states or cfg.pending_plan_repair:
         raise ValueError('Legacy recovery/plan-repair flags are unsupported; physically continuable raw-state feedback is now automatic.')
     if cfg.anchored_plan_execution and not (cfg.gpu_pipeline and cfg.parallel_rollouts):
@@ -154,12 +176,14 @@ def main():
         raise ValueError('recovery requires event-consistent labels')
     if (cfg.region_plan or cfg.unified_contact) and not cfg.gpu_pipeline:
         raise ValueError('Regional objectives require fresh GPU Newton witness tensors')
+    if cfg.keep_patch_weight < 0 or (cfg.keep_patch_weight and not cfg.gpu_pipeline):
+        raise ValueError('Keep-patch loss requires nonnegative weight and actual GPU Newton witnesses')
     if cfg.parallel_rollouts and (not cfg.gpu_pipeline or cfg.execution_only):
         raise ValueError('Parallel rollouts require GPU pipeline; execution-only adaptation uses reference batches')
     if cfg.training_prediction_budget is not None and cfg.training_prediction_budget < 1:
         raise ValueError('Training prediction budget must be positive')
     if cfg.static_gradient_audit and (not cfg.gpu_pipeline or not cfg.region_plan or not cfg.unified_contact
-                                    or cfg.static_audit_samples < 1 or cfg.initial_position_checkpoint is None):
+                                    or cfg.static_audit_samples < 1 or cfg.audit_checkpoint is None):
         raise ValueError('Static contact audit requires a position checkpoint, GPU regional objective and positive sample count')
     if cfg.comparison_batch_order:
         torch.backends.mha.set_fastpath_enabled(False)
@@ -181,29 +205,19 @@ def main():
     if cfg.event_endpoint_gate and not (cfg.event_roles and cfg.gpu_pipeline and cfg.parallel_rollouts):
         raise ValueError('Event endpoint trial requires explicit roles and parallel GPU training')
     require_current_newton_manifest(manifest, context='full1000 position training')
-    model = Full1000PositionPredictor(cfg.width, cfg.layers, cfg.location_width,
-                                     body_geometry=cfg.body_geometry, part_geometry=cfg.part_geometry,
-                                     region_plan=cfg.region_plan, unified_contact=cfg.unified_contact,
-                                     execution_plan_gradients=cfg.execution_plan_gradients,
-                                     execution_observation_gradients=cfg.execution_observation_gradients,
-                                     event_roles=cfg.event_roles).to(device)
-    initial = torch.load(cfg.stage_a_checkpoint, map_location=device, weights_only=False)
-    assert initial['robot_asset_json'] == encode_robot_asset_json()
-    loaded, fresh = model.load_stage_a(initial['model'])
-    if cfg.initial_position_checkpoint is not None:
-        initial = torch.load(cfg.initial_position_checkpoint, map_location=device, weights_only=False)
-        if initial['schema'] != 'full1000_position_predictor_v1':
-            raise ValueError('position adaptation checkpoint required')
-        decode_robot_asset_json(initial['robot_asset_json'], context='position warm start')
-        migrated = model.load_state_dict(initial['model'], strict=False)
-        if migrated.unexpected_keys or any(not k.startswith(('body_geometry_', 'part_geometry_', 'region_', 'execution_geometry_encoder.', 'execution_role_encoder.')) for k in migrated.missing_keys):
-            raise ValueError(f'unexpected warm-start incompatibility: {migrated}')
-    warm_source = cfg.initial_position_checkpoint or cfg.stage_a_checkpoint
-    warm_metadata = {'source': str(warm_source.resolve()), 'source_step': int(initial.get('step', -1)),
-        'sha256': hashlib.sha256(warm_source.read_bytes()).hexdigest(),
-        'optimizer_resumed': False, 'shared_weights_exact': True,
-        'new_geometry_zero_output': ((cfg.body_geometry and not initial.get('config', {}).get('body_geometry', False))
-            or (cfg.part_geometry and not initial.get('config', {}).get('part_geometry', False)))}
+    if cfg.static_gradient_audit:
+        checkpoint = torch.load(cfg.audit_checkpoint, map_location=device, weights_only=False)
+        for key in ARCHITECTURE_FIELDS:
+            if getattr(cfg, key) != checkpoint['config'].get(key, False if key not in ('width', 'layers', 'location_width') else getattr(cfg, key)):
+                raise ValueError(f'Audit configuration differs from checkpoint: {key}')
+        model = load_position_predictor(checkpoint, device=device)
+    else:
+        model = build_position_predictor(asdict(cfg), schema=cfg.architecture).to(device)
+    initial, loaded, fresh, warm_metadata = initialize_predictor(model,
+        initialization=cfg.initialization, seed=cfg.seed)
+    if cfg.static_gradient_audit:
+        warm_metadata.update(initialization='read_only_audit', source=str(cfg.audit_checkpoint.resolve()),
+            source_step=checkpoint['step'], predictor_checkpoints_loaded=[str(cfg.audit_checkpoint.resolve())])
     if cfg.execution_only and cfg.rollout_batch_fraction:
         raise ValueError('execution-only adaptation requires rollout-batch-fraction 0')
     payload = torch.load(cfg.data_cache, map_location='cpu', weights_only=False)
@@ -217,6 +231,9 @@ def main():
         if cfg.pilot_samples < 1: raise ValueError('pilot-samples must be positive')
         train = train[torch.linspace(0, len(train)-1, min(len(train), cfg.pilot_samples), device=train.device).long()]
         validation = validation[torch.linspace(0, len(validation)-1, min(len(validation), cfg.pilot_samples), device=validation.device).long()]
+    if cfg.scratch_joint_mean_bias and not cfg.static_gradient_audit:
+        warm_metadata['joint_bias_initialization'] = initialize_training_joint_bias(model, target['q'], train)
+    warm_metadata['joint_bias_initialization'] = warm_metadata.get('joint_bias_initialization')
     if cfg.parallel_rollouts:
         if cfg.parallel_pool_size is None: cfg.parallel_pool_size=cfg.batch_size
         if cfg.parallel_updates_per_step is None: cfg.parallel_updates_per_step=(len(train)+cfg.batch_size-1)//cfg.batch_size
@@ -236,15 +253,14 @@ def main():
     heights = sorted({round(float(samples[i]['height']), 8) for i in ids})
     workers = Workers(cfg.output / 'newton_workers', heights, str(device),
         checkpoint=cfg.query_checkpoint, source_manifest=cfg.query_source_manifest, source_model=cfg.query_source_model, query_worlds=cfg.query_worlds,
-                      tensor_transport=cfg.gpu_pipeline).__enter__()
+                      tensor_transport=cfg.gpu_pipeline, solid_geometry=True).__enter__()
     atexit.register(workers.__exit__, None, None, None)
     router.configured_router = lambda: workers.router
     tensor_scene_ids = torch.full((len(samples),), -1, dtype=torch.long, device=device)
     for i in ids:
         height = min(heights, key=lambda h: abs(h - float(samples[i]['height'])))
         target['newton_model_fingerprint'][i] = torch.tensor(list(bytes.fromhex(workers.entries[height]['fp'])), dtype=torch.uint8, device=device)
-        if cfg.gpu_pipeline:
-            tensor_scene_ids[i] = workers.entries[height]['scene_id']
+        tensor_scene_ids[i] = workers.entries[height]['scene_id']
     basis, origin = target['newton_world_basis'], target['newton_world_origin']
     frame_quat = torch.as_tensor(Rotation.from_matrix(basis.cpu().numpy()).as_quat()[:, [3, 0, 1, 2]], dtype=torch.float32, device=device)
 
@@ -281,6 +297,9 @@ def main():
                     static_query_snapshot = (indices.detach().clone(), q.detach().clone(), observed)
             rows = DeviceWitnessRows(model.fk, qlocal, observed,
                 world_frame=(origin[indices], basis[indices]), collision_aggregation=cfg.collision_aggregation)
+            if cfg.unified_contact:
+                rows.solid = workers.solid_router(model.fk, qlocal, tensor_scene_ids[indices],
+                    world_frame=(origin[indices], basis[indices]))
             return rows, observed
         return query_local_distances(model.fk, qlocal, take(scene, indices),
             world_frame=(origin[indices], basis[indices]), fingerprints=target['newton_model_fingerprint'][indices])
@@ -305,6 +324,12 @@ def main():
     rotation_w = basis @ scene['box_rotation']
     ground_w = origin[:, 2] + scene['ground_height']
     region_label_metadata = None
+    contact_skin = None
+    if cfg.unified_contact:
+        from contact_solver.contact_material_skin import ContactMaterialSkin
+        contact_skin = ContactMaterialSkin(model.region_geometry, workers.tensor_router.link_names)
+        training_rows = torch.zeros(len(samples), device=device, dtype=torch.bool)
+        training_rows[train] = True
     if cfg.region_plan:
         region_labels = torch.zeros(len(samples), 6, 4, dtype=torch.bool, device=device)
         audited_pairs = []
@@ -318,6 +343,9 @@ def main():
                 rows, observed = query(native_target_q[indices], indices)
                 region_labels[indices] = model.region_geometry.actual_mask(model.fk, rows, target['planned_surface'][indices])
                 audited_pairs.append({'indices': indices.cpu(), 'observed': cpu_tree(observed)})
+                if contact_skin is not None:
+                    contact_skin.add(model.fk, model.region_geometry, native_target_q[indices],
+                        observed, indices, training_rows[indices])
         target['region_label'] = region_labels
         target['region_label_known'] = region_labels.any(-1) & target['planned_contact']
         # Initialize the new region decision from training labels only, so
@@ -341,6 +369,75 @@ def main():
             'labels': region_labels.cpu(), 'known': target['region_label_known'].cpu(),
             'native_target_q': native_target_q.cpu(), 'newton_batches': audited_pairs}, cfg.output/'region_labels.pt')
         print(json.dumps({'region_labels': region_label_metadata}), flush=True)
+
+    if contact_skin is not None:
+        skin_source_evidence = []
+        if not cfg.region_plan:
+            with torch.no_grad():
+                for indices in train.split(cfg.batch_size):
+                    _, observed = query(native_target_q[indices], indices)
+                    contact_skin.add(model.fk, model.region_geometry, native_target_q[indices],
+                        observed, indices, training_rows[indices])
+                    skin_source_evidence.append(dict(indices=indices.cpu(), q_world=native_target_q[indices].cpu(),
+                        pairs={name: value.cpu() for name, value in observed['pairs'].items()}))
+        contact_skin.finalize()
+        model.region_geometry.material_skin = contact_skin
+        from somaforge_core.newton_contacts import SCHEMA as native_contact_schema
+        from somaforge_core.contact_face_selection import FACE_POLICY
+        skin_metadata = dict(**contact_skin.contract(), contact_semantics=native_contact_schema,
+            face_selection=FACE_POLICY, sampling='fresh static Newton query at native source q; no integration',
+            raw_evidence_reference='region_labels.pt:newton_batches' if cfg.region_plan else 'source_evidence',
+            scenes={str(entry['scene_id']):dict(height_scale=height, model_fingerprint=entry['fp'],
+                model=str(entry['folder']/'model.json'), binding=str(entry['folder']/'binding.json'))
+                for height, entry in workers.entries.items()})
+        torch.save(dict(metadata=skin_metadata, robot_asset_json=encode_robot_asset_json(),
+            source_evidence=skin_source_evidence,
+            buffers={name: value.cpu() for name, value in contact_skin.named_buffers()}),
+            cfg.output/'contact_material_skin.pt')
+        print(json.dumps({'contact_material_skin': contact_skin.contract()}), flush=True)
+
+    keep_patch_allowance = None
+    keep_patch_metadata = {'enabled': False}
+    reference_patch_cache = (KeepPatchCache(len(samples), inputs['current_q'], workers.tensor_router.link_names)
+        if cfg.keep_patch_weight else None)
+    pool_patch_cache = (KeepPatchCache(cfg.parallel_pool_size, inputs['current_q'], workers.tensor_router.link_names)
+        if cfg.keep_patch_weight and cfg.parallel_rollouts else None)
+    if cfg.keep_patch_weight:
+        # A keep label is continuous activation, not a claim that a particular
+        # material site remains stationary. Calibrate geometric motion from
+        # each real demonstration action, never a projector-generated target.
+        reference_motion = torch.zeros(len(samples), 6, device=device)
+        reference_present = torch.zeros_like(reference_motion, dtype=torch.bool)
+        calibration_ids = torch.cat((train, validation)).unique()
+        with torch.no_grad():
+            for indices in calibration_ids.split(cfg.batch_size):
+                observed = workers.tensor_router(native_q[indices], tensor_scene_ids[indices])
+                patch = bind_keep_patch(model.fk, native_q[indices], observed)
+                movement, present = keep_patch_motion(model.fk, native_target_q[indices], patch)
+                reference_motion[indices], reference_present[indices] = movement, present
+        keep = target['role'] == 2
+        if bool((keep[calibration_ids] & ~reference_present[calibration_ids]).any()):
+            raise ValueError('Demonstration keep role lacks an actual allocated primary-face patch')
+        # A predicted keep on a part whose demonstrated role is different has
+        # no per-action keep example. Use only training keep examples as its
+        # fallback allowance, and explicitly mark unseen parts as unknown.
+        keep_patch_allowance, fallback, fallback_known = calibrated_keep_allowance(
+            reference_motion, reference_present, target['role'], train)
+        keep_patch_metadata = dict(enabled=True, schema='newton_material_patch_keep_intent_v1',
+            weight=cfg.keep_patch_weight, role='network conditioned_role == keep',
+            geometry='current actual allocated task-eligible primary-face materials; FK to endpoint',
+            patch='minimum tangent displacement over convex material patch; permits an interior pivot',
+            allowance='own demonstration action for demonstrated keep; training-only per-part median otherwise',
+            fallback_m=fallback.cpu().tolist(), fallback_known=fallback_known.cpu().tolist(),
+            unknown_policy='reported; no invented material or loaded-support evidence',
+            penalty='log1p_squared_residual_v1; same scalar tail as contact and collision',
+            scale_m=DEFAULT_MATERIAL_RESIDUAL_SCALE_M, actual_loaded_path_budget_unchanged=True,
+            contact_truth_unchanged=True, executed_support_evidence=False)
+        torch.save(dict(metadata=keep_patch_metadata, robot_asset_json=encode_robot_asset_json(),
+            sample_ids=calibration_ids.cpu(), motion_m=reference_motion.cpu(),
+            present=reference_present.cpu(), allowance_m=keep_patch_allowance.cpu()),
+            cfg.output/'keep_patch_calibration.pt')
+        print(json.dumps({'keep_patch':keep_patch_metadata}), flush=True)
 
     def render(q, indices):
         fixed = fixed_scene[indices]
@@ -377,17 +474,32 @@ def main():
         return {'role': roles, 'contact_cell': cell, 'contact_cell_valid': valid,
                 'endpoint_points_world': endpoint_points, 'contact_keep_intent': persistent}
 
-    def objective(prediction, observation, indices, labels):
+    def teacher_conditions(indices, labels):
+        conditions = dict(teacher_contact=target['planned_contact'][indices],
+            teacher_cell=labels['contact_cell'], teacher_role=labels['role'])
+        if cfg.region_plan:
+            conditions['teacher_regions'] = target['region_label'][indices]
+        return conditions
+
+    def teacher_available(indices, labels):
+        visible = (labels['contact_cell_valid'] | ~target['planned_contact'][indices]).all(-1)
+        if cfg.region_plan:
+            visible &= (target['region_label_known'][indices] | ~target['planned_contact'][indices]).all(-1)
+        return visible
+
+    def objective(prediction, observation, indices, labels, *, patch_cache=None, patch_keys=None):
         qlocal = to_local(prediction.qpos, indices)
         if cfg.reuse_fk:
             model.fk.begin_link_pose_cache(qlocal)
         try:
-            return objective_impl(prediction, observation, indices, labels, qlocal)
+            return objective_impl(prediction, observation, indices, labels, qlocal,
+                patch_cache=patch_cache, patch_keys=patch_keys)
         finally:
             if cfg.reuse_fk:
                 model.fk.end_link_pose_cache()
 
-    def objective_impl(prediction, observation, indices, labels, qlocal):
+    def objective_impl(prediction, observation, indices, labels, qlocal, *, patch_cache=None, patch_keys=None):
+        supervised = labels.get('supervised', torch.ones(len(indices), device=device, dtype=torch.bool))
         with timed('newton_query'):
             queried = query(prediction.qpos, indices, qlocal if cfg.reuse_fk else None)
         if cfg.gpu_pipeline and cfg.region_plan:
@@ -403,39 +515,60 @@ def main():
         compatible = ((prediction.conditioned_contact == target['planned_contact'][indices]).all(-1)
             & ((surfaces == target['planned_surface'][indices]) | ~prediction.conditioned_contact).all(-1))
         with timed('relative_layout'):
-            layout, layout_metrics = relative_contact_layout_loss(model, qlocal, points_local(points_w, indices),
-                prediction.conditioned_contact, surfaces, queried[0], regions=prediction.planned_regions)
-        support_loss = prediction.qpos.sum(-1)*0
-        if cfg.require_endpoint_contact_retention or cfg.predicted_contact_retention_weight > 0:
-            from contact_solver.support_transition import endpoint_contact_retention, predicted_contact_retention_loss
-            # Re-query the input: stored/averaged part anchors cannot identify
-            # the exact material link or prove current activation/allocation.
-            initial_rows, _ = query(observation['current_q'].detach(), indices)
-            if cfg.require_endpoint_contact_retention:
-                support_metrics = endpoint_contact_retention(model.fk, initial_rows, queried[0],
-                    tolerance_m=cfg.endpoint_contact_tolerance_m)
-                metrics.update(support_metrics)
-            if cfg.predicted_contact_retention_weight > 0:
-                support_loss, support_metrics = predicted_contact_retention_loss(model.fk, initial_rows,
-                    queried[0], prediction.role.detach(), tolerance_m=cfg.endpoint_contact_tolerance_m)
-                metrics.update(support_metrics)
-        metrics['weighted_predicted_contact_retention_loss'] = cfg.predicted_contact_retention_weight*support_loss
-        supervised = labels.get('supervised', torch.ones(len(indices), device=device, dtype=torch.bool))
+            own_error,own_complete,own_count=native_position_statistics(model,workers.position_router,
+                qlocal,tensor_scene_ids[indices],points_w,prediction.conditioned_contact,surfaces,queried[1],
+                regions=prediction.planned_regions,world_frame=(origin[indices],basis[indices]))
+            layout=endpoint_position_loss(own_error)
+            layout_metrics=dict(relative_layout_rms_cm=100*own_error.detach().clamp_min(0).sqrt(),
+                relative_layout_observed_parts=own_count.to(qlocal))
+        # An endpoint predictor supplies neither an adjacent-pose trajectory nor
+        # executed loads. Do not substitute a whole-action displacement loss.
+        metrics['support_motion_evidence_known'] = torch.zeros_like(compatible, dtype=qlocal.dtype)
+        hold_loss = prediction.qpos.sum(-1)*0
+        if cfg.keep_patch_weight:
+            with timed('keep_patch_objective'):
+                cache = reference_patch_cache if patch_cache is None else patch_cache
+                keys = indices if patch_keys is None else patch_keys
+                # Legacy nested rollouts may contain different generated poses
+                # for the same demonstration row; those have no stable slot key.
+                if patch_cache is None and not torch.equal(observation['current_q'], inputs['current_q'][indices]):
+                    current_actual = workers.tensor_router(observation['current_q'].detach(), tensor_scene_ids[indices])
+                    patch = bind_keep_patch(model.fk, observation['current_q'], current_actual)
+                else:
+                    patch = cache.get(keys, observation['current_q'], tensor_scene_ids[indices],
+                        model.fk, workers.tensor_router,
+                        source=reference_patch_cache if patch_cache is not None else None, source_keys=indices)
+                keep_allowance = keep_allowance_for_observation(
+                    keep_patch_allowance[indices], fallback, fallback_known, supervised)
+                hold_loss, hold_metrics = keep_patch_loss(model.fk, prediction.qpos,
+                    prediction.conditioned_role, patch, keep_allowance)
+                # Scalar-per-sample summaries match the existing training log.
+                active = (prediction.conditioned_role == 2) & hold_metrics['keep_patch_present']
+                metrics['keep_patch_loss'] = hold_loss
+                metrics['keep_patch_missing'] = hold_metrics['keep_patch_missing']
+                metrics['keep_patch_motion_cm'] = 100*(hold_metrics['keep_patch_motion_m']*active).amax(-1)
+                metrics['keep_patch_excess_cm'] = 100*hold_metrics['keep_patch_excess_m'].amax(-1)
+                metrics['keep_patch_unknown_allowance'] = ((prediction.conditioned_role == 2)
+                    & ~torch.isfinite(keep_allowance)).sum(-1).to(qlocal)
         with timed('planner_objective'):
             plan_loss, plan_metrics = (relative_plan_objective(prediction, labels, observation['heightmap'])
                 if cfg.relative_plan_supervision else contact_plan_objective(prediction, labels))
         if cfg.execution_only:
             plan_loss = plan_loss.detach() * 0
         imitation = demonstration_loss(compatible * metrics['imitation_loss'], supervised)
+        metrics['imitation_supervised'] = (compatible & supervised).float()
         execution_loss = metrics['own_plan_realization_loss']
         approach_loss = cfg.missing_pair_approach_weight * metrics['missing_pair_approach_loss']
         if cfg.unified_contact:
             from contact_solver.contact_regions import unified_region_objective
             with timed('unified_region_objective'):
+                interval=(workers.target_interval(model,queried[0],prediction.conditioned_contact,
+                    surfaces,take(scene,indices),tensor_scene_ids[indices]) if cfg.shared_shape_target_interval else None)
                 execution_loss, region_metrics = unified_region_objective(model, queried[0],
                     prediction.conditioned_contact, surfaces, take(scene, indices), prediction.planned_regions,
-                    audit_path=cfg.output/'unknown_normals.jsonl')
+                    audit_path=cfg.output/'unknown_normals.jsonl',surface_interval=interval)
             metrics.update(region_metrics)
+            metrics['execution_penetration_cm'] = torch.maximum(metrics['newton_penetration_cm'], region_metrics['solid_penetration_cm'])
             metrics['newton_invalid_fullbody_witnesses'] = torch.maximum(metrics['newton_invalid_fullbody_witnesses'], region_metrics['region_invalid_penetrating_normals'])
             metrics['newton_generation_accepted'] *= region_metrics['region_gradient_valid']
             metrics['newton_generation_valid'] *= region_metrics['region_gradient_valid']
@@ -458,33 +591,31 @@ def main():
         plan_loss = demonstration_loss(plan_loss, supervised)
         loss = (plan_loss + imitation + execution_loss
             + approach_loss + metrics['safety_loss']
-            + cfg.relative_layout_weight * layout + cfg.predicted_contact_retention_weight*support_loss)
-        if cfg.gpu_pipeline:
-            from generator.next_interaction_heightmap import HEIGHTMAP_RESOLUTION_M
-            scale = 2 * HEIGHTMAP_RESOLUTION_M
-            own_error, own_complete, _ = queried[0].anchored_layout(
-                points_w, prediction.conditioned_contact, surfaces, actual=True, regions=prediction.planned_regions)
-            task_error, task_complete, _ = queried[0].anchored_layout(
-                labels['endpoint_points_world'], target['planned_contact'][indices], target['planned_surface'][indices], actual=True)
-            own_ok = own_complete & torch.isfinite(own_error) & (own_error <= scale**2)
-            task_ok = task_complete & torch.isfinite(task_error) & (task_error <= scale**2)
+            + cfg.relative_layout_weight * layout + cfg.keep_patch_weight * hold_loss)
+        with torch.no_grad():
+            task_error,task_complete,task_count=native_position_statistics(model,workers.position_router,
+                qlocal,tensor_scene_ids[indices],labels['endpoint_points_world'],target['planned_contact'][indices],
+                target['planned_surface'][indices],queried[1],world_frame=(origin[indices],basis[indices]))
+            own_ok = endpoint_layout_pass(own_error, own_complete, own_count, ENDPOINT_POSITION_TOLERANCE_M)
+            task_ok = endpoint_layout_pass(task_error, task_complete, task_count, ENDPOINT_POSITION_TOLERANCE_M)
             metrics['own_endpoint_layout_accepted'] = own_ok.float()
-            metrics['task_endpoint_layout_accepted'] = task_ok.float()
+            metrics['task_endpoint_layout_accepted'] = torch.where(supervised, task_ok.float(), torch.nan)
             support_ok = persistent_role_consistent(prediction.conditioned_role, observation['current_contact'])
             metrics['persistent_role_accepted'] = support_ok.float()
-            metrics['event_endpoint_accepted'] = (own_ok & task_ok & support_ok).float()
+            metrics['event_endpoint_accepted'] = (own_ok & (~supervised | task_ok) & support_ok).float()
             metrics['issued_plan_position_loss'] = layout
             # The scene-fixed layout term above already optimizes this error.
             # Do not add it twice when the legacy anchored flag is set.
-        if cfg.unified_contact:
-            loss = loss*metrics['region_gradient_valid']
+        metrics['newton_generation_accepted'] = generation_acceptance_mask(
+            metrics['newton_contact_accepted'], metrics.get('execution_penetration_cm', metrics['newton_penetration_cm'])/100,
+            metrics['newton_invalid_fullbody_witnesses'], limits=runtime_acceptance).float()
         if cfg.static_gradient_audit:
             # Expose the exact weighted terms only for frozen-model auditing.
-            valid = metrics['region_gradient_valid']
-            metrics['audit_planner'] = plan_loss*valid
-            metrics['audit_imitation'] = imitation*valid
-            metrics['audit_layout'] = cfg.relative_layout_weight*layout*valid
-            metrics['audit_safety'] = metrics['safety_loss']*valid
+            metrics['audit_planner'] = plan_loss
+            metrics['audit_imitation'] = imitation
+            metrics['audit_layout'] = cfg.relative_layout_weight*layout
+            metrics['audit_safety'] = metrics['safety_loss']
+            metrics['audit_keep_patch'] = cfg.keep_patch_weight*hold_loss
         metrics.update(plan_metrics); metrics.update(layout_metrics)
         # Surface compatibility is loss-only, so replacing the two-way
         # classifier by thousands of cells cannot silence the motion prior.
@@ -492,27 +623,19 @@ def main():
                                                   prediction.contact, queried[1])
         metrics['plan_exact'] = ((prediction.contact == target['planned_contact'][indices]).all(-1)
             & ((emitted_surfaces == target['planned_surface'][indices]) | ~prediction.contact).all(-1)).float()
-        metrics['constraint_prior'] = plan_loss + imitation + cfg.relative_layout_weight * layout
+        metrics['constraint_prior'] = (plan_loss + imitation + cfg.relative_layout_weight * layout
+            + cfg.keep_patch_weight * hold_loss)
         metrics['loss'] = loss
         return loss, metrics, queried
 
     @torch.no_grad()
-    def realized_layout(prediction, observation, queried):
+    def realized_layout(prediction, observation, queried, indices):
         points = plan_points_in_pose_frame(observation['current_q'], prediction.conditioned_points_local)
         surfaces = audit_intended_surfaces(points, prediction.conditioned_contact, queried[1])
         active = prediction.conditioned_contact
-        if cfg.gpu_pipeline:
-            return queried[0].realized_layout(points, active, surfaces)
-        witnesses = torch.zeros_like(points); observed = torch.zeros_like(active)
-        enabled, faces = active.cpu().tolist(), surfaces.cpu().tolist()
-        for i, catalog in enumerate(queried[1]['surface_catalog_by_sample']):
-            actual = select_contact_pairs([queried[1]['pairs'][i]], catalog)
-            for part, pair in enumerate(representative_pairs(actual['contact_pairs'][0], enabled[i], faces[i])):
-                if pair is not None:
-                    witnesses[i, part] = points.new_tensor(pair['position_w']); observed[i, part] = True
-        error, _, count = relative_layout_statistics(witnesses, points, observed)
-        complete = active.any(-1) & ((observed | ~active).all(-1))
-        return error, complete, count
+        return native_position_statistics(model,workers.position_router,to_local(prediction.qpos,indices),
+            tensor_scene_ids[indices],points,active,surfaces,queried[1],regions=prediction.planned_regions,
+            world_frame=(origin[indices],basis[indices]))
 
     def fresh_observation(q, indices, observed, chosen):
         if cfg.gpu_pipeline:
@@ -525,9 +648,6 @@ def main():
         return {'current_q': q.detach(), 'current_contact': torch.as_tensor(np.asarray(masks), device=device),
                 'current_anchor': torch.as_tensor(np.asarray(points), device=device), 'heightmap': render(q, indices)}
 
-    from contact_solver.predictor_constraints import CanonicalBoxGeometry
-    rollout_geometry = CanonicalBoxGeometry() if cfg.parallel_rollouts or cfg.rollout_batch_fraction else None
-
     @torch.no_grad()
     def continuation(q, indices, queried, metric):
         if cfg.gpu_pipeline:
@@ -537,24 +657,9 @@ def main():
                 select_contact_pairs([pairs], catalog)['contact_part_mask'][0]
                 for pairs, catalog in zip(queried[1]['pairs'], queried[1]['surface_catalog_by_sample'])
             ]), device=device, dtype=torch.bool)
-        clear, _, _ = rollout_geometry.evaluate(model.fk, to_local(q.detach(), indices), take(scene, indices))
-        depth_cm = torch.maximum(metric['newton_penetration_cm'], 100*(-clear.amin(-1)).clamp_min(0))
-        invalid = metric['newton_invalid_fullbody_witnesses'].clone()
-        if cfg.gpu_pipeline:
-            pair = queried[0].pair
-            # Missing solver fields are errors; unallocated activation is an
-            # explicit invalid-state reset, never accepted as normal contact.
-            active = ((pair['type'].long() & 1) != 0) & (pair['dist'] < pair['includemargin'])
-            if not torch.equal(active, pair['active']):
-                raise ValueError('Newton activation metadata mismatch')
-            bad = active & ~pair['constraint_allocated']
-            invalid.scatter_add_(0, pair['sample'], bad.to(invalid))
-        continuable, reasons = physical_reset_masks(q, depth_cm, invalid,
-            metric['joint_violation_rad'], actual_contact,
-            TerminationLimits(penetration_m=cfg.recoverable_penetration_m))
-        unsupported = continuable & ~metric['endpoint_contact_retention_valid'] if cfg.require_endpoint_contact_retention else torch.zeros_like(continuable)
-        reasons['endpoint_contact_retention_failed'] = unsupported
-        return continuable & ~unsupported, reasons
+        return native_continuation_masks(q, metric, actual_contact,
+            pair=queried[0].pair if cfg.gpu_pipeline else None,
+            limits=TerminationLimits(penetration_m=cfg.recoverable_penetration_m))
 
     starts = {(s['motion_id'], s['current_frame']): i for i, s in enumerate(samples)}
     successor = torch.tensor([starts.get((s['motion_id'], s['target_frame']), -1) for s in samples], device=device)
@@ -562,25 +667,56 @@ def main():
     allowed_successors[train] = True
     successor = torch.where((successor >= 0) & allowed_successors[successor.clamp_min(0)], successor, -1)
     config = {key: str(value.resolve()) if isinstance(value, Path) else value for key, value in asdict(cfg).items()}
+    if cfg.static_gradient_audit:
+        config['architecture'] = checkpoint['schema']
     dataset = {'schema': 'full1000_position_ablation_v1', 'original_timeline_preserved': bool(manifest.get('fixed_timeline_ablation')),
         'raster_label_semantics': 'nearest_observed_3d_cell_v1', 'forbidden_forward_inputs': ['surface ID', 'event index', 'future q'],
         'own_plan_realization_under_wrong_predicted_plan': True,
         'pose_realization_gradient_reaches_plan_heads': False,
-        'execution_plan_gradient_contract': 'detached hard plan and encoder features; independent execution residuals, geometry encoder and output norm',
-        'gradient_clipping': 'planner and executor parameter groups clipped independently at norm 10',
+        'execution_plan_gradient_contract': ('legacy checkpoint flags, read-only audit' if cfg.static_gradient_audit and checkpoint['schema'] != STRUCTURED_SCHEMA
+            else ('detached hard contact intent; shared v1 observation encoder' if cfg.architecture == LEGACY_SCHEMA and cfg.execution_observation_gradients
+            else 'detached hard contact intent; independent planner/executor observation gradients')),
+        'architecture_contract': model.architecture_contract() if hasattr(model, 'architecture_contract') else {'schema': checkpoint['schema'], 'legacy_read_only': True},
+        'gradient_clipping': 'actual model parameter groups clipped independently at norm 10: '+', '.join(model.training_parameter_groups()),
         'failure_states_used_for_training': bool(cfg.parallel_rollouts or cfg.rollout_batch_fraction), 'common_horizontal_translation_allowed_in_layout': False,
-        'contact_position_contract': 'observed_endpoint_region_geometry_v3',
+        'contact_position_contract': CONTACT_POSITION_SCHEMA,
         'rollout_policy': (f'up to {cfg.rollout_steps} autonomous outputs per batch segment; keep physically continuable failures; no demonstration-end termination'
                            if cfg.rollout_batch_fraction else 'no autonomous rollout'),
         'source_reconstruction': 'archived full1000 config, teacher schedule and loss contract; not a byte-identical source restore',
         'runtime_difference': 'current Newton labels rebuilt on original boundaries',
-        'position_interface_loss': 'scene-fixed witness positions plus unchanged Newton activation; no future-only translation exemption',
+        'position_interface_loss': workers.position_router.contract(),
+        'endpoint_position_loss': {'schema': CONTACT_POSITION_SCHEMA,
+            'tolerance_m': ENDPOINT_POSITION_TOLERANCE_M,
+            'zero_gradient_inside_accepted_range': True,
+            'spatial_metric_changed': True,
+            'newton_contact_rule_changed': False},
+        'task_acceptance': acceptance_contract(runtime_acceptance),
+        'optimization_acceptance_limits': acceptance_contract(DEFAULT_ACCEPTANCE),
         'planner_supervision': 'actual demonstrated endpoints for every role; persistent activation is not a fixed point',
-        'relative_layout_contract': 'newton_region_matched_witness_xy_v3',
+        'relative_layout_contract': CONTACT_POSITION_SCHEMA,
         'execution_only_adaptation': cfg.execution_only,
-        'inherited_pretraining': 'shared Stage-A weights were originally trained with IDs; ID modules are omitted, not distilled',
+        'initialization': warm_metadata,
+        'inherited_pretraining': 'none; predictor training initializes without predictor checkpoints',
         'samples': len(samples), 'training_samples': len(train), 'validation_samples': len(validation)}
-    dataset['endpoint_contact_retention_contract'] = dict(enabled=cfg.require_endpoint_contact_retention, tolerance_m=cfg.endpoint_contact_tolerance_m, semantics='endpoint_region_motion_v2: same endpoint part AND terrain face, internal witness changes allowed; minimum same-material displacement across both endpoint regions; endpoint-only, not load or path certification')
+    if cfg.unified_contact and cfg.shared_shape_target_interval:
+        dataset['shape_target_interval_objective']=workers.target_interval_provider().contract()
+    dataset['reference_warmup'] = {
+        'steps': cfg.reference_warmup_steps, 'sampling': 'one shuffled traversal of all training rows per interval',
+        'plan': 'visible demonstrated role/contact/cell and actual Newton endpoint regions; region logits remain independently supervised',
+        'newton_objective_unchanged': True, 'generated_state_feedback': False,
+        'optimizer_and_scheduler_restarted_at_transition': False,
+        'teacher_schedule_clock': 'reporting interval minus reference_warmup_steps',
+    }
+    dataset['continuous_demonstration_training'] = {
+        'enabled': cfg.continuous_demonstration_training and cfg.parallel_rollouts,
+        'sampling': 'one shuffled traversal of the training demonstration rows each feedback interval',
+        'conditioning': 'complete demonstrated role/contact/cell/native regions',
+        'loss': 'same planner, pose, contact, layout, keep and safety objective',
+        'pool_commit': False, 'autonomous_teacher_schedule_changed': False,
+        'post_demo_reference_target_fabricated': False,
+    }
+    from somaforge_core.loaded_material_motion import unknown_material_path
+    dataset['support_motion_contract'] = unknown_material_path()
     dataset['forward_progress_contract'] = dict(enabled=cfg.require_forward_progress,
         window_steps=cfg.progress_window, minimum_m=cfg.progress_minimum_m,
         direction='whole task start-to-end XY; fixed through each episode',
@@ -588,7 +724,7 @@ def main():
         loss_changed=False)
     dataset['short_ablation_contract'] = {
         'anchored_plan_execution': cfg.anchored_plan_execution,
-        'failure_contract': 'raw prediction feedback while physically continuable; reset on severe penetration, zero actual contacts, or invalid state; failed output contributes loss first',
+        'failure_contract': 'commit only accepted and physically continuable predictions; otherwise retain input and target; every candidate contributes loss before rollback; periodically resample after the attempt budget',
         'pending_plan_repair': cfg.pending_plan_repair,
         'repair_contract': 'frozen issued world intent; no planner loss on repairs; own-complete wrong-task plans reset' if cfg.pending_plan_repair else None,
         'event_roles': cfg.event_roles, 'event_endpoint_gate': cfg.event_endpoint_gate,
@@ -601,11 +737,10 @@ def main():
         'recovery_penetration_limit_is_not_contact_truth': cfg.recoverable_penetration_m,
         'rollout_steps_initial': cfg.rollout_steps, 'rollout_steps_final': cfg.rollout_steps_final,
         'bptt': False, 'raw_q_feedback': True,
-        'predicted_contact_retention_objective': {
-            'weight': cfg.predicted_contact_retention_weight, 'tolerance_m': cfg.endpoint_contact_tolerance_m,
-            'gate': 'detached raw predicted role==2 AND actual initial Newton primary-face contact',
-            'scope': 'each declared endpoint separately; final contact loss does not disable penalty',
-            'teacher_roles_used': False},
+        'support_motion_objective': {
+            'enabled': False, 'reason': 'endpoint_only_without_executed_trajectory',
+            'substitute_endpoint_displacement_loss': False},
+        'keep_intent_geometry_objective': keep_patch_metadata,
         'execution_gap_objective': {
             'schema': 'newton_gap_interval_v1',
             'upper': 'actual pair includemargin; independent of activation flags',
@@ -628,7 +763,8 @@ def main():
             'failure_feedback':'retain exact pre-prediction input and target within sampling window; rejected output still trains',
             'progress_history':'accepted transitions only','successor_must_be_training_row':True,
             'old_rollout_steps_and_fraction_are_unused':True,
-            'plan_conditioning':'original full1000 teacher probability on each visible pool input; zero by interval 700 unless explicitly overridden',
+            'plan_conditioning':'teacher plans only while demonstration-supervised; no teacher or future labels after exhaustion',
+            'autonomous_commit':'own actual contact, region-filtered position, keep-role consistency and safety; no final demonstration target',
             'teacher_changes_plan_only':True,
             'teacher_q_never_used_as_feedback':True,
             'loss_weight':'one mean loss over all slots per optimizer update',
@@ -640,15 +776,23 @@ def main():
             'injection': 'residual into each of six existing part tokens before terrain reasoning',
             'source_vertices_are_not_network_inputs': True, 'gap_is_not_contact_truth': True}
     if cfg.region_plan or cfg.unified_contact:
+        if cfg.unified_contact:
+            dataset['collision_distance_objective'] = workers.solid_router.contract()
+        from contact_solver.contact_surface_interval import CONTACT_SURFACE_INTERVAL_SCHEMA
         dataset['contact_regions'] = {'schema': model.region_geometry.schema,
             'region_names': model.region_geometry.names, 'features_per_part': 32 if cfg.region_plan else 0,
             'raw_mesh_network_input': False, 'region_label_metadata': region_label_metadata,
             'unified_interval_objective': cfg.unified_contact,
-            'interval_penalty_aggregation': 'robust_lower_plus_robust_upper_mean_plus_max_v2',
+            'interval_penalty_aggregation': 'log1p_squared_lower_plus_upper_mean_plus_max_v3',
+            'material_face_interval': CONTACT_SURFACE_INTERVAL_SCHEMA,
+            'native_candidate_disables_material_field': False,
+            'contact_material_skin': None if contact_skin is None else contact_skin.contract(),
             'all_raw_fullbody_witnesses_checked': True,
-            'proxy_is_only_missing_pair_approach_not_contact_truth': True,
-            'invalid_penetrating_normal_policy': 'raw audit saved; entire sample excluded from gradients and rollout; never accepted as safe',
+            'proxy_is_loss_geometry_not_contact_truth': True,
+            'witness_distribution_requirement': 'audit only; endpoint events do not require every observed quadrant to recur',
+            'invalid_penetrating_normal_policy': 'raw audit saved; invalid native distance rows excluded; verified complete-solid and other gradients retained; rollout rejected',
             'execution_gradient_reaches_new_region_head': False}
+    warm_metadata['initial_model_sha256'] = state_fingerprint(model)
     (cfg.output / 'config.json').write_text(json.dumps(config, indent=2))
     if cfg.constraint_training:
         dataset['constraint_training'] = dict(schema='predictor_constraint_band_v1',
@@ -662,7 +806,9 @@ def main():
             inference='ordinary network forward; no projector')
         dataset['gradient_clipping'] = 'no gradient clipping; actual AdamW increment projected and backtracked'
     (cfg.output / 'dataset.json').write_text(json.dumps(dataset, indent=2))
-    (cfg.output / 'warm_start.json').write_text(json.dumps({**warm_metadata, 'stage_a_loaded': loaded, 'stage_a_fresh': fresh}, indent=2))
+    initialization_report = {**warm_metadata, 'loaded_parameters': loaded, 'fresh_parameters': fresh}
+    (cfg.output / 'initialization.json').write_text(json.dumps(initialization_report, indent=2))
+    (cfg.output / 'warm_start.json').write_text(json.dumps(initialization_report, indent=2))
     if cfg.static_gradient_audit:
         from generator.research.isolated_gradients import audit
         audit(model, cfg, inputs, validation, labels_for, objective)
@@ -685,7 +831,7 @@ def main():
         constraint_adapter = PredictorConstraintAdapter(root_relative_cost=cfg.constraint_root_cost)
 
     def save(path, step, metrics, state=None):
-        torch.save({'schema': 'full1000_position_predictor_v1', 'model': model.state_dict() if state is None else state,
+        torch.save({'schema': cfg.architecture, 'architecture_contract': model.architecture_contract(), 'model': model.state_dict() if state is None else state,
                     'config': config, 'dataset': dataset, 'step': step, 'metrics': metrics,
                     'condition_contract': dataset, 'robot_asset_json': encode_robot_asset_json(),
                     'constraint_training_state': None if constrained_step is None or state is not None else constrained_step.state_dict(),
@@ -699,12 +845,12 @@ def main():
             observation = take(inputs, indices)
             labels = labels_for(observation, indices)
             if teacher:
-                visible = (labels['contact_cell_valid'] | ~target['planned_contact'][indices]).all(-1)
+                visible = teacher_available(indices, labels)
                 indices = indices[visible]
                 if not len(indices): continue
                 observation = take(inputs, indices); labels = labels_for(observation, indices)
-                prediction = model(**observation, teacher_contact=target['planned_contact'][indices],
-                    teacher_cell=labels['contact_cell'], teacher_role=labels['role'], teacher_mask=torch.ones(len(indices), device=device, dtype=torch.bool))
+                prediction = model(**observation, **teacher_conditions(indices, labels),
+                    teacher_mask=torch.ones(len(indices), device=device, dtype=torch.bool))
             else:
                 prediction = model(**observation)
             visible_count += len(indices)
@@ -719,7 +865,7 @@ def main():
                 actual_ok = acceptance(queried[1], target['planned_contact'][indices], target['planned_surface'][indices])['contact_accepted']
                 metrics['constraint_verified_penetration_cm'] = 100*depth
                 metrics['constraint_contact_satisfied'] = (actual_ok & (depth <= DEFAULT_ACCEPTANCE.shallow_penetration_m)).float()
-            error, complete, count = realized_layout(prediction, observation, queried)
+            error, complete, count = realized_layout(prediction, observation, queried, indices)
             eligible = complete & (count >= 2)
             layout_errors.extend((100 * error[eligible].sqrt()).cpu().tolist())
             safe = eligible & (metrics['newton_generation_accepted'] > .5) & (metrics['joint_violation_rad'] <= .15)
@@ -741,8 +887,7 @@ def main():
     if cfg.compile_modules:
         # Compile pure neural submodules in place: preserve checkpoint keys and
         # keep Newton queries, contact assertions and stage control eager.
-        for module in (model.height, model.location_key, model.shared,
-                       model.plan_fusion, model.interaction_decoder):
+        for module in model.compilable_modules():
             module.compile(dynamic=True)
 
     def statistic(value, *, integer=False):
@@ -779,39 +924,53 @@ def main():
     pool=None
     pending=None
     training_predictions=0
-    if cfg.parallel_rollouts:
+    def make_pool():
         from generator.parallel_rollout_pool import ParallelRolloutPool
-        pool=ParallelRolloutPool(inputs,train,successor,cfg.parallel_pool_size,
+        return ParallelRolloutPool(inputs,train,successor,cfg.parallel_pool_size,
             recover_failed_states=cfg.recover_failed_states,max_episode_steps=cfg.parallel_episode_limit,
             max_retries=cfg.parallel_retry_limit,
             allow_post_demo=cfg.parallel_allow_post_demo,
             global_directions=global_directions if cfg.require_forward_progress else None,
             progress_window=cfg.progress_window,progress_minimum_m=cfg.progress_minimum_m)
-        if cfg.pending_plan_repair:
-            from generator.pending_contact_plan import PendingContactPlans, planner_weights
-            pending=PendingContactPlans(cfg.parallel_pool_size, device)
+    def record_training_diagnostics(metrics):
+        for name in ('region_gradient_valid', 'imitation_supervised', 'newton_contact_accepted',
+                     'newton_generation_accepted', 'plan_contact_exact', 'plan_role_exact'):
+            if name in metrics:
+                training_diagnostics[name] = training_diagnostics.get(name, 0.) + metrics[name].detach().sum()
+
     for step in range(1, cfg.steps + 1):
         if device.type == 'cuda': torch.cuda.synchronize(device)
         step_begun = time.perf_counter(); timings = {}
         model.train()
-        probability = 1. if cfg.constraint_training else teacher_probability(step, execution_only=cfg.execution_only, fixed=cfg.fixed_teacher_probability)
+        reference_warmup, probability = training_course(step,
+            reference_warmup_steps=cfg.reference_warmup_steps,
+            execution_only=cfg.execution_only, fixed=cfg.fixed_teacher_probability)
+        if cfg.parallel_rollouts and pool is None and not reference_warmup:
+            pool = make_pool()
+            if cfg.pending_plan_repair:
+                from generator.pending_contact_plan import PendingContactPlans, planner_weights
+                pending = PendingContactPlans(cfg.parallel_pool_size, device)
+        if cfg.constraint_training:
+            probability = 1.
+        training_diagnostics = {}
         rollout_depth = (cfg.rollout_steps_final if cfg.rollout_steps_final is not None
             and step > cfg.rollout_curriculum_switch else cfg.rollout_steps)
         total_loss, total_count, teacher_count, rollout_outputs, phase_advances = 0., 0, 0, 0, 0
+        demonstration_predictions = 0
         combined_total, rollout_weighted_total, gradient_norm_total, batches = 0., 0., 0., 0
         constraint_accepted_updates = 0
         depth_outputs = [0] * rollout_depth
         failure_counts = {'own_contact': 0, 'own_safety': 0, 'task_contact': 0, 'joint_limit': 0,
                           'retries_used': 0, 'advances_used': 0, 'stopped': 0,
-                          'severe_penetration_resets': 0, 'no_contact_resets': 0, 'invalid_resets': 0, 'endpoint_contact_retention_failed_resets': 0, 'no_forward_progress_resets': 0}
+                          'severe_penetration_resets': 0, 'no_contact_resets': 0, 'invalid_resets': 0, 'no_forward_progress_resets': 0}
         if pool is not None:
             failure_counts = {key.replace('_resets', '_rejections'): value for key, value in failure_counts.items()}
         prediction_start=training_predictions
         pool_counts={key:torch.zeros((),device=device,dtype=torch.long) for key in
             ('generated_inputs','advances','retries','resets','terminal_resets','invalid_resets','timeout_resets',
              'periodic_resamples','rollbacks','accepted_transitions','invalid_rejections','severe_penetration_rejections',
-             'no_contact_rejections','endpoint_contact_retention_failed_rejections','no_forward_progress_rejections',
-             'demo_exhausted','autonomous_states','severe_penetration_resets','no_contact_resets','endpoint_contact_retention_failed_resets','no_forward_progress_resets')}
+             'no_contact_rejections','no_forward_progress_rejections',
+             'demo_exhausted','autonomous_states','autonomous_inputs','severe_penetration_resets','no_contact_resets','no_forward_progress_resets')}
         if pool is not None:
             from contact_solver.device_contact_objective import acceptance
             age_histogram=torch.zeros(cfg.parallel_episode_limit+1,device=device,dtype=torch.long)
@@ -826,17 +985,20 @@ def main():
                 pool_counts['generated_inputs']+=generated
                 labels=labels_for(observation,indices,recursive=True)
                 labels['supervised']=pool.supervised[slots].clone()
+                pool_counts['autonomous_inputs']+=(~labels['supervised']).sum()
                 repair = pending.batch(slots) if pending is not None else {}
                 if pending is not None:
                     labels['planner_weight'] = planner_weights(repair['repair_mask'])
-                teacher=teacher_mask_for_batch(probability,target['planned_contact'][indices],labels['contact_cell_valid'])
+                teacher=teacher_mask_for_batch(probability,target['planned_contact'][indices],labels['contact_cell_valid'],
+                    region_known=target['region_label_known'][indices] if cfg.region_plan else None)
                 teacher &= labels['supervised']
                 if pending is not None: teacher &= ~repair['repair_mask']
                 optimizer.zero_grad(set_to_none=True)
                 with timed('forward'):
-                    prediction=model(**observation,teacher_contact=target['planned_contact'][indices],
-                        teacher_cell=labels['contact_cell'],teacher_role=labels['role'],teacher_mask=teacher, **repair)
-                loss,rm,queried=objective(prediction,observation,indices,labels)
+                    prediction=model(**observation, **teacher_conditions(indices, labels), teacher_mask=teacher, **repair)
+                loss,rm,queried=objective(prediction,observation,indices,labels,
+                    patch_cache=pool_patch_cache, patch_keys=slots)
+                record_training_diagnostics(rm)
                 combined=loss.mean()
                 with timed('backward_optimizer'):
                     combined.backward()
@@ -847,26 +1009,35 @@ def main():
                 teacher_count+=statistic(teacher.sum(),integer=True)
                 total_loss+=statistic(loss.detach().sum());combined_total+=statistic(loss.detach().sum())
                 accepted=acceptance(queried[1],target['planned_contact'][indices],target['planned_surface'][indices])['contact_accepted']
-                safe=(rm['newton_generation_accepted'] > .5) & accepted & (rm['joint_violation_rad'] <= .15)
-                if cfg.region_plan and cfg.unified_contact: safe &= rm['region_plan_realized'] > .5
-                if cfg.event_endpoint_gate: safe &= rm['event_endpoint_accepted'] > .5
-                if cfg.gpu_pipeline: safe &= rm['event_endpoint_accepted'] > .5
-                if pending is not None: safe &= rm['event_endpoint_accepted'] > .5
-                if cfg.require_endpoint_contact_retention: safe &= rm['endpoint_contact_retention_valid']
+                safe=endpoint_feedback_mask(rm, accepted, labels['supervised'], limits=runtime_acceptance)
                 recoverable, reset_reasons = continuation(prediction.qpos, indices, queried, rm)
                 if pending is not None:
                     own_complete = ((rm['newton_generation_accepted'] > .5)
-                        & (rm['region_plan_realized'] > .5) & (rm['own_endpoint_layout_accepted'] > .5))
+                        & (rm['own_endpoint_layout_accepted'] > .5))
                     # Completed wrong-task intent is not an unfinished plan.
                     # Reset rather than relabeling that endpoint as the old event.
                     recoverable &= ~own_complete
                 with timed('pool_feedback'):
                     feedback=pool.update(slots,prediction.qpos,queried[1],safe,recoverable,fresh_observation,reset_reasons=reset_reasons)
+                    if pool_patch_cache is not None:
+                        # Only store committed states that survived periodic resampling.
+                        # Rejected states retain their patch; changed reset states miss
+                        # the exact pose/scene check on their next lookup.
+                        with torch.no_grad():
+                            committed = (safe & recoverable
+                                & (pool.observation['current_q'][slots] == prediction.qpos).all(-1)
+                                & (tensor_scene_ids[pool.indices[slots]] == tensor_scene_ids[indices]))
+                            chosen = committed.nonzero().flatten()
+                            if len(chosen):
+                                patch = bind_keep_patch(model.fk, prediction.qpos.detach(), queried[1],
+                                    sample_indices=chosen)
+                                pool_patch_cache.put(slots[chosen], prediction.qpos[chosen],
+                                    tensor_scene_ids[indices[chosen]], patch)
                     if pending is not None:
                         issued_world = plan_points_in_pose_frame(observation['current_q'], prediction.conditioned_points_local)
                         pending.update(slots, prediction, issued_world, pool.retries[slots] > 0)
                 for key in pool_counts:
-                    if key!='generated_inputs':pool_counts[key]+=feedback[key]
+                    if key not in ('generated_inputs','autonomous_inputs'):pool_counts[key]+=feedback[key]
                 phase_advances+=statistic(feedback['advances'],integer=True)
                 failure_counts['own_contact']+=statistic((rm['newton_contact_accepted'] <= .5).sum(),integer=True)
                 failure_counts['own_safety']+=statistic((rm['newton_generation_accepted'] <= .5).sum(),integer=True)
@@ -879,7 +1050,8 @@ def main():
             depth_outputs=age_histogram.cpu().tolist()
             rollout_outputs=sum(depth_outputs[1:])
         order_generator = torch.Generator(device=device).manual_seed(cfg.seed+step) if cfg.comparison_batch_order else None
-        shuffled=(train[:0] if pool is not None else train[torch.randperm(len(train), device=device, generator=order_generator)])
+        shuffled=(train[:0] if pool is not None and not cfg.continuous_demonstration_training
+                  else train[torch.randperm(len(train), device=device, generator=order_generator)])
         for indices in shuffled.split(cfg.batch_size):
             if not len(indices):continue
             if cfg.training_prediction_budget is not None:
@@ -888,8 +1060,11 @@ def main():
                 indices=indices[:remaining]
             optimizer.zero_grad(set_to_none=True)
             observation = take(inputs, indices); labels = take(fixed_labels, indices)
-            visible = (labels['contact_cell_valid'] | ~target['planned_contact'][indices]).all(-1)
-            teacher = teacher_mask_for_batch(probability,target['planned_contact'][indices],labels['contact_cell_valid'])
+            visible = teacher_available(indices, labels)
+            reference_probability = reference_batch_teacher_probability(probability,
+                parallel_feedback=pool is not None, continuous_demonstrations=cfg.continuous_demonstration_training)
+            teacher = teacher_mask_for_batch(reference_probability,target['planned_contact'][indices],labels['contact_cell_valid'],
+                region_known=target['region_label_known'][indices] if cfg.region_plan else None)
             if cfg.execution_only and not bool(visible.all()):
                 raise ValueError('adaptation requires fully observed teacher plans')
             if cfg.constraint_training:
@@ -906,9 +1081,7 @@ def main():
                 query_audit_index = 0
                 def constraint_closure():
                     nonlocal query_audit_index
-                    pred = model(**observation, teacher_contact=fixed_active,
-                        teacher_cell=labels['contact_cell'], teacher_role=labels['role'],
-                        teacher_mask=torch.ones_like(teacher))
+                    pred = model(**observation, **teacher_conditions(indices, labels), teacher_mask=torch.ones_like(teacher))
                     _, metric, queried = objective(pred, observation, indices, labels)
                     if cfg.pilot_samples is not None:
                         audit_dir = cfg.output/'constraint_queries'
@@ -922,8 +1095,7 @@ def main():
                             sampling='fresh static query at candidate pose; no integration',
                             q_world=pred.qpos.detach().cpu(), observed=cpu(queried[1]),
                             current_observed=cpu(current_actual),
-                            forward_inputs=cpu(dict(**observation, teacher_contact=fixed_active,
-                                teacher_cell=labels['contact_cell'], teacher_role=labels['role'],
+                            forward_inputs=cpu(dict(**observation, **teacher_conditions(indices, labels),
                                 teacher_mask=torch.ones_like(teacher))), keep=cpu(keep)), audit_dir/f'{step}_{batches}_{query_audit_index}.pt')
                         query_audit_index += 1
                     return constraint_adapter(model, queried[0], take(scene, indices),
@@ -941,14 +1113,16 @@ def main():
                 teacher_count += len(indices)
                 continue
             with timed('forward'):
-                prediction = model(**observation, teacher_contact=target['planned_contact'][indices],
-                    teacher_cell=labels['contact_cell'], teacher_role=labels['role'], teacher_mask=teacher)
+                prediction = model(**observation, **teacher_conditions(indices, labels), teacher_mask=teacher)
             loss, first_metrics, first_queried = objective(prediction, observation, indices, labels)
+            record_training_diagnostics(first_metrics)
             training_predictions+=len(indices)
+            demonstration_predictions+=len(indices)
             combined = loss.mean()
             rollout_weighted = combined.detach() * 0
             teacher_count += statistic(teacher.sum(), integer=True); total_count += len(indices); total_loss += statistic(loss.detach().sum())
-            count = max(1, round(len(indices) * cfg.rollout_batch_fraction)) if cfg.rollout_batch_fraction else 0
+            count = (max(1, round(len(indices) * cfg.rollout_batch_fraction))
+                if cfg.rollout_batch_fraction and not reference_warmup else 0)
             positions = torch.randperm(len(indices), device=device)[:count]
             rindices, rinput = indices[positions], take(observation, positions)
             rsupervised = torch.ones(len(rindices), device=device, dtype=torch.bool)
@@ -979,17 +1153,11 @@ def main():
                         fact = contact_acceptance(actual['contact_pairs'][0], target['planned_contact'][rindices[i]].tolist(), target['planned_surface'][rindices[i]].tolist())
                         accepted.append(fact['contact_accepted'])
                     accepted = torch.as_tensor(accepted, device=device)
-                safe = ((rm['newton_generation_accepted'] > .5) & accepted
-                        & (rm['joint_violation_rad'] <= .15))
-                if cfg.gpu_pipeline:
-                    safe &= rm['event_endpoint_accepted'] > .5
-                if cfg.region_plan and cfg.unified_contact:
-                    safe &= rm['region_plan_realized'] > .5
+                safe = endpoint_feedback_mask(rm, accepted, rsupervised, limits=runtime_acceptance)
                 failure_counts['own_contact'] += statistic((rm['newton_contact_accepted'] <= .5).sum(), integer=True)
                 failure_counts['own_safety'] += statistic((rm['newton_generation_accepted'] <= .5).sum(), integer=True)
                 failure_counts['task_contact'] += statistic(((~accepted) & rsupervised).sum(), integer=True)
                 failure_counts['joint_limit'] += statistic((rm['joint_violation_rad'] > .15).sum(), integer=True)
-                if cfg.require_endpoint_contact_retention: safe &= rm['endpoint_contact_retention_valid']
                 keep, reset_reasons = continuation(action.qpos, rindices, queried, rm)
                 for reason, mask in reset_reasons.items():
                     failure_counts[reason+'_resets'] += statistic(mask.sum(), integer=True)
@@ -1036,12 +1204,18 @@ def main():
         actual_predictions=training_predictions-prediction_start
         parallel_metrics=({key:int(value) for key,value in zip(pool_counts,torch.stack(list(pool_counts.values())).cpu().tolist())}
             if pool is not None else None)
+        diagnostics = {name: float(value.cpu())/total_count for name, value in training_diagnostics.items()}
+        training_phase = 'reference_warmup' if reference_warmup else ('persistent_parallel' if pool is not None else 'nested_rollout')
         performance_history.append({'step': step, 'training_seconds': train_seconds,
-            'training_mode':'persistent_parallel' if pool is not None else 'nested_rollout',
+            'training_mode':training_phase, 'training_diagnostics': diagnostics,
             'training_predictions':actual_predictions,'total_training_predictions':training_predictions,
+            'demonstration_predictions':demonstration_predictions,
             'predictions_per_second':actual_predictions/train_seconds,'optimizer_updates':constraint_accepted_updates if cfg.constraint_training else batches,
                    'optimizer_proposals':batches,
             'parallel_pool':parallel_metrics,
+            'keep_patch_cache': {name: dict(query_samples=cache.query_samples, hit_samples=cache.hit_samples,
+                source_samples=cache.source_samples, storage_bytes=cache.storage_bytes()) for name, cache in
+                (('reference', reference_patch_cache), ('pool', pool_patch_cache)) if cache is not None},
             'optimized_loss': combined_total/total_count, 'base_loss': total_loss/total_count,
             'rollout_depth_outputs': depth_outputs, 'rollout_failure_counts': failure_counts,
             'training_component_seconds': train_timings})
@@ -1054,7 +1228,10 @@ def main():
                 + 5 * metrics['newton_unrealized_intended_contacts'] + metrics['root_cm'] + metrics['body_cm']
                 + 10 * metrics['joint_rmse_rad'] + metrics['penetration_cm'] + metrics['maxima']['penetration_cm'])
             row = {'step': step, 'teacher_probability': probability, 'teacher_fraction': teacher_count / total_count,
+                   'training_phase': training_phase, 'teacher_schedule_step': max(0, step-cfg.reference_warmup_steps),
+                   'training_diagnostics': diagnostics,
                    'training_predictions':actual_predictions,'total_training_predictions':training_predictions,
+                   'demonstration_predictions':demonstration_predictions,
                    'predictions_per_second':actual_predictions/train_seconds,'optimizer_updates':constraint_accepted_updates if cfg.constraint_training else batches,
                    'optimizer_proposals':batches,
                    'parallel_pool':parallel_metrics,

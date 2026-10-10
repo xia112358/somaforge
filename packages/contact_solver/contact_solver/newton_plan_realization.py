@@ -13,6 +13,7 @@ from torch import Tensor
 from contact_solver.interaction_acceptance import DEFAULT_ACCEPTANCE, contact_acceptance
 
 from somaforge_core.contact_face_selection import select_contact_pairs, upward_face_mask
+from somaforge_core.contact_source_geometry import SOURCE_NORMAL_FAN_SCHEMA
 
 from contact_solver.newton_witness_loss import full_body_violation, query_local_distances, selected_contact_cost, unwanted_contact_cost
 
@@ -58,7 +59,7 @@ def newton_plan_realization(
         rows, observed = query_override
         if len(rows) != len(qpos):
             raise ValueError("Newton plan-realization query batch mismatch")
-    if observed.get("surface_attribution_schema") != "newton_source_triangle_normal_fan_v1":
+    if observed.get("surface_attribution_schema") != SOURCE_NORMAL_FAN_SCHEMA:
         raise ValueError("plan realization requires source-aware Newton contact queries")
     if "full_robot_separation" not in observed:
         raise ValueError("plan realization requires Newton full-body separation")

@@ -3,6 +3,23 @@ import pytest
 from motion_edit.generation.native_contact_refinement import event_contact_intent
 
 
+def solid_query(link_names, heights):
+    """Independent analytic solids for the native-query test doubles."""
+    import torch
+    from contact_solver.solid_witness_loss import SolidSceneRouter
+    from somaforge_core.robot_assets import canonical_g1_asset_metadata
+    from somaforge_core.solid_distance import SOLID_GEOMETRY_SCHEMA
+    shapes = [dict(shape=0, body=None, kind='box', scale=[5., 5., .25],
+                   transform=[0., 0., -.25, 0., 0., 0., 1.])]
+    for index, (name, height) in enumerate(zip(link_names, heights), 1):
+        shapes.append(dict(shape=index, body=name, kind='sphere', scale=[.02]*3,
+                           transform=[0., 0., height, 0., 0., 0., 1.]))
+    router = SolidSceneRouter({0: dict(schema=SOLID_GEOMETRY_SCHEMA, model_fingerprint='f'*64,
+        robot_asset=canonical_g1_asset_metadata(), shapes=shapes,
+        allowed_pairs=[[0, i] for i in range(1, len(shapes))])}, link_names)
+    return lambda fk, q: router(fk, q, torch.zeros(len(q), dtype=torch.long, device=q.device))
+
+
 def event():
     return dict(start_frame=2,end_frame=8,persistent_parts=['left_foot'],
                 source_surfaces=[0,-1,-1,-1,-1,-1],target_surfaces=[0,-1,1,-1,-1,-1],
@@ -20,6 +37,19 @@ def test_conflicting_surface_intent_fails_closed():
     second=event();second['source_surfaces'][0]=second['target_surfaces'][0]=1
     with pytest.raises(ValueError,match='Conflicting'):
         event_contact_intent([event(),second],10)
+
+
+def test_missing_authored_surface_task_fails_without_creating_contact_target():
+    from motion_edit.generation.native_contact_refinement import require_material_task_coverage
+    wanted, _ = event_contact_intent([event()], 10)
+    valid = wanted.copy()
+    domains = [[dict(normal=[0,0,1], origin=[0,0,0]) if active else None for active in row] for row in wanted]
+    tasks = (np.zeros((10,6,3)), np.zeros((10,6,3)), valid, domains)
+    require_material_task_coverage([event()], 10, tasks)
+    valid[8,2] = False; domains[8][2] = None
+    with pytest.raises(ValueError, match='required part-frames.*8, 2'):
+        require_material_task_coverage([event()], 10, tasks)
+    assert not valid[8,2] and domains[8][2] is None
 
 
 def test_three_state_events_use_explicit_release_only():
@@ -59,6 +89,25 @@ def test_output_smoothness_repairs_jump_instead_of_preserving_candidate():
     assert gradient[2] > 0
     assert marker_acceleration_loss(points-.01*gradient, 1.) < loss
     assert marker_acceleration_loss(torch.arange(5.), 1.) == 0
+
+
+def test_marker_continuity_preserves_source_acceleration_and_constant_corrections():
+    import torch
+    from motion_edit.generation.native_contact_refinement import marker_acceleration_loss
+    source = torch.tensor([0., .1, .6, 1.4, 2.7], requires_grad=True)
+    points = source.detach().clone().requires_grad_()
+    value = marker_acceleration_loss(points, .01, source)
+    assert value == 0 and torch.autograd.grad(value, points)[0].eq(0).all()
+    assert marker_acceleration_loss(source, .01) > 0
+    shifted = source.detach()+.3+torch.arange(len(source))*.02
+    assert marker_acceleration_loss(shifted, .01, source) < 1.e-8
+    changed = source.detach().clone(); changed[2] += .3; changed.requires_grad_()
+    value = marker_acceleration_loss(changed, .01, source)
+    grad, source_grad = torch.autograd.grad(value, (changed, source), allow_unused=True)
+    assert source_grad is None  # immutable demonstration, not an optimized target
+    assert grad[2] > 0 and grad[1] < 0 and grad[3] < 0
+    with pytest.raises(ValueError, match='align'):
+        marker_acceleration_loss(changed, .01, source[:-1])
 
 
 def test_material_guidance_only_for_missing_candidates():
@@ -132,6 +181,7 @@ def test_absent_witness_has_region_approach_gradient_but_no_contact_truth():
     geometry=dict(normal=[0,0,1], origin=[0,0,0], surface_type='plane')
     result, history = refine_trajectory(q, fk, [wanted_event], query, 'test',
         config=RefinementConfig(steps=1, audit_every=1),
+        solid_query=solid_query(('left_ankle_roll_link',), (.03,)),
         approach_tasks=(local, local, valid, [[geometry]*6 for _ in range(3)]))
     assert torch.all(result[:,2] < q[:,2])
     assert history[-1]['missing_contacts'] == 3
@@ -140,6 +190,7 @@ def test_absent_witness_has_region_approach_gradient_but_no_contact_truth():
     jump = q.clone(); jump[1, 7] = .2
     _, continuous = refine_trajectory(jump, fk, [], query, 'test',
         config=RefinementConfig(steps=1, audit_every=1), continuity_reference=q,
+        solid_query=solid_query(('left_ankle_roll_link',), (.03,)),
         approach_tasks=(local, local, valid, [[geometry]*6 for _ in range(3)]))
     assert continuous[0]['passed'] and continuous[-1]['step'] == 1
     assert continuous[-1]['joint_velocity_residual'] < continuous[0]['joint_velocity_residual']
@@ -153,7 +204,7 @@ def test_regional_refinement_keeps_attraction_and_separation_after_activation():
     class FK:
         def link_poses(self, q, names):
             pos = torch.stack([q[:, :3] if name.startswith('left') else q[:, 7:10] for name in names], 1)
-            return pos, torch.eye(3).expand(len(q), len(names), 3, 3)
+            return pos, torch.eye(3).to(q).expand(len(q), len(names), 3, 3)
     class Regions:
         valid = torch.ones(6, 4, dtype=torch.bool)
         def witness_regions(self, fk, q, sample, part, points):
@@ -177,7 +228,8 @@ def test_regional_refinement_keeps_attraction_and_separation_after_activation():
     observed=dict(schema='newton_device_witness_batch_v1', pairs=pair,
         configured_margin=torch.tensor([.02]), link_names=('left_ankle_roll_link','right_ankle_roll_link'))
     wanted=torch.tensor([[True,True,False,False,False,False]])
-    loss,depth,missing,off,metrics=regional_terms(FK(),Regions(),q,observed,wanted,torch.zeros(1,6,dtype=torch.long),[[None]*6])
+    query_solid = solid_query(observed['link_names'], (.03, .01))
+    loss,depth,missing,off,metrics=regional_terms(FK(),Regions(),q,observed,wanted,torch.zeros(1,6,dtype=torch.long),[[None]*6], solid=query_solid(FK(), q))
     grad=torch.autograd.grad(loss.sum(),q)[0]
     assert grad[0,2]==0  # activated left foot is already inside its actual margin
     assert grad[0,9]<0  # active right foot penetrates and must leave the surface
@@ -188,11 +240,11 @@ def test_regional_refinement_keeps_attraction_and_separation_after_activation():
     # penetration still repels. Only an explicit release moves the first foot.
     none = torch.zeros_like(wanted)
     faces = torch.zeros(1,6,dtype=torch.long)
-    free_loss,_,_,_,free_metrics = regional_terms(FK(),Regions(),q,observed,none,faces,[[None]*6])
+    free_loss,_,_,_,free_metrics = regional_terms(FK(),Regions(),q,observed,none,faces,[[None]*6], solid=query_solid(FK(), q))
     free_grad = torch.autograd.grad(free_loss.sum(),q)[0]
     assert free_grad[0,2] == 0 and free_grad[0,9] < 0
     released = none.clone(); released[0,0] = True
-    release_loss,_,_,_,release_metrics = regional_terms(FK(),Regions(),q,observed,none,faces,[[None]*6],released)
+    release_loss,_,_,_,release_metrics = regional_terms(FK(),Regions(),q,observed,none,faces,[[None]*6],released, solid=query_solid(FK(), q))
     release_grad = torch.autograd.grad(release_loss.sum(),q)[0]
     assert release_grad[0,2] < 0
     assert release_metrics['release_violations'][0,0]
@@ -201,8 +253,10 @@ def test_regional_refinement_keeps_attraction_and_separation_after_activation():
     from types import SimpleNamespace
     from contact_solver.contact_regions import unified_region_objective
     from contact_solver.device_contact_objective import DeviceWitnessRows
+    rows = DeviceWitnessRows(FK(), q, observed)
+    rows.solid = query_solid(FK(), q)
     legacy,_ = unified_region_objective(SimpleNamespace(fk=FK(),region_geometry=Regions()),
-        DeviceWitnessRows(FK(),q,observed),none,faces,{})
+        rows,none,faces,{})
     assert torch.autograd.grad(legacy.sum(),q)[0][0,2] < 0
     pair['constraint_allocated'][0]=False
     with pytest.raises(ValueError,match='Unallocated'):
@@ -239,7 +293,7 @@ def test_both_missing_contact_proxies_use_the_full_actual_margin():
         def link_poses(self, q, names):
             return q[:, None, :3].expand(-1, len(names), -1), torch.eye(3).to(q).expand(len(q), len(names), 3, 3)
 
-    geometry = SimpleNamespace(names=[('only',)]*6,
+    geometry = SimpleNamespace(names=[('only',)]*6, material_skin=None,
         **{f'cloud_{part}_0': torch.zeros(1, 3) for part in range(6)})
     ground = dict(normal=[0, 0, 1], origin=[0, 0, 0], surface_type='plane')
     for proxy in (ContactRegions.missing_region_distance, EventContactRegions.missing_region_distance):
@@ -252,3 +306,24 @@ def test_both_missing_contact_proxies_use_the_full_actual_margin():
         gradient = torch.autograd.grad(loss.sum(), q)[0]
         assert loss[0].sum() == 0 and gradient[0, 2] == 0
         assert loss[1].sum() > 0 and gradient[1, 2] > 0
+
+
+def test_refinement_selection_cannot_prefer_a_stationary_marker_over_material_budget():
+    from motion_edit.generation.native_contact_refinement import loaded_material_candidate_rank
+    from somaforge_core.loaded_material_motion import MATERIAL_MOTION_SCHEMA
+
+    def candidate(path, marker_drift, passed):
+        return dict(event_acceptance=dict(failed_checks=0), max_penetration_mm=1.,
+            source_support=dict(accumulated_drift_max_mm=marker_drift),
+            phase_support=dict(schema=MATERIAL_MOTION_SCHEMA,
+                phases=[dict(passed=passed, edited_budget=dict(material_tangent_path_m=path))]))
+
+    within_budget = candidate(.04, 100., True)
+    over_budget = candidate(.08, 0., False)
+    assert loaded_material_candidate_rank(within_budget) < loaded_material_candidate_rank(over_budget)
+    within_budget['source_support']['accumulated_drift_max_mm'] = 10000.
+    assert loaded_material_candidate_rank(within_budget) < loaded_material_candidate_rank(over_budget)
+    # Partial known motion is not a measured zero-motion reference.
+    unknown = candidate(0., 0., None)
+    assert loaded_material_candidate_rank(within_budget) < loaded_material_candidate_rank(unknown)
+    assert loaded_material_candidate_rank(dict(phase_support=dict(phases=[]))) is None

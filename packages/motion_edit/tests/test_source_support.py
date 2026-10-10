@@ -33,69 +33,44 @@ def test_drift_accumulates_across_witness_changes_but_resets_on_release():
 
 def test_absolute_phase_budget_rejects_sliding_despite_contact():
     import numpy as np
-    from motion_edit.generation.source_support import audit_phase_support
+    from motion_edit.generation.source_support import audit_geometric_phase_motion
     c={'actions':[{'id':'phase','start':0,'end':10,
                    'requirements':[{'kind':'keep','part':0,'surface':0}]}]}
     mask=np.ones((11,6),bool);surface=np.zeros((11,6),int)
     steps=np.zeros((11,6));steps[:10,0]=.008
-    r=audit_phase_support(c,steps,mask,surface,tolerance_m=.06)
+    r=audit_geometric_phase_motion(c,steps,mask,surface,tolerance_m=.06)
     assert not r['passed'] and r['phases'][0]['material_tangent_path_m']>.079
     steps[:10,0]=.001
-    assert audit_phase_support(c,steps,mask,surface,tolerance_m=.06)['passed']
+    assert audit_geometric_phase_motion(c,steps,mask,surface,tolerance_m=.06)['passed']
     steps[4,0]=np.nan
-    assert not audit_phase_support(c,steps,mask,surface,tolerance_m=.06)['passed']
+    assert not audit_geometric_phase_motion(c,steps,mask,surface,tolerance_m=.06)['passed']
 
 
 def test_unconstrained_first_action_does_not_gain_support_budget():
     import numpy as np
-    from motion_edit.generation.source_support import audit_phase_support
+    from motion_edit.generation.source_support import audit_geometric_phase_motion
     c={'actions':[{'id':'approach','start':0,'end':10,
                    'requirements':[{'kind':'establish','part':1,'surface':0}]},
                   {'id':'support','start':10,'end':14,
                    'requirements':[{'kind':'keep','part':1,'surface':0}]}]}
     steps=np.zeros((15,6));steps[:10]=1.
-    r=audit_phase_support(c,steps,np.ones((15,6),bool),np.zeros((15,6),int),tolerance_m=.06)
+    r=audit_geometric_phase_motion(c,steps,np.ones((15,6),bool),np.zeros((15,6),int),tolerance_m=.06)
     assert r['passed'] and len(r['phases'])==1 and r['phases'][0]['start']==10
 
 
 def test_phase_audit_requires_calibrated_budget_and_missing_is_not_zero():
     import numpy as np
     import pytest
-    from motion_edit.generation.source_support import audit_phase_support
+    from motion_edit.generation.source_support import audit_geometric_phase_motion
     contract={'actions':[{'id':'support','start':0,'end':2,
                          'requirements':[{'kind':'keep','part':0,'surface':0}]}]}
     steps=np.zeros((3,6));mask=np.ones((3,6),bool);faces=np.zeros((3,6),int)
-    unknown=audit_phase_support(contract,steps,mask,faces)
+    unknown=audit_geometric_phase_motion(contract,steps,mask,faces)
     assert unknown['passed'] is None and unknown['budget_source']=='unknown'
-    result=audit_phase_support(contract,steps,mask,faces,budgets_m=[.002])
+    result=audit_geometric_phase_motion(contract,steps,mask,faces,budgets_m=[.002])
     assert result['passed'] and result['phases'][0]['force_bearing_slip_status'].startswith('unknown')
     steps[1,0]=np.nan
-    assert not audit_phase_support(contract,steps,mask,faces,budgets_m=[.002])['passed']
-
-
-def test_source_calibration_is_fixed_when_candidate_samples_refresh(tmp_path):
-    import json
-    import numpy as np
-    from motion_edit.generation.source_support import SourcePhaseMotion
-    class FK:
-        def link_poses(self,q,names):
-            return q[:,None,:3],torch.eye(3).expand(len(q),1,3,3)
-    q=torch.tensor([[0.,0,0],[.001,0,0],[.003,0,0]])
-    pairs=[[dict(part=0,surface=0,body_name='foot',allocated=True,dist=0.,includemargin=.01,
-                 position_w=[float(v),0,0],normal_w=[0,0,1])] for v in q[:,0]]
-    labels=tmp_path/'labels.npz'
-    np.savez(labels,contact_pairs_json=np.asarray(json.dumps(pairs)),
-        contact_semantics_json=np.asarray(json.dumps({'scene':{'surface_catalog':[{'surface':0,'normal_w':[0,0,1]}]}})))
-    c={'actions':[{'id':'keep','start':0,'end':2,'requirements':[{'kind':'keep','part':0,'surface':0}]}]}
-    loss=SourcePhaseMotion(FK(),q,labels,c)
-    np.testing.assert_allclose(loss.tolerance_m.numpy(),[.006],atol=1e-8)
-    assert loss(q)==0
-    before=loss.tolerance_m.clone()
-    loss.refresh([dict(names=('foot',),frames=torch.tensor([0,1]),parts=torch.tensor([0,0]),
-        links=torch.tensor([0,0]),local=torch.tensor([[1.,0,0],[-1.,0,0]]),normals=torch.tensor([[0.,0,1]]*2))])
-    torch.testing.assert_close(before,loss.tolerance_m)
-    shifted=q.clone();shifted[1:,0]+=.01
-    assert loss(shifted)>0
+    assert not audit_geometric_phase_motion(contract,steps,mask,faces,budgets_m=[.002])['passed']
 
 
 def test_fresh_editor_output_is_safe_for_refinement(tmp_path, monkeypatch):
@@ -186,59 +161,3 @@ def test_isolated_stationary_sample_does_not_erase_region_translation():
     stats=contact_region_statistics(torch.tensor([0., .01, .01, .01, .01]),
                                     torch.zeros(5,dtype=torch.long),1)
     assert stats['pivot'][0]==0 and stats['lower_quartile'][0]>.009
-
-
-def test_rotating_contact_region_uses_same_optimization_and_audit_metric():
-    import numpy as np
-    from motion_edit.generation.source_support import (
-        SourcePhaseMotion, native_material_samples, native_material_motion)
-
-    class FK:
-        def link_poses(self,q,names):
-            angle=q[:,3];c,s=angle.cos(),angle.sin();zero=c*0;one=zero+1
-            rotation=torch.stack((c,-s,zero,s,c,zero,zero,zero,one),-1).reshape(-1,1,3,3)
-            return q[:,None,:3],rotation
-
-    angle=torch.tensor([0.,.2]);q=torch.stack((-angle.cos(),-angle.sin(),angle*0,angle),-1)
-    q.requires_grad_()
-    # Body origin moves ~20 cm, while a cluster at the actual pivot stays put.
-    local=torch.tensor([[1.,0,0],[1.,.0001,0],[1.,.0002,0],[0.,0,0],[2.,0,0]])
-    observed=dict(link_names=['foot'],pairs=dict(
-        sample=torch.zeros(5,dtype=torch.long),part=torch.zeros(5,dtype=torch.long),
-        eligible=torch.ones(5,dtype=torch.bool),upward=torch.ones(5,dtype=torch.bool),
-        task_pair=torch.ones(5,dtype=torch.bool),normal_w=torch.tensor([[0.,0,1]]*5),body_link0=torch.full((5,),-1),
-        body_link1=torch.zeros(5,dtype=torch.long),geometry_point1_w=local+q.detach()[0,:3]))
-    fk=FK();samples=native_material_samples(fk,q,observed,[0,1])
-    audit=native_material_motion(fk,q,observed,[0,1],samples)
-    loss=SourcePhaseMotion.__new__(SourcePhaseMotion)
-    loss.fk=fk;loss.names=samples['names'];loss.frames=samples['frames']
-    loss.links=samples['links'];loss.local=samples['local'];loss.groups=loss.frames*6+samples['parts']
-    loss.normals=samples['normals']
-    loss.size=6;loss.phases=[(0,1,0)];loss._index_samples()
-    path=loss.paths(q)
-    np.testing.assert_allclose(path.detach().numpy(),audit['pivot'][:1,0],atol=1.e-7)
-    assert path[0]<.0001 and audit['maximum'][0,0]>.19
-    shifted=q+torch.tensor([[0.,0,0,0],[.008,0,0,0]])
-    assert loss.paths(shifted)[0]>.007
-    loss.paths(shifted).sum().backward()
-    assert q.grad.isfinite().all() and q.grad.abs().sum()>0
-
-
-def test_original_keep_motion_is_not_optimized_to_static():
-    from motion_edit.generation.source_support import SourcePhaseMotion
-    class FK:
-        def link_poses(self,q,names):
-            return q[:,None,:3],torch.eye(3).expand(len(q),1,3,3)
-    original=torch.tensor([[0.,0,0],[.10,0,0]])
-    loss=SourcePhaseMotion.__new__(SourcePhaseMotion)
-    loss.fk=FK();loss.source_q=original;loss.names=['foot']
-    loss.frames=torch.tensor([0]);loss.links=torch.tensor([0]);loss.local=torch.zeros(1,3)
-    loss.groups=torch.tensor([0]);loss.normals=torch.tensor([[0.,0,1]])
-    loss.size=6;loss.phases=[(0,1,0)];loss.residual_scale_m=.01;loss.tolerance_m=.01
-    loss._index_samples()
-    q=original.clone().requires_grad_()
-    value=loss(q);value.backward()
-    assert value.item()==0 and not q.grad.any()
-    added=original.clone();added[1,0]+=.03;added.requires_grad_()
-    value=loss(added);value.backward()
-    assert value.item()>0 and added.grad[1,0]>0

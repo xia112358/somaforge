@@ -23,10 +23,12 @@ dataset preparation lives in `generator.training_data`, owned Newton workers in
 were preserved when extracting these helpers. Query checkpoint, source scene
 manifest and model inspection paths are explicit configuration fields.
 
-The trainer's historical default input paths still require the corresponding
-local artifacts and current validation. Supply the intended versioned dataset
-and checkpoint explicitly for a new experiment; cleanup does not approve old
-data or change a training recipe automatically.
+The maintained trainer defaults match the user-designated
+[`predictor.v1_latest.20261010`](../baselines/predictor_v1_latest_20261010/README.md):
+v1, loaded-material207_joint_v12 data and keep-patch weight1. Configuration,
+dependencies and the fixed step1000 comparison checkpoint are registered there.
+New scratch runs do not load that checkpoint; use a fresh output directory.
+Historical data variants are not approved merely by repository cleanup.
 
 ## Data and historical records
 
@@ -42,9 +44,14 @@ Root `data`, `logs` and `tmp` are symlinks into `runtime/current/holosoma`.
 `tmp/` still contains referenced historical weights, datasets and scene records.
 Its name is not evidence that its contents can be deleted.
 
-The 2026-09-28 inventory verified all 44 entries in
-`baselines/corrected1000/sha256.json` against their preserved snapshot or runtime
-artifact. The historical direct-infiller corpus and source code remain intact;
+The 2026-09-28 inventory checked the previous Predictor snapshot. That pretrained
+recipe was moved to the system recycle bin after explicit confirmation on
+2026-10-02. That scratch recipe and control500 were archived in place on
+2026-10-10 when the user designated `baselines/predictor_v1_latest_20261010/`
+as the current training and analysis baseline. The current pointer and archive
+index are `baselines/current.json` and `baselines/archives.json`; historical
+weights, data, source snapshots and launch records remain intact.
+The historical direct-infiller corpus remains intact;
 that experiment is documented in `climb00_direct_infiller_baseline.md` and is
 not a newly approved training corpus.
 
@@ -110,10 +117,10 @@ layer `--source` path is rejected both by parsing and direct handler calls.
 The old workbench server, LTE catalog adapter and adapter test were moved to the
 system recycle bin after explicit confirmation.
 
-Predictor, its compatibility package and corrected1000 snapshots are frozen for
-this retirement pass. File hashes are checked against the pre-change inventory
-under `tmp/retire_nonpredictor_20260928/`. This scope does not remove shared
-geometry/storage helpers required by the active Contact Editor.
+The Predictor was outside the 2026-09-28 retirement pass. Its pretrained
+initialization and previous baseline were subsequently retired on 2026-10-02;
+the earlier inventory is historical evidence, not a current executable recipe.
+Shared geometry/storage helpers required by the Contact Editor remain in use.
 
 ### Unified web visualization (2026-09-28)
 

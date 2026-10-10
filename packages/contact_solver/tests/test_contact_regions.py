@@ -4,7 +4,24 @@ from contact_solver.contact_regions import ContactRegions, unified_region_object
 from generator.full1000_position_predictor import Full1000PositionPredictor
 from generator.neural_infiller import CanonicalG1ForwardKinematics
 from generator.next_interaction_heightmap import HEIGHTMAP_ROWS, HEIGHTMAP_COLS
-from contact_solver.device_contact_objective import DeviceWitnessRows
+from contact_solver.device_contact_objective import DeviceWitnessRows as NativeWitnessRows
+from contact_solver.solid_witness_loss import SolidWitnessRows
+
+
+def DeviceWitnessRows(fk, q, observed):
+    """Synthetic interval tests supply a separate, upward plane distance.
+
+    Native activation/normal errors remain independently testable. Production
+    receives complete solids from the realized scene, with no such fallback.
+    """
+    rows = NativeWitnessRows(fk, q, observed)
+    p = observed['pairs']
+    pair = {key: p[key].clone() for key in ('sample', 'body_link0', 'body_link1', 'full_kind')}
+    pair.update(dist=p['dist'].double(), point0_w=p['geometry_point0_w'].double(),
+                point1_w=p['geometry_point1_w'].double(),
+                normal_w=q.new_tensor([0., 0., 1.]).double().expand(len(p['dist']), 3))
+    rows.solid = SolidWitnessRows(q, pair, fk.link_poses(q.double(), observed['link_names']))
+    return rows
 
 
 def test_regions_cover_canonical_geometry_and_mask_padded_regions():
@@ -80,6 +97,20 @@ def witness_fixture(depths):
     return q, observed, model, active, regions
 
 
+def interval_query_fixture(rows, regions):
+    from contact_solver.contact_surface_interval import SurfaceIntervalQuery
+    q=rows.q;link=torch.full((len(q),6,4),-1,dtype=torch.long)
+    point=q.new_zeros(len(q),6,4,3);normal=torch.zeros_like(point);gap=q.new_zeros(len(q),6,4)
+    unique=torch.zeros(len(q),6,4,dtype=torch.bool)
+    for i,part in enumerate((0,1)):
+        region=int(regions[0,part].nonzero()[0]);link[0,part,region]=i
+        point[0,part,region]=rows.solid.material_local[i,1]
+        normal[0,part,region]=rows.solid.normal_local[i]
+        gap[0,part,region]=rows.solid.distances[i]
+        unique[0,part,region]=True
+    return SurfaceIntervalQuery(tuple(rows.observed['link_names']),link,point,normal,gap,unique,unique.clone())
+
+
 def test_unified_contact_remains_repulsive_after_activation_and_both_feet_receive_gradient():
     q, obs, model, active, regions = witness_fixture([-.02, -.01])
     rows=DeviceWitnessRows(model.fk,q,obs)
@@ -119,14 +150,15 @@ def test_front_and_rear_of_same_foot_are_independent_and_extra_collision_cannot_
     active[:,1]=False;regions[:,1]=False
     # Rear is planned; the forefoot still has to avoid penetration.
     loss,_=unified_region_objective(model,DeviceWitnessRows(model.fk,q,obs),active,torch.zeros(1,6,dtype=torch.long),{},regions)
-    torch.testing.assert_close(loss,torch.tensor([7+(7+3)/24]))
+    rear, front = torch.tensor(17.).log(), torch.tensor(5.).log()
+    torch.testing.assert_close(loss,(rear+(rear+front)/24).reshape(1))
     lifted=dict(obs,pairs={k:v.clone() for k,v in obs['pairs'].items()})
     lifted['pairs']['dist'][1]=.03;lifted['pairs']['eligible'][1]=False
     less,_=unified_region_objective(model,DeviceWitnessRows(model.fk,q,lifted),active,torch.zeros(1,6,dtype=torch.long),{},regions)
     assert loss>less
 
 
-def test_unknown_penetration_requires_audit_and_has_no_training_gradient(tmp_path):
+def test_unknown_native_normal_requires_audit_but_retains_verified_solid_gradients(tmp_path):
     import pytest
     q,obs,model,active,regions=witness_fixture([-.02,-.01])
     obs['pairs']['task_pair'][1]=False
@@ -135,9 +167,201 @@ def test_unknown_penetration_requires_audit_and_has_no_training_gradient(tmp_pat
     with pytest.raises(ValueError,match='explicit audit'):
         unified_region_objective(model,rows,active,torch.zeros(1,6,dtype=torch.long),{},regions)
     loss,m=unified_region_objective(model,rows,active,torch.zeros(1,6,dtype=torch.long),{},regions,audit_path=tmp_path/'audit.jsonl')
-    assert m['region_gradient_valid'].item()==0 and m['region_invalid_penetrating_normals'].item()==1
+    assert m['region_gradient_valid'].item()==1 and m['region_invalid_penetrating_normals'].item()==1
     loss.sum().backward()
-    assert q.grad.abs().sum()==0 and (tmp_path/'audit.jsonl').exists()
+    assert loss.item()>0 and q.grad[0,2]<0 and q.grad[0,9]<0
+    assert (tmp_path/'audit.jsonl').exists()
+
+
+def test_undefined_complete_geometry_still_raises_instead_of_inventing_gradient():
+    import pytest
+    q,obs,model,active,regions=witness_fixture([-.02,-.01])
+    rows=DeviceWitnessRows(model.fk,q,obs)
+    rows.solid.distances = rows.solid.distances*torch.nan
+    with pytest.raises(ValueError,match='Undefined complete-solid'):
+        unified_region_objective(model,rows,active,torch.zeros(1,6,dtype=torch.long),{},regions)
+
+
+def test_zero_shape_interval_cannot_erase_native_gap_or_create_contact():
+    q,obs,model,active,regions=witness_fixture([.05,.05])
+    rows=DeviceWitnessRows(model.fk,q,obs)
+    loss,metrics=unified_region_objective(model,rows,active,torch.zeros(1,6,dtype=torch.long),{},regions,
+        surface_interval=q.sum()*0+torch.zeros(1,6,4))
+    assert loss.item()>0
+    grad=torch.autograd.grad(loss.sum(),q)[0]
+    assert grad[0,2]>0 and grad[0,9]>0
+    assert metrics['region_plan_realized'].item()==0
+    assert metrics['region_missing_count'].item()==2
+
+
+def test_shape_interval_does_not_erase_complete_terrain_or_self_clearance():
+    q,obs,model,active,regions=witness_fixture([-.02,-.01])
+    rows=DeviceWitnessRows(model.fk,q,obs)
+    rows.solid.pair['full_kind'][1]=1
+    loss,metrics=unified_region_objective(model,rows,active,torch.zeros(1,6,dtype=torch.long),{},regions,
+        surface_interval=q.sum()*0+torch.zeros(1,6,4))
+    grad=torch.autograd.grad(loss.sum(),q)[0]
+    assert grad[0,2]<0 and grad[0,9]<0
+    assert metrics['solid_terrain_penetration_cm'].item()>0
+    assert metrics['solid_self_penetration_cm'].item()>0
+
+
+def test_undefined_shape_interval_requires_explicit_error_without_proxy_fallback():
+    import pytest
+    q,obs,model,active,regions=witness_fixture([.01,.01])
+    cost=torch.zeros(1,6,4);cost[0,0,0]=torch.inf
+    with pytest.raises(ValueError,match='no geometric fallback'):
+        unified_region_objective(model,DeviceWitnessRows(model.fk,q,obs),active,
+            torch.zeros(1,6,dtype=torch.long),{},regions,surface_interval=cost)
+
+
+def test_shared_interval_merges_duplicate_recovery_without_erasing_solids():
+    from contact_solver.contact_surface_interval import SurfaceIntervalBounds
+    q,obs,model,active,regions=witness_fixture([-.02,-.01])
+    rows=DeviceWitnessRows(model.fk,q,obs)
+    base,original=unified_region_objective(model,rows,active,torch.zeros(1,6,dtype=torch.long),{},regions)
+    lower=q.new_zeros(1,6,4)
+    for i,part in enumerate((0,1)):
+        region=int(regions[0,part].nonzero()[0])
+        lower[0,part,region]=(-rows.solid.distances[i]).relu().square()
+    merged,metrics=unified_region_objective(model,rows,active,torch.zeros(1,6,dtype=torch.long),{},regions,
+        surface_interval=SurfaceIntervalBounds(lower,torch.zeros_like(lower),
+            solid_target_mask=torch.tensor([[False,True],[False,True]]),query=interval_query_fixture(rows,regions)))
+    torch.testing.assert_close(merged,base)
+    torch.testing.assert_close(torch.autograd.grad(merged.sum(),q,retain_graph=True)[0],
+        torch.autograd.grad(base.sum(),q)[0])
+    torch.testing.assert_close(metrics['unified_physical_clearance_component'],torch.zeros(1))
+    torch.testing.assert_close(metrics['solid_terrain_penetration_cm'],original['solid_terrain_penetration_cm'])
+    torch.testing.assert_close(metrics['solid_self_penetration_cm'],original['solid_self_penetration_cm'])
+
+
+def test_shared_recovery_bound_cannot_suppress_a_larger_physical_lower_bound():
+    from contact_solver.contact_surface_interval import SurfaceIntervalBounds
+    q,obs,model,active,regions=witness_fixture([-.02,-.01])
+    rows=DeviceWitnessRows(model.fk,q,obs)
+    base,_=unified_region_objective(model,rows,active,torch.zeros(1,6,dtype=torch.long),{},regions)
+    field=q.sum()*0+q.new_zeros(1,6,4)
+    shared,_=unified_region_objective(model,rows,active,torch.zeros(1,6,dtype=torch.long),{},regions,
+        surface_interval=SurfaceIntervalBounds(field,field))
+    torch.testing.assert_close(shared,base)
+    grad=torch.autograd.grad(shared.sum(),q)[0]
+    assert grad[0,2]<0 and grad[0,9]<0
+
+
+def test_target_recovery_retains_independent_self_collision_gradient():
+    from contact_solver.contact_surface_interval import SurfaceIntervalBounds
+    q,observed,model,active,regions=witness_fixture([-.1,-.1])
+    regions[0,1]=False;regions[0,1,0]=True
+    observed['pairs']['geometry_point0_w'][:,2]=.1
+    rows=DeviceWitnessRows(model.fk,q,observed)
+    pair=dict(sample=torch.tensor([0]),body_link0=torch.tensor([0]),body_link1=torch.tensor([1]),
+        full_kind=torch.tensor([1]),dist=torch.tensor([-.02],dtype=torch.float64),
+        point0_w=torch.tensor([[-.1,0.,0.]],dtype=torch.float64),
+        point1_w=torch.tensor([[-.12,0.,0.]],dtype=torch.float64),
+        normal_w=torch.tensor([[1.,0.,0.]],dtype=torch.float64))
+    rows.solid=SolidWitnessRows(q,pair,model.fk.link_poses(q.double(),observed['link_names']))
+    lower=q.new_zeros(1,6,4)
+    lower[0,0,0]=(.1-q[0,2]).square();lower[0,1,0]=(.1-q[0,9]).square()
+    loss,metrics=unified_region_objective(model,rows,active,torch.zeros(1,6,dtype=torch.long),{},regions,
+        surface_interval=SurfaceIntervalBounds(lower,torch.zeros_like(lower)))
+    grad=torch.autograd.grad(loss.sum(),q)[0]
+    # The larger z recovery must not erase the smaller x self-collision repair.
+    assert metrics['solid_self_penetration_cm'].item()>0
+    assert grad[0,0]>0 and grad[0,7]<0
+
+
+def test_target_interval_binding_cannot_claim_a_self_collision():
+    import pytest
+    from contact_solver.contact_surface_interval import SurfaceIntervalBounds
+    q,obs,model,active,regions=witness_fixture([-.02,-.01])
+    rows=DeviceWitnessRows(model.fk,q,obs)
+    rows.solid.pair['full_kind'][1]=1
+    lower=q.new_zeros(1,6,4)
+    with pytest.raises(ValueError,match='Self collision cannot be deduplicated'):
+        unified_region_objective(model,rows,active,torch.zeros(1,6,dtype=torch.long),{},regions,
+            surface_interval=SurfaceIntervalBounds(lower,lower,
+                solid_target_mask=torch.tensor([[False,True],[False,True]])))
+
+
+def test_shared_bounds_preserve_original_material_scalar_and_gradient_without_collision():
+    from contact_solver.contact_surface_interval import SurfaceIntervalBounds
+    q,obs,model,active,regions=witness_fixture([0.,0.])
+    rows=DeviceWitnessRows(model.fk,q,obs)
+    lower=q.new_zeros(1,6,4);upper=torch.zeros_like(lower)
+    lower[0,0,0]=(.03-q[0,2]).square()
+    upper[0,0,0]=(.04+q[0,0]).square()
+    scale=.25*obs['configured_margin'][:,None,None]
+    model.region_geometry.missing_region_distance=lambda *args:(lower+upper)/scale.square()
+    control,_=unified_region_objective(model,rows,active,torch.zeros(1,6,dtype=torch.long),{},regions)
+    shared,_=unified_region_objective(model,rows,active,torch.zeros(1,6,dtype=torch.long),{},regions,
+        surface_interval=SurfaceIntervalBounds(lower,upper))
+    torch.testing.assert_close(shared,control)
+    torch.testing.assert_close(torch.autograd.grad(shared.sum(),q,retain_graph=True)[0],
+        torch.autograd.grad(control.sum(),q)[0])
+
+
+def test_different_witness_bounds_keep_independent_penalties_and_gradients():
+    from contact_solver.contact_surface_interval import SurfaceIntervalBounds
+    q,obs,model,active,regions=witness_fixture([.03,-.02])
+    class IndependentFootLinks:
+        def link_poses(self,q,names):
+            return torch.stack([q[:,:3],q[:,7:10]],1),torch.eye(3).to(q).expand(len(q),2,3,3)
+    model.fk=IndependentFootLinks()
+    obs['link_names']=('left_ankle_roll_link','left_ankle_roll_sphere_1_link')
+    obs['pairs']['geometry_point0_w'][:,0]=-.1
+    obs['pairs']['geometry_point1_w'][:,0]=-.1
+    obs['pairs']['part'][:]=0;obs['pairs']['upward'][1]=False
+    active[:,1]=False;regions[:,1]=False
+    zero=q.sum()*0+q.new_zeros(1,6,4)
+    loss,metrics=unified_region_objective(model,DeviceWitnessRows(model.fk,q,obs),active,
+        torch.zeros(1,6,dtype=torch.long),{},regions,surface_interval=SurfaceIntervalBounds(zero,zero,
+            solid_target_mask=torch.tensor([[False,True],[False,True]])))
+    torch.testing.assert_close(loss,q.new_tensor([(1+1/24)*(torch.log(torch.tensor(17.))+torch.log(torch.tensor(5.)))]))
+    grad=torch.autograd.grad(loss.sum(),q,retain_graph=True)[0]
+    assert grad[0,2]>0 and grad[0,9]<0
+    torch.testing.assert_close(grad[0,2],q.new_tensor((1+1/24)/5*2*.01/.005**2))
+    torch.testing.assert_close(grad[0,9],q.new_tensor(-(1+1/24)/17*2*.02/.005**2))
+    pieces=metrics['unified_attraction_component']+metrics['unified_separation_component']
+    torch.testing.assert_close(pieces,loss)
+    torch.testing.assert_close(torch.autograd.grad(pieces.sum(),q)[0],grad)
+
+
+def test_whole_native_and_material_queries_cannot_supply_mixed_bounds():
+    from contact_solver.contact_surface_interval import SurfaceIntervalBounds
+    q,obs,model,active,regions=witness_fixture([.03,0.])
+    rows=DeviceWitnessRows(model.fk,q,obs)
+    lower=q.new_zeros(1,6,4);lower[0,0,0]=(.04-q[0,2]).square()
+    scale=.25*obs['configured_margin'][:,None,None]
+    model.region_geometry.missing_region_distance=lambda *args:lower/scale.square()
+    control,_=unified_region_objective(model,rows,active,torch.zeros(1,6,dtype=torch.long),{},regions)
+    shared,_=unified_region_objective(model,rows,active,torch.zeros(1,6,dtype=torch.long),{},regions,
+        surface_interval=SurfaceIntervalBounds(lower,torch.zeros_like(lower)))
+    torch.testing.assert_close(shared,control)
+    torch.testing.assert_close(torch.autograd.grad(shared.sum(),q,retain_graph=True)[0],torch.autograd.grad(control.sum(),q)[0])
+
+
+def test_entity_region_match_without_same_material_query_cannot_erase_clearance():
+    import dataclasses
+    from contact_solver.contact_surface_interval import SurfaceIntervalBounds,same_interval_query
+    q,obs,model,active,regions=witness_fixture([-.02,-.01])
+    rows=DeviceWitnessRows(model.fk,q,obs);query=interval_query_fixture(rows,regions)
+    part=torch.tensor([0,1]);region=torch.tensor([0,1])
+    assert same_interval_query(rows.solid,query,obs['link_names'],part,region,1).all()
+    point=query.point_local.clone();point[0,0,0,0]+=.01
+    normal=query.normal.clone();normal[0,0,0]=torch.tensor([1.,0.,0.])
+    gap=query.signed_gap.clone();gap[0,0,0]-=.005
+    unique=query.unique.clone();unique[0,0,0]=False
+    for wrong in (dataclasses.replace(query,point_local=point),dataclasses.replace(query,normal=normal),
+                  dataclasses.replace(query,signed_gap=gap),dataclasses.replace(query,unique=unique)):
+        matched=same_interval_query(rows.solid,wrong,obs['link_names'],part,region,1)
+        assert matched.tolist()==[False,True]
+        lower=q.new_zeros(1,6,4)
+        lower[0,0,0]=(-rows.solid.distances[0]).relu().square();lower[0,1,1]=(-rows.solid.distances[1]).relu().square()
+        loss,metrics=unified_region_objective(model,rows,active,torch.zeros(1,6,dtype=torch.long),{},regions,
+            surface_interval=SurfaceIntervalBounds(lower,torch.zeros_like(lower),
+                solid_target_mask=torch.tensor([[False,True],[False,True]]),query=wrong))
+        assert metrics['unified_physical_clearance_component'].item()>0
+        assert torch.autograd.grad(loss.sum(),q,retain_graph=True)[0][0,2]<0
 
 
 def test_opposite_violations_in_one_region_both_receive_gradients():
@@ -158,7 +382,8 @@ def test_opposite_violations_in_one_region_both_receive_gradients():
     active[:, 1] = False; regions[:, 1] = False
     loss, metrics = unified_region_objective(model, DeviceWitnessRows(model.fk, q, obs),
         active, torch.zeros(1, 6, dtype=torch.long), {}, regions)
-    torch.testing.assert_close(loss, torch.tensor([10+10/24]))
+    both = torch.tensor(5.).log()+torch.tensor(17.).log()
+    torch.testing.assert_close(loss, (both+both/24).reshape(1))
     grad = torch.autograd.grad(loss.sum(), q, retain_graph=True)[0]
     assert grad[0, 2] > 0  # Pull the top-facing witness down.
     assert grad[0, 9] < 0  # Push the other witness out of penetration.
@@ -206,3 +431,18 @@ def test_zero_regional_residual_at_margin_does_not_certify_contact():
     assert loss.item() == 0
     assert not obs['pairs']['eligible'][0]
     assert metrics['region_plan_realized'].item() == 0
+
+
+def test_native_candidate_does_not_turn_off_material_recovery_field():
+    q, obs, model, active, regions = witness_fixture([.019, .002])
+    class EmbeddedMaterials(TestRegions):
+        def missing_region_distance(self, fk, q, surface, scene, margin):
+            result = q.new_zeros(len(q), 6, 4)
+            result[:, 0, 0] = ((.09-q[:, 2]).relu()/(.25*margin)).square()
+            return result
+    model.region_geometry = EmbeddedMaterials()
+    loss, metrics = unified_region_objective(model, DeviceWitnessRows(model.fk, q, obs),
+        active, torch.zeros(1, 6, dtype=torch.long), {}, regions)
+    assert metrics['region_plan_realized'].item() == 1
+    assert obs['pairs']['task_pair'][0] and obs['pairs']['eligible'][0]
+    assert loss.item() > 0 and torch.autograd.grad(loss.sum(), q)[0][0, 2] < 0
