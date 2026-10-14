@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from types import SimpleNamespace
 
-from motion_edit.generation.newton_collision_filter import (
+from somaforge_core.newton_collision_filter import (
     apply_self_collision_filters_to_builder,
 )
 

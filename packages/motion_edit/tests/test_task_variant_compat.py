@@ -179,6 +179,19 @@ def test_surface_follow_composes_explicit_uv_edit_on_target_surface() -> None:
         atol=1.0e-9,
     )
     assert edit.metadata["surface_transform_then_uv"] is True
+    from motion_edit.contact.surface_frame import map_points_between_surface_frames
+
+    transform = edit.metadata["surface_transform"]
+    assert transform["target_surface"] == target_raw
+    np.testing.assert_allclose(
+        map_points_between_surface_frames(
+            np.asarray(edit.old_world_position),
+            transform["source_surface"],
+            transform["target_surface"],
+        ),
+        edit.new_world_position,
+        atol=1.0e-9,
+    )
     assert expanded.metadata["composed_surface_uv_edit_count"] == 1
 
 
@@ -339,6 +352,16 @@ def test_surface_follow_rotates_anchor_while_preserving_uv() -> None:
     np.testing.assert_allclose(edit.delta_world, [-0.1, 0.3, 0.0])
     assert edit.surface_coordinates_before == edit.surface_coordinates_after
     assert edit.metadata["uniform_surface_translation"] is False
+    # Position-dependent deltas from one rotation must remain one episode.
+    from dataclasses import replace
+    from motion_edit.generation.contact_episodes import _phase_delta
+
+    second = replace(anchor, anchor_id="left_hand_next", start_frame=20,
+                     end_frame=30, world_position=[0.8, -0.4, 0.70],
+                     surface_coordinates={"u": 0.3, "v": -0.1})
+    pair = expand_task_variant_plan(plan, anchors=[anchor, second], surfaces=[source])
+    _phase_delta([anchor.anchor_id, second.anchor_id],
+                 {item.anchor_id: item for item in pair.edits})
 
 
 def test_translate_pose_updates_semantic_and_dense_targets() -> None:

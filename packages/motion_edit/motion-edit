@@ -18,5 +18,16 @@ fi
 
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONPATH="$ROOT:$SOMAFORGE_ROOT/packages/somaforge_core${PYTHONPATH:+:$PYTHONPATH}"
+# Current contact evidence validation uses the pinned Newton semantics. The
+# generic conda environment need not have Newton installed, even for read-only
+# reviews; use the same project runtime as native contact queries.
+if [[ "${1:-}" == "contact-editor" ]]; then
+  EDITOR_PYTHON="$SOMAFORGE_ROOT/runtime/environments/newton-main-20260914/bin/python"
+  if [[ ! -x "$EDITOR_PYTHON" ]]; then
+    echo "Missing required project Newton runtime: $EDITOR_PYTHON" >&2
+    exit 1
+  fi
+  exec "$EDITOR_PYTHON" -c "from motion_edit.cli import main; main()" "$@"
+fi
 exec "$CONDA" run --no-capture-output -n "$CONDA_ENV" \
   python -c "from motion_edit.cli import main; main()" "$@"

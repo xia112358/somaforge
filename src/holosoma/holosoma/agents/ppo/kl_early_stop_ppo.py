@@ -61,7 +61,13 @@ class KLEarlyStopPPO(PPO):
         self._actor_updates_stopped = False
         self._accepted_actor_updates_current_rollout = 0
 
-        for minibatch in self._mini_batch_generator():
+        for raw_minibatch in self._mini_batch_generator():
+            minibatch, excluded_fraction = self._filter_ppo_minibatch(raw_minibatch)
+            loss_dict["probe_excluded_fraction"] = (
+                loss_dict.get("probe_excluded_fraction", 0.0) + excluded_fraction
+            )
+            if minibatch["ppo_valid"].shape[0] == 0:
+                continue
             processed_minibatches += 1
             ppo_losses = self._compute_ppo_loss(minibatch)
             pre_kl = float(ppo_losses["kl_mean"].item())

@@ -61,6 +61,10 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _sha256_if_exists(path: Path) -> str | None:
+    return _sha256(path) if path.is_file() else None
+
+
 def _git_output(args: list[str]) -> str:
     try:
         result = subprocess.run(
@@ -116,6 +120,7 @@ def _build_command(args: argparse.Namespace, motion_count: int, max_motion_len: 
         "--training.project",
         args.project,
         "--acceptance.config.enabled",
+        "True",
         "--acceptance.config.output-path",
         str(csv_path),
         "--acceptance.config.summary-path",
@@ -159,6 +164,13 @@ def _build_command(args: argparse.Namespace, motion_count: int, max_motion_len: 
         "--video.enabled",
         "False",
     ]
+    if args.bad_motion_body_pos_threshold is not None:
+        cmd.extend(
+            [
+                "--termination.terms.bad-tracking.params.bad-motion-body-pos-threshold",
+                str(args.bad_motion_body_pos_threshold),
+            ]
+        )
     return cmd
 
 
@@ -246,7 +258,7 @@ def _standard_metadata(
         "motion_manifest": str(manifest_path),
         "motion_manifest_sha256": _sha256(manifest_path),
         "standard_manifest": str(DEFAULT_MANIFEST.resolve()),
-        "standard_manifest_sha256": _sha256(DEFAULT_MANIFEST.resolve()),
+        "standard_manifest_sha256": _sha256_if_exists(DEFAULT_MANIFEST.resolve()),
         "checkpoint": str(checkpoint_path),
         "checkpoint_sha256": _sha256(checkpoint_path),
         "motion_count": int(motion_count),
@@ -365,6 +377,7 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--bad-motion-body-pos-threshold", type=float, default=None)
     parser.add_argument("--max-eval-steps", type=int, default=None)
     parser.add_argument("--eval-step-margin", type=int, default=8)
     parser.add_argument(

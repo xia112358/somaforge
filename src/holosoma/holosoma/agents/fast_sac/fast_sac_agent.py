@@ -647,6 +647,15 @@ class FastSACAgent(BaseAlgo):
         self.global_step = torch_checkpoint["global_step"]
         self._restore_env_state(torch_checkpoint.get("env_state"))
 
+    def load_for_inference(self, ckpt_path: str | None) -> None:
+        """Load the actor and observation normalizer, never replay/training state."""
+        if not ckpt_path:
+            return
+        torch_checkpoint = self._load_checked_checkpoint(ckpt_path, weights_only=False)
+        self.actor.load_state_dict(torch_checkpoint["actor_state_dict"])
+        if self.obs_normalization:
+            self.obs_normalizer.load_state_dict(torch_checkpoint["obs_normalizer_state"])
+
     def learn(self) -> None:
         args = self.config
         device = self.device

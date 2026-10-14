@@ -112,6 +112,49 @@ class SurfaceEditorSaveTests(unittest.TestCase):
         self.assertEqual(first.edits[0]["source"], "motion_edit_web")
         self.assertEqual(first.edits[0]["metadata"]["binding_granularity"], "anchor_point")
 
+    def test_current_plan_keeps_source_evidence_and_authored_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session, anchor_id, plan_path, layers = self._prepare_session(root)
+            original_graph = read_surface_editor_graph(session)
+            terrain = root / "terrain.obj"
+            terrain.write_text("v 0 0 0\n")
+            session = replace(session, terrain_mesh=str(terrain))
+            move_surface_editor_anchor(session, anchor_id=anchor_id, tangent_delta=[.02, 0.])
+            pending = read_pending_surface_edits(session)[0]
+            from motion_edit.workbench.surface_editor_session import write_pending_surface_edits
+            write_pending_surface_edits(session, [replace(pending, affected_frames=[1, 2])])
+            with mock.patch("motion_edit.workbench.generation_plan.read_verified_contact_graph", return_value=original_graph) as verify:
+                save_surface_editor_session(session, layers_root=layers)
+            verify.assert_called_once_with(layers / session.contact_layer, session.motion_id,
+                motion_path=session.motion_path,
+                labels_path=layers / session.contact_layer / "contact_labels" / "motion_a.npz")
+            plan = read_contact_edit_plan(plan_path)
+            self.assertEqual(plan.source_contact_layer, "contact/bound")
+            self.assertEqual(plan.metadata["augmentation_objective"], "consolidated_v1")
+            self.assertTrue(plan.metadata["free_surface_contacts"])
+            self.assertEqual(plan.metadata["source_terrain_mesh"], str(terrain.resolve()))
+            from motion_edit.generation.free_surface_reference import reference_offsets
+            offsets = reference_offsets([0, 1], plan.metadata["free_surface_reference_offsets"][anchor_id])
+            np.testing.assert_allclose(offsets, [[0., 0., 0.], [.02, 0., 0.]])
+            # Saving a draft must not modify the authoritative source anchors.
+            from motion_edit.contact import read_contact_graph
+            self.assertEqual(read_contact_graph(layers / session.contact_layer, session.motion_id), original_graph)
+
+    def test_unverified_source_is_rejected_before_writing_candidate_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session, anchor_id, plan_path, layers = self._prepare_session(root)
+            terrain = root / "terrain.obj"
+            terrain.write_text("v 0 0 0\n")
+            session = replace(session, terrain_mesh=str(terrain))
+            move_surface_editor_anchor(session, anchor_id=anchor_id, tangent_delta=[.02, 0.])
+            with mock.patch("motion_edit.workbench.generation_plan.read_verified_contact_graph", side_effect=ValueError("old Newton runtime")):
+                with self.assertRaisesRegex(ValueError, "old Newton runtime"):
+                    save_surface_editor_session(session, layers_root=layers)
+            self.assertFalse(plan_path.exists())
+            self.assertFalse((layers / "contact/edited").exists())
+
     def test_preparing_session_resets_graph_and_pending_edits_together(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

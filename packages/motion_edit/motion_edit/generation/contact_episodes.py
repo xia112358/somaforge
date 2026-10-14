@@ -212,6 +212,40 @@ def _contact_point_force_trajectory(
     return trajectory, force_trajectory, phase_mask
 
 
+def _verified_episode_points(patches, member_anchor_ids, start, end):
+    """Read Newton-bound points; interpolation is an episode target, not contact truth.
+
+    Preserve the existing episode gap/interpolation design. The returned mask
+    marks only observed anchor frames, including zero-force active contacts.
+    """
+    by_anchor = {patch.anchor_id: patch for patch in patches}
+    rows = [[] for _ in range(end - start)]
+    for anchor_id in member_anchor_ids:
+        patch = by_anchor.get(anchor_id)
+        if patch is None or patch.metadata.get('source_target_contract') != 'newton_robot_geometry_point_trajectory':
+            raise ValueError(f'{anchor_id}: missing verified Newton episode binding')
+        if patch.source_target_frames is None or patch.source_target_points_w is None:
+            raise ValueError(f'{anchor_id}: missing Newton episode point trajectory')
+        if len(patch.source_target_frames) != len(patch.source_target_points_w):
+            raise ValueError(f'{anchor_id}: Newton episode frame/point mismatch')
+        for frame, points in zip(patch.source_target_frames, patch.source_target_points_w):
+            if start <= frame < end:
+                points = np.asarray(points, dtype=np.float64)
+                if points.ndim != 2 or points.shape[1] != 3 or not len(points) or not np.isfinite(points).all():
+                    raise ValueError(f'{anchor_id}: invalid Newton episode points')
+                rows[frame - start].extend(points)
+    mask = np.asarray([bool(row) for row in rows])
+    known = np.flatnonzero(mask)
+    if not len(known):
+        raise ValueError('Episode contains no verified Newton contact observations')
+    representatives = np.asarray([np.mean(rows[i], axis=0) for i in known])
+    trajectory = np.stack([
+        np.interp(np.arange(end - start), known, representatives[:, axis])
+        for axis in range(3)
+    ], axis=-1)
+    return trajectory, mask
+
+
 def build_contact_episode_trajectories(
     *,
     anchors: list[ContactAnchorRecord],
@@ -220,6 +254,7 @@ def build_contact_episode_trajectories(
     n_frames: int,
     contact_motion: dict[str, Any] | None = None,
     contact_positions_are_target: bool = False,
+    verified_patches: list[Any] | None = None,
 ) -> list[ContactEpisodeTrajectory]:
     """Collapse source fragments into the same episode handles used by the editor."""
 
@@ -266,6 +301,10 @@ def build_contact_episode_trajectories(
             fallback_semantic_xyz=source_semantic,
             fallback_world_position=np.asarray(handle.world_position, dtype=np.float64),
         )
+        if verified_patches is not None:
+            recorded_contact, phase_mask = _verified_episode_points(
+                verified_patches, handle.member_anchor_ids, start, end,
+            )
         if edited and contact_positions_are_target:
             target_contact = recorded_contact
             source_contact = recorded_contact - delta[None, :]

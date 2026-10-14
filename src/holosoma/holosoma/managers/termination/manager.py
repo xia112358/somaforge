@@ -134,3 +134,11 @@ class TerminationManager:
             self.time_outs[env_ids] = False
             for done in self.term_dones.values():
                 done[env_ids] = False
+
+    def get_term(self, name: str) -> Any:
+        """Return a configured termination callable or stateful instance."""
+        if name in self._term_instances:
+            return self._term_instances[name]
+        if name in self._term_funcs:
+            return self._term_funcs[name]
+        raise KeyError(f"Termination term {name!r} not found")

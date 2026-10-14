@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic.dataclasses import dataclass
@@ -10,6 +11,7 @@ InputSource = Literal["keyboard", "interface", "joystick", "ros2"]
 
 DEFAULT_VELOCITY_INPUT: InputSource = "keyboard"
 DEFAULT_STATE_INPUT: InputSource = "keyboard"
+DEFAULT_WANDB_DOWNLOAD_DIR = str(Path.home() / ".cache" / "somaforge" / "checkpoints")
 
 
 @dataclass(frozen=True)
@@ -93,7 +95,7 @@ class TaskConfig:
     use_sim_time: bool = False
     """Use synchronized simulation time for WBT policies."""
 
-    wandb_download_dir: str = "/tmp"
+    wandb_download_dir: str = DEFAULT_WANDB_DOWNLOAD_DIR
     """Directory for downloading W&B checkpoints."""
 
     # Deprecation candidates:

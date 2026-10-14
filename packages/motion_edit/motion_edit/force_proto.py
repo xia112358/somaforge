@@ -144,7 +144,8 @@ def _load_masked_motion(path: Path) -> _MaskedMotion:
             ends=_optional_indices(data, "proto_end_idx"),
             contact=_select_contact_parts(raw_contact, part_indices),
             active=_select_contact_parts(_optional_mask_any(data, ("active_part_mask", "active_force_part_mask")), part_indices),
-            support=_select_contact_parts(_optional_mask_any(data, ("support_part_mask", "support_force_part_mask")), part_indices),
+            # This graph describes editing intent, not observed bearing loads.
+            support=_select_contact_parts(_optional_mask_any(data, ("contact_keep_intent_mask", "support_part_mask", "support_force_part_mask")), part_indices),
             body_pos_w=part_body_pos_w,
             body_names=list(CONTACT_PART_ORDER),
         )
@@ -201,7 +202,8 @@ def segments_from_masked_motion(path: Path, *, source: str = "force_contact", st
             support=mask_string(inputs.support[start_i]) if inputs.support is not None else None,
             events=graph.events,
             anchors=graph.anchors,
-            metadata={"proto_index": proto_id},
+            metadata={"proto_index": proto_id, "support_role_semantics": "declared_contact_keep_intent",
+                      "actual_support_status": "unknown_without_solver_loads"},
         )
         segment.validate()
         segments.append(segment)
@@ -228,7 +230,8 @@ def segments_from_masked_motion(path: Path, *, source: str = "force_contact", st
                 contact_end=mask_string(inputs.contact[end_frame]) if inputs.contact is not None else None,
                 active=mask_string(inputs.active[start_i]) if inputs.active is not None else None,
                 support=mask_string(inputs.support[start_i]) if inputs.support is not None else None,
-                metadata={"proto_index": proto_id},
+                metadata={"proto_index": proto_id, "support_role_semantics": "declared_contact_keep_intent",
+                          "actual_support_status": "unknown_without_solver_loads"},
             )
             segment.validate()
             segments.append(segment)

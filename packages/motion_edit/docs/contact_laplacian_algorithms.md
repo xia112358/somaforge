@@ -203,9 +203,7 @@ to produce a generated motion npz.
 `motion-edit generate-ref` uses this ContactEditPlan-driven path with both
 edited and fixed contact handles, then passes the dense task-space target to
 fullbody IK. Production contact forces are collected later by a Newton policy
-rollout; this geometry stage does not solve contact dynamics. The hidden
-`generate-lte-augmentation --mode lte_fullbody` command can still run the same
-geometry stage for diagnostics. The generation metadata should record:
+rollout; this geometry stage does not solve contact dynamics. The obsolete LTE and proxy-acceptance queue CLI entries have been removed. The generation metadata should record:
 
 - number of moving contact handles;
 - number of fixed contact handles;

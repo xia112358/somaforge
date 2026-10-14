@@ -473,8 +473,6 @@ def build_retargeter_kwargs_from_config(
         "foot_sticking_tolerance": retargeter_config.foot_sticking_tolerance,
         "self_collision": retargeter_config.self_collision,
         "step_size": retargeter_config.step_size,
-        "visualize": retargeter_config.visualize,
-        "debug": retargeter_config.debug,
         "w_nominal_tracking_init": retargeter_config.w_nominal_tracking_init,
     }
     if task_type == "climbing":
@@ -718,8 +716,6 @@ def main(cfg: RetargetingConfig) -> None:
     )
     logger.info("Retargeting complete. Results saved to: %s", dest_res_path)
 
-    if cfg.retargeter.debug:
-        input("Press Enter to exit ...")
 
 
 if __name__ == "__main__":

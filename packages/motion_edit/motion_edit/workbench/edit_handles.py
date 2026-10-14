@@ -3,7 +3,9 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from hashlib import sha1
-from typing import Any
+from typing import Any, Callable
+
+import numpy as np
 
 from motion_edit.contact.schema import ContactAnchorRecord
 
@@ -17,6 +19,17 @@ FOOT_PARENT_BY_BODY = {
 }
 
 POSITION_OFFSET_EPSILON = 1.0e-6
+
+SUPPORT_BODY_LINK = {
+    "left_foot": "left_ankle_roll_link",
+    "right_foot": "right_ankle_roll_link",
+    "left_hand": "left_wrist_yaw_link",
+    "right_hand": "right_wrist_yaw_link",
+    "left_knee": "left_knee_link",
+    "right_knee": "right_knee_link",
+}
+
+ContactGapValidator = Callable[[str, str, int, int], bool]
 
 
 @dataclass(frozen=True)
@@ -156,6 +169,7 @@ def build_contact_episode_handles(
     *,
     max_gap_frames: int = 0,
     min_duration_frames: int = 1,
+    gap_validator: ContactGapValidator | None = None,
 ) -> list[ContactEpisodeHandle]:
     grouped: dict[tuple[str, str | None, str | None], list[ContactAnchorRecord]] = {}
     for anchor in anchors:
@@ -170,7 +184,19 @@ def build_contact_episode_handles(
         connected: list[ContactAnchorRecord] = []
         connected_end = -1
         for anchor in ordered:
-            if connected and anchor.start_frame <= connected_end + max(0, int(max_gap_frames)):
+            gap_frames = int(anchor.start_frame) - int(connected_end)
+            within_gap = gap_frames <= max(0, int(max_gap_frames))
+            gap_valid = (
+                gap_frames <= 0
+                or gap_validator is None
+                or gap_validator(
+                    parent_contact_body(anchor.body),
+                    str(anchor.surface_id),
+                    int(connected_end),
+                    int(anchor.start_frame),
+                )
+            )
+            if connected and within_gap and gap_valid:
                 connected.append(anchor)
                 connected_end = max(connected_end, anchor.end_frame)
                 continue
@@ -185,3 +211,46 @@ def build_contact_episode_handles(
             if episode.end_frame - episode.start_frame >= max(1, int(min_duration_frames)):
                 episodes.append(episode)
     return sorted(episodes, key=lambda item: (item.start_frame, item.end_frame, item.body, item.handle_id))
+
+
+def build_stationary_contact_gap_validator(
+    *,
+    body_positions: np.ndarray,
+    body_names: Iterable[object],
+    maximum_endpoint_displacement_m: float = 0.03,
+    maximum_path_length_m: float = 0.05,
+) -> ContactGapValidator:
+    """Validate that missing collision frames still describe one support.
+
+    Raw heel/toe collision can flicker during a stable contact.  A gap may be
+    closed only when the corresponding support link remains nearly stationary
+    throughout it.  Fast swing-through scuffs therefore remain separate raw
+    contacts and cannot be promoted to one long support episode.
+    """
+
+    positions = np.asarray(body_positions, dtype=np.float64)
+    names = np.asarray(list(body_names)).astype(str).tolist()
+    if positions.ndim != 3 or positions.shape[-1] != 3:
+        raise ValueError("body_positions must have shape [frames, bodies, 3]")
+    if positions.shape[1] != len(names):
+        raise ValueError("body_positions and body_names disagree")
+    index_by_body = {
+        body: names.index(link_name)
+        for body, link_name in SUPPORT_BODY_LINK.items()
+        if link_name in names
+    }
+
+    def validate(body: str, _surface_id: str, gap_start: int, gap_end: int) -> bool:
+        if body not in index_by_body:
+            return False
+        if gap_start < 0 or gap_end >= len(positions) or gap_end <= gap_start:
+            return False
+        values = positions[gap_start : gap_end + 1, index_by_body[body]]
+        endpoint_displacement = float(np.linalg.norm(values[-1] - values[0]))
+        path_length = float(np.linalg.norm(np.diff(values, axis=0), axis=-1).sum())
+        return (
+            endpoint_displacement <= float(maximum_endpoint_displacement_m)
+            and path_length <= float(maximum_path_length_m)
+        )
+
+    return validate

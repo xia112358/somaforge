@@ -98,6 +98,8 @@ def test_edited_patch_uses_same_world_delta_as_semantic_handle() -> None:
         "source_patch_world_plus_edit_delta_world"
     )
     assert contact.metadata["authoritative_delta_world"] == [0.0, 0.0, 0.1]
+    assert contact.metadata["target_surface_geometry"]["normal"] == surface.normal
+    assert contact.metadata["target_surface_geometry"]["origin"] == surface.origin
     assert spec.metadata["semantic_patch_displacement_contract"] == (
         "same_world_delta"
     )

@@ -90,8 +90,19 @@ def build_contact_aware_taskspace_motion(*args: Any, **kwargs: Any):
         for edit in edits
     }
     updated_contacts = []
+    surfaces_by_id = {str(surface.surface_id): surface for surface in surfaces}
     translated_anchor_ids: list[str] = []
     for contact in spec.contacts:
+        # Filtering selects the established translation-target calculation;
+        # it must not discard the actual face needed by surface-local losses.
+        surface_id = contact.metadata.get("target_surface_id")
+        surface = surfaces_by_id.get(str(surface_id))
+        if surface is not None:
+            contact = replace(contact, metadata={**contact.metadata,
+                "target_surface_geometry": {
+                    "surface_type": surface.surface_type, "normal": list(surface.normal),
+                    "origin": list(surface.origin), "polygon_world": surface.metadata.get("polygon_world"),
+                }})
         edit = edits_by_anchor.get(str(contact.anchor_id))
         delta = _edit_world_delta(edit) if edit is not None else None
         effective_surface = (

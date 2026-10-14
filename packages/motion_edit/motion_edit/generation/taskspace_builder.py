@@ -162,8 +162,8 @@ def build_contact_aware_taskspace_motion(
                     f"{source_target_points_w.shape} does not match "
                     f"{source_points_w.shape}"
                 )
-            source_target_contract = (
-                "newton_counterpart_world_trajectory"
+            source_target_contract = patch.metadata.get(
+                "source_target_contract", "newton_counterpart_world_trajectory"
             )
             recorded_local_points = np.asarray(
                 patch.source_points_local_by_frame, dtype=np.float64
@@ -257,6 +257,12 @@ def build_contact_aware_taskspace_motion(
                     else None
                 ),
                 "source_target_contract": source_target_contract,
+                "target_surface_geometry": ({
+                    "surface_type": surface.surface_type,
+                    "normal": list(surface.normal),
+                    "origin": list(surface.origin),
+                    "polygon_world": surface.metadata.get("polygon_world"),
+                } if surface is not None else None),
             },
             **kwargs,
         )

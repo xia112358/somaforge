@@ -9,6 +9,7 @@ description = "Motion edit layers, segment candidates, and export tools for Holo
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+  "contact-solver",
   "fastapi",
   "numpy",
   "scipy",
@@ -16,6 +17,9 @@ dependencies = [
   "trimesh",
   "uvicorn",
 ]
+
+[project.optional-dependencies]
+generation = ["coal>=3.0,<4", "clarabel>=0.11,<1", "threadpoolctl>=3,<4"]
 
 [project.scripts]
 motion-edit = "motion_edit.cli:main"

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { EditHandle } from '../core/types';
+import { clearResources } from '../core/resources';
 
 const HANDLE_LIFT_M = 0.008;
 const RESTORE_GHOST_LIFT_M = 0.006;
@@ -23,6 +24,7 @@ export class ContactHandleLayer {
   private readonly restoreGhostHitMeshes: THREE.Mesh[] = [];
   private readonly pointer = new THREE.Vector2();
   private readonly raycaster = new THREE.Raycaster();
+  private signature = '';
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -30,8 +32,9 @@ export class ContactHandleLayer {
   ) {}
 
   clear(): void {
-    this.handles.clear();
-    this.restoreGhosts.clear();
+    clearResources(this.handles);
+    clearResources(this.restoreGhosts);
+    this.signature = '';
     this.handleObjects.clear();
     this.restoreGhostObjects.clear();
     this.handleHitMeshes.length = 0;
@@ -45,7 +48,11 @@ export class ContactHandleLayer {
   }
 
   rebuild({ handles, visibleHandleIds, selectedHandle, radius }: RebuildOptions): void {
+    const visible = handles.filter(handle => visibleHandleIds.has(handle.handle_id) || handle.handle_id === selectedHandle?.handle_id);
+    const signature = JSON.stringify([radius, selectedHandle?.handle_id, visible]);
+    if (signature === this.signature) return;
     this.clear();
+    this.signature = signature;
     this.canvas.dataset.contactMarker = 'episode-handle';
 
     for (const handle of handles) {
@@ -100,6 +107,7 @@ export class ContactHandleLayer {
   }
 
   pickRestoreGhost(event: PointerEvent, selectedHandle: EditHandle | null): EditHandle | null {
+    if (!this.restoreGhosts.visible) return null;
     this.setPointerRay(event);
     const hit = this.raycaster.intersectObjects(this.restoreGhostHitMeshes, false)[0];
     if (hit) return hit.object.userData.restoreHandle as EditHandle;
@@ -118,6 +126,7 @@ export class ContactHandleLayer {
   }
 
   pickHandle(event: PointerEvent, handles: EditHandle[], selectedHandle: EditHandle | null): EditHandle | null {
+    if (!this.handles.visible) return null;
     this.setPointerRay(event);
     const rect = this.canvas.getBoundingClientRect();
     const localX = event.clientX - rect.left;

@@ -109,7 +109,7 @@ class WholeTrajectoryOptimizerTests(unittest.TestCase):
         self.assertGreaterEqual(achieved_normal_displacement[3, 0], 0.0)
         self.assertLess(abs(achieved_normal_displacement[2, 0]), 5.0e-4)
 
-    def test_fullbody_entrypoint_uses_contact_aware_taskspace_solver(self) -> None:
+    def test_fullbody_entrypoint_rejects_retired_keypoint_input(self) -> None:
         import jax.numpy as jnp
 
         urdf_path, robot = self._robot()
@@ -150,23 +150,14 @@ class WholeTrajectoryOptimizerTests(unittest.TestCase):
                 ),
             )
 
-            solve_pyroki_fullbody_ik(
-                lte_path=lte,
-                output_path=output,
-                robot_urdf=urdf_path,
-                max_nfev=2,
-            )
-
-            with np.load(output, allow_pickle=True) as result:
-                self.assertEqual(
-                    str(result["ik_backend"]),
-                    "pyroki_contact_aware_taskspace",
+            with self.assertRaisesRegex(ValueError, "Legacy LTE keypoints"):
+                solve_pyroki_fullbody_ik(
+                    lte_path=lte,
+                    output_path=output,
+                    robot_urdf=urdf_path,
+                    max_nfev=2,
                 )
-                self.assertEqual(result["joint_pos"].shape[0], frames)
-                self.assertTrue(
-                    bool(result["newton_canonicalization_required"])
-                )
-                self.assertIn("ik_diagnostics_json", result.files)
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

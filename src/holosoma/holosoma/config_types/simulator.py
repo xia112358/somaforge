@@ -14,6 +14,23 @@ DEFAULT_MJWARP_NJMAX_PER_ENV = 512
 
 
 @dataclass(frozen=True)
+class DepthRayCameraConfig:
+    """Low-cost terrain depth camera used by the PHP student."""
+
+    enabled: bool = False
+    body_name: str = "torso_link"
+    width: int = 87
+    height: int = 58
+    focal_length: float = 24.0
+    horizontal_aperture: float = 20.955
+    offset_pos: tuple[float, float, float] = (0.12, 0.0, 0.18)
+    offset_rot_wxyz: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
+    max_distance: float = 5.0
+    translation_drift_range: tuple[float, float] = (-0.025, 0.025)
+    angular_drift_degrees: float = 2.5
+
+
+@dataclass(frozen=True)
 class MujocoWarpConfig:
     """Configuration for MuJoCo Warp backend memory allocation.
 
@@ -474,6 +491,9 @@ class SimulatorInitConfig:
 
     contact_sensor_history_length: int = 4
     """Number of physics steps of contact data retained for sensors."""
+
+    depth_ray_camera: DepthRayCameraConfig = field(default_factory=DepthRayCameraConfig)
+    """Optional 58x87 ray-cast depth camera for PHP-style distillation."""
 
     mujoco_warp: MujocoWarpConfig = field(default_factory=MujocoWarpConfig)
     """MuJoCo Warp backend memory allocation configuration.

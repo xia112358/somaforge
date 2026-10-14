@@ -329,6 +329,9 @@ def setup_simulation_environment(
     simulation_app = None
     if get_simulator_type() in (SimulatorType.ISAACSIM, SimulatorType.ISAACLAB3_NEWTON):
         simulation_app = setup_isaaclab_launcher(config, device, launcher_args=launcher_args)
+        if get_simulator_type() == SimulatorType.ISAACLAB3_NEWTON:
+            from somaforge_core.newton_runtime_compat import install as install_newton_runtime_compat
+            install_newton_runtime_compat()
 
     # Set random seed if specified (only for ExperimentConfig)
     if isinstance(config, ExperimentConfig) and config.training.seed is not None:

@@ -116,7 +116,16 @@ g1_29dof_wbt_randomization = RandomizationManagerCfg(
     step_terms={},
 )
 
+# PHP uses the full dynamics randomization while the 60--80 ms delay is applied
+# to depth observations (not to motor actions).
+g1_29dof_wbt_php_student_randomization = RandomizationManagerCfg(
+    setup_terms={**base_setup_terms},
+    reset_terms={**base_reset_terms},
+    step_terms={**base_step_terms},
+)
+
 __all__ = [
     "g1_29dof_wbt_randomization",
     "g1_29dof_wbt_randomization_domain_rand",
+    "g1_29dof_wbt_php_student_randomization",
 ]

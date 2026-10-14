@@ -295,6 +295,9 @@ def build_cnn_layer(
 
         current_in_channels = current_out_channels
 
+    if layer_config.global_average_pool:
+        layers.append(nn.AdaptiveAvgPool2d((1, 1)))
+
     cnn_sequential = nn.Sequential(*layers)
 
     # Wrap with CNNWrapper to handle flattened inputs/outputs

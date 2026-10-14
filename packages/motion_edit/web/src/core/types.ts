@@ -75,6 +75,7 @@ export type Generation = {
 };
 
 export type Session = {
+  review?: Review;
   motion_id: string;
   read_only: boolean;
   capabilities: {
@@ -96,6 +97,7 @@ export type Session = {
   edit_handles: EditHandle[];
   surfaces: Surface[];
   contact_force: {
+    mask_status?: string;
     part_order: string[];
     forces: Vec3[][];
     masks: boolean[][];
@@ -112,11 +114,29 @@ export type Session = {
     output_contact_layer: string;
     source_contact_layer: string;
     output_motion_path: string;
-    output_segment_layer: string;
     output_motion_id: string;
     register_motion: boolean;
     overwrite: boolean;
   };
   plan: { path: string; status: string; edit_count: number } | null;
   generation: Generation;
+};
+
+export type ReviewRecord = {
+  label: string; method: string; iteration: string; q: number[];
+  normal_starts: Vec3[]; normals: Vec3[];
+  diagnostics: Record<string, unknown>;
+};
+export type Review = {
+  collection?: { path: string; terrain_override: string | null; case_index: number; reference_index: number; cases: {index:number;label:string}[] };
+  comparison?: { label: string; qpos: number[][]; fps: number; joint_names: string[]; terrain_obj_url: string | null };
+  segments?: { start: number; end: number; label: string }[];
+  depth_mm?: number[];
+  support_frames?: {part:number;load_known:boolean;load_state:string;normal_force_n:number|null;loaded_speed_cm_s:number|null}[][];
+  support_assessment_schema?: string;
+  actual_support_status?: string;
+  kind: 'motion' | 'report' | 'support_motion' | 'support_slip'; source: string; notice: string;
+  slip_frames?: { part: number; surface: number; body: string; position: Vec3; delta: Vec3; motion_cm: number }[][];
+  reference?: string; records?: ReviewRecord[];
+  phases?: { start: number; end: number; part: string; aggregate: Vec3[]; rollouts: Vec3[][]; aggregate_net_cm: number; rollout_median_net_cm: number }[];
 };

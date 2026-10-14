@@ -39,6 +39,37 @@ def _edit(anchor: ContactAnchorRecord, delta: list[float]) -> ContactAnchorEditR
     )
 
 
+def test_verified_labels_replace_old_mask_without_changing_episode_design():
+    from types import SimpleNamespace
+
+    anchor = _anchor('heel', 'left_heel', 2, 6, 0.0)
+    motion = {
+        'contact_force_part_order': np.asarray(['LHEE']),
+        'contact_force_part_w': np.full((8, 1, 3), 10.0),
+        'contact_force_part_mask': np.ones((8, 1), dtype=bool),
+        'contact_force_part_position_w': np.full((8, 1, 3), 99.0),
+    }
+    kwargs = dict(
+        anchors=[anchor], edits=[_edit(anchor, [0, 0.1, 0])],
+        keypoints={'left_foot': np.zeros((8, 3))}, n_frames=8,
+        contact_motion=motion,
+    )
+    old = build_contact_episode_trajectories(**kwargs)[0]
+    bound = SimpleNamespace(
+        anchor_id='heel', source_target_frames=[2, 3, 4, 5],
+        source_target_points_w=[[[1., 2., 3.]]] * 4,
+        metadata={'source_target_contract': 'newton_robot_geometry_point_trajectory'},
+    )
+    new = build_contact_episode_trajectories(**kwargs, verified_patches=[bound])[0]
+    np.testing.assert_allclose(new.source_contact_xyz, np.tile([1, 2, 3], (4, 1)))
+    np.testing.assert_array_equal(new.contact_force_w, old.contact_force_w)
+    np.testing.assert_array_equal(new.target_semantic_xyz, old.target_semantic_xyz)
+    assert (new.start_frame, new.end_frame, new.member_anchor_ids) == (old.start_frame, old.end_frame, old.member_anchor_ids)
+    motion['contact_force_part_mask'][:] = False
+    zero_force = build_contact_episode_trajectories(**kwargs, verified_patches=[bound])[0]
+    assert zero_force.contact_mask.all()
+
+
 def test_heel_and_toe_fragments_produce_one_force_bound_foot_episode() -> None:
     heel = _anchor("heel", "left_heel", 2, 6, 0.0)
     toe = _anchor("toe", "left_toe", 5, 9, 0.2)

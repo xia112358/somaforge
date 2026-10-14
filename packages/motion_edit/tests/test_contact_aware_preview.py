@@ -11,7 +11,6 @@ from motion_edit.generation.contact_aware_preview import (
     _run_pyroki_preview_subprocess,
     merge_pyroki_preview_motion,
 )
-from motion_edit.generation.lte_fullbody import _run_fullbody_ik_subprocess
 
 
 def test_contact_aware_ik_reuses_current_conda_interpreter(
@@ -51,28 +50,6 @@ def test_contact_aware_ik_reuses_current_conda_interpreter(
     assert all(Path(item).is_absolute() for item in python_path[:2])
 
 
-def test_legacy_ik_reuses_current_conda_interpreter(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    calls: list[list[str]] = []
-    monkeypatch.setenv("CONDA_DEFAULT_ENV", "/opt/conda/envs/env_somaforge")
-    monkeypatch.setattr(
-        "motion_edit.generation.lte_fullbody.subprocess.run",
-        lambda cmd, **kwargs: calls.append(cmd),
-    )
-
-    _run_fullbody_ik_subprocess(
-        lte_path=tmp_path / "lte.npz",
-        ik_output_path=tmp_path / "ik.npz",
-        lte_repo_root=None,
-        ik_script=tmp_path / "ik.py",
-        ik_conda_env="env_somaforge",
-        ik_max_nfev=None,
-    )
-
-    assert calls[0][0] == sys.executable
-    assert "conda" not in calls[0]
 
 
 def test_resolve_layers_root_uses_somaforge_runtime_for_isolated_worktree(tmp_path, monkeypatch) -> None:

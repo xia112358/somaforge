@@ -84,4 +84,12 @@ def contact_graph_from_masks(
             body_names=body_names,
             source=source,
         )
-    return ContactGraph(motion_id=motion_id, events=events, anchors=anchors, patches=patches_from_anchors(anchors), transitions=transitions)
+    from somaforge_core.support_semantics import SUPPORT_ASSESSMENT_SCHEMA
+    # Graph roles are editing/planning intents. Legacy automatic keep proposals
+    # never establish measured load or a stationary physical support point.
+    patches = patches_from_anchors(anchors)
+    for record in (*events, *anchors, *patches, *transitions):
+        record.metadata['support_assessment_schema'] = SUPPORT_ASSESSMENT_SCHEMA
+        record.metadata['support_role_semantics'] = 'contact_keep_intent'
+        record.metadata['actual_support_status'] = 'unknown_without_solver_loads'
+    return ContactGraph(motion_id=motion_id, events=events, anchors=anchors, patches=patches, transitions=transitions)

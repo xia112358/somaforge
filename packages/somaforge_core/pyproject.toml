@@ -8,6 +8,12 @@ version = "0.1.0"
 description = "Shared asset and data-contract utilities for SomaForge."
 requires-python = ">=3.10"
 
+[project.optional-dependencies]
+solid = ["numpy", "scipy", "trimesh", "coal>=3.0,<4"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["somaforge_core*"]
+
+[tool.setuptools.package-data]
+somaforge_core = ["coal_batch.cpp"]

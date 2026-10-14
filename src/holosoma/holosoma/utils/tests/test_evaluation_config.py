@@ -12,6 +12,8 @@ import torch
 import tyro
 from holosoma.config_types.eval_callback import EvaluationConfig
 from holosoma.config_types.experiment import ExperimentConfig
+from holosoma.config_values.wbt.g1.curriculum import g1_29dof_wbt_tracking_precision_curriculum_10k
+from holosoma.config_values.wbt.g1.termination import g1_29dof_wbt_termination
 from holosoma.eval_agent import run_eval_with_tyro
 from holosoma.utils.eval_utils import CheckpointConfig
 from holosoma.utils.sim_utils import configure_newton_cuda_graph_for_visualizer, sync_launcher_headless_config
@@ -80,6 +82,51 @@ def test_evaluation_settings_win_during_final_config_composition() -> None:
     assert resolved.training.num_envs == 7
     assert resolved.terrain.terrain_term.spawn.randomize_tiles is False
     assert resolved.terrain.terrain_term.spawn.xy_offset_range == 0.25
+
+
+def test_eval_config_removes_training_only_runtime_state() -> None:
+    config = ExperimentConfig()
+    algo_config = dataclasses.replace(
+        config.algo.config,
+        load_optimizer=True,
+        actor_finetune_mode="full_actor",
+        anchor_kl_checkpoint="anchor.pt",
+        anchor_kl_coef=0.2,
+        exec_consistency_coef=0.01,
+    )
+    bad_tracking = g1_29dof_wbt_termination
+    if bad_tracking is not None and "bad_tracking" in bad_tracking.terms:
+        term = bad_tracking.terms["bad_tracking"]
+        bad_tracking = dataclasses.replace(
+            bad_tracking,
+            terms={
+                **bad_tracking.terms,
+                "bad_tracking": dataclasses.replace(
+                    term,
+                    params={**term.params, "probe_fixed_qualification_boundary": True},
+                ),
+            },
+        )
+    training = dataclasses.replace(
+        config,
+        algo=dataclasses.replace(config.algo, config=algo_config),
+        curriculum=g1_29dof_wbt_tracking_precision_curriculum_10k,
+        termination=bad_tracking,
+    )
+
+    resolved = training.get_eval_config(EvaluationConfig())
+
+    assert resolved.curriculum is not None
+    assert resolved.curriculum.setup_terms == {}
+    assert resolved.curriculum.reset_terms == {}
+    assert resolved.curriculum.step_terms == {}
+    assert resolved.algo.config.load_optimizer is False
+    assert resolved.algo.config.actor_finetune_mode == "none"
+    assert resolved.algo.config.anchor_kl_checkpoint is None
+    assert resolved.algo.config.anchor_kl_coef == 0.0
+    assert resolved.algo.config.exec_consistency_coef == 0.0
+    if resolved.termination is not None and "bad_tracking" in resolved.termination.terms:
+        assert "probe_fixed_qualification_boundary" not in resolved.termination.terms["bad_tracking"].params
 
 
 @pytest.mark.parametrize(
@@ -233,7 +280,7 @@ def test_eval_export_keeps_only_explicit_output(tmp_path) -> None:
         def attach_checkpoint_metadata(self, saved_config, saved_wandb_path) -> None:
             pass
 
-        def load(self, checkpoint_path: str) -> None:
+        def load_for_inference(self, checkpoint_path: str) -> None:
             assert checkpoint_path == str(checkpoint)
 
         def export(self, onnx_file_path: str) -> None:

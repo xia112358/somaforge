@@ -93,7 +93,7 @@ def _slice_recording_env(recording: dict[str, Any], env_id: int, num_envs: int, 
         if key == "_metadata_json":
             continue
         array = np.asarray(value)
-        if array.ndim >= 2 and array.shape[1] == num_envs:
+        if not key.startswith(('solver_contact_', 'raw_contact_')) and array.ndim >= 2 and array.shape[1] == num_envs:
             sliced[key] = array[:, env_id]
         else:
             sliced[key] = array
@@ -325,6 +325,8 @@ def _stable_contact_mask(
     on_threshold: float,
     off_threshold: float,
     close_gap_frames: int,
+    min_on_frames: int = 0,
+    min_off_frames: int = 0,
 ) -> tuple[np.ndarray, np.ndarray]:
     if not 0.0 <= off_threshold <= on_threshold:
         raise ValueError("Contact mask thresholds must satisfy 0 <= off_threshold <= on_threshold.")
@@ -336,6 +338,8 @@ def _stable_contact_mask(
         active = np.where(active, magnitude[frame_idx] > off_threshold, raw[frame_idx])
         stable[frame_idx] = active
 
+    if min_on_frames < 0 or min_off_frames < 0:
+        raise ValueError("Minimum contact on/off frames must be nonnegative.")
     if close_gap_frames > 0:
         for part_idx in range(stable.shape[1]):
             values = stable[:, part_idx]
@@ -348,6 +352,41 @@ def _stable_contact_mask(
                 if is_internal_gap and end - start <= close_gap_frames:
                     values[start:end] = True
                 start = end
+
+    # Offline reference extraction can reject sensor pulses that never persist
+    # long enough to represent an actionable contact phase. Iterate because
+    # removing a short on-run may create a short off-gap, and vice versa.
+    for _ in range(8):
+        previous = stable.copy()
+        for part_idx in range(stable.shape[1]):
+            values = stable[:, part_idx]
+            # Fill release gaps first so one sustained contact is not split
+            # into multiple short pulses and incorrectly removed below.
+            start = 0
+            while start < values.size:
+                end = start + 1
+                while end < values.size and values[end] == values[start]:
+                    end += 1
+                run_length = end - start
+                if (
+                    not values[start]
+                    and min_off_frames > 0
+                    and start > 0
+                    and end < values.size
+                    and run_length < min_off_frames
+                ):
+                    values[start:end] = True
+                start = end
+            start = 0
+            while start < values.size:
+                end = start + 1
+                while end < values.size and values[end] == values[start]:
+                    end += 1
+                if values[start] and min_on_frames > 0 and end - start < min_on_frames:
+                    values[start:end] = False
+                start = end
+        if np.array_equal(previous, stable):
+            break
     return raw, stable
 
 
@@ -556,6 +595,24 @@ def main() -> None:
         default=2,
         help="Close internal false gaps up to this many 50 Hz frames.",
     )
+    parser.add_argument(
+        "--mask-min-on-frames",
+        type=int,
+        default=6,
+        help="Remove contact pulses shorter than this many 50 Hz frames.",
+    )
+    parser.add_argument(
+        "--mask-min-off-frames",
+        type=int,
+        default=6,
+        help="Fill internal release gaps shorter than this many 50 Hz frames.",
+    )
+    parser.add_argument(
+        "--mask-history-reduce",
+        choices=("latest", "max"),
+        default="max",
+        help="Use the latest physics sample or the maximum-magnitude saved history sample for mask extraction.",
+    )
     parser.add_argument("--force-reduce", choices=("sum", "max", "mean"), default="sum")
     parser.add_argument(
         "--forces-only",
@@ -633,17 +690,34 @@ def main() -> None:
             raise ValueError("Latest contact force does not match contact_force_part_history_w[:, 0].")
     if not np.isfinite(part_force).all():
         raise ValueError("Computed contact_force_part_w contains NaN or Inf.")
+    mask_force = part_force
+    if part_force_history is not None and args.mask_history_reduce == "max":
+        history_magnitude = np.linalg.norm(part_force_history, axis=-1)
+        history_index = history_magnitude.argmax(axis=1)
+        mask_force = np.take_along_axis(
+            part_force_history,
+            history_index[:, None, :, None],
+            axis=1,
+        ).squeeze(1)
     raw_part_mask, part_mask = _stable_contact_mask(
-        part_force,
+        mask_force,
         on_threshold=float(args.threshold),
         off_threshold=float(args.mask_off_threshold),
         close_gap_frames=int(args.mask_close_gap_frames),
+        min_on_frames=int(args.mask_min_on_frames),
+        min_off_frames=int(args.mask_min_off_frames),
     )
-    part_positions = (
-        None
-        if args.forces_only
-        else _raw_contact_part_positions(recording, meta, order, body_pos_w, part_body_names)
-    )
+    force_support_raw, force_support_mask = raw_part_mask, part_mask
+    from somaforge_core.newton_contacts import extract_recording_contacts
+    from somaforge_core.contact_schema import CONTACT_FORCE_PART_NAMES
+    observed = extract_recording_contacts(recording, meta,
+        int(selected_env_id if selected_env_id is not None else meta.get('env_id', 0)),
+        parts=CONTACT_FORCE_PART_NAMES)
+    if observed['unallocated'].any():
+        raise ValueError('Unallocated active Newton constraints in recording')
+    part_mask = observed['active'][order]
+    raw_part_mask = part_mask.copy()
+    part_positions = None if args.forces_only else (observed['position_w'][order], part_mask)
 
     out = {
         "fps": np.asarray(fps),
@@ -656,6 +730,10 @@ def main() -> None:
         "body_lin_vel_w": body_lin_vel_w,
         "body_ang_vel_w": body_ang_vel_w,
         "contact_force_part_w": part_force,
+        "force_support_mask": force_support_mask,
+        "force_support_mask_raw": force_support_raw,
+        "contact_part_mask": part_mask,
+        "contact_semantics_json": np.asarray(json.dumps(meta['solver_contact_semantics'])),
         "contact_force_part_mask": part_mask,
         "contact_force_part_mask_raw": raw_part_mask,
         "contact_force_part_order": np.asarray(PART_ORDER),
@@ -666,25 +744,35 @@ def main() -> None:
         "contact_force_demo_threshold": np.asarray(np.float32(args.threshold)),
         "contact_force_demo_off_threshold": np.asarray(np.float32(args.mask_off_threshold)),
         "contact_force_demo_close_gap_frames": np.asarray(np.int32(args.mask_close_gap_frames)),
+        "contact_force_demo_min_on_frames": np.asarray(np.int32(args.mask_min_on_frames)),
+        "contact_force_demo_min_off_frames": np.asarray(np.int32(args.mask_min_off_frames)),
+        "contact_force_demo_mask_history_reduce": np.asarray(str(args.mask_history_reduce)),
         "contact_force_sample_semantics": np.asarray("latest_physics_step_time_aligned_with_raw_contacts"),
+        "contact_mask_sample_semantics": np.asarray(
+            "Newton solver activation and allocation; no force threshold or temporal label editing"
+        ),
         "robot_asset_json": np.asarray(encode_robot_asset_json(robot_asset)),
         "kinematics_provenance_json": np.asarray(encode_kinematics_provenance(kinematics_provenance)),
-        "contact_force_provenance_json": np.asarray(
-            encode_contact_force_provenance(
-                newton_contact_provenance(
-                    solver_config=solver_config,
-                    source_recording=str(args.recording),
-                    force_reduce=args.force_reduce,
-                    threshold_n=args.threshold,
-                    mask_off_threshold_n=args.mask_off_threshold,
-                    mask_close_gap_frames=args.mask_close_gap_frames,
-                    history_sample_count=(
-                        int(part_force_history.shape[1]) if part_force_history is not None else None
-                    ),
-                )
-            )
-        ),
     }
+    contact_provenance = newton_contact_provenance(
+        solver_config=solver_config,
+        source_recording=str(args.recording),
+        force_reduce=args.force_reduce,
+        threshold_n=args.threshold,
+        mask_off_threshold_n=args.mask_off_threshold,
+        mask_close_gap_frames=args.mask_close_gap_frames,
+        history_sample_count=(int(part_force_history.shape[1]) if part_force_history is not None else None),
+    )
+    contact_provenance.update(
+        {
+            "contact_mask_history_reduce": str(args.mask_history_reduce),
+            "contact_mask_min_on_frames": int(args.mask_min_on_frames),
+            "contact_mask_min_off_frames": int(args.mask_min_off_frames),
+        }
+    )
+    out["contact_force_provenance_json"] = np.asarray(
+        encode_contact_force_provenance(contact_provenance)
+    )
     if part_force_history is not None:
         out["contact_force_part_history_w"] = part_force_history
         out["contact_force_part_history_latest_index"] = np.asarray(np.int32(0))

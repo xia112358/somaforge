@@ -173,7 +173,7 @@ def _is_somaforge_root(path: Path) -> bool:
     return (
         (path / "src/holosoma/holosoma").is_dir()
         and (path / "packages/motion_edit").is_dir()
-        and (path / "packages/gmvq").is_dir()
+        and (path / "packages/somaforge_core").is_dir()
     )
 
 

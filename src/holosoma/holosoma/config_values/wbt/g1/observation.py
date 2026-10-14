@@ -12,16 +12,6 @@ actor_obs_shared = ObsGroupCfg(
             scale=1.0,
             noise=0.0,
         ),
-        "motion_ref_joint_pos": ObsTermCfg(
-            func="holosoma.managers.observation.terms.wbt:motion_ref_joint_pos",
-            scale=1.0,
-            noise=0.01,
-        ),
-        "motion_ref_joint_vel": ObsTermCfg(
-            func="holosoma.managers.observation.terms.wbt:motion_ref_joint_vel",
-            scale=1.0,
-            noise=0.5,
-        ),
         "motion_ref_pos_b": ObsTermCfg(
             func="holosoma.managers.observation.terms.wbt:motion_ref_pos_b",
             scale=1.0,
@@ -92,16 +82,6 @@ critic_obs_shared_terms = {
         scale=1.0,
         noise=0.0,
     ),
-    "motion_ref_joint_pos": ObsTermCfg(
-        func="holosoma.managers.observation.terms.wbt:motion_ref_joint_pos",
-        scale=1.0,
-        noise=0.01,
-    ),
-    "motion_ref_joint_vel": ObsTermCfg(
-        func="holosoma.managers.observation.terms.wbt:motion_ref_joint_vel",
-        scale=1.0,
-        noise=0.5,
-    ),
     "motion_ref_pos_b": ObsTermCfg(
         func="holosoma.managers.observation.terms.wbt:motion_ref_pos_b",
         scale=1.0,
@@ -165,35 +145,106 @@ critic_obs_shared_terms = {
     ),
 }
 
-future_ref_terms = {
-    "future_motion_ref_joint_pos": ObsTermCfg(
-        func="holosoma.managers.observation.terms.wbt:future_motion_ref_joint_pos",
-        params={"offsets": (1, 2, 4, 8)},
-        scale=1.0,
-        noise=0.01,
-    ),
-    "future_motion_ref_pos_b": ObsTermCfg(
-        func="holosoma.managers.observation.terms.wbt:future_motion_ref_pos_b",
-        params={"offsets": (1, 2, 4, 8)},
-        scale=1.0,
-        noise=0.25,
-    ),
-    "future_motion_ref_ori_b": ObsTermCfg(
-        func="holosoma.managers.observation.terms.wbt:future_motion_ref_ori_b",
-        params={"offsets": (1, 2, 4, 8)},
-        scale=1.0,
-        noise=0.05,
-    ),
-}
+FUTURE_REF_OFFSETS = (1, 2, 4, 8)
+CURRENT_REF_TERM_NAMES = ("motion_command", "motion_ref_pos_b", "motion_ref_ori_b")
+
+future_ref_terms = {}
+for offset in FUTURE_REF_OFFSETS:
+    # Keep each future frame identical to the current reference contract and
+    # adjacent in the flattened observation: [q, qd, torso_pos, torso_rot6d].
+    future_ref_terms.update(
+        {
+            f"future_t{offset}_motion_command": ObsTermCfg(
+                func="holosoma.managers.observation.terms.wbt:future_motion_command",
+                params={"offset": offset},
+                scale=1.0,
+                noise=0.0,
+            ),
+            f"future_t{offset}_motion_ref_pos_b": ObsTermCfg(
+                func="holosoma.managers.observation.terms.wbt:future_motion_ref_pos_b",
+                params={"offset": offset},
+                scale=1.0,
+                noise=0.25,
+            ),
+            f"future_t{offset}_motion_ref_ori_b": ObsTermCfg(
+                func="holosoma.managers.observation.terms.wbt:future_motion_ref_ori_b",
+                params={"offset": offset},
+                scale=1.0,
+                noise=0.05,
+            ),
+        }
+    )
 
 actor_obs_future_ref_terms = {
-    **actor_obs_shared.terms,
-    **future_ref_terms,
+    "00_reference_window": ObsTermCfg(
+        func="holosoma.managers.observation.terms.wbt:policy_reference_window",
+        params={"include_current": False, "add_noise": True},
+        scale=1.0,
+        noise=0.0,
+    ),
+    **{name: term for name, term in actor_obs_shared.terms.items() if name not in CURRENT_REF_TERM_NAMES},
 }
 
 critic_obs_future_ref_terms = {
-    **critic_obs_shared_terms,
-    **future_ref_terms,
+    "00_reference_window": ObsTermCfg(
+        func="holosoma.managers.observation.terms.wbt:policy_reference_window",
+        params={"include_current": True, "add_noise": False},
+        scale=1.0,
+        noise=0.0,
+    ),
+    **{name: term for name, term in critic_obs_shared_terms.items() if name not in CURRENT_REF_TERM_NAMES},
+}
+
+actor_obs_future_ref_no_qdot_terms = {
+    "00_reference_window": ObsTermCfg(
+        func="holosoma.managers.observation.terms.wbt:policy_reference_window",
+        params={"include_current": False, "add_noise": True, "include_joint_velocity": False},
+        scale=1.0,
+        noise=0.0,
+    ),
+    **{name: term for name, term in actor_obs_shared.terms.items() if name not in CURRENT_REF_TERM_NAMES},
+}
+
+critic_obs_future_ref_no_qdot_terms = {
+    "00_reference_window": ObsTermCfg(
+        func="holosoma.managers.observation.terms.wbt:policy_reference_window",
+        params={"include_current": True, "add_noise": False, "include_joint_velocity": False},
+        scale=1.0,
+        noise=0.0,
+    ),
+    **{name: term for name, term in critic_obs_shared_terms.items() if name not in CURRENT_REF_TERM_NAMES},
+}
+
+sparse_climb_actor_terms = {
+    "00_sparse_climb_reference_window": ObsTermCfg(
+        func="holosoma.managers.observation.terms.wbt:sparse_climb_reference_window",
+        params={"add_noise": True},
+        scale=1.0,
+        noise=0.0,
+    ),
+    # Current full-body geometry and terrain remain single-frame observations.
+    **{
+        name: actor_obs_shared.terms[name]
+        for name in (
+            "pelvis_global_pos",
+            "pelvis_global_lin_vel",
+            "robot_body_pos_b",
+            "robot_body_ori_b",
+            "terrain_height_scan",
+        )
+    },
+}
+
+sparse_climb_actor_proprio_history_terms = {
+    "projected_gravity": ObsTermCfg(
+        func="holosoma.managers.observation.terms.wbt:projected_gravity",
+        scale=1.0,
+        noise=0.05,
+    ),
+    **{
+        name: actor_obs_shared.terms[name]
+        for name in ("base_lin_vel", "base_ang_vel", "dof_pos", "dof_vel", "actions")
+    },
 }
 
 a2a_limb_state_term = {
@@ -320,6 +371,46 @@ g1_29dof_wbt_future_ref_observation = ObservationManagerCfg(
     },
 )
 
+g1_29dof_wbt_future_ref_no_qdot_observation = ObservationManagerCfg(
+    groups={
+        "actor_obs": ObsGroupCfg(
+            concatenate=True,
+            enable_noise=True,
+            history_length=1,
+            terms=actor_obs_future_ref_no_qdot_terms,
+        ),
+        "critic_obs": ObsGroupCfg(
+            concatenate=True,
+            enable_noise=False,
+            history_length=1,
+            terms=critic_obs_future_ref_no_qdot_terms,
+        ),
+    },
+)
+
+g1_29dof_wbt_sparse_climb_observation = ObservationManagerCfg(
+    groups={
+        "actor_obs": ObsGroupCfg(
+            concatenate=True,
+            enable_noise=True,
+            history_length=1,
+            terms=sparse_climb_actor_terms,
+        ),
+        "actor_proprio_history": ObsGroupCfg(
+            concatenate=True,
+            enable_noise=True,
+            history_length=5,
+            terms=sparse_climb_actor_proprio_history_terms,
+        ),
+        "critic_obs": ObsGroupCfg(
+            concatenate=True,
+            enable_noise=False,
+            history_length=1,
+            terms=critic_obs_future_ref_no_qdot_terms,
+        ),
+    },
+)
+
 g1_29dof_wbt_contact_force_observation = ObservationManagerCfg(
     groups={
         "actor_obs": ObsGroupCfg(
@@ -354,10 +445,90 @@ g1_29dof_wbt_a2a_pure_observation = ObservationManagerCfg(
     },
 )
 
+php_student_actor_terms = {
+    "velocity_command": ObsTermCfg(
+        func="holosoma.managers.observation.terms.wbt:php_velocity_command",
+        params={"command": (1.0, 0.0)},
+    ),
+    "projected_gravity": ObsTermCfg(
+        func="holosoma.managers.observation.terms.wbt:projected_gravity", noise=0.05
+    ),
+    "base_ang_vel": ObsTermCfg(
+        func="holosoma.managers.observation.terms.wbt:base_ang_vel", noise=0.2
+    ),
+    "dof_pos": ObsTermCfg(func="holosoma.managers.observation.terms.wbt:dof_pos", noise=0.01),
+    "dof_vel": ObsTermCfg(func="holosoma.managers.observation.terms.wbt:dof_vel", noise=0.5),
+    "actions": ObsTermCfg(func="holosoma.managers.observation.terms.wbt:actions"),
+}
+
+php_expert_actor_terms = {
+    name: actor_obs_shared.terms[name]
+    for name in (
+        "motion_command",
+        "motion_ref_pos_b",
+        "motion_ref_ori_b",
+        "base_lin_vel",
+        "base_ang_vel",
+        "terrain_height_scan",
+        "dof_pos",
+        "dof_vel",
+        "actions",
+    )
+}
+
+g1_29dof_wbt_php_expert_observation = ObservationManagerCfg(
+    groups={
+        "actor_obs": ObsGroupCfg(
+            concatenate=True, enable_noise=True, history_length=1, terms=php_expert_actor_terms
+        ),
+        "critic_obs": ObsGroupCfg(
+            concatenate=True, enable_noise=False, history_length=1, terms=critic_obs_shared_terms
+        ),
+    }
+)
+
+g1_29dof_wbt_php_student_observation = ObservationManagerCfg(
+    groups={
+        "actor_obs": ObsGroupCfg(
+            concatenate=True, enable_noise=True, history_length=1, terms=php_student_actor_terms
+        ),
+        "depth_obs": ObsGroupCfg(
+            concatenate=True,
+            enable_noise=False,
+            history_length=1,
+            terms={
+                "depth": ObsTermCfg(
+                    func="holosoma.managers.observation.terms.wbt:PHPDepthImage",
+                    params={
+                        "max_distance": 5.0,
+                        "offset_range": (-0.03, 0.03),
+                        "gaussian_std": 0.03,
+                        "delay_steps": (3, 4),
+                    },
+                    scale=0.2,
+                    clip=(0.0, 1.0),
+                )
+            },
+        ),
+        "critic_obs": ObsGroupCfg(
+            concatenate=True, enable_noise=False, history_length=1, terms=critic_obs_shared_terms
+        ),
+        "teacher_actor_obs": ObsGroupCfg(
+            concatenate=True, enable_noise=False, history_length=1, terms=php_expert_actor_terms
+        ),
+    }
+)
+
 __all__ = [
+    "CURRENT_REF_TERM_NAMES",
+    "FUTURE_REF_OFFSETS",
     "g1_29dof_wbt_a2a_observation",
     "g1_29dof_wbt_a2a_pure_observation",
     "g1_29dof_wbt_contact_force_observation",
     "g1_29dof_wbt_future_ref_observation",
+    "g1_29dof_wbt_future_ref_no_qdot_observation",
+    "g1_29dof_wbt_sparse_climb_observation",
     "g1_29dof_wbt_observation",
+    "g1_29dof_wbt_php_student_observation",
+    "g1_29dof_wbt_php_expert_observation",
 ]

@@ -52,7 +52,16 @@ def _resolve_source_path(plan: Any) -> Path:
 def _load_source_motion(plan: Any, preview: Any) -> tuple[dict[str, Any], Path]:
     path = _resolve_source_path(plan)
     motion = preview._load_motion_npz(path)
+    from somaforge_core.robot_assets import decode_robot_asset_json
+    decode_robot_asset_json(motion.get("robot_asset_json"), context=f"generation source {path}")
     missing = [name for name in _REQUIRED_ROLLOUT_FIELDS if name not in motion]
+    labels_path = getattr(plan, "metadata", {}).get("newton_contact_file")
+    if missing and labels_path and all(name.startswith("raw_contact_") for name in missing):
+        # Current motions carry solver observations in a hash-bound sidecar.
+        # Never fabricate legacy force arrays just to satisfy an old container.
+        from somaforge_core.newton_contact_data import load_contact_labels
+        load_contact_labels(path, labels_path)
+        missing = []
     if missing:
         raise ValueError(
             "contact-aware generation requires one unified rollout source as its "
@@ -61,10 +70,6 @@ def _load_source_motion(plan: Any, preview: Any) -> tuple[dict[str, Any], Path]:
     return motion, path
 
 
-def _load_force_rollout(plan: Any, preview: Any) -> tuple[dict[str, Any], Path]:
-    """Compatibility alias for callers migrating to the unified source."""
-
-    return _load_source_motion(plan, preview)
 
 
 def _stamp_rollout_authority_metadata(
@@ -131,11 +136,13 @@ def generate_contact_aware_pyroki_preview(
     ik_conda_env: str = "env_somaforge",
     ik_script: str | Path | None = None,
     ik_max_nfev: int | None = None,
+    ik_q_acceleration_weight: float | None = None,
     ik_collision_similarity_weight: float | None = None,
     ik_collision_max_refinements: int | None = None,
     ik_collision_reference_cache: str | Path | None = None,
     semantic_proxy_basis: str | Path | None = None,
     layers_root: Path | None = None,
+    compile_only: bool = False,
 ):
     """Generate every target and initializer from one rollout source motion."""
 
@@ -153,6 +160,8 @@ def generate_contact_aware_pyroki_preview(
             "contact edit plan must be validated or locked; pass allow_draft=True to override"
         )
     preview.validate_contact_edit_plan(plan, allow_free=allow_free)
+    from .contract import validate_generation_metadata
+    validate_generation_metadata(plan.metadata)
 
     output = Path(output_motion_path).expanduser()
     if output.exists() and not overwrite:
@@ -165,9 +174,11 @@ def generate_contact_aware_pyroki_preview(
         layers_root,
         contact_layer=contact_layer,
     )
-    graph = preview.read_contact_graph(
+    from motion_edit.contact.layers import read_verified_contact_graph
+    graph = read_verified_contact_graph(
         resolved_layers_root / contact_layer,
         plan.source_motion_id,
+        motion_path=source_path, labels_path=plan.metadata.get('newton_contact_file'),
     )
     surface_path = (
         resolved_layers_root
@@ -260,9 +271,10 @@ def generate_contact_aware_pyroki_preview(
         json.dumps(proxy_metadata, sort_keys=True)
     )
 
-    patches, binding_summary = preview.bind_newton_contact_patches(
-        graph.anchors,
-        source_motion,
+    from motion_edit.contact.layers import verified_source_patches
+    patches, binding_summary = verified_source_patches(
+        graph,
+        source_motion_path=source_path,
         min_force_norm=float(min_raw_contact_force_norm),
     )
     binding_summary["source_motion_path"] = str(source_path)
@@ -284,6 +296,13 @@ def generate_contact_aware_pyroki_preview(
         ],
         axis=1,
     )
+    taskspace_edits = edits
+    if (plan.metadata or {}).get("free_surface_contacts"):
+        # An edit window selects where a displacement is requested; it must
+        # not erase the source contact before/after that window. Free-surface
+        # offsets below still apply their original per-frame windows.
+        from .support_motion import full_contact_episode_edits
+        taskspace_edits = full_contact_episode_edits(edits, graph.anchors)
     taskspace = preview.build_contact_aware_taskspace_motion(
         motion_id=graph.motion_id,
         source_motion=source_motion,
@@ -293,7 +312,7 @@ def generate_contact_aware_pyroki_preview(
         patches=patches,
         anchors=graph.anchors,
         surfaces=surfaces,
-        edits=edits,
+        edits=taskspace_edits,
         source_reference_weight=float(source_reference_weight),
         boundary_ramp_frames=int(boundary_ramp_frames),
     )
@@ -310,6 +329,55 @@ def generate_contact_aware_pyroki_preview(
         }
     )
     plan_metadata = dict(plan.metadata or {})
+    if 'source_loaded_material_reference' in plan_metadata:
+        taskspace_metadata['source_loaded_material_reference'] = plan_metadata['source_loaded_material_reference']
+    if 'environment_depth_residual_scale_m' in plan_metadata:
+        taskspace_metadata['environment_depth_residual_scale_m'] = plan_metadata['environment_depth_residual_scale_m']
+    if "release_witnesses" in plan_metadata:
+        taskspace_metadata["release_witnesses"] = plan_metadata["release_witnesses"]
+    if "native_hard_release" in plan_metadata:
+        taskspace_metadata["native_hard_release"] = plan_metadata["native_hard_release"]
+    taskspace_metadata["normalize_contact_group_weights"] = bool(plan_metadata.get("normalize_contact_group_weights", False))
+    if "root_yaw_condition" in plan_metadata:
+        taskspace_metadata["root_yaw_condition"] = dict(plan_metadata["root_yaw_condition"])
+    if plan_metadata.get("free_surface_contacts"):
+        # Keep the authored surface edit separate from the deliberately weak,
+        # unrotated free-landing reference used below.
+        taskspace_metadata["support_surface_transforms"] = list(plan.surface_transforms)
+        if "support_residual_scale" in plan_metadata:
+            taskspace_metadata["support_residual_scale"] = plan_metadata["support_residual_scale"]
+        for key in ("support_rotation_policy", "support_origin_policy", "augmentation_objective"):
+            if key in plan_metadata:
+                taskspace_metadata[key] = plan_metadata[key]
+        offsets = plan_metadata.get("free_surface_reference_offsets")
+        if offsets is not None and (not isinstance(offsets, dict) or not plan_metadata.get("convex_surface_targets")):
+            raise ValueError("Explicit free-surface offsets require convex actual-face targets")
+        if offsets is None and Path(plan_metadata["source_terrain_mesh"]).resolve() != Path(plan_metadata["target_terrain_mesh"]).resolve():
+            raise ValueError("Free surface contact pilot currently requires unchanged terrain")
+        by_anchor = {patch.anchor_id: patch for patch in patches}
+        contacts = []
+        for contact in taskspace.contacts:
+            patch = by_anchor[contact.anchor_id]
+            slots = np.searchsorted(patch.source_target_frames, contact.frames)
+            from .free_surface_reference import reference_offsets
+            offset = reference_offsets(contact.frames, offsets[contact.anchor_id] if offsets is not None else [0., 0., 0.])
+            breaks=np.flatnonzero(np.any(np.diff(offset,axis=0)!=0,axis=1))+1
+            for indices in np.split(np.arange(len(contact.frames)),breaks):
+                if not len(indices):continue
+                contacts.append(preview.replace(contact,frames=np.asarray(contact.frames)[indices],
+                    target_uv=None,
+                    points_local_by_frame=(None if contact.points_local_by_frame is None else contact.points_local_by_frame[indices]),
+                    target_points_w=np.asarray(patch.source_target_points_w)[slots[indices]]+offset[indices,None,:],
+                    metadata={**contact.metadata, "target_contract": "unrotated_demonstration_weak_reference",
+                              "free_surface_reference_offset_world": offset[indices[0]].tolist()}))
+        taskspace = preview.replace(taskspace, contacts=tuple(contacts))
+        if plan_metadata.get("stable_contact_material_samples"):
+            from .stable_contact_material import stabilize_contact_material_samples, MATERIAL_SAMPLE_SCHEMA
+            taskspace = stabilize_contact_material_samples(taskspace, source_motion)
+            taskspace_metadata["optimization_sample_contract"] = MATERIAL_SAMPLE_SCHEMA
+        taskspace_metadata["free_surface_contacts"] = True
+        taskspace_metadata["convex_surface_targets"] = bool(plan_metadata.get("convex_surface_targets", False))
+        taskspace_metadata["surface_reference_ratio"] = float(source_reference_weight)
     target_terrain_mesh = plan_metadata.get("target_terrain_mesh")
     if target_terrain_mesh:
         source_terrain_mesh = plan_metadata.get("source_terrain_mesh")
@@ -326,12 +394,15 @@ def generate_contact_aware_pyroki_preview(
                     Path(source_terrain_mesh).expanduser().resolve()
                 ),
                 "collision_reference_motion": str(source_path),
-                "environment_collision_contract": (
-                    "source_rollout_soft_signed_distance_similarity"
-                ),
+                "environment_collision_contract": "source_relative_one_sided_penetration",
             }
         )
     taskspace = preview.replace(taskspace, metadata=taskspace_metadata)
+    if "source_prefix_reference" in plan_metadata:
+        from .lte_fullbody import _semantic_keypoints_from_motion
+        from .source_prefix_reference import apply_source_prefix
+        taskspace = apply_source_prefix(taskspace, _semantic_keypoints_from_motion(source_motion),
+                                        plan.surface_transforms, plan_metadata["source_prefix_reference"])
     taskspace.validate()
 
     work_dir = (
@@ -353,6 +424,8 @@ def generate_contact_aware_pyroki_preview(
         ),
     )
     preview.write_contact_aware_taskspace_motion(taskspace_path, taskspace)
+    if compile_only:
+        return taskspace_path
     preview._run_pyroki_preview_subprocess(
         taskspace_path=taskspace_path,
         source_motion_path=source_path,
@@ -360,6 +433,7 @@ def generate_contact_aware_pyroki_preview(
         ik_script=ik_script,
         ik_conda_env=ik_conda_env,
         ik_max_nfev=ik_max_nfev,
+        ik_q_acceleration_weight=ik_q_acceleration_weight,
         ik_collision_similarity_weight=ik_collision_similarity_weight,
         ik_collision_max_refinements=ik_collision_max_refinements,
         ik_collision_reference_cache=ik_collision_reference_cache,

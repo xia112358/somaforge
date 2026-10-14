@@ -41,31 +41,7 @@ def test_newton_force_target_reorders_canonical_parts(tmp_path: Path) -> None:
     assert target.joint_pos is not None
 
 
-def test_force_retarget_cli_exposes_complete_newton_loop_inputs() -> None:
-    args = build_parser().parse_args(
-        [
-            "force-retarget",
-            "--initial-motion",
-            "candidate.npz",
-            "--lte",
-            "candidate.contact_laplacian_keypoints.npz",
-            "--target-force-motion",
-            "target.force.npz",
-            "--manifest",
-            "manifest.json",
-            "--motion-id",
-            "00",
-            "--checkpoint",
-            "model.pt",
-            "--newton-python",
-            "/env/bin/python",
-            "--output-motion",
-            "output.npz",
-            "--work-dir",
-            "work",
-        ]
-    )
-
-    assert args.func.__name__ == "_cmd_force_retarget"
-    assert args.physics_iterations == 4
-    assert args.pyroki_iterations == 25
+def test_force_retarget_cli_is_retired() -> None:
+    import pytest
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["force-retarget"])

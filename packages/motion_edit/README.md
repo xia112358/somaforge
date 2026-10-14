@@ -11,6 +11,12 @@ kinematics. No alternative dynamics backend is supported.
 The package stores local runtime metadata and
 segment layers under `data/`; large runtime artifacts remain untracked.
 
+Shared Newton collision queries and self-collision filters are owned by
+`somaforge_core`; current IK imports them directly. Contact objectives are owned
+by `contact_solver`, an explicit dependency of Motion Edit. Neither core nor the
+solver imports this editing application. Contact bindings initialize once in
+the contact package, without repeated installation in generation.
+
 ## Layout
 
 ```text
@@ -57,6 +63,12 @@ environment. Project-local `.venv` environments are not used.
 
 The main user-facing path starts from the canonical asset manifest:
 
+The header's Open button searches registered motions by name or ID and accepts
+read-only replay/report paths. The right panel keeps a collapsible recent-motion
+list. Display layers remain independent and available during generation;
+generation locks contact edits until it finishes. Generated references open as
+read-only candidates and still require native validation before training use.
+
 ```text
 Somaforge Newton 8-part asset manifest
   -> self-collision base policy rollout
@@ -84,11 +96,7 @@ Somaforge Newton 8-part asset manifest
 
 ./motion-edit generate-ref \
   --plan data/workbench/climb00_surface_edits.json \
-  --output-motion data/motions/generated/climb00_farther.policy_ref_v1.npz \
-  --output-contact-layer contact/climb00_farther \
-  --output-segment-layer candidates/climb00_farther \
-  --output-motion-version-id climb00_farther \
-  --register-motion-version
+  --output-motion data/motions/generated/climb00_farther.policy_ref_v1.npz
 
 ./motion-edit export-manifest \
   --motion-version-id climb00_farther \
@@ -114,7 +122,14 @@ moves the whole episode while remaining same-surface constrained. Selection
 and dragging are separate actions, and edited handles retain a clickable ghost
 at their session-start position for exact episode restore. The Output tab
 validates the plan and runs the same formal `generate-ref` implementation as a
-background job; the CLI remains available for batch and scripted runs.
+background job; the CLI remains available for batch and scripted runs. Both
+use `generation.jobs.generate_candidate` with the current backend defaults.
+Saved plans compile authored displacement windows from the unchanged verified
+Newton source layer and actual terrain. Old or unverified labels are rejected.
+The saved edited contact layer is a draft, not generated contact truth.
+Generated versions open for playback with no inherited contact layer; their
+`.generation.json` receipt records `training_ready=false` until native validation.
+Segmentation is rebuilt from that validation, rather than an output UI setting.
 
 The Contact Editor Generate action and `generate-ref` remain supported
 orchestration surfaces. The retained production command for reproducible
@@ -135,20 +150,9 @@ It deliberately does not invent or migrate edited contact forces. Policy
 training consumes the canonical kinematic result; measured force and raw
 contacts remain source-rollout evidence rather than generated output fields.
 
-`generate-lte-augmentation` remains available only as a hidden/internal
-geometry diagnostic. Its output is not a standard generated trajectory because
-it does not write the WBT contact-force contract:
-
-```bash
-./motion-edit generate-lte-augmentation \
-  --plan data/workbench/climb00_surface_edits.json \
-  --output-motion ../../tmp/motion_edit/climb00_farther.geometry_debug.npz \
-  --output-contact-layer contact/climb00_farther \
-  --output-segment-layer candidates/climb00_farther \
-  --output-motion-version-id climb00_farther \
-  --register-motion-version \
-  --mode lte_fullbody
-```
+Kinematic generation uses `generate-ref` for single plans and plan manifests.
+The former LTE and proxy-acceptance queue commands have been removed.
+Every candidate requires fresh native Newton validation before training admission.
 
 The former viewer, iframe timeline, surface-editor bridge, and interactive
 cutter commands were removed. New work enters through the unified
@@ -165,7 +169,6 @@ Keep these boundaries clear when debugging or adding features:
 | `motion_edit/web/` + `web/` | Single-port API and Three.js Contact Editor | Contact dynamics or policy rollout |
 | `motion_edit/generation/` | ContactEditPlan -> edited kinematic reference; hidden geometry diagnostics | Contact dynamics or policy rollout |
 | `motion_edit/contact_laplacian/` | One motion's whole-trajectory Contact Laplacian, ContactHandleSpec, residual weights, solver metadata | Multi-motion queueing, policy-force writing, or simulator rollout |
-| `motion_edit/augmentation.py` | Dataset-level job state, static candidate acceptance, accepted manifest | Editing plans, trajectory solving, Newton replay, or training |
 | `motion_edit/contact_force/` | Canonical contact-force schema and explicitly diagnostic prescribed-force tools | Production force generation |
 | `motion_edit/segmentation/` | Draft segmentation sessions with explicit start/list/edit/save/discard commands | Main contact-anchor editing |
 | `motion_edit/storage/` | MotionAsset, MotionVersion, canonical segments, token catalogs | Runtime `.npz` payload ownership |
@@ -192,20 +195,16 @@ simultaneous heel-plus-toe contact are all preserved.
 - Use `motion-edit generate-ref` for edited kinematic trajectories.
 - Force-training files require `contact_force_part_w`, `contact_force_part_mask`,
   `contact_force_part_order`, and Newton `contact_force_provenance_json`.
-- Treat `contact_force_part_w` and `contact_force_part_history_w` as physical
-  data. Do not smooth them for editing. For complete recordings, the former is
-  the strongest valid sample in the control interval and is aligned with the
-  raw contact point from the same physics substep; the latter stores all
-  physics substeps in latest-first order. Legacy recordings without point
-  history fall back to the latest physics step. Stable editor phases come from
-  `contact_force_part_mask`, while
-  `contact_force_part_mask_raw` retains the direct force-threshold decision.
-- Use `generate-lte-augmentation --mode lte_fullbody` only for hidden geometry
+- Contact activation uses the actual Newton/MJWarp CONSTRAINT, includemargin
+  and allocation fields. Contact force describes support, not activation.
+  Effective task contacts use `somaforge_core.contact_face_selection`; event
+  identities span execution noise and heel/toe switches within one endpoint.
+- Use internal geometry helpers only for explicit geometry
   diagnostics.
 - Pass a logical contact layer such as `contact/raw29_00_editor_ready`; it
   resolves under `data/layers/contact/...`.
-- Non-dry-run `generate-ref` requires `--output-contact-layer` or
-  `output_contact_layer` in the plan.
+- `generate-ref` writes a candidate and validation receipt, not contact labels.
+  Fresh Newton labels and acceptance are required before training.
 - Confirm `ContactEditPlan.source_motion_path` exists before generation. It may
   be an absolute path outside this repository.
 - CUDA/JAX/Isaac initialization warnings inside Codex or a machine without GPU
@@ -276,7 +275,7 @@ The only active canonical segmentation path is `data/segments/<motion_version_id
 
 Motion assets and motion versions are path references; registering them does not copy the `.npz`. Contact-first segmentation is the default canonical segmentation source. Cutter/manual refinement updates the canonical segmentation with `cut_source=cutter_refined` or related provenance. `accepted`, `rejected`, `manual`, and cutter-refined states are statuses or provenance fields on canonical `SegmentRecord`s. They should not become competing active segment layers for the same motion version.
 
-Legacy `data/layers/{candidates,manual,accepted,rejected}` paths remain for compatibility and migration. CLI commands that write these legacy layers print a warning and should not be treated as the primary storage path for new curation.
+Historical `data/layers/{candidates,manual,accepted,rejected}` artifacts are retained as provenance. Their old curation/migration CLI entries have been removed. Current exports require `--motion-version-id` and read canonical segments.
 
 Split `.npz` files are export caches only. `export-split-npz` reads canonical segments and materializes clips for downstream training/export; those clips are safe to delete and regenerate.
 
@@ -351,7 +350,7 @@ for the retained end-to-end command sequence and measured acceptance values.
   WBT-ready generated force-ref motion versions, not raw accepted clips.
 - `rejected`: candidates kept for provenance but excluded from export.
 
-Accept/reject writes use upsert-by-segment-id semantics for legacy compatibility. For canonical storage, use `mark-segment-status` so accepted/rejected remains a status inside `data/segments/<motion_version_id>.jsonl`.
+The old `accept`/`reject` layer commands are removed. Use `mark-segment-status` so accepted/rejected remains a status inside `data/segments/<motion_version_id>.jsonl`.
 
 ## Contact-Centric Pipeline
 
@@ -485,19 +484,28 @@ same `surface_id`/`object_id` form one episode. That episode has one handle;
 moving it applies one shared surface displacement to every member anchor while
 preserving the original per-frame contact samples, forces and stage structure.
 
-- Recent motions: a bottom-right vertical scroll list treats the source motion
+- Recent motions: a collapsible bottom-right list treats the source motion
   and every generated MotionVersion as peer entries. Selecting an entry opens
   its complete trajectory while preserving the owning asset context.
-- Contact tab: body/surface/status filters, current-frame mode, previous/next
-  contact, read-only surface-position offset and reject/clamp boundary mode.
-- Display tab: terrain, contact surfaces, bound point+force samples, episode
-  handles, root path, selection guides, handle size and force scale.
+- Contact tab: an episode picker jumps to the selected episode's start frame.
+  Body/surface/status filters, current-frame visibility and reject/clamp dragging
+  are under “筛选与拖动设置”; offsets appear only after selection.
+  The `[` / `]` shortcuts traverse matching episodes in time order and wrap at
+  the ends. Episode navigation pauses playback before jumping. Current-frame
+  mode only controls 3D marker visibility; it does not prevent navigation through
+  contact-free frames. Empty filters disable navigation and clear stale selection.
+- Display tab: scene layers, camera focus/follow and terrain opacity. Selection
+  guides, handle size, force scale and channel legends are under “显示细节”.
 - Output tab: ContactEditPlan, generated motion/contact/segment paths, MotionVersion
   registration, overwrite policy, validation, generation status, reload and discard.
 - Timeline: 8-part lane labels, adaptive time/frame ruler, stable cut markers,
-  direct drag scrubbing, frame stepping and previous/next cut navigation. It is
+  direct drag scrubbing, frame stepping and explicitly labeled “切分点” navigation
+  on desktop and mobile. Cut navigation pauses playback and is disabled when no
+  cuts are provided. It is
   the only frame scrub control; there is no duplicate range slider.
-- Toolbar: camera framing, undo, redo and save.
+- Toolbar: a shared open dialog for registered motions, NPZ playback and reports,
+  plus camera framing, undo, redo and save. Read-only playback hides the editing
+  actions and Output tab.
 
 Opening a source or generated entry switches a complete MotionAsset-backed
 bundle. Generated versions inherit robot, force, terrain and surface context,
@@ -580,28 +588,15 @@ edited-kinematics implementation; the CLI form is:
 ./motion-edit generate-ref \
   --plan data/workbench/climb00_farther.json \
   --output-motion data/motions/generated/climb00_farther.policy_ref_v1.npz \
-  --output-contact-layer contact/climb00_farther \
-  --output-segment-layer candidates/climb00_farther \
-  --output-motion-version-id climb00_farther \
-  --register-motion-version \
   --overwrite
 ```
 
-Use `generate-lte-augmentation` only when debugging the geometry stage:
-
-```bash
-./motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
-./motion-edit generate-lte-augmentation \
-  --plan data/workbench/climb00_farther.json \
-  --output-motion ../../tmp/motion_edit/climb00_farther.geometry_debug.npz \
-  --output-contact-layer contact/climb00_farther \
-  --output-segment-layer candidates/climb00_farther \
-  --output-motion-version-id climb00_farther \
-  --register-motion-version \
-  --mode lte_fullbody
-```
-
-Generation requires a `validated` or `locked` plan by default. The production
+Generation requires a `validated` or `locked` plan with explicit metadata
+`augmentation_objective="consolidated_v1"` and `free_surface_contacts=true`.
+Missing versions, legacy LTE taskspace and noncanonical robot assets are rejected.
+Rebuild old plans from verified source events and actual surfaces; adding version
+fields alone is not a migration. CLI, editor and batch scripts share this check.
+ The production
 facade extracts semantic `body_pos_w` keypoints, solves the whole-trajectory
 contact-Laplacian curves, binds Newton contact patches in canonical robot-local
 frames, and runs PyRoki IK with direct Newton collision/FK evaluation. The
@@ -611,55 +606,191 @@ file. Motion Edit never fabricates or migrates the force field written to a
 training reference: force-bearing output comes only from execution of the
 fine-tuned policy in Newton.
 
-The archived source `.npz`, source ContactLayer, and source canonical segmentation are not modified. `--output-contact-layer` writes a graph derived from the source ContactGraph with edited anchor positions. `--output-segment-layer` writes candidate segments for the edited reference. `--register-motion-version` registers that edited trajectory. Canonical segmentation for the new version is only built when `--build-canonical` is passed explicitly.
+The source motion, contact layer and event identities remain unchanged.
+Generated contact labels must be freshly materialized by Newton; copied source
+graphs and proxy error thresholds do not establish edited contact truth.
 
-## Dataset Augmentation Queue
+Standard dataset augmentation requires plan metadata `source_prefix_reference` to preserve a source-like start
+when a spatial edit otherwise distorts the initial stance. Its explicit contract
+contains `schema="source_prefix_reference_v1"`, `hold_frames` (exclusive),
+`transition_end_frame`, `surface_transform_id`, `joint_prior_scale` and
+`semantic_weight`. Before `hold_frames`, every semantic source body follows the
+same rigid source-to-target surface map. A quintic transition restores the edited
+semantic targets and the original weights by `transition_end_frame`. The IK joint
+prior is strengthened on the same clock. No solved poses are spliced or repaired,
+and contacts, collisions, source arrays and event timing retain their contracts.
+This is a generation reference, not evidence of dynamic feasibility; validate a
+new candidate through Newton observations and policy execution before admission.
+The root yaw condition is derived from the exact surface map used for semantic
+positions. An authored root yaw must agree with that map, including wraparound;
+conflicting headings and tilted maps unsupported by the current world-Z IK fail
+before generation. The optimizer left-composes this rotation with the source
+WXYZ root quaternion, preserving its original pitch/roll. Output root and body
+velocities are recomputed from the solved poses, never copied from the unrotated
+source. A generation receipt must confirm that IK retained the root yaw condition.
 
-Dataset augmentation has four separate stages:
+An unstable initial stance can force balance-recovery adjustments that deviate
+from the reference or disrupt task contacts, causing early task failure despite
+a visually plausible motion. Initial posture, heading and velocity consistency
+are therefore part of standard augmentation, not just a display check. The
+[-10/+20 policy comparisons](../../docs/trajectory_refinement.md) document this
+diagnosis; successful start repair still requires full rollout/contact acceptance.
 
-```text
-contact/jitter.py       generate independent ContactEditPlans
-generation/             solve one plan over one complete trajectory
-augmentation.py         schedule/resume/retry independent plan jobs,
-                        statically validate, then admit accepted outputs
-```
+## Dataset Augmentation
 
-`batch_contact_laplacian` is retained as a solver compatibility string. Here
-`batch` means that all frames and contact handles of one motion are optimized
-together; it does not mean that several motions are solved in one tensor batch.
-The outer augmentation queue intentionally runs independent plans one at a
-time and persists progress after every state change.
+Single and batch generation share the contact-aware rollout-authority backend:
 
 ```bash
-/home/xiaz/somaforge/packages/motion_edit/motion-edit generate-contact-jitter-plans \
-  --cut-summary data/exports/contact_cut_summary.json \
-  --output-dir data/workbench/augmentations/climb_jitter
-
-/home/xiaz/somaforge/packages/motion_edit/motion-edit generate-augmentations \
+./motion-edit generate-ref \
   --plan-manifest data/workbench/augmentations/climb_jitter/manifest.json \
+  --source-prefix-config /path/to/source-clock-prefix.json \
   --output-motion-dir data/motions/generated \
-  --register-motion-version \
-  --continue-on-error
+  --ik-max-nfev 25 \
+  --ik-q-acceleration-weight 8
 ```
 
-The queue file is execution state: pending/running/retrying/failed/accepted,
-attempt counts and errors. The separate `.accepted.json` manifest contains only
-outputs that passed canonical-asset, shape, finite-value, solver-provenance,
-Contact Laplacian target-error and full-body IK anchor-error checks. A
-MotionVersion is registered only after these checks pass. This is still
-`static_kinematic` acceptance: every accepted manifest explicitly retains
-`physics_replay_required: true`; Newton rollout and force extraction remain the
-next stage before force-aware WBT data admission.
+A manifest contains `{"plans": [{"plan_path": "plan.json"}]}`. Relative plan
+paths are resolved against that manifest. Output identity collisions fail before
+generation. Each `.generation.json` receipt records the plan hash, actual solver
+diagnostics and `requires_native_validation`; it never admits a candidate to a
+training manifest. Existing files are not overwritten without `--overwrite`.
+
+Both single-plan and plan-manifest `generate-ref` accept `--source-prefix-config`
+with a JSON contract such as `configs/motion_edit/climb00_source_prefix_v1.json`.
+The example's frame boundaries are specific to that native source clock; the
+backend contains no motion, angle or collection-size defaults. Without the flag,
+every batch plan must already contain `metadata.source_prefix_reference`; missing
+configuration fails before the first solve. This allows different source clocks
+in one batch. Single-plan editor generation retains explicitly authored prefix
+settings without imposing a dataset recipe on unrelated local edits. Conflicting
+plan and CLI settings fail. Batch preflight checks all source lengths and surface
+maps before its first solve, and changing the configuration during a batch stops
+the queue. The receipt pins the effective plan, configuration and prefix
+implementation, and checks that IK actually applied the requested reference.
+
+Prepare a fresh collection version without starting generation or GPU work:
+
+```bash
+runtime/environments/newton-main-20260914/bin/python -B \
+  scripts/expand_source_preserving_augmentations.py \
+  --prepare-from-collection runtime/current/motions/climb00_contact_dataset/versions/loaded_material_rebuild_20261003/edits207_joint_v12/index.json \
+  --source-prefix-config configs/motion_edit/climb00_source_prefix_v1.json \
+  --output runtime/current/motions/climb00_contact_dataset/versions/source_prefix_standard_20261014/edits207_joint_v14 \
+  --prepare-only
+```
+
+This accepts an edit index (`motion_files[].plan`) or a plan manifest
+(`plans[].plan_path`). It prepares `plans/`, `manifest.json`, `preparation.json`
+and a `prepared` status. It reads the unchanged native source, preserves loaded
+material evidence when present, and pins the source contact layer and terrain
+files. An identical `--resume` verifies the prepared files; changed inputs,
+configuration or implementation require a fresh version. No edited poses or
+old generation results are reused. Run the prepared manifest through the formal
+`generate-ref --plan-manifest ... --output-motion-dir ...` entrypoint afterward.
+Native FK, fresh Newton labels and actual policy rollout acceptance remain
+required before using the generated candidates as executed training data.
+
+The full native-source rebuild command
+`scripts/expand_source_preserving_augmentations.py` also accepts
+`--source-prefix-config` and requires it unless every input plan already has a
+prefix contract. It applies the configuration to prepared plans on the
+new native clock, records it in `inputs.json` and `generation_complete.json`, and
+rejects resumed results whose effective prefix or implementation differs.
+Pre-existing authored prefix boundaries are mapped exactly during event rebase;
+missing exact boundaries fail instead of silently changing the start interval.
+
+The standard order is source-clock prefix preparation, contact-aware generation,
+canonical Newton FK and fresh labels, joint policy refinement when needed, fixed
+policy rollout evaluation/collection, and per-trial dataset admission. Complete
+tracking alone cannot pass a contact-event task. Only accepted actual policy
+executions enter the dataset; kinematic candidates and failed rollouts stay in
+the audit. Each stage is explicit and preparation never starts training.
+Changing the prefix implementation invalidates prepared-version/resume hashes;
+prepare a fresh version rather than rewriting old receipts.
+
+Newton activation/allocation, full-body separation, event realization, support
+motion and trajectory continuity are evaluated separately. Source timing is
+intent, not proof that the edited trajectory achieves those contacts. Proxy point
+error is not a contact definition or dataset admission rule.
 
 ## Legacy And Developer Notes
 
-Legacy layer curation, cutter segment export/sync helpers, request-file
-migration, old LTE catalog import, and low-level clip editing remain in the
-codebase for compatibility and tests. They are hidden from the primary
-`motion-edit --help` output. Prefer the main workflow unless you are migrating
-old data or debugging one subsystem.
+Retired commands are not registered, including hidden aliases: `workbench`,
+`workbench-action`, `import-manual-cuts`, `export-cutter-segments`, `accept`,
+`reject`, `list-layer`, `migrate-layer-to-canonical`, `import-lte-catalog`, and
+`force-retarget`. Their handlers and the old workbench server/LTE adapter were
+removed. The export commands reject the former `--source` branch and require a
+canonical motion version. The main Contact Editor and its shared internal
+editing/storage helpers remain available.
+
+Predictor code and the compatibility dependencies used by its historical
+experiments are outside this retirement pass.
 
 See also:
 
 - `docs/contact_laplacian_algorithms.md` for the contact-Laplacian geometry
   backend used inside `generate-ref`.
+
+## Unified playback and experiment review
+
+All maintained G1 motion playback uses the same `contact-editor` Three.js page,
+server, camera, and transport controls. Registered source/edited motions continue
+using `--motion-id`; read-only results and research reports use:
+
+```bash
+./motion-edit contact-editor --review path/to/motion.npz --terrain path/to/terrain.obj
+./motion-edit contact-editor --review path/to/diagnostic.json
+```
+
+The toolbar's “打开轨迹／回放／报告” dialog accepts these paths. No additional
+Viser server, iframe, browser window, or polling bridge is started. Registered
+motions remain available in the session list. Simulation rendering is separate:
+train/eval/replay/run_sim continue using AppLauncher `--visualizer kit`.
+
+Read-only NPZ requires the canonical `robot_asset_json`, complete `joint_names`,
+and `[T, 7 + J]` root-xyz / quaternion-wxyz / joint-angle data. It never fabricates
+contact labels from geometry or contact forces. Unloaded contact evidence is
+explicitly unknown. Optional terrain is an OBJ in the repository/runtime tree.
+Files with missing/wrong robot fingerprints or unrecognized pose layouts fail
+explicitly; do not restamp historical data to bypass the check.
+
+Research JSON uses `robot_asset_json`, `joint_names`, optional `terrain`, and
+`records`, each with unique `label` and `q`. The existing step14 gradient reports
+are accepted directly. Labels ending in `_initial`, `_stepN`, or `_final` are
+grouped by method and saved iteration. The `original` record (or first record)
+is the fixed reference. Both poses, terrain copies, penetration-normal arrows,
+and sampled mesh-material-point displacement share the existing scene. Terrain
+opacity, displacement link, and arrow scale are adjustable. Display offsets do
+not enter the reported physical displacement.
+
+Reports' contact markers and acceptance metrics remain **historical diagnostics**,
+not current Newton/top-face truth. Review never writes MotionVersions, labels,
+edit plans, or training inputs. Predictor training/model code is unaffected.
+
+The same review input also opens predictor `manifest.json` collections with
+`cases[].path` and infiller `cases.json` collections with `cases[].motion`.
+Case motion and terrain paths are relative to the collection file unless
+absolute; report terrain paths are likewise relative to their report. Each
+selected NPZ still requires canonical robot provenance and named joints.
+
+The inspector switches cases and selects a reference trajectory. An explicitly
+marked reference with matching `corpus_indices` is selected automatically.
+Both trajectories use one playback clock, aligned at time zero and sampled
+using their own FPS (including fractional rates). This is time alignment, not
+automatic contact-event alignment. The reference disappears after its recorded
+duration. Choose side-by-side or original-coordinate overlay; the reference is
+blue. Display offsets never modify motion data. Segment selection and cut
+navigation jump to recorded frame boundaries; the peak button locates the
+largest reported `native_depth_mm` value. These values remain report diagnostics.
+
+Display controls provide robot framing, camera following, and shared terrain
+opacity. FPS remains accessible on narrow screens. Stationary and single-point
+support tracks render as points. Failed scene loads disable editing until retry
+loads the backend's current session successfully.
+
+Force magnitude and historical force masks never establish current contact
+activation. The playback API preserves recorded force masks as diagnostics;
+effective masks require verified Newton evidence and shared primary-face
+selection. Missing evidence is shown as unknown. Verified six-part masks are
+shown using their actual part names; the UI does not fabricate heel/toe splits
+or forces for those selected pairs.

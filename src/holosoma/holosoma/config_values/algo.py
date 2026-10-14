@@ -3,6 +3,8 @@ from dataclasses import fields
 from holosoma.config_types.algo import (
     FastSACAlgoConfig,
     FastSACConfig,
+    DistillConfig,
+    DistillPPOConfig,
     KLEarlyStopPPOAlgoConfig,
     KLEarlyStopPPOConfig,
     LayerConfig,
@@ -70,6 +72,15 @@ kl_early_stop_ppo = KLEarlyStopPPOAlgoConfig(
     ),
 )
 
+distill_ppo = PPOAlgoConfig(
+    _target_="holosoma.agents.ppo.distill_ppo.DistillPPO",
+    _recursive_=False,
+    config=DistillPPOConfig(
+        **{config_field.name: getattr(ppo.config, config_field.name) for config_field in fields(PPOConfig)},
+        distill=DistillConfig(),
+    ),
+)
+
 fast_sac = FastSACAlgoConfig(
     _target_="holosoma.agents.fast_sac.fast_sac_agent.FastSACAgent",
     _recursive_=False,
@@ -120,4 +131,5 @@ DEFAULTS = {
     "ppo": ppo,
     "kl_early_stop_ppo": kl_early_stop_ppo,
     "fast_sac": fast_sac,
+    "distill_ppo": distill_ppo,
 }

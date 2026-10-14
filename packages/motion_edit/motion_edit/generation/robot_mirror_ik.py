@@ -685,6 +685,8 @@ def solve_robot_mirror_ik(
         "solver": result.metadata,
     }
     payload["motion_edit_robot_mirror_ik_json"] = np.asarray(json.dumps(metadata, sort_keys=True))
+    from somaforge_core.support_evidence import reference_only_support
+    reference_only_support(payload, reason='mirror IK output has no measured execution support', retain_force_targets=True)
     output = Path(output_path).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(output, **payload)

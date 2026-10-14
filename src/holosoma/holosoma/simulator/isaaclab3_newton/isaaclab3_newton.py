@@ -33,7 +33,7 @@ def _register_self_collision_filters(
         builder = getattr(NewtonManager, "_builder", None)
         if builder is None:
             return
-        from motion_edit.generation.newton_collision_filter import apply_self_collision_filters_to_builder
+        from somaforge_core.newton_collision_filter import apply_self_collision_filters_to_builder
 
         body_pairs, shape_pairs = apply_self_collision_filters_to_builder(
             builder, exclude_kinematic_distance=exclude_kinematic_distance

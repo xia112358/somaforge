@@ -226,6 +226,7 @@ def prepare_contact_editor_session(
         session = prepare_surface_editor_session(
             motion_path=config.motion,
             contact_force_path=contact_motion,
+            terrain_mesh=config.terrain_mesh,
             motion_id=config.motion_id,
             contact_layer=source_layer,
             surface_catalog=str(surface_catalog),
@@ -317,6 +318,7 @@ def prepare_contact_editor_session(
     session = prepare_surface_editor_session(
         motion_path=config.motion,
         contact_force_path=contact_motion,
+        terrain_mesh=config.terrain_mesh,
         motion_id=config.motion_id,
         contact_layer=ready_layer,
         surface_catalog=str(surface_catalog),

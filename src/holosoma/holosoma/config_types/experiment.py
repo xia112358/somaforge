@@ -176,10 +176,37 @@ class ExperimentConfig:
             video=evaluation.video,
             headless_recording=False,
         )
+        inference_overrides = {
+            "load_optimizer": False,
+            "actor_finetune_mode": "none",
+            "anchor_kl_checkpoint": None,
+            "anchor_kl_coef": 0.0,
+            "exec_consistency_coef": 0.0,
+        }
+        algo_fields = {field.name for field in dataclasses.fields(self.algo.config)}
+        eval_algo_config = dataclasses.replace(
+            self.algo.config,
+            **{name: value for name, value in inference_overrides.items() if name in algo_fields},
+        )
+        eval_termination = self.termination
+        if eval_termination is not None:
+            eval_terms = {}
+            for name, term in eval_termination.terms.items():
+                params = dict(term.params)
+                # Probe qualification is a training curriculum mechanism and
+                # requires a live tracking_precision term.  Evaluation uses
+                # the static thresholds already stored in this term instead.
+                params.pop("probe_fixed_qualification_boundary", None)
+                params.pop("exclude_probe_envs", None)
+                eval_terms[name] = dataclasses.replace(term, params=params)
+            eval_termination = dataclasses.replace(eval_termination, terms=eval_terms)
 
         return dataclasses.replace(
             self,
             evaluation=evaluation,
+            algo=dataclasses.replace(self.algo, config=eval_algo_config),
+            curriculum=CurriculumManagerCfg(),
+            termination=eval_termination,
             terrain=dataclasses.replace(
                 self.terrain,
                 terrain_term=dataclasses.replace(

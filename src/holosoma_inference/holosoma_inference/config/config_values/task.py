@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from holosoma_inference.config.config_types.task import TaskConfig
+from holosoma_inference.config.config_types.task import TaskConfig, DEFAULT_WANDB_DOWNLOAD_DIR
 
 _MODELS_DIR = Path(__file__).parent.parent.parent / "models"
 
@@ -23,7 +23,7 @@ locomotion = TaskConfig(
     state_input="keyboard",
     joystick_type="xbox",
     joystick_device=0,
-    wandb_download_dir="/tmp",
+    wandb_download_dir=DEFAULT_WANDB_DOWNLOAD_DIR,
 )
 
 # Whole-body tracking task
@@ -42,7 +42,7 @@ wbt = TaskConfig(
     state_input="keyboard",
     joystick_type="xbox",
     joystick_device=0,
-    wandb_download_dir="/tmp",
+    wandb_download_dir=DEFAULT_WANDB_DOWNLOAD_DIR,
 )
 
 # Safety locomotion (FastSAC) — used as default secondary for dual-mode
@@ -60,7 +60,7 @@ safety_locomotion_g1 = TaskConfig(
     state_input="keyboard",
     joystick_type="xbox",
     joystick_device=0,
-    wandb_download_dir="/tmp",
+    wandb_download_dir=DEFAULT_WANDB_DOWNLOAD_DIR,
 )
 
 DEFAULTS = {

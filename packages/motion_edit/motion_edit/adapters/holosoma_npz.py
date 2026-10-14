@@ -67,4 +67,6 @@ def subset_arrays(arrays: dict[str, Any], start: int, end: int) -> dict[str, Any
             out[key] = arr.copy()
     out["source_start_frame"] = np.asarray(start, dtype=np.int64)
     out["source_end_frame"] = np.asarray(end, dtype=np.int64)
+    from somaforge_core.support_evidence import reference_only_support
+    reference_only_support(out, reason='cropped output requires a new binding to the native source recording', retain_force_targets=True)
     return out

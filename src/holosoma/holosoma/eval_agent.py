@@ -109,7 +109,7 @@ def run_eval_with_tyro(
         )
         algo.setup()
         algo.attach_checkpoint_metadata(saved_config, saved_wandb_path)
-        algo.load(checkpoint_path)
+        algo.load_for_inference(checkpoint_path)
 
         if evaluation.export_onnx:
             exported_policy_dir = eval_log_dir / "exported"

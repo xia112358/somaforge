@@ -475,6 +475,13 @@ class BaseTask:
 
     def _post_physics_step(self):
         self._refresh_sim_tensors()
+        # Terms in reward and observation managers often consume the same
+        # freshly-refreshed simulator tensors. Keep their derived values alive
+        # for this control step only, then invalidate them after the next
+        # physics refresh.
+        step_cache = getattr(self, "_holosoma_step_cache", None)
+        if step_cache is not None:
+            step_cache.clear()
         self.episode_length_buf += 1
         self._update_counters_each_step()
 

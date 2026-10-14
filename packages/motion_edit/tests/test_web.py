@@ -11,8 +11,7 @@ import numpy as np
 from fastapi import HTTPException
 
 from motion_edit.contact.plans import ContactEditPlan, read_contact_edit_plan, write_contact_edit_plan
-from motion_edit.generation.contact_aware import ContactAwareGenerationResult
-from motion_edit.generation.lte_fullbody import LteGenerationResult
+from motion_edit.generation import ContactAwarePreviewResult
 from motion_edit.web.motion_data import load_contact_force_payload, load_motion_sequence
 from motion_edit.web.server import (
     WEB_DIST,
@@ -84,29 +83,29 @@ class WebMotionDataTests(unittest.TestCase):
         session_payload_mock,
     ) -> None:
         resolve_motion_mock.return_value = EditorMotion(
-            motion_id="gmvq-ref",
-            motion_asset_id="gmvq-ref",
+            motion_id="generated-ref",
+            motion_asset_id="generated-ref",
             motion_version_id=None,
-            motion_path="tmp/gmvq-ref.npz",
+            motion_path="fixtures/generated-ref.npz",
             provenance="source",
         )
         read_motion_asset_mock.return_value = MotionAssetRecord(
-            motion_asset_id="gmvq-ref",
-            motion_path="tmp/gmvq-ref.npz",
-            motion_id="gmvq-ref",
-            surface_catalog_path="tmp/surfaces.jsonl",
+            motion_asset_id="generated-ref",
+            motion_path="fixtures/generated-ref.npz",
+            motion_id="generated-ref",
+            surface_catalog_path="fixtures/surfaces.jsonl",
         )
         prepare_playback_mock.return_value = SimpleNamespace()
         recent_entry_mock.return_value = SimpleNamespace()
         state = EditorState()
 
         with patch.object(EditorState, "snapshot", return_value=(SimpleNamespace(anchors=[]), [])):
-            payload = _open_motion(state, "gmvq-ref")
+            payload = _open_motion(state, "generated-ref")
 
         self.assertEqual(payload, {"read_only": True})
         self.assertTrue(state.read_only)
         prepare_playback_mock.assert_called_once()
-        reset_generation_mock.assert_called_once_with(state, "gmvq-ref")
+        reset_generation_mock.assert_called_once_with(state, "generated-ref")
         upsert_recent_mock.assert_called_once()
 
     def test_edit_handle_payload_includes_read_only_offset_from_initial_position(self) -> None:
@@ -178,7 +177,9 @@ class WebMotionDataTests(unittest.TestCase):
         self.assertEqual(fps, 50)
         self.assertEqual(names, ("joint_a", "joint_b"))
         self.assertEqual(len(contacts["part_order"]), 8)
-        self.assertTrue(contacts["masks"][1][0])
+        self.assertEqual(contacts["masks"], [])
+        self.assertTrue(contacts["recorded_force_masks"][1][0])
+        self.assertEqual(contacts["mask_status"], "recorded_force_mask_unverified")
         self.assertTrue(contacts["position_valid"][1][0])
         self.assertEqual(contacts["sample_points"][1], [[0.30000001192092896, 0.4000000059604645, 0.5]])
         self.assertEqual(contacts["sample_forces"][1], [[4.0, 5.0, 6.0]])
@@ -253,121 +254,100 @@ class WebMotionDataTests(unittest.TestCase):
         open_motion_mock.assert_called_once()
         self.assertEqual(open_motion_mock.call_args.args[1], "current-motion")
 
-    def test_generation_job_uses_formal_generator_and_marks_plan_generated(self) -> None:
+    def test_retired_generation_settings_are_explicitly_rejected(self) -> None:
+        from pydantic import ValidationError
+        from motion_edit.web.server import SettingsRequest
+        for model in (SettingsRequest, GenerateRequest):
+            with self.assertRaises(ValidationError):
+                model(output_segment_layer="old/candidates")
+
+    def test_generation_job_uses_current_backend_and_registers_unvalidated_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            plan_path = root / "edit-plan.json"
-            output_motion = root / "generated.npz"
-            write_contact_edit_plan(
-                plan_path,
-                ContactEditPlan(
-                    plan_id="test-edit",
-                    source_motion_path=str(root / "source.npz"),
-                    source_motion_id="test-motion",
-                    source_contact_layer="contact/source",
-                    status="validated",
-                ),
-            )
-            calls: list[dict] = []
+            plan_path, output_motion = root / "edit-plan.json", root / "generated.npz"
+            write_contact_edit_plan(plan_path, ContactEditPlan(
+                plan_id="test-edit", source_motion_path=str(root / "source.npz"),
+                source_motion_id="test-motion", source_contact_layer="contact/source",
+                status="validated", metadata={"augmentation_objective": "consolidated_v1", "free_surface_contacts": True},
+            ))
+            calls = []
 
-            def fake_generator(plan: ContactEditPlan, **kwargs) -> ContactAwareGenerationResult:
-                calls.append({"plan": plan, **kwargs})
-                return ContactAwareGenerationResult(
-                    generation=LteGenerationResult(
-                        output_motion_path=output_motion,
-                        output_contact_layer="contact/edited",
-                        output_segment_layer="candidates/edited",
-                        output_motion_version_id="edited-v1",
-                        warnings=["test warning"],
-                    )
+            # Explicit current signature catches the retired kwargs that broke the real UI.
+            def fake_generator(path, *, output_motion_path, source_contact_layer, overwrite):
+                calls.append((path, source_contact_layer, overwrite))
+                return ContactAwarePreviewResult(
+                    output_motion_path=Path(output_motion_path),
+                    semantic_task_proxy_path=root / "proxy.npz",
+                    taskspace_spec_path=root / "taskspace.npz", ik_output_path=root / "ik.npz",
+                    binding_summary={}, diagnostics={"augmentation_objective": "consolidated_v1", "free_surface_contacts": True},
+                    warnings=("native validation required",),
                 )
 
             state = EditorState(generation=GenerationJob(status="running"))
-            _run_generation(
-                state,
-                fake_generator,
-                plan_path=plan_path,
-                source_contact_layer="contact/source",
-                output_contact_layer="contact/edited",
-                output_motion_path=str(output_motion),
-                output_segment_layer="candidates/edited",
-                output_motion_id="edited-v1",
-                register_motion=True,
-                overwrite=False,
-                fps=50.0,
-            )
-
-            self.assertEqual(len(calls), 1)
-            self.assertEqual(calls[0]["fullbody_solver"], "batch_contact_laplacian")
-            self.assertFalse(calls[0]["bake_force"])
+            with patch("motion_edit.web.server.write_motion_version") as register:
+                _run_generation(state, fake_generator, plan_path=plan_path,
+                    source_contact_layer="contact/source", output_motion_path=str(output_motion),
+                    output_motion_id="edited-v1", register_motion=True, overwrite=False, fps=50.,
+                    motion_asset_id="asset-a", parent_motion_version_id="parent-v1")
+            self.assertEqual(calls, [(plan_path.resolve(), "contact/source", False)])
             self.assertEqual(state.generation.status, "succeeded")
-            self.assertEqual(state.generation.warnings, ["test warning"])
+            self.assertEqual(state.generation.output_motion_id, "edited-v1")
+            self.assertEqual(state.generation.warnings, ["native validation required"])
+            candidate = register.call_args.args[0]
+            self.assertIsNone(candidate.contact_layer)
+            self.assertIsNone(candidate.canonical_segment_path)
+            self.assertFalse(candidate.metadata["training_ready"])
+            self.assertEqual(candidate.parent_motion_version_id, "parent-v1")
             generated_plan = read_contact_edit_plan(plan_path)
             self.assertEqual(generated_plan.status, "generated")
             self.assertEqual(generated_plan.output_motion_path, str(output_motion))
+            import json
+            receipt = json.loads(output_motion.with_suffix(".generation.json").read_text())
+            import hashlib
+            self.assertEqual(hashlib.sha256(Path(receipt["plan"]).read_bytes()).hexdigest(), receipt["plan_sha256"])
+            self.assertFalse(receipt["training_ready"])
+            self.assertEqual(receipt["status"], "requires_native_validation")
 
-    def test_generate_http_uses_editor_state_fps_and_starts_worker(self) -> None:
+    def test_generate_http_keeps_fps_out_of_backend_and_starts_worker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            plan_path = root / "edit-plan.json"
-            output_motion = root / "generated.npz"
-            write_contact_edit_plan(
-                plan_path,
-                ContactEditPlan(
-                    plan_id="test-http-generate",
-                    source_motion_path=str(root / "source.npz"),
-                    source_motion_id="test-motion",
-                    source_contact_layer="contact/source",
-                    status="validated",
-                    edits=[_test_surface_edit()],
-                ),
-            )
-            calls: list[dict] = []
+            plan_path, output_motion = root / "edit-plan.json", root / "generated.npz"
+            write_contact_edit_plan(plan_path, ContactEditPlan(
+                plan_id="test-http-generate", source_motion_path=str(root / "source.npz"),
+                source_motion_id="test-motion", source_contact_layer="contact/source",
+                status="validated", edits=[_test_surface_edit()],
+                metadata={"augmentation_objective": "consolidated_v1", "free_surface_contacts": True},
+            ))
+            calls = []
 
-            def fake_generator(plan: ContactEditPlan, **kwargs) -> ContactAwareGenerationResult:
-                calls.append({"plan": plan, **kwargs})
-                return ContactAwareGenerationResult(
-                    generation=LteGenerationResult(
-                        output_motion_path=output_motion,
-                        output_contact_layer="contact/edited",
-                        output_segment_layer="candidates/edited",
-                        output_motion_version_id=None,
-                    )
+            def fake_generator(path, *, output_motion_path, source_contact_layer, overwrite):
+                calls.append((path, overwrite))
+                return ContactAwarePreviewResult(
+                    output_motion_path=Path(output_motion_path), semantic_task_proxy_path=root / "proxy.npz",
+                    taskspace_spec_path=root / "taskspace.npz", ik_output_path=root / "ik.npz",
+                    binding_summary={}, diagnostics={"augmentation_objective": "consolidated_v1", "free_surface_contacts": True},
+                    warnings=(),
                 )
 
             app = create_app(generation_fn=fake_generator)
             state = app.state.editor_state
-            state.session = SimpleNamespace(
-                edit_plan_path=str(plan_path),
-                contact_layer="contact/source",
-                output_contact_layer="contact/edited",
-            )
-            state.fps = 60.0
-            state.output_motion_path = str(output_motion)
-            state.output_segment_layer = "candidates/edited"
-            state.register_motion = False
-
-            with patch("motion_edit.web.server._save_session", return_value={}):
-                response = _generate_endpoint(app)(GenerateRequest(register_motion=False))
-
-            self.assertIn(response["status"], {"running", "succeeded"})
-            deadline = time.time() + 2.0
-            while state.generation.status == "running" and time.time() < deadline:
-                time.sleep(0.01)
-            self.assertEqual(state.generation.status, "succeeded")
-            self.assertEqual(len(calls), 1)
-            self.assertEqual(calls[0]["fps"], 60.0)
-            self.assertTrue(state.overwrite)
-
-            output_motion.touch()
-            with patch("motion_edit.web.server._save_session", return_value={}):
-                repeated = _generate_endpoint(app)(GenerateRequest(register_motion=False))
-            self.assertIn(repeated["status"], {"running", "succeeded"})
-            deadline = time.time() + 2.0
-            while state.generation.status == "running" and time.time() < deadline:
-                time.sleep(0.01)
-            self.assertEqual(state.generation.status, "succeeded")
-            self.assertEqual(len(calls), 2)
+            state.session = SimpleNamespace(edit_plan_path=str(plan_path), contact_layer="contact/source", output_contact_layer="contact/edited")
+            state.fps, state.output_motion_path, state.register_motion = 60., str(output_motion), False
+            for index in range(2):
+                with patch("motion_edit.web.server._save_session", return_value={}):
+                    response = _generate_endpoint(app)(GenerateRequest(register_motion=False))
+                self.assertIn(response["status"], {"running", "succeeded"})
+                deadline = time.time() + 2.
+                while state.generation.status == "running" and time.time() < deadline:
+                    time.sleep(.01)
+                self.assertEqual(state.generation.status, "succeeded")
+                self.assertEqual(len(calls), index + 1)
+                self.assertTrue(state.overwrite)
+                output_motion.touch()
+                # The real save revalidates a generated plan before another run.
+                plan = read_contact_edit_plan(plan_path)
+                from dataclasses import replace
+                write_contact_edit_plan(plan_path, replace(plan, status="validated"))
 
     def test_existing_default_output_enables_repeat_generation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

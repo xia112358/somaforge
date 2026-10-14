@@ -8,13 +8,13 @@ This repository provides tools for retargeting human motion data to humanoid rob
 
 ```bash
 # Robot-only (OMOMO)
-python examples/robot_retarget.py --data_path demo_data/OMOMO_new --task-type robot_only --task-name sub3_largebox_003 --data_format smplh --retargeter.debug --retargeter.visualize
+python examples/robot_retarget.py --data_path demo_data/OMOMO_new --task-type robot_only --task-name sub3_largebox_003 --data_format smplh
 
 # Object interaction (OMOMO)
-python examples/robot_retarget.py --data_path demo_data/OMOMO_new --task-type object_interaction --task-name sub3_largebox_003 --data_format smplh --retargeter.debug --retargeter.visualize
+python examples/robot_retarget.py --data_path demo_data/OMOMO_new --task-type object_interaction --task-name sub3_largebox_003 --data_format smplh
 
 # Climbing
-python examples/robot_retarget.py --data_path demo_data/climb --task-type climbing --task-name mocap_climb_seq_0 --data_format mocap --robot-config.robot-urdf-file /home/xiaz/somaforge/src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf --retargeter.debug --retargeter.visualize
+python examples/robot_retarget.py --data_path demo_data/climb --task-type climbing --task-name mocap_climb_seq_0 --data_format mocap --robot-config.robot-urdf-file /home/xiaz/somaforge/src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf
 ```
 
 **Note**: Add `--augmentation` to run sequences with augmentation. You must first run the original sequence before adding augmentation.
@@ -73,7 +73,7 @@ This will convert the BVH files to `.npy` format with global joint positions.
 #### Single Sequence Retargeting on LAFAN
 
 ```bash
-python examples/robot_retarget.py --data_path demo_data/lafan --task-type robot_only --task-name dance2_subject1 --data_format lafan --task-config.ground-range -10 10 --save_dir demo_results/g1/robot_only/lafan --retargeter.debug --retargeter.visualize --retargeter.foot-sticking-tolerance 0.02
+python examples/robot_retarget.py --data_path demo_data/lafan --task-type robot_only --task-name dance2_subject1 --data_format lafan --task-config.ground-range -10 10 --save_dir demo_results/g1/robot_only/lafan --retargeter.foot-sticking-tolerance 0.02
 ```
 
 #### Batch Processing for Motion Retargeting on LAFAN
@@ -122,7 +122,7 @@ This will convert the AMASS `.npz` files to `.npz` format with global joint posi
 #### Single Sequence Retargeting on AMASS SMPL-X
 
 ```bash
-python examples/robot_retarget.py --data_path demo_data/amass_smplx_processed --task-type robot_only --task-name HumanEva_S3_Jog_1_stageii --data_format smplx --task-config.ground-range -10 10 --save_dir demo_results/g1/robot_only/amass_smplx --retargeter.debug --retargeter.visualize
+python examples/robot_retarget.py --data_path demo_data/amass_smplx_processed --task-type robot_only --task-name HumanEva_S3_Jog_1_stageii --data_format smplx --task-config.ground-range -10 10 --save_dir demo_results/g1/robot_only/amass_smplx
 ```
 
 #### Batch Processing for Motion Retargeting on AMASS SMPL-X
@@ -131,39 +131,19 @@ python examples/robot_retarget.py --data_path demo_data/amass_smplx_processed --
 python examples/parallel_robot_retarget.py --data-dir demo_data/amass_smplx_processed --task-type robot_only --data_format smplx --save_dir demo_results_parallel/g1/robot_only/amass_smplx --task-config.object-name ground --task-config.ground-range -10 10
 ```
 
-## Check Visualizations of Saved Retargeting Results
+## Review saved results
+
+Use the repository's shared Motion Edit page. From the repository root:
 
 ```bash
-# Visualize object-interaction results
-python viser_player.py --robot_urdf /home/xiaz/somaforge/src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf \
-    --object_urdf models/largebox/largebox.urdf \
-    --qpos_npz demo_results_parallel/g1/object_interaction/omomo/sub3_largebox_003_original.npz
-
-# Visualize climbing results
-python viser_player.py --robot_urdf /home/xiaz/somaforge/src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf \
-    --object_urdf demo_data/climb/mocap_climb_seq_0/multi_boxes.urdf \
-    --qpos_npz demo_results_parallel/g1/climbing/mocap_climb/mocap_climb_seq_0_original.npz
-
-python viser_player.py --robot_urdf /home/xiaz/somaforge/src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf \
-    --object_urdf demo_data/climb/mocap_climb_seq_0/multi_boxes_scaled_0.74_0.74_0.89.urdf \
-    --qpos_npz demo_results_parallel/g1/climbing/mocap_climb/mocap_climb_seq_0_z_scale_1.2.npz
-
-# Visualize robot only results
-python viser_player.py --robot_urdf /home/xiaz/somaforge/src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf \
-    --qpos_npz demo_results_parallel/g1/robot_only/omomo/sub3_largebox_003_original.npz
-
-# Visualize LAFAN robot only results
-python viser_player.py --robot_urdf /home/xiaz/somaforge/src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf \
-    --qpos_npz demo_results/g1/robot_only/lafan/dance2_subject1.npz
-
-# Visualize AMASS results
-python viser_player.py --robot_urdf /home/xiaz/somaforge/src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf \
-    --qpos_npz demo_results/g1/robot_only/amass_smplx/HumanEva_S3_Jog_1_stageii.npz
-
-# Visualize AMASS results
-python viser_player.py --robot_urdf /home/xiaz/somaforge/src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf \
-    --qpos_npz demo_results_parallel/g1/robot_only/amass_smplx/HumanEva_S1_Box_1_stageii_original.npz
+./motion-edit contact-editor --review path/to/canonical_motion.npz --terrain path/to/terrain.obj
 ```
+
+Playback requires the current canonical G1 asset fingerprint and named joints.
+Old unverified NPZ files must not be stamped with a new fingerprint to bypass
+validation. The review mode is read-only and does not infer contact labels.
+Retargeting itself runs without an embedded viewer; the old Viser player,
+wrapper page, and retargeter debug/visualize switches are retired.
 
 ## Quantitative Evaluation
 

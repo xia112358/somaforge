@@ -123,6 +123,26 @@ def test_stable_contact_mask_closes_short_gaps_without_changing_force() -> None:
     np.testing.assert_array_equal(force, original)
 
 
+def test_stable_contact_mask_removes_short_pulses_and_release_gaps() -> None:
+    force = np.zeros((20, 1, 3), dtype=np.float32)
+    force[1:3, 0, 2] = 12.0
+    force[9:18, 0, 2] = 12.0
+    force[13:15, 0, 2] = 0.0
+
+    _, stable = _stable_contact_mask(
+        force,
+        on_threshold=10.0,
+        off_threshold=5.0,
+        close_gap_frames=0,
+        min_on_frames=6,
+        min_off_frames=6,
+    )
+
+    expected = np.zeros(20, dtype=bool)
+    expected[9:18] = True
+    np.testing.assert_array_equal(stable[:, 0], expected)
+
+
 def test_part_forces_reject_merged_recording_without_toe_bodies() -> None:
     recording = {"contact_forces": np.zeros((3, 1, 3), dtype=np.float32)}
 

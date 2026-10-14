@@ -14,7 +14,13 @@ from somaforge_core import (
 )
 
 
-def _write_motion(path: Path, body_names: list[str], *, fps: float = 50.0) -> None:
+def _write_motion(
+    path: Path,
+    body_names: list[str],
+    *,
+    fps: float = 50.0,
+    sim_velocity: float | None = None,
+) -> None:
     frames = 3
     joint_pos = np.zeros((frames, 36), dtype=np.float32)
     joint_pos[:, 2] = 1.0
@@ -32,8 +38,7 @@ def _write_motion(path: Path, body_names: list[str], *, fps: float = 50.0) -> No
         output_fps=fps,
         body_names=body_names,
     )
-    np.savez_compressed(
-        path,
+    payload = dict(
         fps=np.asarray([fps], dtype=np.float32),
         joint_pos=joint_pos,
         joint_vel=joint_vel,
@@ -46,6 +51,14 @@ def _write_motion(path: Path, body_names: list[str], *, fps: float = 50.0) -> No
         robot_asset_json=np.asarray(encode_robot_asset_json()),
         kinematics_provenance_json=np.asarray(encode_kinematics_provenance(provenance)),
     )
+    if sim_velocity is not None:
+        sim_joint_vel = np.full_like(joint_vel, sim_velocity)
+        payload.update(
+            sim_joint_vel=sim_joint_vel,
+            sim_root_lin_vel=np.full((frames, 3), sim_velocity, dtype=np.float32),
+            sim_root_ang_vel=np.full((frames, 3), -sim_velocity, dtype=np.float32),
+        )
+    np.savez_compressed(path, **payload)
 
 
 def _load(directory: Path) -> MultiMotionLoader:
@@ -81,3 +94,14 @@ def test_multi_motion_rejects_mixed_fps(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="same FPS"):
         _load(tmp_path)
+
+
+def test_multi_motion_keeps_reference_and_reset_velocities_separate(tmp_path: Path) -> None:
+    _write_motion(tmp_path / "a.npz", ["pelvis", "torso_link"], sim_velocity=2.0)
+
+    motion = _load(tmp_path)
+
+    np.testing.assert_allclose(motion.joint_vel.numpy(), 0.0)
+    np.testing.assert_allclose(motion.sim_joint_vel.numpy(), 2.0)
+    np.testing.assert_allclose(motion.sim_root_lin_vel.numpy(), 2.0)
+    np.testing.assert_allclose(motion.sim_root_ang_vel.numpy(), -2.0)

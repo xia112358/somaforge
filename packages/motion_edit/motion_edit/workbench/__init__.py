@@ -5,7 +5,6 @@ from .cutter_session import (
     segments_from_cutter_file,
     sync_cutter_session_file,
 )
-from .server import make_workbench_server
 from .session import WorkbenchSession
 from .surface_editor_session import (
     SurfaceEditorSession,
@@ -40,7 +39,6 @@ __all__ = [
     "curate_segment",
     "export_cutter_session_file",
     "load_workbench_segments",
-    "make_workbench_server",
     "move_surface_editor_anchor",
     "prepare_surface_editor_session",
     "read_pending_surface_edits",

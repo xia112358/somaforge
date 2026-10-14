@@ -18,7 +18,12 @@ This repository is the training/integration workspace for Newton WBT climbing. K
 - Large copied HTML/vendor documentation dumps.
 - Full external datasets or generated retargeting result directories.
 
-Use ignored local paths such as:
+Formal datasets, references, checkpoints and manifests belong in
+`runtime/current/{motions,models,manifests,generated}/`. Use `tmp/` for diagnostics
+and disposable experiments only. Existing referenced artifacts in `tmp/` are
+protected historical dependencies, not permission to delete them.
+
+Other ignored local paths include:
 
 ```text
 tmp/
@@ -40,7 +45,7 @@ ${DATA_ROOT}/relative/path
 /path/to/local/data   # only in clearly documented local examples
 ```
 
-If a manifest depends on large files outside git, document the expected layout in `docs/training-recipes.md` or a nearby README.
+If a manifest depends on large files outside git, document the expected layout in `docs/repository-maintenance.md` or a nearby README.
 
 ## Retargeting exception
 

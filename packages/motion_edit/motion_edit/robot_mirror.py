@@ -277,6 +277,8 @@ def mirror_motion_npz(
     output = Path(output_path).expanduser().resolve()
     payload = _load_npz_payload(source)
     decode_robot_asset_json(payload.get("robot_asset_json"), context=str(source))
+    from somaforge_core.support_evidence import reference_only_support
+    reference_only_support(payload, reason='mirrored trajectory is a reference, not an observed execution', retain_force_targets=True)
     for required in ("joint_names", "joint_pos", "body_names", "body_pos_w", "body_quat_w"):
         if required not in payload:
             raise ValueError(f"{source}: missing required motion field {required!r}")
@@ -327,6 +329,8 @@ def mirror_contact_force_npz(
     decode_robot_asset_json(source_payload.get("robot_asset_json"), context=str(source))
     root_qpos = np.asarray(source_payload["joint_pos"], dtype=np.float64)[:, :7].copy()
     payload = {key: value for key, value in source_payload.items() if not key.startswith(_RAW_CONTACT_PREFIX)}
+    from somaforge_core.support_evidence import reference_only_support
+    reference_only_support(payload, reason='mirrored force fields are reference targets, not measured loads', retain_force_targets=True)
     _mirror_joint_arrays(payload)
     _recompute_named_body_arrays(payload)
     _mirror_contact_parts(payload, root_qpos)

@@ -3,7 +3,12 @@ from __future__ import annotations
 import unittest
 
 from motion_edit.contact.schema import ContactAnchorRecord
-from motion_edit.workbench.edit_handles import build_contact_episode_handles, contact_episode_handle_payloads
+import numpy as np
+from motion_edit.workbench.edit_handles import (
+    build_contact_episode_handles,
+    build_stationary_contact_gap_validator,
+    contact_episode_handle_payloads,
+)
 
 
 def _anchor(
@@ -82,6 +87,28 @@ class ContactEpisodeHandleTests(unittest.TestCase):
         self.assertAlmostEqual(payload["position_offset"]["u"], 0.03)
         self.assertAlmostEqual(payload["position_offset"]["v"], -0.02)
         self.assertTrue(payload["has_position_offset"])
+
+    def test_geometry_validator_prevents_swing_scuffs_from_bridging_support(self) -> None:
+        positions = np.zeros((30, 1, 3), dtype=np.float32)
+        positions[10:21, 0, 0] = np.linspace(0.0, 0.20, 11)
+        positions[21:, 0, 0] = 0.20
+        validator = build_stationary_contact_gap_validator(
+            body_positions=positions,
+            body_names=["left_ankle_roll_link"],
+        )
+        handles = build_contact_episode_handles(
+            [
+                _anchor("stance", "left_sole", 0, 10),
+                _anchor("scuff", "left_toe", 15, 16),
+                _anchor("landing", "left_sole", 21, 29),
+            ],
+            max_gap_frames=10,
+            gap_validator=validator,
+        )
+        self.assertEqual(
+            [(item.start_frame, item.end_frame) for item in handles],
+            [(0, 10), (15, 16), (21, 29)],
+        )
 
 
 if __name__ == "__main__":

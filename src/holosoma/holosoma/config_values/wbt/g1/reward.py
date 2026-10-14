@@ -97,6 +97,67 @@ g1_29dof_wbt_contact_force_reward = RewardManagerCfg(
     }
 )
 
+
+_SPARSE_CLIMB_CONTACT_ENDPOINTS = (
+    "left_ankle_roll_link",
+    "right_ankle_roll_link",
+    "left_wrist_yaw_link",
+    "right_wrist_yaw_link",
+    "left_knee_link",
+    "right_knee_link",
+)
+
+_SPARSE_CLIMB_ENDPOINT_LABELS = ("lf", "rf", "lh", "rh", "lk", "rk")
+
+_sparse_climb_endpoint_position_terms = {
+    f"sparse_climb_position_{label}": RewardTermCfg(
+        func="holosoma.managers.reward.terms.wbt:motion_relative_selected_body_position_error_exp",
+        params={"sigma": 0.3, "body_names": (body_name,)},
+        weight=0.25,
+    )
+    for label, body_name in zip(_SPARSE_CLIMB_ENDPOINT_LABELS, _SPARSE_CLIMB_CONTACT_ENDPOINTS, strict=True)
+}
+
+_sparse_climb_endpoint_orientation_terms = {
+    f"sparse_climb_orientation_{label}": RewardTermCfg(
+        func="holosoma.managers.reward.terms.wbt:motion_relative_selected_body_orientation_error_exp",
+        params={"sigma": 0.4, "body_names": (body_name,)},
+        weight=0.25,
+    )
+    for label, body_name in zip(_SPARSE_CLIMB_ENDPOINT_LABELS, _SPARSE_CLIMB_CONTACT_ENDPOINTS, strict=True)
+}
+
+g1_29dof_wbt_sparse_climb_reward = RewardManagerCfg(
+    terms={
+        **g1_29dof_wbt_reward.terms,
+        # Knees are commanded contact-capable parts in the sparse interface;
+        # do not simultaneously classify their intended contacts as undesired.
+        "undesired_contacts": RewardTermCfg(
+            func="holosoma.managers.reward.terms.wbt:UndesiredContacts",
+            params={
+                "threshold": 1.0,
+                "undesired_contacts_body_names": (
+                    "^(?!left_wrist_yaw_link$)(?!right_wrist_yaw_link$)"
+                    "(?!left_knee_link$)(?!right_knee_link$)"
+                    "(?!left_ankle_roll_link$)(?!right_ankle_roll_link$)"
+                    "(?!left_ankle_roll_sphere_[1-5]_link$)"
+                    "(?!right_ankle_roll_sphere_[1-5]_link$).+$"
+                ),
+            },
+            weight=-0.5,
+        ),
+        # Per-part kernels prevent one badly tracked active limb from being
+        # hidden by five easy support limbs in a single averaged error.
+        **_sparse_climb_endpoint_position_terms,
+        **_sparse_climb_endpoint_orientation_terms,
+        "sparse_climb_contact_match": RewardTermCfg(
+            func="holosoma.managers.reward.terms.wbt:motion_sparse_contact_match",
+            params={"contact_threshold": 10.0},
+            weight=1.0,
+        ),
+    }
+)
+
 _A2A_REPLACED_TRACKING_TERMS = {
     "motion_relative_body_position_error_exp",
     "motion_relative_body_orientation_error_exp",
@@ -238,6 +299,7 @@ g1_29dof_wbt_proto_reward = RewardManagerCfg(
 __all__ = [
     "g1_29dof_wbt_a2a_reward",
     "g1_29dof_wbt_contact_force_reward",
+    "g1_29dof_wbt_sparse_climb_reward",
     "g1_29dof_wbt_proto_reward",
     "g1_29dof_wbt_reward",
 ]

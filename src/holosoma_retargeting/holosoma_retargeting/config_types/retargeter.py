@@ -76,12 +76,6 @@ class RetargeterConfig:
     step_size: float = 0.2
     """Trust region for each SQP iteration."""
 
-    visualize: bool = False
-    """Whether to visualize the retargeting process."""
-
-    debug: bool = False
-    """Whether to enable debug mode."""
-
     self_collision: SelfCollisionConfig = field(default_factory=SelfCollisionConfig)
     """Configuration for self-collision avoidance."""
 

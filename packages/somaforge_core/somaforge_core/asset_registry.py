@@ -27,6 +27,20 @@ class AssetManifest:
         if payload.get("schema") != ASSET_MANIFEST_SCHEMA:
             raise ValueError(f"unsupported asset manifest schema: {payload.get('schema')!r}")
         self.root = (self.path.parent / str(payload.get("root", ".."))).resolve()
+        external_roots = payload.get("external_roots", [])
+        if not isinstance(external_roots, list):
+            raise ValueError("external_roots must be a list of relative directory paths")
+        roots = {}
+        for value in external_roots:
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"invalid external root: {value!r}")
+            alias = Path(value)
+            if alias.is_absolute() or alias == Path(".") or ".." in alias.parts:
+                raise ValueError(f"external root must be a relative directory without traversal: {value!r}")
+            if alias in roots:
+                raise ValueError(f"duplicate external root: {value!r}")
+            roots[alias] = (self.root / alias).resolve()
+        self.external_roots = tuple(roots.items())
         records = payload.get("assets")
         if not isinstance(records, list):
             raise ValueError(f"asset manifest has no assets list: {self.path}")
@@ -64,6 +78,16 @@ class AssetManifest:
         except KeyError as exc:
             raise KeyError(f"asset is not registered in {self.path}: {asset_id}") from exc
 
+    def logical_path(self, path: str | Path) -> Path:
+        """Map a physical asset to its declared checkout-relative path."""
+        resolved = (self.root / Path(path).expanduser()).resolve()
+        if resolved.is_relative_to(self.root):
+            return resolved.relative_to(self.root)
+        for alias, external_root in self.external_roots:
+            if resolved.is_relative_to(external_root):
+                return alias / resolved.relative_to(external_root)
+        raise ValueError(f"asset is outside declared roots: {resolved}")
+
     def resolve(
         self,
         asset_id: str,
@@ -81,7 +105,15 @@ class AssetManifest:
             raise KeyError(f"asset {asset_id} has no file key {file_key!r}")
         path = (self.root / relative).resolve()
         if not path.is_relative_to(self.root):
-            raise ValueError(f"asset escapes manifest root: {asset_id} -> {relative}")
+            logical = Path(relative)
+            declared = (
+                not logical.is_absolute()
+                and ".." not in logical.parts
+                and any(logical.is_relative_to(alias) and path.is_relative_to(external_root)
+                        for alias, external_root in self.external_roots)
+            )
+            if not declared:
+                raise ValueError(f"asset escapes manifest root: {asset_id} -> {relative}")
         if require_exists and not path.exists():
             raise FileNotFoundError(f"asset file is missing: {asset_id} -> {path}")
         expected = record.sha256.get(file_key)
