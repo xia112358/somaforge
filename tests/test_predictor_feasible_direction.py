@@ -1,5 +1,5 @@
 import torch
-from predictor_feasible_direction import constrained_direction
+from contact_solver.research.feasible_direction import constrained_direction
 
 
 def test_boundary_direction_preserves_constraint_and_improves_task():

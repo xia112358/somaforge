@@ -22,7 +22,7 @@ def comparisons(a,b):
 
 def experiment(c,model,inputs,base,checkpoint,metadata):
     reference=base.qpos[0].detach().double();scale=c['scale'];out=c['out']
-    source=Path('tmp/baseline1000_step14_static_interval_20260925/diagnostic.json')
+    source=Path('runtime/current/archives/preserved_inputs_20261010/baseline1000_step14_static_interval_20260925/diagnostic.json')
     saved=json.loads(source.read_text())
     if saved['robot_asset_json']!=c['saved']['robot_asset_json']:raise ValueError('Teacher asset mismatch')
     target=reference.new_tensor(next(r['q'] for r in saved['records'] if r['label']=='face3_iter5')).detach()

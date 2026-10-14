@@ -1,8 +1,7 @@
 import sys
 from pathlib import Path
 import numpy as np
-sys.path.insert(0,str(Path(__file__).parents[1]/'tmp'))
-from ordered_contact_teacher import OrderedContactTeacher
+from generator.research.archived_experiments.ordered_contact_teacher import OrderedContactTeacher
 
 
 def make():

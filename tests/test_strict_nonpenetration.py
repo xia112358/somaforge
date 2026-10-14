@@ -1,6 +1,6 @@
 import pytest
 import torch
-from climb00_pipeline.strict_nonpenetration import generation_gate,priority_loss
+from contact_solver.strict_nonpenetration import generation_gate,priority_loss
 
 
 def report(terrain=0.,self_depth=0.):

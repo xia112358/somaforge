@@ -144,6 +144,7 @@ def full_interaction_objective(
         realization_contact=prediction.conditioned_contact,
         realization_surface=prediction.conditioned_surface,
         missing_pair_approach_weight=missing_pair_approach_weight,
+        structure_joint_max_weight=1.0,  # Historical non-endpoint objective.
         query_override=query_override,
     )
     # A wrong autonomous plan has no compatible pose target.  In particular,

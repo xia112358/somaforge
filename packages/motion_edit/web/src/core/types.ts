@@ -97,6 +97,7 @@ export type Session = {
   edit_handles: EditHandle[];
   surfaces: Surface[];
   contact_force: {
+    mask_status?: string;
     part_order: string[];
     forces: Vec3[][];
     masks: boolean[][];
@@ -113,7 +114,6 @@ export type Session = {
     output_contact_layer: string;
     source_contact_layer: string;
     output_motion_path: string;
-    output_segment_layer: string;
     output_motion_id: string;
     register_motion: boolean;
     overwrite: boolean;
@@ -128,6 +128,10 @@ export type ReviewRecord = {
   diagnostics: Record<string, unknown>;
 };
 export type Review = {
+  collection?: { path: string; terrain_override: string | null; case_index: number; reference_index: number; cases: {index:number;label:string}[] };
+  comparison?: { label: string; qpos: number[][]; fps: number; joint_names: string[]; terrain_obj_url: string | null };
+  segments?: { start: number; end: number; label: string }[];
+  depth_mm?: number[];
   support_frames?: {part:number;load_known:boolean;load_state:string;normal_force_n:number|null;loaded_speed_cm_s:number|null}[][];
   support_assessment_schema?: string;
   actual_support_status?: string;

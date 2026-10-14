@@ -1,7 +1,7 @@
 import pytest
 import torch
-from infiller_collision_fast import penetration
-from climb00_pipeline.neural_infiller import full_geometry_box_ground_penetration
+from contact_solver.research.sampled_penetration import penetration
+from generator.neural_infiller import full_geometry_box_ground_penetration
 
 
 @pytest.mark.parametrize('margin,tolerance',[(0.,0.),(.002,.005)])

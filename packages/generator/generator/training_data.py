@@ -82,13 +82,14 @@ def prepare(model: ConditionedHeightmapPosePredictor, cfg, device: torch.device)
                 raise ValueError(f'Pose cache/sample boundary mismatch: {key}')
         q = np.asarray(cache["target_q"][:, (0, -1)], dtype=np.float32)
     center, rotation, half, ground = box_obbs(data)
-    heightmap = render_root_yaw_box_heightmaps(
+    depth_observation = getattr(model, 'depth_observation', False)
+    heightmap = None if depth_observation else render_root_yaw_box_heightmaps(
         center, rotation, half, ground, q[:, 0],
         supersample=cfg.heightmap_supersample,
     )
     tensor = lambda value, **kwargs: torch.as_tensor(value, device=device, **kwargs)
     current_contact = tensor(data["start_contacts"]).bool()
-    current_surface = observed_surface_indices(
+    current_surface = data['current_surfaces'] if depth_observation else observed_surface_indices(
         heightmap,
         q[:, 0],
         np.asarray(data["start_contacts"], dtype=bool),
@@ -101,10 +102,11 @@ def prepare(model: ConditionedHeightmapPosePredictor, cfg, device: torch.device)
         "current_contact": current_contact,
         "current_anchor": tensor(data["current_contacts"]),
         "current_surface": tensor(current_surface, dtype=torch.long),
-        "heightmap": tensor(heightmap),
         "planned_contact": planned_contact,
         "planned_surface": planned_surface,
     }
+    if not depth_observation:
+        inputs['heightmap'] = tensor(heightmap)
     target_q = tensor(q[:, 1])
     with torch.no_grad():
         body_position, body_rotation6d = model.fk(target_q[:, None])
@@ -172,7 +174,8 @@ def prepare(model: ConditionedHeightmapPosePredictor, cfg, device: torch.device)
         "query_scene_validation": query_metadata,
         "splits": {key: len(value) for key, value in split.items()},
         "condition_contract": "decoder consumes one explicit topology+surface plan",
-        "pose_input": "current q + actual contact/anchor + heightmap-derived surface index + 2cm root-yaw heightmap + explicit plan",
+        "pose_input": ("current q + actual contact/anchor + calibrated 2D depth scan + explicit plan"
+            if depth_observation else "current q + actual contact/anchor + heightmap-derived surface index + 2cm root-yaw heightmap + explicit plan"),
         "excluded": ["binding", "predicted topology features", "event index", "future pose"],
         "training": "pose-only; no topology classification objective",
         "failure_states_used_for_training": False,

@@ -26,7 +26,7 @@ def diagnose(c,model,inputs,base,checkpoint,cfg,evaluate,reference,task_specs):
                 violation_max=float((r.value.abs() if r.kind=='eq' else r.value.relu()).max().detach()))
         return data
     # This endpoint is never used in loss, initialization or parameter updates.
-    old=json.loads(Path('tmp/baseline1000_step14_static_interval_20260925/diagnostic.json').read_text())
+    old=json.loads(Path('runtime/current/archives/preserved_inputs_20261010/baseline1000_step14_static_interval_20260925/diagnostic.json').read_text())
     if old['robot_asset_json']!=c['saved']['robot_asset_json']:raise ValueError('Audit asset mismatch')
     qp=reference.new_tensor(next(r['q'] for r in old['records'] if r['label']=='face3_iter5'))
     compatibility={}

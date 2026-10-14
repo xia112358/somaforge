@@ -32,7 +32,6 @@ from .contact import (
 )
 from .contact.graph import ContactGraph
 from .contact.jitter import DEFAULT_JITTER_BODIES, generate_contact_jitter_plans
-from .generation import generate_contact_aware_pyroki_preview
 from .contact.layers import read_contact_graph
 from .contact.patches import patches_from_anchors
 from .contact.surface_catalog import box_surfaces, parse_box_descriptor, surfaces_from_obj_mesh_faces, surfaces_from_urdf_meshes
@@ -788,7 +787,6 @@ def _cmd_validate_contact_edit_plan(args: argparse.Namespace) -> None:
 
 def _cmd_generate_ref(args: argparse.Namespace) -> None:
     """Single and batch generation share the actual contact-aware backend."""
-    import hashlib
     import json
     if args.plan:
         if not args.output_motion or args.output_motion_dir:
@@ -807,31 +805,34 @@ def _cmd_generate_ref(args: argparse.Namespace) -> None:
             jobs.append((path, Path(args.output_motion_dir).expanduser() / f"{plan.plan_id}.npz"))
         if len({out.resolve() for _, out in jobs}) != len(jobs):
             raise ValueError("Batch plans have duplicate output identities")
+        if not jobs:
+            raise ValueError("Standard augmentation requires a nonempty plan manifest")
+    prefix_digest = None
+    from .generation.source_prefix_reference import load_prefix_configuration, configure_plan_prefix
+    prefix_config = prefix_evidence = None
+    if args.source_prefix_config:
+        # Validate every plan before the first solve and keep one config for the batch.
+        prefix_config, prefix_evidence = load_prefix_configuration(args.source_prefix_config)
+        prefix_digest = prefix_evidence['sha256']
+    if args.plan_manifest or args.source_prefix_config:
+        for path, _ in jobs:
+            configure_plan_prefix(read_contact_edit_plan(path), prefix_config, prefix_evidence,
+                                  required=bool(args.plan_manifest))
     for path, output in jobs:
-        plan = read_contact_edit_plan(path)
-        from .generation.contract import validate_generation_metadata
-        validate_generation_metadata(plan.metadata)
-        result = generate_contact_aware_pyroki_preview(
-            plan, output_motion_path=output,
+        if prefix_digest is not None:
+            import hashlib
+            if hashlib.sha256(Path(args.source_prefix_config).read_bytes()).hexdigest() != prefix_digest:
+                raise ValueError("Source prefix configuration changed during batch generation")
+        from .generation.jobs import generate_candidate
+        result = generate_candidate(
+            path, output_motion_path=output,
             source_contact_layer=args.source_contact_layer,
             overwrite=args.overwrite, allow_draft=args.allow_draft,
             allow_free=args.allow_free, intermediate_dir=args.intermediate_dir,
             ik_conda_env=args.ik_conda_env, ik_max_nfev=args.ik_max_nfev,
             ik_q_acceleration_weight=args.ik_q_acceleration_weight,
+            source_prefix_config=args.source_prefix_config,
         )
-        expected = plan.metadata['augmentation_objective']
-        if result.diagnostics.get('augmentation_objective') != expected:
-            raise ValueError('Generated IK objective does not match its plan')
-        if bool(result.diagnostics.get('free_surface_contacts')) != bool(plan.metadata.get('free_surface_contacts')):
-            raise ValueError('Generated IK surface tasks do not match its plan')
-        receipt = dict(plan=str(path.resolve()), plan_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
-            motion=str(result.output_motion_path.resolve()),
-            taskspace=str(result.taskspace_spec_path.resolve()),
-            ik_artifact=str(result.ik_output_path.resolve()),
-            diagnostics=result.diagnostics, training_ready=False,
-            status='requires_native_validation',
-            backend='contact_aware_rollout_authority')
-        output.with_suffix('.generation.json').write_text(json.dumps(receipt, indent=2))
         print(f"generated contact-aware candidate {result.output_motion_path}; Newton validation required")
 
 
@@ -1358,6 +1359,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ik-conda-env", default="env_somaforge")
     p.add_argument("--ik-max-nfev", type=int, default=None)
     p.add_argument("--ik-q-acceleration-weight", type=float, default=None)
+    p.add_argument("--source-prefix-config", type=Path, help="Source-clock JSON prefix; standard batches require this or a prefix on every plan")
     p.add_argument("--intermediate-dir", default=None)
     p.set_defaults(func=_cmd_generate_ref)
 

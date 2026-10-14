@@ -194,7 +194,7 @@ def test_resume_rejects_old_objective_or_changed_evidence_and_scale(tmp_path):
     from motion_edit.generation.regenerate_edits import GENERATION_SCHEMA, validate_completed_generation, generation_objective
     paths = {key: tmp_path/key for key in ('sites', 'observations', 'phases', 'plan', 'motion', 'labels', 'events', 'contract')}
     for key, path in paths.items():
-        path.write_text(key)
+        path.write_text('{"metadata": {}}' if key == 'plan' else key)
     digests = {key: hashlib.sha256(path.read_bytes()).hexdigest() for key, path in paths.items()}
     objective = generation_objective(.01, .01, 4)
     record = dict(schema=GENERATION_SCHEMA, plan_sha256=digests['plan'],

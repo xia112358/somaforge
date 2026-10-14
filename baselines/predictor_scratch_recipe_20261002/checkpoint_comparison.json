@@ -4,9 +4,9 @@
   "continuous_group": 1,
   "rankings": [
     {
-      "checkpoint": "/home/xiaz/somaforge/runtime/current/holosoma/tmp/predictor_scratch1k_20261002/training/best_historical_score.pt",
+      "checkpoint": "runtime/current/archives/preserved_inputs_20261010/predictor_scratch1k_20261002/training/best_historical_score.pt",
       "step": 725,
-      "report": "/home/xiaz/somaforge/runtime/current/holosoma/tmp/predictor_scratch1k_20261002/recursive_candidates/training_best_historical_score/report.json",
+      "report": "runtime/current/archives/preserved_inputs_20261010/predictor_scratch1k_20261002/recursive_candidates/training_best_historical_score/report.json",
       "schema": "newton_recursive_checkpoint_selection_v3",
       "ordering": "lexicographic, larger is better; preserve earlier checkpoint on exact ties",
       "fields": [
@@ -46,9 +46,9 @@
       "task_progress": "required task contacts accepted at each successive evaluation stage"
     },
     {
-      "checkpoint": "/home/xiaz/somaforge/runtime/current/holosoma/tmp/predictor_scratch1k_20261002/training/step_0925.pt",
+      "checkpoint": "runtime/current/archives/preserved_inputs_20261010/predictor_scratch1k_20261002/training/step_0925.pt",
       "step": 925,
-      "report": "/home/xiaz/somaforge/runtime/current/holosoma/tmp/predictor_scratch1k_20261002/recursive_candidates/training_step_0925/report.json",
+      "report": "runtime/current/archives/preserved_inputs_20261010/predictor_scratch1k_20261002/recursive_candidates/training_step_0925/report.json",
       "schema": "newton_recursive_checkpoint_selection_v3",
       "ordering": "lexicographic, larger is better; preserve earlier checkpoint on exact ties",
       "fields": [

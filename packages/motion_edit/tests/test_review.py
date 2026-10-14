@@ -57,6 +57,109 @@ def test_motion_is_not_relabelled(tmp_path):
     assert '未知' in payload['review']['notice']
 
 
+def _motion(path, *, frames=3, fps=50):
+    data = report()
+    np.savez(path, qpos=[data['records'][0]['q']] * frames,
+             joint_names=data['joint_names'], robot_asset_json=data['robot_asset_json'], fps=fps)
+
+
+def test_collection_loads_relative_assets_pairs_matching_corpus_and_keeps_diagnostics(tmp_path):
+    _motion(tmp_path / 'reference.npz', fps=29.97)
+    _motion(tmp_path / 'candidate.npz')
+    path = tmp_path / 'cases.json'
+    path.write_text(json.dumps({'cases': [
+        dict(name='reference', motion='reference.npz', reference=True, corpus_indices=[7]),
+        dict(name='candidate', motion='candidate.npz', terrain='terrain.obj', corpus_indices=[7],
+             contacts=[[True] * 6] * 3, native_depth_mm=[0, 4, 1],
+             segments=[dict(first_frame=0, frames=3, corpus_index=7)]),
+    ]}))
+    payload = load_review(path, url=str, case_index=1)
+    assert payload['terrain_obj_url'] == str(tmp_path / 'terrain.obj')
+    assert payload['review']['comparison']['fps'] == 29.97
+    assert payload['review']['collection']['reference_index'] == 0
+    assert payload['review']['segments'] == [dict(start=0, end=2, label='7')]
+    assert payload['review']['depth_mm'] == [0, 4, 1]
+    assert payload['contact_force']['masks'] == []
+    assert payload['read_only']
+    assert 'comparison' not in load_review(path, url=str, case_index=1, reference_index=-1)['review']
+
+
+def test_predictor_manifest_and_invalid_selection(tmp_path):
+    _motion(tmp_path / 'endpoints.npz')
+    path = tmp_path / 'manifest.json'
+    path.write_text(json.dumps({'cases': [dict(path='endpoints.npz', terrain='terrain.obj')]}))
+    payload = load_review(path, url=str)
+    assert payload['motion_id'] == 'endpoints'
+    assert payload['review']['collection']['reference_index'] == -1
+    for kwargs in (dict(case_index=-1), dict(case_index=1), dict(reference_index=3)):
+        with pytest.raises(ValueError, match='out of range'):
+            load_review(path, url=str, **kwargs)
+
+
+@pytest.mark.parametrize('fault', ['segment', 'depth', 'missing_asset'])
+def test_invalid_case_diagnostics_rejected(tmp_path, fault):
+    _motion(tmp_path / 'motion.npz')
+    row = dict(motion='motion.npz')
+    if fault == 'segment': row['segments'] = [dict(first_frame=2, frames=2)]
+    if fault == 'depth': row['native_depth_mm'] = [0, float('nan'), 0]
+    if fault == 'missing_asset': row['motion'] = 'missing.npz'
+    path = tmp_path / 'cases.json'; path.write_text(json.dumps({'cases': [row]}))
+    with pytest.raises((ValueError, FileNotFoundError)):
+        load_review(path, url=str)
+
+
+def test_report_relative_terrain_and_failed_load_preserves_session(tmp_path):
+    path = tmp_path / 'report.json'
+    data = report(); data['terrain'] = 'terrain.obj'
+    path.write_text(json.dumps(data))
+    assert load_review(path, url=str)['terrain_obj_url'] == str(tmp_path / 'terrain.obj')
+    data.pop('terrain'); path.write_text(json.dumps(data))
+    with TestClient(create_app(review_path=str(path))) as client:
+        before = client.get('/api/session').json()
+        response = client.post('/api/review/load', json={'path': str(tmp_path / 'missing.json')})
+        assert response.status_code == 400
+        assert client.get('/api/session').json() == before
+
+
+def test_force_does_not_define_contact_without_solver_evidence(tmp_path):
+    from motion_edit.web.motion_data import load_contact_force_payload
+    path = tmp_path / 'force.npz'
+    np.savez(path, contact_force_part_w=np.ones((3, 8, 3)))
+    payload = load_contact_force_payload(path, frame_count=3)
+    assert payload['masks'] == []
+    assert payload['recorded_force_masks'] == []
+    assert payload['mask_status'] == 'unknown_missing_contact_mask'
+
+
+def test_visual_contact_uses_shared_face_selection_and_keeps_raw_pairs(tmp_path, monkeypatch):
+    from motion_edit.web.motion_data import load_contact_force_payload
+    from somaforge_core import newton_contact_data
+    from somaforge_core.contact_face_selection import FACE_POLICY
+    verified = []
+    monkeypatch.setattr(newton_contact_data, 'load_raw_contact_labels',
+                        lambda *args, **kwargs: verified.append((args, kwargs)))
+    top = dict(part=0, surface=0, position_w=[0, 0, 0], allocated=True, dist=0, includemargin=.001)
+    side = dict(part=2, surface=1, position_w=[0, 0, 1], allocated=True, dist=0, includemargin=.001)
+    catalog = [dict(surface=0, normal_w=[0, 0, 1]), dict(surface=1, normal_w=[1, 0, 0])]
+    path = tmp_path / 'contacts.npz'
+    np.savez(path, contact_semantics_json=json.dumps({'scene': {'surface_catalog': catalog}}),
+             contact_pairs_json=json.dumps([[top, side]]))
+    payload = load_contact_force_payload(path, frame_count=1)
+    assert verified == [((path, None), {'frame_count': 1})]
+    assert payload['masks'] == [[True, False, False, False, False, False]]
+    assert payload['face_selection'] == FACE_POLICY
+    assert payload['raw_contact_pairs'] == [[top, side]]
+    assert payload['abnormal_contact_pairs'] == [[side]]
+    assert payload['force_status'] == 'unknown_for_selected_pairs'
+
+
+@pytest.mark.parametrize('fps', [0, -1, float('nan'), float('inf')])
+def test_invalid_playback_rate_rejected(tmp_path, fps):
+    path = tmp_path / 'motion.npz'; _motion(path, fps=fps)
+    with pytest.raises(ValueError, match='positive fps'):
+        load_review(path, url=str)
+
+
 def test_support_motion_review_uses_playback_and_rejects_invalid_tracks(tmp_path):
     data = report()
     motion = tmp_path / 'motion.npz'

@@ -11,6 +11,12 @@ kinematics. No alternative dynamics backend is supported.
 The package stores local runtime metadata and
 segment layers under `data/`; large runtime artifacts remain untracked.
 
+Shared Newton collision queries and self-collision filters are owned by
+`somaforge_core`; current IK imports them directly. Contact objectives are owned
+by `contact_solver`, an explicit dependency of Motion Edit. Neither core nor the
+solver imports this editing application. Contact bindings initialize once in
+the contact package, without repeated installation in generation.
+
 ## Layout
 
 ```text
@@ -56,6 +62,12 @@ Set `MOTION_EDIT_CONDA_ENV` only when intentionally testing another Conda
 environment. Project-local `.venv` environments are not used.
 
 The main user-facing path starts from the canonical asset manifest:
+
+The header's Open button searches registered motions by name or ID and accepts
+read-only replay/report paths. The right panel keeps a collapsible recent-motion
+list. Display layers remain independent and available during generation;
+generation locks contact edits until it finishes. Generated references open as
+read-only candidates and still require native validation before training use.
 
 ```text
 Somaforge Newton 8-part asset manifest
@@ -110,7 +122,14 @@ moves the whole episode while remaining same-surface constrained. Selection
 and dragging are separate actions, and edited handles retain a clickable ghost
 at their session-start position for exact episode restore. The Output tab
 validates the plan and runs the same formal `generate-ref` implementation as a
-background job; the CLI remains available for batch and scripted runs.
+background job; the CLI remains available for batch and scripted runs. Both
+use `generation.jobs.generate_candidate` with the current backend defaults.
+Saved plans compile authored displacement windows from the unchanged verified
+Newton source layer and actual terrain. Old or unverified labels are rejected.
+The saved edited contact layer is a draft, not generated contact truth.
+Generated versions open for playback with no inherited contact layer; their
+`.generation.json` receipt records `training_ready=false` until native validation.
+Segmentation is rebuilt from that validation, rather than an output UI setting.
 
 The Contact Editor Generate action and `generate-ref` remain supported
 orchestration surfaces. The retained production command for reproducible
@@ -465,19 +484,28 @@ same `surface_id`/`object_id` form one episode. That episode has one handle;
 moving it applies one shared surface displacement to every member anchor while
 preserving the original per-frame contact samples, forces and stage structure.
 
-- Recent motions: a bottom-right vertical scroll list treats the source motion
+- Recent motions: a collapsible bottom-right list treats the source motion
   and every generated MotionVersion as peer entries. Selecting an entry opens
   its complete trajectory while preserving the owning asset context.
-- Contact tab: body/surface/status filters, current-frame mode, previous/next
-  contact, read-only surface-position offset and reject/clamp boundary mode.
-- Display tab: terrain, contact surfaces, bound point+force samples, episode
-  handles, root path, selection guides, handle size and force scale.
+- Contact tab: an episode picker jumps to the selected episode's start frame.
+  Body/surface/status filters, current-frame visibility and reject/clamp dragging
+  are under “筛选与拖动设置”; offsets appear only after selection.
+  The `[` / `]` shortcuts traverse matching episodes in time order and wrap at
+  the ends. Episode navigation pauses playback before jumping. Current-frame
+  mode only controls 3D marker visibility; it does not prevent navigation through
+  contact-free frames. Empty filters disable navigation and clear stale selection.
+- Display tab: scene layers, camera focus/follow and terrain opacity. Selection
+  guides, handle size, force scale and channel legends are under “显示细节”.
 - Output tab: ContactEditPlan, generated motion/contact/segment paths, MotionVersion
   registration, overwrite policy, validation, generation status, reload and discard.
 - Timeline: 8-part lane labels, adaptive time/frame ruler, stable cut markers,
-  direct drag scrubbing, frame stepping and previous/next cut navigation. It is
+  direct drag scrubbing, frame stepping and explicitly labeled “切分点” navigation
+  on desktop and mobile. Cut navigation pauses playback and is disabled when no
+  cuts are provided. It is
   the only frame scrub control; there is no duplicate range slider.
-- Toolbar: camera framing, undo, redo and save.
+- Toolbar: a shared open dialog for registered motions, NPZ playback and reports,
+  plus camera framing, undo, redo and save. Read-only playback hides the editing
+  actions and Output tab.
 
 Opening a source or generated entry switches a complete MotionAsset-backed
 bundle. Generated versions inherit robot, force, terrain and surface context,
@@ -582,6 +610,32 @@ The source motion, contact layer and event identities remain unchanged.
 Generated contact labels must be freshly materialized by Newton; copied source
 graphs and proxy error thresholds do not establish edited contact truth.
 
+Standard dataset augmentation requires plan metadata `source_prefix_reference` to preserve a source-like start
+when a spatial edit otherwise distorts the initial stance. Its explicit contract
+contains `schema="source_prefix_reference_v1"`, `hold_frames` (exclusive),
+`transition_end_frame`, `surface_transform_id`, `joint_prior_scale` and
+`semantic_weight`. Before `hold_frames`, every semantic source body follows the
+same rigid source-to-target surface map. A quintic transition restores the edited
+semantic targets and the original weights by `transition_end_frame`. The IK joint
+prior is strengthened on the same clock. No solved poses are spliced or repaired,
+and contacts, collisions, source arrays and event timing retain their contracts.
+This is a generation reference, not evidence of dynamic feasibility; validate a
+new candidate through Newton observations and policy execution before admission.
+The root yaw condition is derived from the exact surface map used for semantic
+positions. An authored root yaw must agree with that map, including wraparound;
+conflicting headings and tilted maps unsupported by the current world-Z IK fail
+before generation. The optimizer left-composes this rotation with the source
+WXYZ root quaternion, preserving its original pitch/roll. Output root and body
+velocities are recomputed from the solved poses, never copied from the unrotated
+source. A generation receipt must confirm that IK retained the root yaw condition.
+
+An unstable initial stance can force balance-recovery adjustments that deviate
+from the reference or disrupt task contacts, causing early task failure despite
+a visually plausible motion. Initial posture, heading and velocity consistency
+are therefore part of standard augmentation, not just a display check. The
+[-10/+20 policy comparisons](../../docs/trajectory_refinement.md) document this
+diagnosis; successful start repair still requires full rollout/contact acceptance.
+
 ## Dataset Augmentation
 
 Single and batch generation share the contact-aware rollout-authority backend:
@@ -589,6 +643,7 @@ Single and batch generation share the contact-aware rollout-authority backend:
 ```bash
 ./motion-edit generate-ref \
   --plan-manifest data/workbench/augmentations/climb_jitter/manifest.json \
+  --source-prefix-config /path/to/source-clock-prefix.json \
   --output-motion-dir data/motions/generated \
   --ik-max-nfev 25 \
   --ik-q-acceleration-weight 8
@@ -599,6 +654,59 @@ paths are resolved against that manifest. Output identity collisions fail before
 generation. Each `.generation.json` receipt records the plan hash, actual solver
 diagnostics and `requires_native_validation`; it never admits a candidate to a
 training manifest. Existing files are not overwritten without `--overwrite`.
+
+Both single-plan and plan-manifest `generate-ref` accept `--source-prefix-config`
+with a JSON contract such as `configs/motion_edit/climb00_source_prefix_v1.json`.
+The example's frame boundaries are specific to that native source clock; the
+backend contains no motion, angle or collection-size defaults. Without the flag,
+every batch plan must already contain `metadata.source_prefix_reference`; missing
+configuration fails before the first solve. This allows different source clocks
+in one batch. Single-plan editor generation retains explicitly authored prefix
+settings without imposing a dataset recipe on unrelated local edits. Conflicting
+plan and CLI settings fail. Batch preflight checks all source lengths and surface
+maps before its first solve, and changing the configuration during a batch stops
+the queue. The receipt pins the effective plan, configuration and prefix
+implementation, and checks that IK actually applied the requested reference.
+
+Prepare a fresh collection version without starting generation or GPU work:
+
+```bash
+runtime/environments/newton-main-20260914/bin/python -B \
+  scripts/expand_source_preserving_augmentations.py \
+  --prepare-from-collection runtime/current/motions/climb00_contact_dataset/versions/loaded_material_rebuild_20261003/edits207_joint_v12/index.json \
+  --source-prefix-config configs/motion_edit/climb00_source_prefix_v1.json \
+  --output runtime/current/motions/climb00_contact_dataset/versions/source_prefix_standard_20261014/edits207_joint_v14 \
+  --prepare-only
+```
+
+This accepts an edit index (`motion_files[].plan`) or a plan manifest
+(`plans[].plan_path`). It prepares `plans/`, `manifest.json`, `preparation.json`
+and a `prepared` status. It reads the unchanged native source, preserves loaded
+material evidence when present, and pins the source contact layer and terrain
+files. An identical `--resume` verifies the prepared files; changed inputs,
+configuration or implementation require a fresh version. No edited poses or
+old generation results are reused. Run the prepared manifest through the formal
+`generate-ref --plan-manifest ... --output-motion-dir ...` entrypoint afterward.
+Native FK, fresh Newton labels and actual policy rollout acceptance remain
+required before using the generated candidates as executed training data.
+
+The full native-source rebuild command
+`scripts/expand_source_preserving_augmentations.py` also accepts
+`--source-prefix-config` and requires it unless every input plan already has a
+prefix contract. It applies the configuration to prepared plans on the
+new native clock, records it in `inputs.json` and `generation_complete.json`, and
+rejects resumed results whose effective prefix or implementation differs.
+Pre-existing authored prefix boundaries are mapped exactly during event rebase;
+missing exact boundaries fail instead of silently changing the start interval.
+
+The standard order is source-clock prefix preparation, contact-aware generation,
+canonical Newton FK and fresh labels, joint policy refinement when needed, fixed
+policy rollout evaluation/collection, and per-trial dataset admission. Complete
+tracking alone cannot pass a contact-event task. Only accepted actual policy
+executions enter the dataset; kinematic candidates and failed rollouts stay in
+the audit. Each stage is explicit and preparation never starts training.
+Changing the prefix implementation invalidates prepared-version/resume hashes;
+prepare a fresh version rather than rewriting old receipts.
 
 Newton activation/allocation, full-body separation, event realization, support
 motion and trajectory continuity are evaluated separately. Source timing is
@@ -634,7 +742,7 @@ using `--motion-id`; read-only results and research reports use:
 ./motion-edit contact-editor --review path/to/diagnostic.json
 ```
 
-The page also accepts these paths under “打开只读回放／实验报告”. No additional
+The toolbar's “打开轨迹／回放／报告” dialog accepts these paths. No additional
 Viser server, iframe, browser window, or polling bridge is started. Registered
 motions remain available in the session list. Simulation rendering is separate:
 train/eval/replay/run_sim continue using AppLauncher `--visualizer kit`.
@@ -658,3 +766,31 @@ not enter the reported physical displacement.
 Reports' contact markers and acceptance metrics remain **historical diagnostics**,
 not current Newton/top-face truth. Review never writes MotionVersions, labels,
 edit plans, or training inputs. Predictor training/model code is unaffected.
+
+The same review input also opens predictor `manifest.json` collections with
+`cases[].path` and infiller `cases.json` collections with `cases[].motion`.
+Case motion and terrain paths are relative to the collection file unless
+absolute; report terrain paths are likewise relative to their report. Each
+selected NPZ still requires canonical robot provenance and named joints.
+
+The inspector switches cases and selects a reference trajectory. An explicitly
+marked reference with matching `corpus_indices` is selected automatically.
+Both trajectories use one playback clock, aligned at time zero and sampled
+using their own FPS (including fractional rates). This is time alignment, not
+automatic contact-event alignment. The reference disappears after its recorded
+duration. Choose side-by-side or original-coordinate overlay; the reference is
+blue. Display offsets never modify motion data. Segment selection and cut
+navigation jump to recorded frame boundaries; the peak button locates the
+largest reported `native_depth_mm` value. These values remain report diagnostics.
+
+Display controls provide robot framing, camera following, and shared terrain
+opacity. FPS remains accessible on narrow screens. Stationary and single-point
+support tracks render as points. Failed scene loads disable editing until retry
+loads the backend's current session successfully.
+
+Force magnitude and historical force masks never establish current contact
+activation. The playback API preserves recorded force masks as diagnostics;
+effective masks require verified Newton evidence and shared primary-face
+selection. Missing evidence is shown as unknown. Verified six-part masks are
+shown using their actual part names; the UI does not fabricate heel/toe splits
+or forces for those selected pairs.

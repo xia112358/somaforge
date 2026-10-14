@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import numpy as np
 from somaforge_core.contact_schema import CONTACT_FORCE_PART_NAMES
 
 
-def load_motion_sequence(path: str | Path) -> tuple[np.ndarray, int, tuple[str, ...]]:
+def load_motion_sequence(path: str | Path) -> tuple[np.ndarray, float, tuple[str, ...]]:
     with np.load(Path(path).expanduser(), allow_pickle=False) as data:
-        fps = int(np.asarray(data["fps"]).reshape(-1)[0]) if "fps" in data else 50
+        fps = float(np.asarray(data["fps"]).reshape(-1)[0]) if "fps" in data else 50.
+        if not np.isfinite(fps) or fps <= 0:
+            raise ValueError(f"{path} requires finite positive fps")
         if "qpos" in data:
             qpos = np.asarray(data["qpos"], dtype=np.float32)
         elif "joint_pos" in data:
@@ -25,7 +28,7 @@ def load_motion_sequence(path: str | Path) -> tuple[np.ndarray, int, tuple[str, 
     return qpos, fps, joint_names
 
 
-def load_contact_force_payload(path: str | Path, *, frame_count: int) -> dict:
+def load_contact_force_payload(path: str | Path, *, frame_count: int, motion_path: str | Path | None = None) -> dict:
     with np.load(Path(path).expanduser(), allow_pickle=False) as data:
         names = (
             [str(item) for item in np.asarray(data["contact_force_part_order"]).reshape(-1).tolist()]
@@ -37,10 +40,11 @@ def load_contact_force_payload(path: str | Path, *, frame_count: int) -> dict:
             if "contact_force_part_w" in data
             else np.zeros((frame_count, len(names), 3), dtype=np.float32)
         )
+        masks_known = "contact_force_part_mask" in data
         masks = (
             np.asarray(data["contact_force_part_mask"], dtype=bool)
             if "contact_force_part_mask" in data
-            else np.linalg.norm(forces, axis=-1) > 0.0
+            else np.zeros(forces.shape[:2], dtype=bool)
         )
         positions = (
             np.asarray(data["contact_force_part_position_w"], dtype=np.float32)
@@ -55,6 +59,9 @@ def load_contact_force_payload(path: str | Path, *, frame_count: int) -> dict:
         raw_counts = np.asarray(data["raw_contact_count"], dtype=np.int64) if "raw_contact_count" in data else None
         raw_points = np.asarray(data["raw_contact_point0_w"], dtype=np.float32) if "raw_contact_point0_w" in data else None
         raw_forces = np.asarray(data["raw_contact_force_w"], dtype=np.float32) if "raw_contact_force_w" in data else None
+        has_solver_evidence = "contact_semantics_json" in data and "contact_pairs_json" in data
+        semantics = json.loads(data["contact_semantics_json"].item()) if has_solver_evidence else None
+        pairs = json.loads(data["contact_pairs_json"].item()) if has_solver_evidence else None
     count = min(frame_count, forces.shape[0], masks.shape[0], positions.shape[0], position_valid.shape[0])
     sample_points: list[list[list[float]]] = []
     sample_forces: list[list[list[float]]] = []
@@ -72,12 +79,32 @@ def load_contact_force_payload(path: str | Path, *, frame_count: int) -> dict:
             active = np.asarray(masks[frame], dtype=bool)
             sample_points.append(np.asarray(positions[frame])[active].tolist())
             sample_forces.append(np.asarray(forces[frame])[active].tolist())
-    return {
+    payload = {
+        "mask_status": "recorded_force_mask_unverified" if masks_known else "unknown_missing_contact_mask",
         "part_order": names,
         "forces": forces[:count].tolist(),
-        "masks": masks[:count].tolist(),
+        "masks": [],
+        "recorded_force_masks": masks[:count].tolist() if masks_known else [],
         "positions": positions[:count].tolist(),
         "position_valid": position_valid[:count].tolist(),
         "sample_points": sample_points,
         "sample_forces": sample_forces,
     }
+    if has_solver_evidence:
+        from somaforge_core.newton_contact_data import load_raw_contact_labels
+        from somaforge_core.contact_face_selection import FACE_POLICY, select_contact_pairs
+        from somaforge_core.newton_contacts import PARTS
+        source = Path(motion_path or path)
+        separate = Path(path) if source.resolve() != Path(path).resolve() else None
+        load_raw_contact_labels(source, separate, frame_count=frame_count)
+        if len(pairs) != frame_count:
+            raise ValueError('Newton pair timeline mismatch')
+        selected = select_contact_pairs(pairs, semantics['scene']['surface_catalog'])
+        payload.update(part_order=list(PARTS), masks=selected['contact_part_mask'].tolist(),
+                       positions=selected['contact_position_w'].tolist(),
+                       position_valid=selected['contact_part_mask'].tolist(),
+                       forces=np.zeros((frame_count, len(PARTS), 3)).tolist(),
+                       mask_status='verified_newton_primary_faces', force_status='unknown_for_selected_pairs',
+                       contact_semantics=semantics, face_selection=FACE_POLICY,
+                       raw_contact_pairs=pairs, abnormal_contact_pairs=selected['abnormal_contact_pairs'])
+    return payload

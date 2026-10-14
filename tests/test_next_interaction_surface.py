@@ -1,6 +1,6 @@
 import torch
 import pytest
-from climb00_pipeline.next_interaction_surface import region_cost
+from generator.next_interaction_surface import region_cost
 
 
 def example():

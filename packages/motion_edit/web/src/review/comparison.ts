@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { clearResources } from '../core/resources';
 import type { Review, ReviewRecord } from '../core/types';
 
 // A layer of the existing scene, not another renderer, server, or playback clock.
@@ -16,8 +17,6 @@ export class Comparison {
   private scale = 3;
   private panel: HTMLElement;
   private details: HTMLElement;
-  private terrain: THREE.Object3D | null = null;
-  private opacity = .45;
   constructor(private scene: THREE.Scene, private onPose: (q: number[]) => void) {
     this.panel = document.getElementById('reviewPanel')!;
     this.details = document.createElement('pre');
@@ -25,16 +24,11 @@ export class Comparison {
     this.scene.add(this.group, this.annotations);
   }
   private clearAnnotations() {
-    this.annotations.traverse((obj: any) => {
-      obj.geometry?.dispose();
-      if (Array.isArray(obj.material)) obj.material.forEach((m: any) => m.dispose());
-      else obj.material?.dispose();
-    });
-    this.annotations.clear();
+    clearResources(this.annotations);
   }
   setup(review: Review | undefined, robot: any, terrain: THREE.Object3D | null, names: string[]) {
     this.group.clear(); this.clearAnnotations(); this.panel.replaceChildren();
-    this.review = review; this.terrain = terrain; this.current = robot; this.reference = null; this.selected = undefined;
+    this.review = review; this.current = robot; this.reference = null; this.selected = undefined;
     this.panel.hidden = !review;
     if (!review || review.kind === 'support_motion' || review.kind === 'support_slip') return;
     const notice = document.createElement('p'); notice.textContent = review.notice;
@@ -91,9 +85,7 @@ export class Comparison {
     scale.setAttribute('aria-label', '位移显示倍率');
     scale.oninput = () => { this.scale = Number(scale.value); this.onPose(this.selected!.q); };
     field('位移显示倍率', scale);
-    const opacity = document.createElement('input'); opacity.type = 'range'; opacity.min = '.05'; opacity.max = '1'; opacity.step = '.05'; opacity.value = String(this.opacity);
-    const applyOpacity = () => { this.opacity = Number(opacity.value); [this.terrain, ...this.group.children.filter(obj => obj !== this.reference)].forEach(obj => obj?.traverse((mesh: any) => { if(mesh.isMesh) { mesh.material.transparent = this.opacity < 1; mesh.material.opacity = this.opacity; mesh.material.depthWrite = this.opacity === 1; } })); };
-    opacity.oninput = applyOpacity; applyOpacity(); field('地形透明度', opacity); this.panel.append(this.details);
+    this.panel.append(this.details);
     method.value = records.find(row => row.label !== original.label)?.method || original.method;
     changeMethod();
   }

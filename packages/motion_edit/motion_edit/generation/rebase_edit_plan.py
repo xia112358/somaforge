@@ -77,6 +77,20 @@ def rebase_plan(plan, old_anchors, new_anchors, old_events, new_events, *,
     result.update(source_motion_path=str(Path(source).resolve()),source_contact_layer=str(Path(layer).resolve()),
                   source_segment_layer=None,edits=[])
     metadata = result['metadata']
+    if 'source_prefix_reference' in metadata:
+        from .source_prefix_reference import prefix_weights
+        config = dict(metadata['source_prefix_reference'])
+        prefix_weights(config, int(clock[-1])+1)
+        old_hold_last, old_end = config['hold_frames']-1, config['transition_end_frame']
+        held = np.flatnonzero(clock == old_hold_last)
+        ended = np.flatnonzero(clock == old_end)
+        if not len(held) or not len(ended):
+            raise ValueError('Source prefix boundaries lack an exact native event-clock mapping')
+        config.update(hold_frames=int(held[-1])+1, transition_end_frame=int(ended[0]))
+        prefix_weights(config, len(clock))
+        metadata['source_prefix_reference'] = config
+        metadata['source_prefix_clock_rebase'] = dict(old_hold_frames=old_hold_last+1,
+            old_transition_end_frame=old_end, contract='exact_authoring_to_native_boundary_mapping')
     metadata.update(newton_contact_file=str(Path(labels).resolve()),event_phase_file=str(Path(events).resolve()),
         source_motion_sha256=hashlib.sha256(Path(source).read_bytes()).hexdigest(),
         free_surface_reference_offsets=offsets,regeneration_source='unchanged_native_execution',

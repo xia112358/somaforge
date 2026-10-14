@@ -4,6 +4,21 @@ from torch import Tensor
 from somaforge_core.g1_kinematics import _quaternion_matrix_wxyz
 
 
+def boundary_cubic_reference(start: Tensor, end: Tensor, phase: Tensor) -> Tensor:
+    """Kinematic budget witness from immutable endpoints, never motion labels.
+
+    It has zero analytic endpoint derivatives; no collision, support or
+    realized contact is claimed for this reference.
+    """
+    aligned=end.clone()
+    aligned[:,3:7]=torch.where((start[:,3:7]*end[:,3:7]).sum(-1,keepdim=True)<0,
+                              -end[:,3:7],end[:,3:7])
+    blend=phase.square()*(3-2*phase)
+    q=(1-blend)*start[:,None]+blend*aligned[:,None]
+    q=torch.cat((q[...,:3],torch.nn.functional.normalize(q[...,3:7],dim=-1),q[...,7:]),-1)
+    return torch.where(phase==0,start[:,None],torch.where(phase==1,end[:,None],q))
+
+
 def densify_qpos(q: Tensor, factor: int) -> Tensor:
     """Nlerp each quaternion on its shortest arc; preserve input sample count at factor=1."""
     if factor < 1 or q.ndim != 3 or q.shape[1] < 2:

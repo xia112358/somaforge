@@ -1,6 +1,6 @@
 import torch
-from infiller_fk_fast import InfillerFK
-from climb00_pipeline.neural_infiller import CanonicalG1ForwardKinematics, CanonicalG1CollisionPoints
+from generator.research.archived_experiments.infiller_fk_fast import InfillerFK
+from generator.neural_infiller import CanonicalG1ForwardKinematics, CanonicalG1CollisionPoints
 
 
 def test_fk_positions_rotations_and_q_gradients():

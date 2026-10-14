@@ -12,6 +12,35 @@ import torch
 from .contact_source_geometry import project_source_triangles_tensor, incident_witness_faces_tensor
 
 
+def validate_observed(observed):
+    """Verify compact actual solver decisions before consuming device pairs."""
+    p = observed['pairs']
+    keys = ('type', 'dist', 'includemargin', 'efc_address', 'constraint_rows', 'active',
+            'constraint_allocated', 'eligible', 'primary_surface', 'part')
+    if any(k not in p for k in keys):
+        raise ValueError('Missing actual solver contact fields')
+    dist, margin, kind, address, rows = (p[k] for k in
+        ('dist', 'includemargin', 'type', 'efc_address', 'constraint_rows'))
+    if dist.ndim != 1 or margin.shape != dist.shape or kind.shape != dist.shape:
+        raise ValueError('Invalid Newton contact field shapes')
+    if address.ndim != 2 or address.shape[0] != len(dist) or address.shape[1] < 1:
+        raise ValueError('Invalid Newton constraint address shape')
+    if rows.shape != dist.shape or p['active'].shape != dist.shape or p['constraint_allocated'].shape != dist.shape:
+        raise ValueError('Invalid Newton contact decision/constraint row shapes')
+    active = ((kind & 1) != 0) & (dist < margin)
+    required = torch.arange(address.shape[1], device=address.device)[None] < rows[:, None]
+    allocated = active & ((address >= 0) | ~required).all(-1)
+    flags = torch.stack((~(torch.isfinite(dist).all() & torch.isfinite(margin).all()),
+        ((rows < 1) | (rows > address.shape[1])).any(),
+        ((active != p['active']) | (allocated != p['constraint_allocated'])).any(),
+        (active & ~allocated).any())).detach().cpu().tolist()
+    for invalid, message in zip(flags, ('Nonfinite Newton contact distance/margin',
+        'Invalid expected contact constraint row count', 'Actual Newton activation/allocation disagreement',
+        'Unallocated active Newton contact')):
+        if invalid:
+            raise ValueError(message)
+
+
 class NewtonContactTensorReader:
     def __init__(self, model, solver, body_env, shape_surface):
         import warp as wp

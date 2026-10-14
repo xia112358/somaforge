@@ -398,6 +398,11 @@ def generate_contact_aware_pyroki_preview(
             }
         )
     taskspace = preview.replace(taskspace, metadata=taskspace_metadata)
+    if "source_prefix_reference" in plan_metadata:
+        from .lte_fullbody import _semantic_keypoints_from_motion
+        from .source_prefix_reference import apply_source_prefix
+        taskspace = apply_source_prefix(taskspace, _semantic_keypoints_from_motion(source_motion),
+                                        plan.surface_transforms, plan_metadata["source_prefix_reference"])
     taskspace.validate()
 
     work_dir = (

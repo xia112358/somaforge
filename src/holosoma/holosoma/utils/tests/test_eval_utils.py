@@ -19,6 +19,29 @@ from omegaconf import OmegaConf
 from somaforge_core.robot_assets import canonical_g1_asset_metadata
 
 
+def test_training_sim_imports_install_newton_api_after_launcher(monkeypatch):
+    from holosoma.utils import eval_utils, sim_utils
+    from holosoma.utils.simulator_config import SimulatorType
+    from somaforge_core import newton_runtime_compat
+
+    calls = []
+    app = object()
+    config = ExperimentConfig()
+    launcher_args = object()
+    monkeypatch.setattr(sim_utils, "setup_simulator_imports", lambda cfg: calls.append("imports"))
+
+    def launch(cfg, *, launcher_args):
+        assert cfg is config
+        calls.append("launcher")
+        return app
+
+    monkeypatch.setattr(sim_utils, "setup_isaaclab_launcher", launch)
+    monkeypatch.setattr(eval_utils, "get_simulator_type", lambda: SimulatorType.ISAACLAB3_NEWTON)
+    monkeypatch.setattr(newton_runtime_compat, "install", lambda: calls.append("compat"))
+    assert eval_utils.init_sim_imports(config, launcher_args=launcher_args) is app
+    assert calls == ["imports", "launcher", "compat"]
+
+
 @pytest.fixture
 def mock_wandb_run() -> mock.MagicMock:
     """Create a mock wandb run object."""

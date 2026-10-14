@@ -87,3 +87,7 @@ runtime/environments/newton-main-20260914/bin/python -m generator.train_full1000
 保留权重、数据、配置、代码快照和失败证据。项目默认配置、资产清单和训练清单指向本版本。
 原训练源码哈希与登记时源码哈希分别保存在[source_provenance.json](source_provenance.json)，
 训练材料库、校准和checkpoint均绑定外部文件哈希。
+
+2026-10-10 的路径迁移将训练启动记录和源码快照移入正式 `runtime/current/archives/`，
+[source_provenance.json](source_provenance.json) 已更新引用。源码快照与 checkpoint 字节不变；
+JSON 内部路径更新后的哈希另行登记，原哈希保留用于审计。迁移不改变训练结果或数据准入。

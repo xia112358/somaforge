@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Protocol
 
 import numpy as np
-from motion_edit.generation.newton_collision import DirectNewtonCollisionScene
+from somaforge_core.newton_collision import DirectNewtonCollisionScene
 from numpy.typing import NDArray
 from somaforge_core import CONTACT_BODY_NAMES_BY_PART, G1_29DOF_JOINT_ORDER
 from somaforge_core.robot_assets import canonical_g1_urdf_path

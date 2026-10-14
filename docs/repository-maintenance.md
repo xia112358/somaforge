@@ -2,68 +2,147 @@
 
 ## Maintained code and entrypoints
 
+Large local runtime data is held outside the checkout at
+`/home/xiaz/somaforge-data/current`, reached through the `runtime/current`
+directory symlink. See [repository-data.md](repository-data.md) for the code/data
+boundary and backup requirements. Required inputs retain their existing paths;
+the relocation does not change baseline weights, contact labels or losses.
+
 | Area | Implementation | Entrypoint / tests |
 | --- | --- | --- |
 | Assets, FK, contact semantics | `packages/somaforge_core` | `scripts/check_asset_manifest.py`, package tests |
-| Motion editing and augmentation | `packages/motion_edit` | `motion-edit generate-ref`, Contact Editor, package tests |
+| Motion editing and augmentation | `packages/motion_edit` | `motion-edit generate-ref`, `motion-edit contact-editor`, package tests |
 | Predictor and Infiller | `packages/generator` | `python -m generator.train_full1000_position`, package tests |
 | Contact optimization | `packages/contact_solver` | package API; diagnostics under `research/`; package tests |
-| Newton WBT | `src/holosoma` | `train_agent.py`, `eval_agent.py`, `replay.py`, `run_sim.py` |
+| Newton WBT | `src/holosoma` | `train_agent.py`, `eval_agent.py`, `replay.py`, `run_sim.py`; `scripts/train_motion_edit_policy_finetune.py` for edited references |
 | Retargeting | `src/holosoma_retargeting` | separate retargeting environment |
 
-`climb00_pipeline` contains historical module aliases only. Current source and
-ordinary tests import the owning package directly. The compatibility identity
-test is retained for old snapshots and checkpoint reproduction. Historical
-experiments are not additional current training entrypoints.
+Shared direct Newton collision queries and canonical self-collision filters live
+in `somaforge_core.newton_collision` and `somaforge_core.newton_collision_filter`.
+Tracking imports the filter directly from core; it does not initialize Motion Edit.
+`contact_solver` depends on core, while Motion Edit and Generator depend on the
+solver and core. The solver has no dependency on the editing application.
+The two former `motion_edit.generation` modules were archived and recycled;
+current imports use core without forwarding modules. Numerical implementations,
+collision filters, margins and authority assets are unchanged.
 
-The maintained full1000 trainer no longer imports training scripts from `tmp/`:
-dataset preparation lives in `generator.training_data`, owned Newton workers in
-`generator.scene_workers`, and the optional isolated-gradient audit in
-`generator.research.isolated_gradients`. Dataset splits and training equations
-were preserved when extracting these helpers. Query checkpoint, source scene
+The follow-up acceptance record is
+`runtime/current/archives/package_simplification_followup_20261010/acceptance.json`.
+It records 1093 package tests (plus 3 subtests), 58 entrypoint checks, and bounded
+real Tracking training/evaluation, edited-reference policy fine-tuning/evaluation,
+and Generator scratch training/evaluation. Training now initializes the existing
+Newton API bridge after AppLauncher, matching evaluation; no solver parameters
+or Predictor implementation were changed. Smoke checkpoints are temporary
+outputs, not new baselines or required inputs. These checks validate working
+entrypoints and finite updates, not convergence or full-trajectory acceptance.
+
+Current implementations and ordinary tests import the owning package directly.
+`climb00_pipeline` contains aliases for historical imports and module CLI calls;
+its module-identity tests and frozen reproduction dependencies remain supported.
+It contains no independent model, solver or dataset implementation. It is excluded
+from the default workspace, installation and subprocess search paths. Historical
+reproduction opts in through its [package instructions](../packages/climb00_pipeline/README.md).
+
+The maintained full1000 trainer uses `generator.training_data`,
+`generator.scene_workers` and `generator.research.isolated_gradients`, rather
+than importing training scripts from `tmp/`. Query checkpoint, source scene
 manifest and model inspection paths are explicit configuration fields.
 
-The maintained trainer defaults match the user-designated
-[`predictor.v1_latest.20261010`](../baselines/predictor_v1_latest_20261010/README.md):
-v1, loaded-material207_joint_v12 data and keep-patch weight1. Configuration,
-dependencies and the fixed step1000 comparison checkpoint are registered there.
-New scratch runs do not load that checkpoint; use a fresh output directory.
-Historical data variants are not approved merely by repository cleanup.
+The current baseline is selected by [`baselines/current.json`](../baselines/current.json):
+[`predictor.v1_latest.20261010`](../baselines/predictor_v1_latest_20261010/README.md).
+It records v1, loaded-material207_joint_v12 data, keep-patch weight 1 and the fixed
+step1000 comparison checkpoint. New scratch runs use a fresh output directory
+and do not load that checkpoint. Cleanup does not approve historical data variants.
 
-## Data and historical records
+## Visualization
 
-- Formal motion/dataset archives: `runtime/current/motions/`.
-- Formal checkpoints: `runtime/current/models/`.
-- Asset, data and acceptance indexes: `runtime/current/manifests/` and the
-  tracked registries in `configs/`.
-- Disposable diagnostics: project `tmp/`.
-- Frozen experiment source/configuration: `baselines/`; do not rewrite snapshots
-  to look like current code.
+The supported browser entry is `motion-edit contact-editor`: `--motion-id` opens
+registered editing/playback; `--review` opens canonical NPZ sequences or JSON pose
+comparisons in the same Three.js page. See the
+[playback documentation](../packages/motion_edit/README.md#unified-playback-and-experiment-review).
+The packaged page references the current JS/CSS bundle in `web_dist/index.html`.
+Historical diagnostic contact flags remain unverified; playback does not infer
+contact truth from geometry or force thresholds.
+
+There is no maintained standalone Viser, workbench server or force-retarget CLI.
+Retargeting does not expose `retargeter.visualize` or `retargeter.debug`.
+Simulation Kit rendering is controlled by AppLauncher.
+`export-manifest` and `export-split-npz` require `--motion-version-id`; the old
+layer `--source` path is rejected.
+
+## Data and retention
+
+| Content | Location |
+| --- | --- |
+| Formal motion/dataset archives | `runtime/current/motions/` |
+| Formal checkpoints | `runtime/current/models/` |
+| Local asset, data and acceptance indexes | `runtime/current/manifests/` |
+| Tracked asset and training contracts | `configs/` |
+| Diagnostics and temporary work | project `tmp/` |
+| Frozen experiment source/configuration | `baselines/` |
 
 Root `data`, `logs` and `tmp` are symlinks into `runtime/current/holosoma`.
-`tmp/` still contains referenced historical weights, datasets and scene records.
-Its name is not evidence that its contents can be deleted.
+Required inputs must never live under `tmp/`. Persistent native build caches
+live under `runtime/current/cache/`; retained experiment inputs and launch
+snapshots live under `runtime/current/archives/`. Temporary outputs may be
+removed only after checking references and confirming the itemized list.
+Do not rewrite frozen source snapshots to look like current code.
 
-The 2026-09-28 inventory checked the previous Predictor snapshot. That pretrained
-recipe was moved to the system recycle bin after explicit confirmation on
-2026-10-02. That scratch recipe and control500 were archived in place on
-2026-10-10 when the user designated `baselines/predictor_v1_latest_20261010/`
-as the current training and analysis baseline. The current pointer and archive
-index are `baselines/current.json` and `baselines/archives.json`; historical
-weights, data, source snapshots and launch records remain intact.
-The historical direct-infiller corpus remains intact;
-that experiment is documented in `climb00_direct_infiller_baseline.md` and is
-not a newly approved training corpus.
+Use [`baselines/current.json`](../baselines/current.json) and
+[`baselines/archives.json`](../baselines/archives.json) for current and archived
+Predictor records. scratch_recipe.20261002 and control500 were archived in place
+on 2026-10-10; their historical weights, data, source snapshots and launch records
+remain available. The historical direct-infiller corpus is described in
+[its recipe](history/climb00_direct_infiller_baseline.md), not a current training admission.
 
-The local retention registry is
-`runtime/current/manifests/repository_cleanup_20260928.json`.
-It records protected reproduction dependencies, not training admission.
-Tracked upstream motion/examples remain pending dependency-specific review;
-the repository audit lists them instead of silently removing them.
+`runtime/current/manifests/repository_cleanup_20260928.json` is a historical
+retention inventory, not the current baseline or a training admission registry.
+It predates the explicitly approved 2026-10-02 retirement of corrected1000 and
+therefore includes paths that no longer exist. Consult current baseline records
+and actual references before any cleanup. Tracked upstream motion/examples also
+require dependency-specific review; the audit lists them rather than removing them.
+
+## Cleanup rules and record
+
+File changes require a plan and confirmation under root `AGENTS.md`. Deletions
+require an itemized confirmation and use the system recycle bin. Never blanket
+clear `tmp/`, discard untracked research, stop training, relabel datasets or
+promote a baseline as a side effect of cleanup. Keep changes reviewable until a
+separate commit/push request.
+
+Earlier cleanup moved 35 tests to their implementation owners and retired old
+Motion Edit handlers, viewers and the LTE adapter. The 2026-09-28 movement and
+verification are recorded in
+`runtime/current/manifests/repository_cleanup_20260928.json`; the former
+`tmp/repository_cleanup_20260928/` diagnostics were later recycled.
+That pass verified 755 tests and 3 subtests plus 870 statically parsed Python
+files; these counts are historical, not current verification results.
+
+The 2026-10-10 maintenance pass replaces legacy imports in 16 ordinary root tests
+with canonical package imports. It removes only the four approved unreferenced
+web JS bundles, empty `source/`, root Python/pytest caches and the cache-only
+`packages/climb00_pipeline/tests/` directory. Compatibility tests, Predictor
+implementation, current baseline, formal data and checkpoints remain intact.
+Caches may be recreated by normal tooling. Movement and verification records
+for this pass are historical; the former `tmp/repository_cleanup_20261010/`
+diagnostics were recycled in the separately confirmed cleanup. Verification passed
+85 affected/compatibility tests, statically parsed 959 Python files without errors,
+and validated both the asset and training manifests.
+
+The broader reorganization keeps the maintained Tracking, Motion Edit and
+Generator interfaces in the table above. Historical reports now live under
+[docs/history](history/README.md). The old direct-infiller launcher and unused
+editor-cut forwarding module were moved to the recycle bin after an itemized
+confirmation. CI runs `scripts/check_repository.py` instead of the removed
+GMVQ checker; it covers package, test, app and baseline changes. The audit also
+rejects retired entrypoints, default legacy search paths and missing workflow
+scripts. The former `tmp/repository_reorganization_20261010/` diagnostics were recycled;
+current retained verification is indexed in
+`runtime/current/manifests/repository_tmp_cleanup_acceptance_20261010.json`.
 
 ## Verification
 
-Static audit, including modified and untracked source:
+Static source/config/import audit and manifest checks:
 
 ```bash
 python3 scripts/check_repository.py --output tmp/repository_audit.json
@@ -76,62 +155,49 @@ Package and contact-pipeline tests require the project's Newton environment:
 
 ```bash
 source scripts/source_isaaclab3_newton_setup.sh
-OMP_NUM_THREADS=2 python -m pytest -p no:cacheprovider \
+OMP_NUM_THREADS=2 PYTHONPATH="$PWD/scripts${PYTHONPATH:+:$PYTHONPATH}" \
+  python -m pytest -p no:cacheprovider \
   packages tests/test_newton_contact_pipeline.py -q
 ```
 
-IsaacLab/CUDA tests require the host environment. Passing static/unit checks
-does not establish trajectory acceptance or policy execution quality.
+Root regression tests import their owning packages directly. Preserved experimental
+helpers live under `generator.research.archived_experiments` and
+`contact_solver.research`; they do not expose old training CLIs. The teacher
+loader test creates its own synthetic fixture, and does not pass silently when
+an external dataset is missing. Local historical corpus integration tests read
+explicit formal archive paths, not `tmp/`.
 
-## Cleanup record and constraints
+The temporary-input migration preserves motion/checkpoint bytes and frozen
+source snapshots. Two registered Tracking manifests now live under
+`runtime/current/motions/wbt/`; their relative and absolute input closure is
+preserved. JSON path edits also refresh associated file hashes. Archived labels
+and preprocessing caches are not re-certified by this migration.
+The complete local source/target hash ledger is
+`runtime/current/archives/preserved_inputs_20261010/migration.json`.
 
-35 tests were relocated from the compatibility package to their implementation
-owners: 25 Generator, 9 Contact Solver and 1 shared-core test. Existing modified
-tests were moved with their changes, not reset to Git versions.
+The repository audit rejects temporary-source imports, temporary data/model
+reads and temporary persistent caches. Temporary diagnostic output is allowed.
+Tests are also checked with workspace `tmp/` reads explicitly denied.
 
-The explicitly approved `.pytest_cache`, `.ruff_cache`, root `__pycache__`, empty
-`source/`, and retired `generation/ik_subprocess.py` were moved to the system
-recycle bin. Additional removals require an enumerated confirmation. Caches may
-be recreated by normal tooling.
+After the separately confirmed cleanup, 2807 migrated originals (about 3.8 GB)
+were moved with `gio trash`; each has a verified replacement and system-trash
+receipt. Verification passed 1091 package tests, 247 root unit tests and 19
+Tracking preset tests, plus 3 subtests, with workspace temporary inputs denied.
+Eight maintained CLI help checks, native Coal loading and both asset/training
+manifest validators passed. Training E2E workflows are outside this cleanup
+verification. The persistent verification and receipt ledger is
+`runtime/current/manifests/repository_tmp_input_migration_20261010.json`.
 
-Diagnostics, movement records, extracted-source fingerprints and test results
-are under `tmp/repository_cleanup_20260928/`. No training process is stopped by
-cleanup; no dataset/checkpoint is deleted, silently relabeled, or promoted to a
-new baseline. Changes are left reviewable in the working tree until a separate
-commit/push request.
+IsaacLab/CUDA tests require the host environment. Static/unit checks do not
+establish trajectory acceptance or policy execution quality.
 
-Verification for this cleanup: 755 package/contact-pipeline tests and 3 subtests
-passed in the host Newton environment. The static audit parsed 870 Python files
-with no errors; asset and training manifests passed; the maintained trainer's
-`--help` completed without starting training. Full WBT training and physical
-rollouts were not run as part of this repository organization.
 
-## Non-predictor entrypoint retirement
-
-The following Motion Edit commands and handlers are now removed, including their
-hidden registrations: `workbench`, `workbench-action`, `import-manual-cuts`,
-`export-cutter-segments`, `accept`, `reject`, `list-layer`,
-`migrate-layer-to-canonical`, `import-lte-catalog`, and `force-retarget`.
-`export-manifest` and `export-split-npz` require `--motion-version-id`; the old
-layer `--source` path is rejected both by parsing and direct handler calls.
-The old workbench server, LTE catalog adapter and adapter test were moved to the
-system recycle bin after explicit confirmation.
-
-The Predictor was outside the 2026-09-28 retirement pass. Its pretrained
-initialization and previous baseline were subsequently retired on 2026-10-02;
-the earlier inventory is historical evidence, not a current executable recipe.
-Shared geometry/storage helpers required by the Contact Editor remain in use.
-
-### Unified web visualization (2026-09-28)
-
-The supported browser entry is `motion-edit contact-editor`. `--motion-id` opens
-registered editing/playback; `--review` opens canonical NPZ sequences or JSON pose
-comparison reports in the same Three.js page. See
-[Motion Edit playback documentation](../packages/motion_edit/README.md#unified-playback-and-experiment-review).
-Retargeting no longer embeds a Viser process or exposes `retargeter.visualize` /
-`retargeter.debug`. Simulation Kit rendering remains controlled by AppLauncher.
-Historical contact flags in diagnostic reports are explicitly unverified, and
-read-only NPZ playback does not infer contact from distances or force thresholds.
-Seven old viewer/configuration files and three superseded web bundles were moved
-to the system trash after the user confirmed the itemized list. No standalone
-Viser fallback entrypoint remains in maintained source. Predictor code remains frozen.
+The Motion Edit detail cleanup unifies editor and CLI generation through
+`motion_edit.generation.jobs.generate_candidate`, removes the retired segment
+output setting and obsolete solver kwargs, and rebuilds saved plans from verified
+source contacts without copying labels to the candidate. Historical object-typed
+text arrays were normalized without changing any numeric motion arrays; the
+original is archived under
+`runtime/current/archives/motion_edit_interface_cleanup_20261010/` and was moved
+with `gio trash`. Generated versions remain playback candidates until their own
+native validation. This cleanup does not change Predictor data, loss or weights.

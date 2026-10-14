@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { clearResources } from '../core/resources';
 import type { Review, Vec3 } from '../core/types';
 
 type Phase = NonNullable<Review['phases']>[number];
@@ -18,13 +19,8 @@ export class SupportMotionOverlay {
   }
 
   private clear() {
-    this.group.traverse((object: any) => {
-      object.geometry?.dispose();
-      if (Array.isArray(object.material)) object.material.forEach((m: any) => m.dispose());
-      else object.material?.dispose();
-    });
-    this.group.clear();
-    this.rawGroup = new THREE.Group();
+    clearResources(this.group);
+    this.rawGroup.clear();
     this.marker = null;
   }
 
@@ -73,9 +69,13 @@ export class SupportMotionOverlay {
       if (path[i].distanceToSquared(path[i - 1]) > 1e-12)
         curve.add(new THREE.LineCurve3(path[i - 1], path[i]));
     }
-    const line = new THREE.Mesh(new THREE.TubeGeometry(curve, Math.max(8, path.length * 2), .0015, 6, false),
-      new THREE.MeshBasicMaterial({ color, depthTest: false, depthWrite: false }));
-    line.renderOrder = 16; this.group.add(line);
+    if (curve.curves.length) {
+      const line = new THREE.Mesh(new THREE.TubeGeometry(curve, Math.max(8, path.length * 2), .0015, 6, false),
+        new THREE.MeshBasicMaterial({ color, depthTest: false, depthWrite: false }));
+      line.renderOrder = 16; this.group.add(line);
+    } else {
+      this.dot(phase.aggregate[0], color, .003);
+    }
     const start = path[0], end = path.at(-1)!;
     const horizontal = end.clone().sub(start); horizontal.z = 0;
     if (horizontal.length() > 1e-6) {

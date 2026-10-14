@@ -1,6 +1,6 @@
 import pytest
 import torch
-from climb00_pipeline.dagger_loop import append_dataset, model_digest, verify_iteration
+from generator.dagger_loop import append_dataset, model_digest, verify_iteration
 
 
 def test_accumulation_preserves_exact_old_prefix():

@@ -26,7 +26,10 @@ def terrain_text(source, scale):
     return '\n'.join(lines)+'\n'
 
 class Workers:
-    def __init__(self, root, heights, device, *, query_worlds=1, tensor_transport=False, solid_geometry=False, checkpoint, source_manifest, source_model):
+    def __init__(self, root, heights, device, *, query_worlds=1, tensor_transport=False, solid_geometry=False, packed_transport=False, checkpoint, source_manifest, source_model, depth_scan_profile=None):
+        from somaforge_core.world_mesh_scan import LEGACY_DEPTH_PROFILE, depth_camera_profile
+        self.depth_scan_profile = LEGACY_DEPTH_PROFILE if depth_scan_profile is None else depth_scan_profile
+        depth_camera_profile(self.depth_scan_profile)
         self.checkpoint = str(checkpoint)
         self.source_manifest = Path(source_manifest)
         self.source_model = Path(source_model)
@@ -35,6 +38,7 @@ class Workers:
         self.query_worlds = query_worlds
         self.tensor_transport = tensor_transport
         self.solid_geometry = solid_geometry
+        self.packed_transport = packed_transport
         self.tensor_clients = {}
 
     def __enter__(self):
@@ -108,6 +112,7 @@ class Workers:
                 from somaforge_core.newton_tensor_transport import TensorSceneClient, TensorSceneRouter
                 for index, (height, entry) in enumerate(self.entries.items()):
                     client = TensorSceneClient(entry['port'], (entry['folder']/'tensor_auth.bin').read_bytes())
+                    client.packed_response = self.packed_transport
                     if client.metadata['provenance']['model_fingerprint'] != entry['fp']:
                         raise ValueError('Tensor scene fingerprint differs from actual model inspection')
                     self.tensor_clients[index] = client
@@ -140,3 +145,11 @@ class Workers:
 
     def target_interval(self,model,rows,active,surface,scene,scene_ids):
         return self.target_interval_provider()(model,rows,active,surface,scene,scene_ids)
+
+    def scan(self, q, scene_ids, fk):
+        if not self.tensor_transport or not self.solid_geometry:
+            raise ValueError('World mesh scanning requires actual initialized scene geometry')
+        if not hasattr(self, 'mesh_scan_router'):
+            from somaforge_core.world_mesh_scan import WorldMeshScanRouter
+            self.mesh_scan_router = WorldMeshScanRouter(self.position_router.metadata, profile=self.depth_scan_profile)
+        return self.mesh_scan_router(q, scene_ids, fk)

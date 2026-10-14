@@ -39,7 +39,7 @@ from motion_edit.generation.pyroki_taskspace import (
     resolve_link_index,
     world_body_poses_from_pyroki_fk,
 )
-from motion_edit.generation.newton_collision import DirectNewtonCollisionScene, COLLISION_WITNESS_SCHEMA
+from somaforge_core.newton_collision import DirectNewtonCollisionScene, COLLISION_WITNESS_SCHEMA
 from motion_edit.generation.pyroki_trajectory_optimizer import (
     EnvironmentContactAnchors,
     ForceLinearization,
@@ -1123,6 +1123,12 @@ def assemble_pyroki_fullbody_problem(
     cfg_source = cfg_source[:n_frames].copy()
     source_reference = source_reference[:n_frames]
     boundary_weights = boundary_weights[:n_frames]
+    joint_prior_scales = (float(q_prior_weight) * np.maximum(source_reference, 0.)
+                          + float(boundary_pin_weight) * boundary_weights[:, None])
+    prefix_reference = collision_spec.metadata.get("source_prefix_reference")
+    if prefix_reference is not None:
+        from motion_edit.generation.source_prefix_reference import prefix_joint_prior_scales
+        joint_prior_scales = prefix_joint_prior_scales(prefix_reference, n_frames, joint_prior_scales)
 
     collision_reference_qpos: np.ndarray | None = None
     collision_reference_force_confidence: dict[str, np.ndarray] = {}
@@ -1224,8 +1230,8 @@ def assemble_pyroki_fullbody_problem(
         if not np.isclose(np.linalg.norm(initial_q[3:7]), 1., atol=1.e-5):
             raise ValueError("Initial root quaternion must be normalized")
         yaw_rotation = Rotation.from_euler("z", yaw_degrees, degrees=True)
-        rotations = Rotation.from_quat(root_source[:, [4, 5, 6, 3]])
-        root_source[:, 3:7] = (yaw_rotation * rotations).as_quat()[:, [3, 0, 1, 2]]
+        from motion_edit.generation.source_prefix_reference import rotate_root_reference
+        root_source = rotate_root_reference(root_source, yaw_degrees)
         # The edited trajectory owns its initial frame too. Splicing a
         # separately prescribed root into frame zero can create a jump to
         # the independently optimized frame one.
@@ -1737,10 +1743,7 @@ def assemble_pyroki_fullbody_problem(
         semantic_sqrt_weight = np.sqrt(np.maximum(compiled.semantic_weights[frame], 0.0))
         contact_sqrt_weight = np.sqrt(np.maximum(compiled.contact_weights[frame], 0.0))
         active_surface_weight = active_contact_surface_weight[frame]
-        prior_scale = (
-            float(q_prior_weight) * np.maximum(source_reference[frame], 0.0)
-            + float(boundary_pin_weight) * float(boundary_weights[frame])
-        )
+        prior_scale = joint_prior_scales[frame]
         q_prior = cfg_source[frame]
         q_prior_previous = cfg_source[max(frame - 1, 0)]
         q_prior_previous_previous = cfg_source[max(frame - 2, 0)]
@@ -1830,6 +1833,7 @@ def assemble_pyroki_fullbody_problem(
         'normal_solve_lower': normal_solve_lower,
         'normal_solve_upper': normal_solve_upper,
         'objective_version': objective_version,
+        'prefix_reference': prefix_reference,
         'q_acceleration_weight': q_acceleration_weight,
         'q_velocity_weight': q_velocity_weight,
         'release_data': release_data,
@@ -1935,6 +1939,7 @@ def _write_fullbody_joint_result(problem, result, output_path):
     lte_path = problem.context['lte_path']
     n_frames = problem.context['n_frames']
     objective_version = problem.context['objective_version']
+    prefix_reference = problem.context['prefix_reference']
     q_acceleration_weight = problem.context['q_acceleration_weight']
     q_velocity_weight = problem.context['q_velocity_weight']
     release_data = problem.context['release_data']
@@ -2120,6 +2125,7 @@ def _write_fullbody_joint_result(problem, result, output_path):
         "convex_contact_temporal_residual_scale": 0.1 if convex_mode else None,
         "surface_reference_ratio": surface_reference_ratio if free_surface_contacts else None,
         "root_yaw_condition": yaw_condition,
+        "source_prefix_reference": prefix_reference,
         "root_yaw_delta_rad": _stats(out_root_delta_base[:, 3]) if yaw_enabled else None,
         "root_translation_delta_m": _stats(
             np.linalg.norm(out_root_delta_base[:, :3], axis=-1)

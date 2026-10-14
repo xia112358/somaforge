@@ -3,14 +3,14 @@ import json
 from pathlib import Path
 import torch
 import pytest
-from direct_surface_infiller import DirectSurfaceInfiller
-from full_shared_contact_model import batch
+from generator.research.archived_experiments.direct_surface_infiller import DirectSurfaceInfiller
+from generator.research.archived_experiments.full_shared_contact_model import batch
 
 
 @pytest.mark.parametrize('kind',['demonstration','predictor_intent'])
 def test_endpoints_gradients_and_supervision_not_input(kind):
     torch.set_num_threads(2)
-    path=Path('tmp/paired_surface_v1/corpus_smoke_all_splits/corpus.pt')
+    path=Path('runtime/current/archives/preserved_inputs_20261010/paired_surface_v1/corpus_smoke_all_splits/corpus.pt')
     if not path.exists():pytest.skip('paired smoke corpus not built')
     payload=torch.load(path,map_location='cpu',weights_only=False)
     record=min((r for r in payload['records'] if r['supervision_kind']==kind),key=lambda r:len(r['base']))
@@ -32,7 +32,7 @@ def test_endpoints_gradients_and_supervision_not_input(kind):
 
 
 def test_no_mixing_intents_and_actual_labels():
-    path=Path('tmp/paired_surface_v1/corpus_smoke_all_splits/corpus.pt')
+    path=Path('runtime/current/archives/preserved_inputs_20261010/paired_surface_v1/corpus_smoke_all_splits/corpus.pt')
     if not path.exists():pytest.skip('paired smoke corpus not built')
     p=torch.load(path,map_location='cpu',weights_only=False)
     r=p['records'][0];s=copy.deepcopy(r);s['supervision_kind']='predictor_intent'

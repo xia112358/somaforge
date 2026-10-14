@@ -1,5 +1,5 @@
 import torch
-from consensus_contact_retention import ContactRetention
+from contact_solver.research.source_contact_retention import ContactRetention
 
 
 def test_normal_loss_preserves_tangential_freedom_and_inactive_frames():

@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 from holosoma.managers.command.terms.climb_reference_goal import load_trimmed_contact_events
 
-MANIFEST = "tmp/climb00_continuous_coverage_trimmed/training_manifest_207_trimmed.json"
+MANIFEST = "runtime/current/motions/wbt/climb00_continuous_coverage_trimmed/training_manifest_207_trimmed.json"
 EXPECTED_FRAMES = (
     29,
     103,

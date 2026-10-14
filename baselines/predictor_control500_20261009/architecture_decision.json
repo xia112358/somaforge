@@ -7,7 +7,7 @@
   "raw30_step250_comparison": {
     "old_rollout": {
       "report": {
-        "path": "tmp/architecture250_motion8_comparison_20261008/old_rollout/report.json",
+        "path": "runtime/current/archives/preserved_inputs_20261010/architecture250_motion8_comparison_20261008/old_rollout/report.json",
         "sha256": "9be996f1c7739f859568fc26bcf9666e839886e50bf551eab53f3bad5aab18ea"
       },
       "checkpoint": "/home/xiaz/somaforge/runtime/current/models/generator/native_interval_scratch1100_20261007_r4/step_0250.pt",
@@ -20,7 +20,7 @@
     },
     "new_rollout": {
       "report": {
-        "path": "tmp/architecture250_motion8_comparison_20261008/new_rollout/report.json",
+        "path": "runtime/current/archives/preserved_inputs_20261010/architecture250_motion8_comparison_20261008/new_rollout/report.json",
         "sha256": "84ef6a5909bb482fed634956898ecf6be8cc2e2f9578f2e4518030c5e45d5c57"
       },
       "checkpoint": "/home/xiaz/somaforge/runtime/current/models/generator/structured_tokens_scratch500_20261008/step_0250.pt",

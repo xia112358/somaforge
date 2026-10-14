@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { clearResources } from '../core/resources';
 import type { Review } from '../core/types';
 
 /** Every arrow follows one actual contact material point to the next pose. */
@@ -10,12 +11,7 @@ export class SupportSlipOverlay {
   private details: HTMLElement | null = null;
   constructor(scene: THREE.Scene,private focus:(points:THREE.Vector3[])=>void) { scene.add(this.group); }
   private clear() {
-    this.group.traverse((o: any) => {
-      o.geometry?.dispose();
-      if (Array.isArray(o.material)) o.material.forEach((m: any) => m.dispose());
-      else o.material?.dispose();
-    });
-    this.group.clear();
+    clearResources(this.group);
   }
   setup(review: Review | undefined) {
     this.clear();this.review=review;this.details=null;

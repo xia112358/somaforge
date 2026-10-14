@@ -17,6 +17,6 @@
   "repository_sync_subtests_passed": 3,
   "repository_static_python_files_checked": 959,
   "repository_static_errors": [],
-  "repository_sync_test_log": "tmp/git_sync_latest_baseline_20261010_tests_run3.log",
+  "repository_sync_test_log": "runtime/current/archives/preserved_inputs_20261010/git_sync_latest_baseline_20261010_tests_run3.log",
   "repository_sync_test_scope": "contact_solver, generator, somaforge_core, motion_edit packages and changed root contact-pipeline tests"
 }

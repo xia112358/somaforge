@@ -396,7 +396,12 @@ def init_sim_imports(tyro_config: ExperimentConfig, launcher_args=None):
 
     simulator_type = get_simulator_type()
     if simulator_type in (SimulatorType.ISAACSIM, SimulatorType.ISAACLAB3_NEWTON):
-        return setup_isaaclab_launcher(tyro_config, launcher_args=launcher_args)
+        simulation_app = setup_isaaclab_launcher(tyro_config, launcher_args=launcher_args)
+        if simulator_type == SimulatorType.ISAACLAB3_NEWTON:
+            from somaforge_core.newton_runtime_compat import install
+
+            install()
+        return simulation_app
 
     # For other simulators, no app is needed
     return None

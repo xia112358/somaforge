@@ -1,6 +1,6 @@
 import dataclasses
 import torch
-from climb00_pipeline.next_interaction_contact_plan import ContactPlanPredictor,hard_choice
+from generator.next_interaction_contact_plan import ContactPlanPredictor,hard_choice
 
 
 def fixture():

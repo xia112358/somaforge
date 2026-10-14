@@ -17,6 +17,8 @@ from torch import Tensor, nn
 from somaforge_core.heightmap import _root_yaw_basis
 from contact_solver.surface_geometry import joint_feasibility_loss
 from generator.next_interaction import structural_pose_loss
+from generator.endpoint_objective import (POSE_POSITION_SCALE_M, POSE_ROTATION_MATRIX_SCALE,
+    POSE_JOINT_SCALE_RAD, STRUCTURE_WEIGHT)
 from generator.next_interaction_heightmap_v3 import DenseHeightmapEncoder, DenseHeightmapInteractionPredictor, TerrainCrossBlock
 from contact_solver.collision_geometry import CanonicalG1CollisionPoints
 from somaforge_core.g1_kinematics import CanonicalG1ForwardKinematics, _matrix_from_rotation6d, _quaternion_matrix_wxyz, _rotation6d
@@ -547,6 +549,7 @@ def conditioned_pose_objective(
     realization_contact: Tensor | None = None,
     realization_surface: Tensor | None = None,
     missing_pair_approach_weight: float = 1.0,
+    structure_joint_max_weight: float = 0.0,
     query_override=None,
 ) -> tuple[Tensor, dict[str, Tensor]]:
     """Pose imitation plus unconditional Newton realization of the plan."""
@@ -575,16 +578,16 @@ def conditioned_pose_objective(
     normalized_contact = (region_error / 0.04).square() * active
     contact = normalized_contact.sum(-1) / count + 0.25 * normalized_contact.amax(-1)
 
-    root_translation = ((qpos[:, :3] - target["q"][:, :3]) / 0.10).square().mean(-1)
+    root_translation = ((qpos[:, :3] - target["q"][:, :3]) / POSE_POSITION_SCALE_M).square().mean(-1)
     root_rotation = (
         (_quaternion_matrix_wxyz(qpos[:, 3:7])
          - _quaternion_matrix_wxyz(target["q"][:, 3:7])).square().mean((-1, -2))
-        / 0.30**2
+        / POSE_ROTATION_MATRIX_SCALE**2
     )
-    joint = ((qpos[:, 7:] - target["q"][:, 7:]) / 0.50).square().mean(-1)
+    joint = ((qpos[:, 7:] - target["q"][:, 7:]) / POSE_JOINT_SCALE_RAD).square().mean(-1)
     pose = root_translation + root_rotation + joint
     structure, structure_metrics = structural_pose_loss(
-        model, qpos, positions, rotations, target
+        model, qpos, positions, rotations, target, joint_max_weight=structure_joint_max_weight
     )
     interaction_pose_prior = _interaction_pose_prior(
         model, qpos, positions, rotations, target
@@ -653,7 +656,7 @@ def conditioned_pose_objective(
     # Exact demonstration witnesses are diagnostics, not hidden binding
     # targets.  The decoder must realize the explicit limb+surface plan using
     # its collision geometry; Newton verifies the resulting hard contact.
-    imitation = pose + 0.5 * structure
+    imitation = pose + STRUCTURE_WEIGHT * structure
     safety = joint_limit
     # A newly requested contact commonly has no Newton narrow-phase pair yet.
     # In that case ``realization`` has no term for the missing limb, so this

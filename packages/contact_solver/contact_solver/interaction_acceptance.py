@@ -1,18 +1,27 @@
 """Task acceptance tolerances over authoritative Newton facts, not labels."""
 from dataclasses import asdict, dataclass
 import math
+from contact_solver.endpoint_task import (ENDPOINT_POSITION_TOLERANCE_M, JOINT_EXCESS_RAD,
+    LEGACY_PENETRATION_ACCEPTANCE_M)
 
 
 @dataclass(frozen=True)
 class InteractionAcceptance:
-    shallow_penetration_m: float = 0.001
+    # Legacy library fallback. New Predictor configs explicitly supply 3 cm.
+    shallow_penetration_m: float = LEGACY_PENETRATION_ACCEPTANCE_M
     extra_activation_margin_fraction: float = 0.05
+    endpoint_position_m: float = ENDPOINT_POSITION_TOLERANCE_M
+    joint_excess_rad: float = JOINT_EXCESS_RAD
 
     def __post_init__(self):
         if not math.isfinite(self.shallow_penetration_m) or self.shallow_penetration_m < 0:
             raise ValueError("Invalid penetration acceptance tolerance")
         if not 0 <= self.extra_activation_margin_fraction <= 1:
             raise ValueError("Invalid extra activation tolerance fraction")
+        if not math.isfinite(self.endpoint_position_m) or self.endpoint_position_m <= 0:
+            raise ValueError('Invalid endpoint spatial tolerance')
+        if not math.isfinite(self.joint_excess_rad) or self.joint_excess_rad < 0:
+            raise ValueError('Invalid joint excess tolerance')
 
 
 DEFAULT_ACCEPTANCE = InteractionAcceptance()
@@ -27,7 +36,9 @@ def acceptance_contract(limits=DEFAULT_ACCEPTANCE):
 def configured_acceptance(config, *, penetration_m=None):
     """Runtime acceptance only; never alter the optimization's default limits."""
     depth = config.get('acceptance_penetration_m', DEFAULT_ACCEPTANCE.shallow_penetration_m)
-    return InteractionAcceptance(shallow_penetration_m=depth if penetration_m is None else penetration_m)
+    return InteractionAcceptance(shallow_penetration_m=depth if penetration_m is None else penetration_m,
+        endpoint_position_m=config.get('endpoint_position_tolerance_m', ENDPOINT_POSITION_TOLERANCE_M),
+        joint_excess_rad=config.get('joint_excess_rad', JOINT_EXCESS_RAD))
 
 
 def generation_acceptance_mask(contact_accepted, depth_m, invalid_witnesses, *, limits=DEFAULT_ACCEPTANCE):

@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from climb00_pipeline.dagger_supervision import endpoint_gate, recovery_roles, verified_target
+from generator.dagger_supervision import endpoint_gate, recovery_roles, verified_target
 
 
 def test_gate_rejects_any_penetration_extra_contact_and_joint_limit():
@@ -32,7 +32,7 @@ def test_missing_support_is_recovery_touchdown_not_input_contact():
 
 
 def test_verified_pose_replaces_old_label_and_material_anchor():
-    from climb00_pipeline.next_interaction_joint import JointInteractionPredictor
+    from generator.next_interaction_joint import JointInteractionPredictor
     model = JointInteractionPredictor(48, 1)
     q = torch.zeros(1, 36); q[:, 3] = 1; q[:, 2] = .8
     old = q.clone(); old[:, 2] = .1

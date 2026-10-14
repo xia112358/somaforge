@@ -8,7 +8,7 @@ BASELINE_SINGLE_MANIFEST = "runtime/current/manifests/omniretarget_baseline.json
 BASELINE_29_MANIFEST = "runtime/current/manifests/omniretarget_baseline_29.json"
 CONTACT_FORCE_MANIFEST = "runtime/current/manifests/newton_contact_force_8part.json"
 CLIMB00_MANIFEST = "runtime/current/manifests/wbt_single_climb_00.json"
-SPARSE_CLIMB00_MANIFEST = "tmp/climb00_sparse_command_stable_v3/manifest.json"
+SPARSE_CLIMB00_MANIFEST = "runtime/current/motions/wbt/climb00_sparse_command_stable_v3/manifest.json"
 
 init_pose_config = NoiseToInitialPoseConfig(
     overall_noise_scale=1.0,

@@ -9,7 +9,7 @@ pytest.importorskip('coal')
 newton = pytest.importorskip('newton')
 
 from motion_edit.generation.convex_geometry_distance import ConvexGeometryDistance
-from motion_edit.generation.newton_collision import NewtonCollisionContacts
+from somaforge_core.newton_collision import NewtonCollisionContacts
 
 
 def field(size=.12):

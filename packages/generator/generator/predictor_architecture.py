@@ -28,13 +28,36 @@ def build_position_predictor(config, *, schema=STRUCTURED_SCHEMA):
         part_geometry=False, region_plan=False, unified_contact=False, event_roles=False)
     kwargs = {key: config.get(key, value) for key, value in defaults.items()}
     kwargs.update(execution_plan_gradients=config.get('execution_plan_gradients', False),
-                  execution_observation_gradients=config.get('execution_observation_gradients', False))
-    return cls(**kwargs)
+                  execution_observation_gradients=config.get('execution_observation_gradients', False),
+                  role_validity=config.get('role_validity', False),
+                  world_surface_scan=config.get('world_surface_scan', False),
+                  depth_observation=config.get('depth_observation', False))
+    model = cls(**kwargs)
+    from somaforge_core.world_mesh_scan import LEGACY_DEPTH_PROFILE, depth_camera_profile
+    model.depth_scan_profile = config.get('depth_scan_profile', LEGACY_DEPTH_PROFILE)
+    depth_camera_profile(model.depth_scan_profile)
+    return model
 
 
 def load_position_predictor(checkpoint, *, device='cpu'):
     decode_robot_asset_json(checkpoint['robot_asset_json'], context='versioned position checkpoint')
     model = build_position_predictor(checkpoint['config'], schema=checkpoint['schema']).to(device)
+    if model.role_validity:
+        from generator.role_validity import ROLE_VALIDITY_SCHEMA
+        if checkpoint.get('architecture_contract', {}).get('role_validity') != ROLE_VALIDITY_SCHEMA:
+            raise ValueError('Checkpoint lacks its required role-validity contract')
+    if model.world_surface_scan:
+        from somaforge_core.world_mesh_scan import SCAN_SCHEMA
+        if checkpoint.get('architecture_contract', {}).get('interaction_candidates') != SCAN_SCHEMA:
+            raise ValueError('Checkpoint lacks its required world mesh scan contract')
+        if checkpoint['architecture_contract'].get('interaction_coordinates') != model.architecture_contract()['interaction_coordinates']:
+            raise ValueError('Checkpoint world mesh coordinate contract mismatch')
+    if model.depth_observation:
+        if checkpoint.get('architecture_contract', {}).get('depth_camera') != model.architecture_contract().get('depth_camera'):
+            raise ValueError('Checkpoint depth camera calibration contract mismatch')
+        if (checkpoint.get('architecture_contract', {}).get('environment_observation')
+                != model.architecture_contract()['environment_observation']):
+            raise ValueError('Checkpoint lacks its required 2D depth observation contract')
     if checkpoint['schema'] == STRUCTURED_SCHEMA:
         if checkpoint.get('architecture_contract') != model.architecture_contract():
             raise ValueError('Checkpoint architecture contract/order mismatch')

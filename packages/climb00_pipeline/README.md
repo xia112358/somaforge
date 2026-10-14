@@ -2,7 +2,9 @@
 
 Implementations now live in [`generator`](../generator/README.md),
 [`contact_solver`](../contact_solver/README.md), and `somaforge_core`.
-Old imports and `python -m climb00_pipeline.<module>` remain supported.
+Old imports and `python -m climb00_pipeline.<module>` remain available for
+explicit historical reproduction. The package is not added to the default
+workspace, setup installation or sourced environment.
 New code should use the canonical packages; WBT remains in `src/holosoma`.
 
 Tests now live beside their canonical implementations in `generator/tests`,
@@ -12,6 +14,17 @@ identity for historical scripts and saved experiment reproduction.
 
 Historical experiments and runtime contracts are indexed in
 [repository maintenance](../../docs/repository-maintenance.md).
-The [direct-infiller recipe](../../docs/climb00_direct_infiller_baseline.md) is a
+The [direct-infiller recipe](../../docs/history/climb00_direct_infiller_baseline.md) is a
 historical experiment with protected external dependencies; it is not the current
 training-data approval contract.
+
+For an archived script that requires these aliases, opt in from the repository
+root after activating the current environment:
+
+```bash
+export PYTHONPATH="$PWD/packages/climb00_pipeline${PYTHONPATH:+:$PYTHONPATH}"
+```
+
+This exposes the same canonical implementation modules; it does not restore
+retired training initializations or make old data valid. Existing environments
+that previously installed this package are not uninstalled by repository cleanup.

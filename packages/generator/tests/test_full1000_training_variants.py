@@ -102,7 +102,7 @@ def test_reference_warmup_preserves_full_teacher_course_after_transition():
 def test_post_demo_commit_ignores_stale_demonstration_but_checks_own_feasibility():
     from contact_solver.interaction_acceptance import configured_acceptance
     from generator.full1000_training_variants import endpoint_feedback_mask
-    metrics = dict(newton_contact_accepted=torch.ones(2), newton_penetration_cm=torch.full((2,), .2),
+    metrics = dict(newton_contact_accepted=torch.ones(2), solid_penetration_cm=torch.full((2,), .2),
         newton_invalid_fullbody_witnesses=torch.zeros(2), joint_violation_rad=torch.zeros(2),
         region_plan_realized=torch.ones(2), own_endpoint_layout_accepted=torch.ones(2),
         persistent_role_accepted=torch.ones(2), task_endpoint_layout_accepted=torch.tensor([0., float('nan')]))
@@ -116,7 +116,7 @@ def test_post_demo_commit_ignores_stale_demonstration_but_checks_own_feasibility
     partial['region_plan_realized'].zero_()
     assert endpoint_feedback_mask(partial, torch.zeros(2, dtype=torch.bool), supervised,
                                   limits=limits).tolist() == [False, True]
-    for key, value in [('newton_contact_accepted', 0.), ('newton_penetration_cm', .501),
+    for key, value in [('newton_contact_accepted', 0.), ('solid_penetration_cm', .501),
                        ('newton_invalid_fullbody_witnesses', 1.), ('joint_violation_rad', .151),
                        ('own_endpoint_layout_accepted', 0.),
                        ('persistent_role_accepted', 0.)]:

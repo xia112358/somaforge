@@ -1,5 +1,6 @@
 from __future__ import annotations
 import torch
+from contact_solver.endpoint_task import JOINT_LIMIT_SCALE_RAD
 
 
 def joint_feasibility_loss(joints, lower, upper):
@@ -8,7 +9,7 @@ def joint_feasibility_loss(joints, lower, upper):
     The maximum term prevents a single invalid joint being diluted across DOFs.
     """
     violation=(lower-joints).relu()+(joints-upper).relu()
-    normalized=(violation/.1).square()
+    normalized=(violation/JOINT_LIMIT_SCALE_RAD).square()
     return normalized.mean(-1)+normalized.amax(-1),violation
 
 

@@ -8,14 +8,13 @@ import torch
 
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "tmp"))
 
-from train_climb00_scan_action_q_deformer import box_obbs  # noqa: E402
-from climb00_pipeline.neural_infiller import (  # noqa: E402
+from generator.training_data import box_obbs  # noqa: E402
+from generator.neural_infiller import (  # noqa: E402
     full_geometry_box_ground_penetration,
     full_geometry_box_penetration,
 )
-from climb00_pipeline.unified_interaction import rollout_ground_collision_loss  # noqa: E402
+from generator.unified_interaction import rollout_ground_collision_loss  # noqa: E402
 
 
 def test_box_obbs_follow_polygon_edges_in_arbitrary_surface_coordinates() -> None:

@@ -50,7 +50,6 @@ lint.ignore=[
 members = [
     "packages/somaforge_core",
     "packages/motion_edit",
-    "packages/climb00_pipeline",
     "packages/generator",
     "packages/contact_solver",
     "src/holosoma",

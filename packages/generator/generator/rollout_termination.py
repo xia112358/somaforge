@@ -1,11 +1,12 @@
 """Episode boundaries, not a replacement for Newton contact activation."""
 from dataclasses import dataclass
 import numpy as np
+from contact_solver.endpoint_task import PENETRATION_ACCEPTANCE_M, JOINT_EXCESS_RAD
 
 @dataclass(frozen=True)
 class TerminationLimits:
-    penetration_m: float = .03
-    joint_excess_rad: float = .15
+    penetration_m: float = PENETRATION_ACCEPTANCE_M
+    joint_excess_rad: float = JOINT_EXCESS_RAD
     stalled_steps: int = 8
 
 def pose_failure(q,lower,upper,limits=TerminationLimits()):
@@ -74,16 +75,16 @@ def physical_reset_masks(q, penetration_cm, invalid_witnesses, joint_violation_r
 
 def native_continuation_masks(q, metrics, actual_contact, *, pair=None,
                               limits=TerminationLimits()):
-    """Use actual contacts and complete penetration distances for boundaries.
+    """Validate endpoint evidence; classify deep penetration without a second gate.
 
-    A conservative shape/box support-plane bound is not a penetration depth.
-    Its negative value must not veto an otherwise valid native pose query.
+    The caller's endpoint_feedback_mask alone applies the penetration limit.
+    Severe penetration is a diagnostic reason, not an alternative tolerance.
     """
     import torch
-    required = ('newton_penetration_cm', 'newton_invalid_fullbody_witnesses',
+    required = ('solid_penetration_cm', 'newton_invalid_fullbody_witnesses',
                 'joint_violation_rad')
     if any(key not in metrics for key in required):
-        raise ValueError('Missing actual Newton continuation metrics')
+        raise ValueError('Missing complete-solid / actual Newton continuation metrics')
     invalid = metrics['newton_invalid_fullbody_witnesses'].clone()
     if pair is not None:
         required_pair = ('type', 'dist', 'includemargin', 'active',
@@ -95,13 +96,11 @@ def native_continuation_masks(q, metrics, actual_contact, *, pair=None,
             raise ValueError('Newton activation metadata mismatch')
         bad = active & ~pair['constraint_allocated']
         invalid.scatter_add_(0, pair['sample'], bad.to(invalid))
-    depth = metrics['newton_penetration_cm']
-    if 'solid_penetration_cm' in metrics:
-        # Signed GJK/EPA on the enabled native solids is an actual depth,
-        # unlike the old conservative support-plane diagnostic.
-        depth = torch.maximum(depth, metrics['solid_penetration_cm'])
-    return physical_reset_masks(q, depth, invalid,
+    depth = metrics['solid_penetration_cm']
+    _, reasons = physical_reset_masks(q, depth, invalid,
         metrics['joint_violation_rad'], actual_contact, limits)
+    reasons['no_contact'] = ~reasons['invalid'] & ~actual_contact.any(-1)
+    return ~(reasons['invalid'] | reasons['no_contact']), reasons
 
 
 def demonstration_loss(value, supervised):

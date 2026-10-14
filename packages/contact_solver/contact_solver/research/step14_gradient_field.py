@@ -41,10 +41,10 @@ def run(query, experiment=None):
     out = Path(os.environ['STEP14_FIELD_OUTPUT']); out.mkdir(parents=True, exist_ok=True)
     if (out / 'diagnostic.json').exists(): raise FileExistsError('Use a new experiment output directory')
     (out / 'queries').mkdir(exist_ok=True)
-    source = Path('tmp/baseline1000_step14_gradient_20260925_v2/diagnostic.json')
+    source = Path('runtime/current/archives/preserved_inputs_20261010/baseline1000_step14_gradient_20260925_v2/diagnostic.json')
     saved = json.loads(source.read_text())
     decode_robot_asset_json(saved['robot_asset_json'], context='step14 recovery fields')
-    old_model = json.loads(Path('tmp/baseline1000_step14_static_interval_20260925/model.json').read_text())
+    old_model = json.loads(Path('runtime/current/archives/preserved_inputs_20261010/baseline1000_step14_static_interval_20260925/model.json').read_text())
     if query.provenance['model_fingerprint'] != old_model['model_fingerprint']:
         raise ValueError('Initialized Newton model differs from the original static fixture')
     device = str(query.model.device)

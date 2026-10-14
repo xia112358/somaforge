@@ -24,7 +24,7 @@ def test_cache_tracks_label_content_and_requires_provenance(tmp_path):
 def test_stream_does_not_double_count_shared_boundary(monkeypatch):
     import torch
     import somaforge_core.newton_contact_query as backend
-    from climb00_pipeline.contact_validity import query_q_contact_sequence
+    from contact_solver.contact_validity import query_q_contact_sequence
     def query(q,scene):
         n=len(q)
         return dict(active=np.ones((n,6),bool),surface=np.zeros((n,6),int),position_w=np.zeros((n,6,3)),

@@ -2,8 +2,8 @@
   "baseline_id": "climb00_direct_infiller_v1",
   "definition": "Training recipe, architecture and evaluation protocol; not a checkpoint",
   "training": {
-    "corpus": "tmp/contact_shared_full_v1/corpus.pt",
-    "output": "tmp/climb00_direct_baseline_run",
+    "corpus": "runtime/current/archives/preserved_inputs_20261010/contact_shared_full_v1/corpus.pt",
+    "output": "runtime/current/models/direct_infiller_reproduction",
     "epochs": 4000,
     "frame_budget": 8192,
     "maximum_batch_size": 512,

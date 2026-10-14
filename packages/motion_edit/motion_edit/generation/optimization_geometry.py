@@ -18,7 +18,7 @@ OPTIMIZATION_GEOMETRY_SCHEMA = 'native_model_defined_convex_and_exact_sphere_dis
 def _scene(resolved, mtime_ns, size, device):
     import newton
     import trimesh
-    from .newton_collision import DirectNewtonCollisionScene
+    from somaforge_core.newton_collision import DirectNewtonCollisionScene
 
     scene = DirectNewtonCollisionScene(resolved, device=device)
     kinds, bodies = scene.model.shape_type.numpy(), scene.model.shape_body.numpy()
@@ -59,7 +59,7 @@ def source_geometry_distances(scene, link_names, qpos, robot, robot_joint_names)
     import jax
     import jax.numpy as jnp
     from scipy.spatial.transform import Rotation
-    from .newton_collision import G1_29DOF_JOINT_ORDER
+    from somaforge_core.newton_collision import G1_29DOF_JOINT_ORDER
     from .convex_geometry_distance import ConvexGeometryDistance
     from .pyroki_taskspace import world_body_poses_from_pyroki_fk
     from .pyroki_fullbody_ik import _robot_min_geometry_distance_by_body_surface

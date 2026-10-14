@@ -1,9 +1,9 @@
 import pytest
 import torch
 
-from climb00_pipeline.device_contact_objective import DeviceWitnessRows, acceptance, reduce_groups, realization
-from climb00_pipeline.interaction_acceptance import contact_acceptance
-from climb00_pipeline.newton_witness_loss import full_body_violation
+from contact_solver.device_contact_objective import DeviceWitnessRows, acceptance, reduce_groups, realization
+from contact_solver.interaction_acceptance import contact_acceptance
+from contact_solver.newton_witness_loss import full_body_violation
 
 
 class Bodies:

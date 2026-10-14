@@ -7,7 +7,7 @@ from holosoma.config_values.wbt.g1.command import (
     SPARSE_CLIMB00_MANIFEST,
     motion_config,
 )
-from holosoma.config_values.wbt.g1.climb_reference_goal import CLIMB00_TRIMMED_207_MANIFEST
+from holosoma.config_values.wbt.g1.climb_reference_goal import CLIMB00_TRIMMED_207_MANIFEST, CLIMB00_SINGLE_FULL_MANIFEST
 
 EXPECTED_MANIFESTS = {
     "g1_29dof_wbt_baseline_single": BASELINE_SINGLE_MANIFEST,
@@ -21,6 +21,7 @@ EXPECTED_MANIFESTS = {
     "g1_29dof_wbt_climb00_php_expert": CLIMB00_MANIFEST,
     "g1_29dof_wbt_climb00_php_student": CLIMB00_MANIFEST,
     "g1_29dof_climb00_reference_goal_24event": CLIMB00_TRIMMED_207_MANIFEST,
+    "g1_29dof_climb00_single_full_noref_imitation_2k": CLIMB00_SINGLE_FULL_MANIFEST,
 }
 
 
@@ -52,7 +53,7 @@ def test_wbt_reference_observation_has_one_joint_target_source() -> None:
             if name.startswith("g1_29dof_wbt_sparse_climb00"):
                 expected = "00_sparse_climb_reference_window" if group == "actor_obs" else "00_reference_window"
                 assert expected in terms
-            elif name == "g1_29dof_climb00_reference_goal_24event":
+            elif name in ("g1_29dof_climb00_reference_goal_24event", "g1_29dof_climb00_single_full_noref_imitation_2k"):
                 assert "00_root_pose_goal" in terms
                 assert "motion_command" not in terms
                 assert ("reference_joint_state" in terms) == (group == "critic_obs")
@@ -196,6 +197,8 @@ def test_experiments_use_canonical_robot_newton_and_compact_outputs() -> None:
             if experiment is sparse_resume
             else 3000
             if experiment is sparse
+            else 2000
+            if experiment is DEFAULTS["g1_29dof_climb00_single_full_noref_imitation_2k"]
             else 20000
         )
         assert experiment.algo.config.num_learning_iterations == expected_iterations
@@ -203,7 +206,8 @@ def test_experiments_use_canonical_robot_newton_and_compact_outputs() -> None:
             assert experiment.algo.config.num_learning_epochs == 2
             assert experiment.algo.config.actor_learning_rate == 3e-4
             assert experiment.algo.config.critic_learning_rate == 3e-4
-        elif experiment in (curriculum, reference_goal, sparse_resume):
+        elif experiment in (curriculum, reference_goal, sparse_resume,
+                            DEFAULTS["g1_29dof_climb00_single_full_noref_imitation_2k"]):
             assert experiment.algo.config.num_learning_epochs == 5
             assert experiment.algo.config.actor_learning_rate == 1e-4
             assert experiment.algo.config.critic_learning_rate == 1e-4
@@ -225,7 +229,7 @@ def test_experiments_use_canonical_robot_newton_and_compact_outputs() -> None:
             else 50
             if experiment is sparse_resume
             else 250
-            if experiment in (sparse, reference_goal)
+            if experiment in (sparse, reference_goal, DEFAULTS["g1_29dof_climb00_single_full_noref_imitation_2k"])
             else 1000
         )
         assert experiment.algo.config.save_interval == expected_save_interval
@@ -274,6 +278,7 @@ def test_experiment_sampler_roles_are_explicit() -> None:
             if experiment in (
                 DEFAULTS["g1_29dof_wbt_climb00_php_student"],
                 DEFAULTS["g1_29dof_climb00_reference_goal_24event"],
+                DEFAULTS["g1_29dof_climb00_single_full_noref_imitation_2k"],
             )
             else "completion_ema_failure_window"
         )

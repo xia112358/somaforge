@@ -1,9 +1,20 @@
 """Public compatibility and dependency-direction regression checks."""
 import importlib
+from pathlib import Path
 import subprocess
 import sys
 
+import pytest
 
+
+@pytest.fixture
+def legacy_import_path(monkeypatch):
+    """Historical aliases are an explicit dependency of compatibility tests."""
+    root = Path(__file__).resolve().parents[3]
+    monkeypatch.syspath_prepend(str(root / 'packages/climb00_pipeline'))
+
+
+@pytest.mark.usefixtures('legacy_import_path')
 def test_legacy_module_identity_and_monkeypatch(monkeypatch):
     for legacy, canonical in (
         ('full1000_position_predictor', 'generator.full1000_position_predictor'),
@@ -27,9 +38,40 @@ for module in pkgutil.iter_modules(contact_solver.__path__):
         importlib.import_module('contact_solver.' + module.name)
 assert not any(n == 'generator' or n.startswith('generator.') for n in sys.modules)
 assert not any(n == 'climb00_pipeline' or n.startswith('climb00_pipeline.') for n in sys.modules)
+assert not any(n == 'motion_edit' or n.startswith('motion_edit.') for n in sys.modules)
 '''], check=True)
 
 
+def test_shared_newton_import_does_not_initialize_editing_or_prediction():
+    subprocess.run([sys.executable, '-c', '''
+import sys
+from somaforge_core.newton_collision import DirectNewtonCollisionScene
+from somaforge_core.newton_collision_filter import apply_self_collision_filters_to_builder
+assert DirectNewtonCollisionScene.__module__ == 'somaforge_core.newton_collision'
+assert callable(apply_self_collision_filters_to_builder)
+assert not any(n.split('.')[0] in ('motion_edit', 'contact_solver', 'generator') for n in sys.modules)
+'''], check=True)
+
+
+def test_maintained_package_dependencies_have_no_cycle():
+    import tomllib
+    root = Path(__file__).resolve().parents[3] / 'packages'
+    names = ('somaforge_core', 'contact_solver', 'motion_edit', 'generator')
+    projects = {name: tomllib.loads((root / name / 'pyproject.toml').read_text())['project'] for name in names}
+    graph = {project['name']: {dep.split('[')[0] for dep in project.get('dependencies', [])}
+             for project in projects.values()}
+
+    def visit(name, ancestors):
+        assert name not in ancestors, f'Package dependency cycle: {ancestors + (name,)}'
+        for dependency in graph.get(name, ()):
+            if dependency in graph:
+                visit(dependency, ancestors + (name,))
+
+    for name in graph:
+        visit(name, ())
+
+
+@pytest.mark.usefixtures('legacy_import_path')
 def test_shared_types_keep_identity():
     from climb00_pipeline.neural_infiller import InfillerOutput as old_output
     from generator.neural_infiller import InfillerOutput

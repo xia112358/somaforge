@@ -34,6 +34,7 @@ type ContactDragControllerOptions = {
   controls: Controls;
   layer: ContactHandleLayer;
   getSession: () => Session | null;
+  isBusy: () => boolean;
   getSelectedHandle: () => EditHandle | null;
   selectHandle: (handle: EditHandle) => void;
   updatePositionOffset: (handle: EditHandle, preview?: THREE.Vector3) => void;
@@ -80,7 +81,7 @@ export class ContactDragController {
   private readonly onPointerDown = (event: PointerEvent): void => {
     const { canvas, layer } = this.options;
     const session = this.options.getSession();
-    if (!event.isPrimary || event.button !== 0 || session?.read_only || session?.generation.status === 'running') return;
+    if (!session || this.options.isBusy() || !event.isPrimary || event.button !== 0 || session.read_only || session.generation.status === 'running') return;
 
     const selectedHandle = this.options.getSelectedHandle();
     const restoreHandle = layer.pickRestoreGhost(event, selectedHandle);
@@ -144,6 +145,10 @@ export class ContactDragController {
     const { canvas, layer } = this.options;
     const interaction = this.interaction;
     if (!interaction) {
+      if (this.options.isBusy() || this.options.getSession()?.read_only) {
+        canvas.style.cursor = 'default';
+        return;
+      }
       const selected = this.options.getSelectedHandle();
       canvas.style.cursor = layer.pickRestoreGhost(event, selected)
         ? 'pointer'

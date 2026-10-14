@@ -26,6 +26,8 @@ from contact_solver.trajectory_projection import project_interaction_q_trajector
 
 本包不依赖 generator。共享 FK 在 `somaforge_core.g1_kinematics`；
 共享结果结构在 `somaforge_core.prediction_contracts`。
+共享 Newton 碰撞查询与过滤在 `somaforge_core.newton_collision` 和
+`somaforge_core.newton_collision_filter`；本包也不依赖 Motion Edit。
 
 几何距离、退出面及穿透损失只用于优化／诊断，不是接触真值。
 实际接触继续使用当前 Newton/MJWarp 的 CONSTRAINT、dist < includemargin、

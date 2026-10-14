@@ -2,7 +2,7 @@
 
 The extension uses the existing Coal Python geometry instances and the exact
 library that owns them. Compilation happens at scene initialization, not query.
-Build products live under the project's tmp directory.
+Build products live in the persistent runtime cache.
 """
 from functools import lru_cache
 from pathlib import Path
@@ -42,7 +42,7 @@ def load_coal_batch():
     project = next((p for p in source.parents if (p/'scripts/source_somaforge.sh').is_file()), None)
     if project is None:
         raise RuntimeError('Native Coal build cache requires the SomaForge workspace')
-    cache = project/'tmp/coal_batch'/digest
+    cache = project/'runtime/current/cache/coal_batch'/digest
     cache.mkdir(parents=True, exist_ok=True)
     output = cache/('coal_batch'+sysconfig.get_config_var('EXT_SUFFIX'))
     with (cache/'build.lock').open('a') as lock:

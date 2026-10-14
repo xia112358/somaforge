@@ -33,9 +33,15 @@ def _transformer(width, layers):
 
 class ObservationEncoder(nn.Module):
     """Ordered root, body-pose, actual-contact, joint and geometry tokens."""
-    def __init__(self, width, layers, geometry_width=0, geometry_count=0):
+    def __init__(self, width, layers, geometry_width=0, geometry_count=0, *, depth_observation=False):
         super().__init__()
-        self.height = DenseHeightmapEncoder(width)
+        self.depth_observation = depth_observation
+        if depth_observation:
+            from generator.depth_observation import DepthScanEncoder
+            self.depth = DepthScanEncoder(width)
+            self.height = None
+        else:
+            self.height = DenseHeightmapEncoder(width)
         self.root_encoder = nn.Linear(6, width)
         self.part_encoder = nn.Linear(9, width)
         self.contact_encoder = nn.Linear(4, width)
@@ -50,8 +56,16 @@ class ObservationEncoder(nn.Module):
         self.norm = nn.LayerNorm(width)
 
     def forward(self, root_rotation, part_pose, current_contact, local_anchor, joint_angles,
-                heightmap, geometry_features=None):
-        terrain = self.height(heightmap)
+                heightmap, geometry_features=None, *, depth=None):
+        image_features = None
+        if self.depth_observation:
+            if heightmap is not None:
+                raise ValueError('Depth Predictor does not accept a heightmap observation')
+            if depth is None:
+                raise ValueError('Depth Predictor is missing the 2D scan')
+            terrain, image_features = self.depth(depth['depth_image'], depth['depth_valid'], depth['depth_intrinsics'])
+        else:
+            terrain = self.height(heightmap)
         root = self.root_encoder(root_rotation)[:, None] + self.type_identity.weight[0]
         parts = self.part_encoder(part_pose) + self.part_identity.weight[None] + self.type_identity.weight[1]
         # Terrain cross-attention retains the spatial memory; it does not pool it.
@@ -69,7 +83,7 @@ class ObservationEncoder(nn.Module):
                 raise ValueError('Configured geometry observations are missing')
             tokens.append(self.geometry_encoder(geometry_features) + self.geometry_identity.weight[None]
                           + self.type_identity.weight[4])
-        return terrain, self.norm(self.interaction(torch.cat(tokens, 1)))
+        return terrain, self.norm(self.interaction(torch.cat(tokens, 1))), image_features
 
 
 class JointPoseHead(nn.Module):
@@ -92,7 +106,8 @@ class StructuredPositionPredictor(nn.Module):
 
     def __init__(self, width=192, layers=3, location_width=32, *, body_geometry=False,
                  part_geometry=False, region_plan=False, unified_contact=False, event_roles=False,
-                 execution_plan_gradients=False, execution_observation_gradients=False):
+                 execution_plan_gradients=False, execution_observation_gradients=False, role_validity=False,
+                 world_surface_scan=False, depth_observation=False):
         super().__init__()
         if width <= 0 or width % 6 or layers < 1 or location_width < 1:
             raise ValueError('Width must be positive/divisible by 6; layers/location width must be positive')
@@ -105,6 +120,15 @@ class StructuredPositionPredictor(nn.Module):
         self.width, self.layers, self.location_width = width, layers, location_width
         self.body_geometry, self.part_geometry = body_geometry, part_geometry
         self.region_plan, self.unified_contact, self.event_roles = region_plan, unified_contact, event_roles
+        self.role_validity = role_validity
+        self.world_surface_scan = world_surface_scan
+        self.depth_observation = depth_observation
+        if depth_observation and (not world_surface_scan or body_geometry or part_geometry):
+            raise ValueError('Depth observation requires scanned candidates and depth-compatible region geometry')
+        if world_surface_scan and not role_validity:
+            raise ValueError('World mesh selection requires actual-contact role validity')
+        if role_validity and not event_roles:
+            raise ValueError('Role validity requires explicit event roles')
         self.execution_plan_gradients = self.execution_observation_gradients = False
         self.fk = CanonicalG1ForwardKinematics()
         self.geometry = CanonicalG1CollisionPoints(64)
@@ -127,11 +151,15 @@ class StructuredPositionPredictor(nn.Module):
             geometry_width, geometry_count = 13, len(self.body_geometry_names)
 
         # Separate construction, not aliases/copies of the same Parameter objects.
-        self.planner_observation = ObservationEncoder(width, layers, geometry_width, geometry_count)
-        self.executor_observation = ObservationEncoder(width, layers, geometry_width, geometry_count)
+        self.planner_observation = ObservationEncoder(width, layers, geometry_width, geometry_count,
+                                                      depth_observation=depth_observation)
+        self.executor_observation = ObservationEncoder(width, layers, geometry_width, geometry_count,
+                                                       depth_observation=depth_observation)
         self.role_head = nn.Linear(width, 4)
         self.location_query = nn.Linear(width, location_width)
         self.location_key = nn.Sequential(nn.Linear(3, width), nn.GELU(), nn.Linear(width, location_width))
+        if depth_observation:
+            self.location_scan_key = nn.Linear(width, location_width, bias=False)
         if region_plan:
             self.region_head = nn.Linear(width, 15)
             self.region_prior = nn.Parameter(torch.zeros(6, 15))
@@ -155,7 +183,7 @@ class StructuredPositionPredictor(nn.Module):
             self.root_pose_head.bias[3] = 1.
 
     def architecture_contract(self):
-        return dict(schema=self.schema, width=self.width, layers=self.layers,
+        contract = dict(schema=self.schema, width=self.width, layers=self.layers,
             location_width=self.location_width, independent_observation_encoders=True,
             body_geometry=self.body_geometry, part_geometry=self.part_geometry,
             region_plan=self.region_plan, unified_contact=self.unified_contact, event_roles=self.event_roles,
@@ -166,12 +194,28 @@ class StructuredPositionPredictor(nn.Module):
             readout='root_query[1] + joint_query[29], independent output rows',
             coordination='attention; no across-part arithmetic pooling',
             relation='canonical URDF query/part ancestor features; no hard attention mask')
+        if self.role_validity:
+            from generator.role_validity import ROLE_VALIDITY_SCHEMA
+            contract['role_validity'] = ROLE_VALIDITY_SCHEMA
+        if self.world_surface_scan:
+            from somaforge_core.world_mesh_scan import SCAN_SCHEMA
+            contract['interaction_candidates'] = SCAN_SCHEMA
+            contract['interaction_coordinates'] = 'world mesh XYZ; no heightmap lifting'
+        if self.depth_observation:
+            from generator.depth_observation import depth_observation_contract
+            contract['environment_observation'] = depth_observation_contract()
+            contract['keep_target'] = 'actual_start_contact_point_no_location_selection_v1'
+            from somaforge_core.world_mesh_scan import LEGACY_DEPTH_PROFILE, depth_camera_profile
+            profile = getattr(self, 'depth_scan_profile', LEGACY_DEPTH_PROFILE)
+            if profile != LEGACY_DEPTH_PROFILE:
+                contract['depth_camera'] = dict(profile=profile, **depth_camera_profile(profile))
+        return contract
 
     def training_parameter_groups(self):
         groups = {'planner': [], 'executor': []}
         for name, parameter in self.named_parameters():
             planner = name.startswith(('planner_observation.', 'role_head.', 'location_query.',
-                                       'location_key.', 'region_head.', 'region_prior'))
+                                       'location_key.', 'location_scan_key.', 'region_head.', 'region_prior'))
             groups['planner' if planner else 'executor'].append(parameter)
         return groups
 
@@ -187,7 +231,7 @@ class StructuredPositionPredictor(nn.Module):
     encode_pose = DenseHeightmapInteractionPredictor.encode_pose
     decode_pose = DenseHeightmapInteractionPredictor.decode_pose
 
-    def forward(self, current_q, current_contact, current_anchor, heightmap, **conditioning):
+    def forward(self, current_q, current_contact, current_anchor, heightmap=None, **conditioning):
         if current_q.ndim != 2 or current_q.shape[1] != 36:
             raise ValueError('Current pose must be [B,36]')
         if current_contact.shape != (len(current_q), 6) or current_contact.dtype != torch.bool:
@@ -205,15 +249,21 @@ class StructuredPositionPredictor(nn.Module):
         root_rotation = _rotation6d(basis.transpose(1, 2) @ _quaternion_matrix_wxyz(current_q[:, 3:7]))
         features = None
         if self.region_plan:
-            features = self.region_geometry(local_position, local_rotation, heightmap)
+            if self.depth_observation:
+                from generator.depth_observation import depth_region_features
+                features = depth_region_features(self.region_geometry, local_position, local_rotation,
+                                                 current_q, basis, conditioning)
+            else:
+                features = self.region_geometry(local_position, local_rotation, heightmap)
         elif self.part_geometry:
             features = self.part_geometry_observation(local_position, local_rotation, heightmap)
         elif self.body_geometry:
             features = body_geometry_features(self, current_q, heightmap, basis)
         args = (root_rotation, part_pose, current_contact, local_anchor, current_q[:, 7:], heightmap, features)
-        _, planned_observation = self.planner_observation(*args)
-        selected = select_position_plan(self, current_q, heightmap, basis, planned_observation[:, 1:7], **conditioning)
-        _, observed = self.executor_observation(*args)
+        _, planned_observation, image_features = self.planner_observation(*args, depth=conditioning)
+        selected = select_position_plan(self, current_q, heightmap, basis, planned_observation[:, 1:7],
+            current_contact=current_contact, image_features=image_features, **conditioning)
+        _, observed, _ = self.executor_observation(*args, depth=conditioning)
         contact = selected.conditioned_contact.detach()
         # Inactive positions cannot influence execution. Roles still distinguish release/idle.
         points = torch.where(contact[..., None], selected.conditioned_points_local.detach(), 0.)

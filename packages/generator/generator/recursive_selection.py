@@ -77,16 +77,18 @@ def recursive_selection(report: dict) -> dict:
     fields = SELECTION_FIELDS
     spatial = contract.get('relative_layout_contract')
     native_schema = 'native_part_surface_to_normal_interval_rms_v1'
+    point_schema = 'newton_endpoint_contact_points_xyz_v1'
+    set_schema = 'newton_matched_endpoint_contact_points_xyz_v2'
     native_position = contract.get('endpoint_position_contract')
     if native_position is not None:
-        if not isinstance(native_position, dict) or native_position.get('schema') != native_schema:
+        if not isinstance(native_position, dict) or native_position.get('schema') not in (native_schema, point_schema, set_schema):
             raise ValueError('unknown native endpoint position contract')
         # The native interval distance is authoritative. The centered witness
         # layout in current reports is explicitly retained for diagnostics.
-        spatial = native_schema
-    elif contract.get('trained_relative_layout_contract') == native_schema:
+        spatial = native_position['schema']
+    elif contract.get('trained_relative_layout_contract') in (native_schema, point_schema, set_schema):
         raise ValueError('missing native endpoint position contract')
-    scene_fixed = spatial in ('newton_scene_fixed_witness_xy_v2', 'newton_region_matched_witness_xy_v3', native_schema)
+    scene_fixed = spatial in ('newton_scene_fixed_witness_xy_v2', 'newton_region_matched_witness_xy_v3', native_schema, point_schema, set_schema)
     if spatial is not None:
         if spatial != 'newton_representative_witness_xy_v1' and not scene_fixed:
             raise ValueError('unknown relative layout contract')

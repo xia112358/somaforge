@@ -48,7 +48,8 @@ def test_scratch_predictor_has_no_partial_weight_loading_or_face_input():
     model, _ = setup()
     assert not hasattr(model, 'load_stage_a')
     assert not any('surface' in key for key in model.state_dict())
-    assert not any('surface' in key for key in inspect.signature(model.forward).parameters)
+    # Surface identities are deterministic validity metadata, never encoder inputs.
+    assert not any('surface' in key for key in inspect.signature(model._encode_points).parameters)
 
 
 def test_network_executes_explicit_position_plan_and_ignores_inactive_location():

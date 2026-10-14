@@ -75,9 +75,18 @@ Expected:
 - Before merging to `main`, run:
 
 ```bash
-conda run -n env_somaforge python -m unittest discover -s tests
-npm --prefix web run build
-npm --prefix web exec -- playwright test
+source scripts/source_somaforge.sh
+PYTHONDONTWRITEBYTECODE=1 runtime/environments/newton-main-20260914/bin/python \
+  -m pytest -p no:cacheprovider packages/motion_edit/tests -q
+npm --prefix packages/motion_edit/web run build
+MOTION_EDIT_E2E_MOTION_ID=<current-motion-id> \
+  packages/motion_edit/web/node_modules/.bin/playwright test \
+  --config=packages/motion_edit/web/playwright.config.ts \
+  --output=tmp/motion_edit_browser_tests
 ```
+
+- Run these commands from the repository root. Browser tests require a running
+  contact-editor server and an explicitly selected current motion. Root
+  `tests/e2e/test_training.py` starts training and is not part of cleanup checks.
 
 - Isaac Sim / CUDA failures inside Codex sandbox are expected; validate those on the local machine.

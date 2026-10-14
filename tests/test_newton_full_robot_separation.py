@@ -23,7 +23,7 @@ def test_unallocated_full_body_contact_is_error():
 
 
 def test_invalid_shallower_witness_is_reported_even_when_deepest_normal_is_valid():
-    from climb00_pipeline.rollout_termination import geometry_failure,TerminationLimits
+    from generator.rollout_termination import geometry_failure,TerminationLimits
     s=snapshot();s['dist'][:2]=[-.0008,-.0004]
     s['geometry_point0_w']=np.zeros((3,3));s['geometry_point1_w']=np.zeros((3,3))
     s['frame_w']=np.tile(np.eye(3),(3,1,1));s['frame_w'][1,0]=np.nan

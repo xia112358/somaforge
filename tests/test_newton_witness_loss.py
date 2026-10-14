@@ -1,6 +1,6 @@
 import pytest
 import torch
-from climb00_pipeline.newton_witness_loss import query_local_distances, selected_contact_cost, unwanted_contact_cost, full_body_violation
+from contact_solver.newton_witness_loss import query_local_distances, selected_contact_cost, unwanted_contact_cost, full_body_violation
 
 
 class TranslationFK:

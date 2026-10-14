@@ -36,23 +36,13 @@ from motion_edit.generation.omni_surface_mapping import install_surface_specific
 
 install_surface_specific_object_mapping()
 
-from motion_edit.contact.newton_shape_filter import install_strict_newton_shape_filter
-
-install_strict_newton_shape_filter()
-
-from motion_edit.contact.foot_runtime_body_aliases import (
-    install_split_foot_runtime_body_aliases,
-)
-
-install_split_foot_runtime_body_aliases()
-
+# Contact binding and canonical foot aliases are initialized by motion_edit.contact.
 from motion_edit.generation.contact_target_contract import (
     install_authoritative_contact_target_contract,
 )
 
 install_authoritative_contact_target_contract()
 
-from motion_edit.generation.contact_aware import ContactAwareGenerationResult, apply_contact_aware_edit_plan_to_motion
 from motion_edit.generation import contact_aware_preview as _contact_aware_preview
 from motion_edit.generation.rollout_authority import install_rollout_authority
 
@@ -90,13 +80,11 @@ from motion_edit.generation.taskspace_spec import (
 
 
 __all__ = [
-    "ContactAwareGenerationResult",
     "ContactAwarePreviewResult",
     "ContactAwareTaskspaceMotion",
     "ContactForceBakeResult",
     "ContactPatchTarget",
     "LteGenerationResult",
-    "apply_contact_aware_edit_plan_to_motion",
     "bake_retargeted_contact_forces_for_motion",
     "build_contact_aware_taskspace_motion",
     "generate_contact_aware_pyroki_preview",

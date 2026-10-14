@@ -1,8 +1,8 @@
 import torch
 import pytest
-from paired_closed_loop_replay import compatible_current,successor_roles,DemonstrationSuccessorTeacher
-from paired_closed_loop_replay import embedded_hold_depth
-from paired_replay_gate import passes_gate
+from generator.research.archived_experiments.paired_closed_loop_replay import compatible_current,successor_roles,DemonstrationSuccessorTeacher
+from generator.research.archived_experiments.paired_closed_loop_replay import embedded_hold_depth
+from generator.research.archived_experiments.paired_replay_gate import passes_gate
 import numpy as np
 
 

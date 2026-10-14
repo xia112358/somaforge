@@ -1,24 +1,54 @@
 """Small, explicit training ablations; never redefine Newton contact truth."""
 import torch
-from contact_solver.interaction_acceptance import DEFAULT_ACCEPTANCE, generation_acceptance_mask
+from contact_solver.interaction_acceptance import DEFAULT_ACCEPTANCE
+from contact_solver.endpoint_penetration import penetration_checks
 
 
-def endpoint_feedback_mask(metrics, task_contact_accepted, supervised, *, limits=DEFAULT_ACCEPTANCE):
+def endpoint_feedback_checks(metrics, task_contact_accepted, supervised, *, limits=DEFAULT_ACCEPTANCE):
     """Commit own feasible intent; require demonstration targets only while supervised."""
-    own = generation_acceptance_mask(metrics['newton_contact_accepted'],
-        metrics['newton_penetration_cm']/100, metrics['newton_invalid_fullbody_witnesses'], limits=limits)
-    own &= metrics['joint_violation_rad'] <= .15
+    checks = penetration_checks(metrics, limits=limits)
+    other = (metrics['newton_contact_accepted'].bool()
+        & (metrics['newton_invalid_fullbody_witnesses'] == 0)
+        & (metrics['joint_violation_rad'] <= limits.joint_excess_rad))
     # Endpoint events require actual part/surface contacts. The observed
     # quadrant distribution is an audit of solver witnesses, not a second
     # conjunction of required contacts. Spatial completeness still uses the
     # intended regions and independent actual Newton evidence.
     for key in ('own_endpoint_layout_accepted', 'persistent_role_accepted'):
         if key in metrics:
-            own &= metrics[key] > .5
+            other &= metrics[key] > .5
     task = task_contact_accepted.bool()
     if 'task_endpoint_layout_accepted' in metrics:
         task = task & (metrics['task_endpoint_layout_accepted'] > .5)
-    return own & (~supervised | task)
+    other &= ~supervised | task
+    checks.update(accepted=other & checks['penetration_passed'],
+        penetration_only=checks['penetration_exceeded'] & other,
+        penetration_and_contact=checks['penetration_exceeded'] & ~metrics['newton_contact_accepted'].bool())
+    return checks
+
+
+def endpoint_feedback_mask(metrics, task_contact_accepted, supervised, *, limits=DEFAULT_ACCEPTANCE):
+    return endpoint_feedback_checks(metrics, task_contact_accepted, supervised, limits=limits)['accepted']
+
+
+def endpoint_rejection_masks(checks, continuation_reasons):
+    """Overlapping reasons plus a truly penetration-only subset of rejections."""
+    result = {key: checks[key] for key in ('penetration_exceeded', 'penetration_unknown',
+        'penetration_only', 'penetration_and_contact')}
+    other = torch.zeros_like(checks['penetration_only'])
+    for key, value in continuation_reasons.items():
+        if key != 'severe_penetration':
+            other |= value
+    result['penetration_only'] = result['penetration_only'] & ~other
+    return result
+
+
+def endpoint_validation_score(metrics):
+    """Checkpoint ranking uses the same accepted flag and complete-solid depth."""
+    return (20 * (1-metrics['plan_exact']) + 40 * (1-metrics['newton_generation_accepted'])
+        + 5 * metrics['newton_unrealized_intended_contacts'] + metrics['root_cm'] + metrics['body_cm']
+        + 10 * metrics['joint_rmse_rad'] + metrics['solid_penetration_cm']
+        + metrics['maxima']['solid_penetration_cm'])
 
 
 def endpoint_layout_pass(error_squared, complete, count, tolerance_m):

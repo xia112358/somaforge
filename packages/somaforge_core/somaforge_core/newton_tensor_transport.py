@@ -59,7 +59,11 @@ def serve_tensor_queries(query, port, authkey):
                     exported.update({key: result[key][:len(q)].clone() for key in
                         ('contact_part_mask', 'contact_surface', 'contact_position_w')})
                     exported['solver_row'] = valid.nonzero().flatten()
-                    response = dict(tensors=exported)
+                    if request.get('pack_response',False):
+                        from .tensor_field_packing import pack_fields
+                        response = dict(packed=pack_fields(exported))
+                    else:
+                        response = dict(tensors=exported)
                     if request.get('audit', False):
                         response['audit'] = query.audit_current(q)
                     connection.send(response)
@@ -76,6 +80,7 @@ class TensorSceneClient:
         self.connection = Client(('127.0.0.1', port), authkey=authkey)
         _disable_nagle(self.connection)
         self.metadata = self.connection.recv()
+        self.packed_response = False
         if self.metadata.get('schema') != 'newton_cuda_ipc_stage_query_v1':
             raise ValueError('Unknown device query transport')
         if self.metadata.get('surface_attribution_schema') != SOURCE_NORMAL_FAN_SCHEMA:
@@ -84,11 +89,16 @@ class TensorSceneClient:
     def query(self, q, *, audit=False):
         if not q.is_cuda:
             raise ValueError('Tensor query forbids CPU pose transport')
-        self.connection.send(dict(op='query', q=q.detach().contiguous(), audit=audit))
+        self.connection.send(dict(op='query', q=q.detach().contiguous(), audit=audit,
+                                  pack_response=self.packed_response))
         response = self.connection.recv()
         if 'error' in response:
             raise RuntimeError(response['error'])
-        tensors = {key: value.clone() for key, value in response['tensors'].items()}
+        if 'packed' in response:
+            from .tensor_field_packing import clone_fields
+            tensors=clone_fields(response['packed'])
+        else:
+            tensors = {key: value.clone() for key, value in response['tensors'].items()}
         audit_result = response.get('audit')
         # Ensure the IPC producer can release its allocations after ack.
         torch.cuda.current_stream(q.device).synchronize()

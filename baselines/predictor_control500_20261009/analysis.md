@@ -24,8 +24,8 @@
 
 原始分析产物：
 
-- `tmp/baseline_control500_mechanism_20261009/report.json`：全部样本的八种姿态分量组合、静态距离及分量贡献。
-- `tmp/baseline_control500_mechanism_20261009/reference_pose_comparison.json`：与精确原始示范终点的 root、关节及形状间隙对照。
-- `tmp/baseline_height110_20261009/solid_link_attribution.json`：最深地形形状对的部位归属。
+- `runtime/current/archives/preserved_inputs_20261010/baseline_control500_mechanism_20261009/report.json`：全部样本的八种姿态分量组合、静态距离及分量贡献。
+- `runtime/current/archives/preserved_inputs_20261010/baseline_control500_mechanism_20261009/reference_pose_comparison.json`：与精确原始示范终点的 root、关节及形状间隙对照。
+- `runtime/current/archives/preserved_inputs_20261010/baseline_height110_20261009/solid_link_attribution.json`：最深地形形状对的部位归属。
 
 分量贡献只分解上述静态输出姿态替换的深度变化，不等于 loss 梯度或训练优化器贡献。

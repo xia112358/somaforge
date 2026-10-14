@@ -352,7 +352,7 @@
   "comparability": "source run ends at550; historical source differs in regional-distribution feedback gate; not a pure loss ablation",
   "recursive_evidence": {
     "checkpoint_step": 950,
-    "report": "tmp/v1_shared_interval_scratch1100_20261009/visualization_step950_vs725_motion4/latest950/report.json",
+    "report": "runtime/current/archives/preserved_inputs_20261010/v1_shared_interval_scratch1100_20261009/visualization_step950_vs725_motion4/latest950/report.json",
     "scope": "motion4 height1 training case, 15 demonstration events plus15 diagnostic continuation; not baseline1000 recursive evaluation",
     "baseline1000_recursive_evaluated": false
   },

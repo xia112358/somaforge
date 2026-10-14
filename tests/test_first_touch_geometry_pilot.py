@@ -3,10 +3,7 @@ from pathlib import Path
 import sys
 import pytest
 
-spec=importlib.util.spec_from_file_location('first_touch_geometry_pilot',Path(__file__).parents[1]/'tmp/train_first_touch_geometry.py')
-module=importlib.util.module_from_spec(spec)
-sys.modules[spec.name]=module
-spec.loader.exec_module(module)
+from generator.research.archived_experiments import terrain_scaling as module
 
 
 def test_height_scaling_keeps_ground_xy_and_topology():

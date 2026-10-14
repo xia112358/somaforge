@@ -193,7 +193,7 @@
     "static_audit_samples": 32,
     "static_audit_pool": null
   },
-  "source_config": "/home/xiaz/somaforge/tmp/predictor_scratch100_20261002/training_attempt2/config.json",
+  "source_config": "runtime/current/archives/preserved_inputs_20261010/predictor_scratch100_20261002/training_attempt2/config.json",
   "source_sha256": {
     "packages/generator/generator/train_full1000_position.py": "2e1366fcbb55cd1c231f78f9948172db06d30911a1161f3237882ebea29196a9",
     "packages/generator/generator/predictor_initialization.py": "e9ac596ac50b4c2657960362c1516a75e7e9b13c1acb813af9fbb9591d052946",
@@ -201,7 +201,7 @@
     "packages/generator/generator/full1000_position_predictor.py": "dac620429ed6759b0a4f348eefe69e3dfa6f592f6038cfc5726910e45a0f8093",
     "packages/generator/generator/parallel_rollout_pool.py": "be2182fc0e031df03fdfed63e5c81e8e4da4a58d430840250d4636d688a083c4"
   },
-  "log": "/home/xiaz/somaforge/tmp/predictor_scratch1k_20261002/training.log",
+  "log": "runtime/current/archives/preserved_inputs_20261010/predictor_scratch1k_20261002/training.log",
   "initialization": "scratch",
   "predictor_checkpoints_loaded": [],
   "reference_warmup_intervals": 100,

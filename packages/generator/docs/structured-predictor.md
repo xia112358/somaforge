@@ -9,6 +9,27 @@ checkpoint schema 为 `full1000_position_predictor_v2`。本轮只实现与验�
 不代表当前默认架构。v1 从零重训使用新的统一区间 loss，未读取 predictor checkpoint。
 对照结论见 `baselines/predictor_control500_20261009/architecture_decision.json`。
 
+## Role 合法性约束（2026-10-12）
+
+新训练默认且必须启用 `role_validity`。v1/v2 共用
+`actual_newton_part_surface_role_validity_v1`：当前实际接触缺失时，keep logit 为
+`-inf`，训练分类损失与推理使用同一分布；已有接触时 establish 仍然合法。
+选择 keep 后，位置分布只覆盖当前已实际接触的同一表面，保留同一部位的全部
+有效表面关系。位置分类损失按监督角色的合法位置空间计算，避免自主预测的
+keep 屏蔽合法的 establish 监督。teacher/repair 也检查相同的合法性条件。
+
+这些关系来自实际 Newton CONSTRAINT 激活与分配、共享主向上表面筛选；
+表面身份只用于确定性动作空间约束，不进入可训练观测编码器。缺失字段、
+未分配的激活接触、未知表面及无法在当前 raster 表示的 keep 明确报错。
+起点原始查询与映射保存在新训练目录的 `role_validity_input_queries/`。
+约束只保证起点决策合法，Infiller 中间接触连续性与执行承重仍需独立评估。
+
+新 checkpoint 的 config 与 architecture contract 显式记录该约束。缺少此标记的
+历史 checkpoint 保持原有读取语义，不能作为新合法性模型或新训练初始化。
+本轮保持 v1 架构、原完整数据划分与 100 轮示范预热＋1000 轮反馈，从零重训。
+模型目录为 `runtime/current/models/generator/v1_role_validity_scratch1100_20261012/`，
+日志为 `tmp/predictor_role_validity_20261012/train.log`。
+
 ## 查明的问题与本轮边界
 
 v1 执行先将当前部位、未来位置、角色与区域的编码相加，再将六个部位平均到一个

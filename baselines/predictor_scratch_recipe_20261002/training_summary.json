@@ -443,13 +443,13 @@
       }
     ]
   },
-  "curves": "/home/xiaz/somaforge/tmp/predictor_scratch1k_20261002/monitor_curves.png",
+  "curves": "runtime/current/archives/preserved_inputs_20261010/predictor_scratch1k_20261002/monitor_curves.png",
   "support_load_and_slip_verified": false,
   "additional_checkpoint_evaluations": [
     {
       "checkpoint_step": 725,
-      "checkpoint": "/home/xiaz/somaforge/runtime/current/holosoma/tmp/predictor_scratch1k_20261002/training/best_historical_score.pt",
-      "report": "/home/xiaz/somaforge/tmp/predictor_scratch1k_20261002/recursive_candidates/training_best_historical_score/report.json",
+      "checkpoint": "runtime/current/archives/preserved_inputs_20261010/predictor_scratch1k_20261002/training/best_historical_score.pt",
+      "report": "runtime/current/archives/preserved_inputs_20261010/predictor_scratch1k_20261002/recursive_candidates/training_best_historical_score/report.json",
       "successful_prefix": 2,
       "planned_events": 15,
       "completed_chain": false,
@@ -633,8 +633,8 @@
     },
     {
       "checkpoint_step": 925,
-      "checkpoint": "/home/xiaz/somaforge/runtime/current/holosoma/tmp/predictor_scratch1k_20261002/training/step_0925.pt",
-      "report": "/home/xiaz/somaforge/tmp/predictor_scratch1k_20261002/recursive_candidates/training_step_0925/report.json",
+      "checkpoint": "runtime/current/archives/preserved_inputs_20261010/predictor_scratch1k_20261002/training/step_0925.pt",
+      "report": "runtime/current/archives/preserved_inputs_20261010/predictor_scratch1k_20261002/recursive_candidates/training_step_0925/report.json",
       "successful_prefix": 5,
       "planned_events": 15,
       "completed_chain": false,

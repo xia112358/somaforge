@@ -44,6 +44,8 @@ from generator.training_data import box_obbs
 from contact_solver.interaction_acceptance import (
     DEFAULT_ACCEPTANCE, acceptance_contract, contact_acceptance, configured_acceptance,
 )
+from contact_solver.endpoint_penetration import solid_separation_record, penetration_contract
+from contact_solver.endpoint_task import PENETRATION_LOSS_SCALE_M
 from generator.rollout_termination import (
     TerminationLimits, geometry_failure, pose_failure,
 )
@@ -79,15 +81,9 @@ def observe(q_world: np.ndarray, endpoint: str, *, solids=None, fk=None, device=
         depth = rows.depths()[0].cpu().tolist()
         pair = {k:v.cpu().numpy() for k,v in rows.pair.items()}
         solid_separation = dict(terrain_penetration_m=depth[0], self_penetration_m=depth[1])
-        separation = dict(native_separation)
-        for kind, name in enumerate(('terrain', 'self')):
-            old = separation[f'{name}_penetration_m']
-            separation[f'{name}_penetration_m'] = max(old, depth[kind])
-            if depth[kind] > old:
-                candidates = np.flatnonzero(pair['full_kind'] == kind)
-                index = candidates[np.argmin(pair['dist'][candidates])]
-                separation[f'worst_{name}'] = {k:pair[k][index].tolist() for k in pair}
-        separation['distance_schema'] = solids.contract()['schema']
+        separation = solid_separation_record(native_separation, depth, pair)
+    else:
+        raise ValueError('Endpoint evaluation requires complete-solid penetration evidence')
     candidate_audit = []
     for pair in raw.get("candidate_pairs", [[]])[0]:
         if not 0 <= int(pair.get("part", -1)) < 6:
@@ -124,11 +120,15 @@ def event_names(entry: dict) -> dict[tuple[int, int], str]:
 
 
 def audit_endpoint_record(record, *, model, checkpoint, prediction, intention, observed, actual,
-                          next_world, device, require_observed_support=False):
+                          next_world, device, require_observed_support=False, penetration_limits=DEFAULT_ACCEPTANCE):
     """Shared own-plan checks for demonstrated and autonomous endpoints."""
     intended_contact, intended_surface = intention['contact'], intention['surface']
     record['native_full_robot_separation'] = actual['native_separation']
     record['solid_full_robot_separation'] = actual['solid_separation']
+    depth = max(actual['terrain_penetration_m'], actual['self_penetration_m'])
+    record['penetration_exceeded'] = depth > penetration_limits.shallow_penetration_m
+    record['penetration_and_contact'] = (record['penetration_exceeded']
+        and not record['own_plan_acceptance']['contact_accepted'])
     if getattr(prediction, 'planned_regions', None) is not None:
         with torch.no_grad():
             audit = model.region_geometry.audit_pairs(model.fk,
@@ -140,13 +140,21 @@ def audit_endpoint_record(record, *, model, checkpoint, prediction, intention, o
         record['predicted_role'] = prediction.conditioned_role[0].cpu().tolist()
         record['temporal_retouch_verified'] = False
     from generator.endpoint_termination import endpoint_failure_reasons
-    from generator.next_interaction_heightmap import HEIGHTMAP_RESOLUTION_M
     from contact_solver.native_contact_position import native_position_statistics, CONTACT_POSITION_SCHEMA
+    from contact_solver.endpoint_contact_points import (CONTACT_POINT_SCHEMA, relation_points,
+        contact_targets, observed_contact_statistics)
+    from contact_solver.contact_point_sets import (CONTACT_SET_SCHEMA, contact_patch_observation,
+        matched_targets, observed_matched_statistics)
     trained_contract = checkpoint.get('dataset', {}).get('contact_position_contract')
+    point_contract = trained_contract == CONTACT_POINT_SCHEMA
+    set_contract = trained_contract == CONTACT_SET_SCHEMA
     record['trained_endpoint_position_contract'] = trained_contract
-    record['endpoint_position_contract'] = CONTACT_POSITION_SCHEMA
-    record['spatial_match_policy'] = 'native_part_surface_to_normal_interval'
-    support_contract = trained_contract in ('persistent_support_observed_scene_v2', 'observed_endpoint_region_geometry_v3', CONTACT_POSITION_SCHEMA)
+    record['endpoint_position_contract'] = (CONTACT_SET_SCHEMA if set_contract else
+        CONTACT_POINT_SCHEMA if point_contract else CONTACT_POSITION_SCHEMA)
+    record['spatial_match_policy'] = ('actual_same_part_surface_point_set_xyz' if set_contract else
+        'actual_point_xyz_minimum_dist_minus_margin' if point_contract
+                                    else 'native_part_surface_to_normal_interval')
+    support_contract = trained_contract in ('persistent_support_observed_scene_v2', 'observed_endpoint_region_geometry_v3', CONTACT_POSITION_SCHEMA, CONTACT_POINT_SCHEMA, CONTACT_SET_SCHEMA)
     require_spatial = bool(support_contract or checkpoint['config'].get('anchored_plan_execution') or checkpoint['config'].get('pending_plan_repair'))
     if support_contract:
         record['persistent_role_consistent'] = bool(
@@ -155,17 +163,32 @@ def audit_endpoint_record(record, *, model, checkpoint, prediction, intention, o
     record['own_endpoint_position_rms_cm'] = None
     if intention['point_world'] is not None and intended_contact.any():
         with torch.no_grad():
-            error,complete,count=native_position_statistics(model,model.native_position_router,
-                torch.as_tensor(next_world[None],device=device),torch.zeros(1,device=device,dtype=torch.long),
-                torch.as_tensor(intention['point_world'][None],device=device),
-                torch.as_tensor(intended_contact[None],device=device),torch.as_tensor(intended_surface[None],device=device),
-                dict(pairs=[actual['pairs']],surface_catalog=actual['surface_catalog']),
-                regions=getattr(prediction,'planned_regions',None))
+            points = torch.as_tensor(intention['point_world'][None],device=device)
+            active = torch.as_tensor(intended_contact[None],device=device)
+            surfaces = torch.as_tensor(intended_surface[None],device=device)
+            if set_contract:
+                start = contact_patch_observation(observed, points)
+                points = matched_targets(points, prediction.conditioned_role, surfaces, start)
+                error,complete,count = observed_matched_statistics(actual, points, prediction.conditioned_role, surfaces, start)
+                record['endpoint_contact_targets_world'] = points[0].cpu().tolist()
+            elif point_contract:
+                start, present = relation_points(observed, surfaces, points)
+                points = contact_targets(points, prediction.conditioned_role, surfaces,
+                    dict(current_contact_relations=present, contact_surface_ids=surfaces,
+                         contact_relation_points=start))
+                error,complete,count = observed_contact_statistics(actual, points, active, surfaces)
+                record['endpoint_contact_targets_world'] = points[0].cpu().tolist()
+            else:
+                error,complete,count=native_position_statistics(model,model.native_position_router,
+                    torch.as_tensor(next_world[None],device=device),torch.zeros(1,device=device,dtype=torch.long),
+                    points, active, surfaces,
+                    dict(pairs=[actual['pairs']],surface_catalog=actual['surface_catalog']),
+                    regions=getattr(prediction,'planned_regions',None))
         if bool(complete[0]):record['own_endpoint_position_rms_cm']=float(100*error[0].sqrt())
     record['support_motion'] = unknown_material_path()
     record['actual_support_evidence_known'] = False
     record['termination_reasons'] = endpoint_failure_reasons(record, require_spatial=require_spatial,
-        tolerance_cm=200*HEIGHTMAP_RESOLUTION_M, require_observed_support=require_observed_support)
+        tolerance_cm=100*penetration_limits.endpoint_position_m, require_observed_support=require_observed_support)
     record['endpoint_accepted'] = not record['termination_reasons']
     return record
 
@@ -269,6 +292,13 @@ def evaluate(args: argparse.Namespace, endpoint: str) -> None:
     if position_metadata['solid_geometry']['model_fingerprint']!=geometry['model_fingerprint']:
         raise ValueError('Contact-position geometry differs from actual evaluation solids')
     model.native_position_router=NativeContactPositionRouter({0:position_metadata})
+    mesh_scan_router = None
+    mesh_audit_count = 0
+    if getattr(model, 'world_surface_scan', False):
+        from somaforge_core.world_mesh_scan import WorldMeshScanRouter
+        from somaforge_core.world_mesh_scan import LEGACY_DEPTH_PROFILE
+        mesh_scan_router = WorldMeshScanRouter({0:position_metadata},
+            profile=getattr(model, 'depth_scan_profile', LEGACY_DEPTH_PROFILE))
     def observe_pose(q):
         return observe(q, endpoint, solids=solids, fk=model.fk, device=device)
 
@@ -335,7 +365,14 @@ def evaluate(args: argparse.Namespace, endpoint: str) -> None:
         initial_offset = np.asarray(args.initial_offset_world_m, dtype=np.float32)
     current_world[:3] += initial_offset
 
-    def infer(q_world: np.ndarray, observed: dict, heightmap: np.ndarray, repair=None):
+    def render_observation(q_world):
+        if getattr(model, 'depth_observation', False):
+            return None
+        return render_root_yaw_box_heightmaps(world_center[None], world_rotation[None], world_half,
+            world_ground, q_world[None], supersample=args.heightmap_supersample)
+
+    def infer(q_world: np.ndarray, observed: dict, heightmap: np.ndarray | None, repair=None):
+        nonlocal mesh_audit_count
         q_tensor = torch.as_tensor(q_world[None], device=device)
         contact_tensor = torch.as_tensor(observed["mask"][None], device=device)
         point_tensor = torch.as_tensor(observed["position_w"][None], device=device)
@@ -381,17 +418,32 @@ def evaluate(args: argparse.Namespace, endpoint: str) -> None:
                     "point_world": point_world[0].cpu().numpy(),
                 }
             if schema in POSITION_SCHEMAS:
+                from generator.role_validity import validity_inputs
+                height_tensor = None if heightmap is None else torch.as_tensor(heightmap, device=device)
+                validity = validity_inputs(model,q_tensor,height_tensor,observed,
+                    scan_provider=mesh_scan_router,
+                    scene_ids=torch.zeros(len(q_tensor),device=device,dtype=torch.long))
                 prediction = model(current_q=q_tensor, current_contact=contact_tensor,
                                    current_anchor=point_tensor,
-                                   heightmap=torch.as_tensor(heightmap, device=device), **(repair or {}))
+                                   heightmap=height_tensor,
+                                   **validity, **(repair or {}))
+                if mesh_scan_router is not None:
+                    mesh_audit_count += 1
+                    torch.save(dict(current_q=q_tensor, current_observed=observed,
+                        validity=validity, scan_audit=mesh_scan_router.last_audit),
+                        args.output/f'depth_scan_{mesh_audit_count:04d}.pt')
                 basis, _ = _root_yaw_basis(q_tensor)
                 points = q_tensor[:, None, :3] + torch.einsum("bij,bpj->bpi", basis, prediction.conditioned_points_local)
                 return prediction, {
                     "contact": prediction.conditioned_contact[0].cpu().numpy(),
-                    "surface": audit_intended_surfaces(points, prediction.conditioned_contact,
-                        {"surface_catalog": observed["surface_catalog"]})[0].cpu().numpy(),
-                    "cell": prediction.cell[0].cpu().numpy(),
+                    "surface": (prediction.conditioned_surface if prediction.conditioned_surface is not None
+                        else audit_intended_surfaces(points, prediction.conditioned_contact,
+                            {"surface_catalog": observed["surface_catalog"]}))[0].cpu().numpy(),
+                    "cell": prediction.conditioned_cell[0].cpu().numpy(),
                     "point_world": points[0].cpu().numpy(),
+                    "mesh_packet": validity if mesh_scan_router is not None else None,
+                    "point_id": (prediction.conditioned_point_id[0].cpu().tolist()
+                        if prediction.conditioned_point_id is not None else None),
                 }
             prediction = model(
                 current_q=q_tensor,
@@ -427,17 +479,16 @@ def evaluate(args: argparse.Namespace, endpoint: str) -> None:
         if args.teacher_forced:
             current_world = world_motion[int(samples[row]["current_frame"])].copy()
         observed = observe_pose(current_world)
-        heightmap = render_root_yaw_box_heightmaps(
-            world_center[None], world_rotation[None], world_half, world_ground,
-            current_world[None], supersample=args.heightmap_supersample,
-        )
+        heightmap = render_observation(current_world)
         if initial_observation is None:
             initial_observation = {
                 "q_world": current_world.tolist(),
                 "contact_mask": observed["mask"].tolist(),
                 "contact_surface": observed["surface"].tolist(),
                 "contact_position_w": observed["position_w"].tolist(),
-                "heightmap": heightmap[0].tolist(),
+                "heightmap": None if heightmap is None else heightmap[0].tolist(),
+                "environment_observation": model.architecture_contract().get('environment_observation')
+                    if getattr(model, 'depth_observation', False) else 'legacy heightmap',
             }
         prediction, intention = infer(current_world, observed, heightmap)
         next_world = prediction.qpos[0].detach().cpu().numpy()
@@ -445,10 +496,11 @@ def evaluate(args: argparse.Namespace, endpoint: str) -> None:
         attempt_records = []
         issued = dict(repair_mask=torch.ones(1, dtype=torch.bool, device=device),
             repair_role=prediction.conditioned_role.detach() if getattr(prediction, 'conditioned_role', None) is not None else None,
+            repair_surface=prediction.conditioned_surface.detach() if getattr(prediction, 'conditioned_surface', None) is not None else None,
+            repair_point_id=prediction.conditioned_point_id.detach() if getattr(prediction, 'conditioned_point_id', None) is not None else None,
             repair_points_world=torch.as_tensor(intention['point_world'][None], device=device) if intention['point_world'] is not None else None,
             repair_regions=prediction.planned_regions.detach() if getattr(prediction, 'planned_regions', None) is not None else None)
         if args.execution_attempts > 1:
-            from generator.next_interaction_heightmap import HEIGHTMAP_RESOLUTION_M
             for attempt in range(args.execution_attempts):
                 enabled, face = intention['contact'], intention['surface']
                 selected = representative_pairs(actual['pairs'], enabled, face)
@@ -457,17 +509,17 @@ def evaluate(args: argparse.Namespace, endpoint: str) -> None:
                 if complete:
                     delta = np.asarray([pair['position_w'][:2] for part, pair in enumerate(selected) if enabled[part]])-intention['point_world'][enabled,:2]
                     error = float(np.sqrt(np.mean(np.sum(delta**2,axis=-1))))
-                limits = TerminationLimits(penetration_m=limits_acceptance.shallow_penetration_m)
+                limits = TerminationLimits(penetration_m=limits_acceptance.shallow_penetration_m,
+                    joint_excess_rad=limits_acceptance.joint_excess_rad)
                 failure = pose_failure(next_world,model.fk.joint_lower.cpu().numpy(),model.fk.joint_upper.cpu().numpy(),limits)
                 failure = failure or geometry_failure(actual['separation'],limits)
-                own_done = bool(complete and error <= 2*HEIGHTMAP_RESOLUTION_M and failure is None
+                own_done = bool(complete and error <= limits_acceptance.endpoint_position_m and failure is None
                     and contact_acceptance(actual['pairs'],enabled,face,limits=limits_acceptance)['contact_accepted'])
                 attempt_records.append(dict(attempt=attempt+1,q_world=next_world.tolist(),own_endpoint_completed=own_done,
                     position_rms_cm=100*error if np.isfinite(error) else None,safety_failure=failure,
                     raw_pairs=actual['raw_pairs']))
                 if own_done or attempt+1==args.execution_attempts: break
-                repair_heightmap=render_root_yaw_box_heightmaps(world_center[None],world_rotation[None],world_half,
-                    world_ground,next_world[None],supersample=args.heightmap_supersample)
+                repair_heightmap=render_observation(next_world)
                 prediction, _ = infer(next_world, actual, repair_heightmap, repair=issued)
                 next_world=prediction.qpos[0].detach().cpu().numpy()
                 actual=observe_pose(next_world)
@@ -548,7 +600,9 @@ def evaluate(args: argparse.Namespace, endpoint: str) -> None:
             "terminal_event": terminals.get(frame_pair, "unknown"),
             "predicted_contact": intended_contact.tolist(),
             "predicted_surface": None if intended_surface is None else intended_surface.tolist(),
-            "predicted_heightmap_cell": None if intended_cell is None else intended_cell.tolist(),
+            "predicted_heightmap_cell": None if intended_cell is None or mesh_scan_router is not None else intended_cell.tolist(),
+            "predicted_mesh_node_index": intended_cell.tolist() if mesh_scan_router is not None else None,
+            "predicted_mesh_point_id": intention.get("point_id"),
             "predicted_contact_point_w": (
                 None if intention["point_world"] is None else intention["point_world"].tolist()
             ),
@@ -575,7 +629,8 @@ def evaluate(args: argparse.Namespace, endpoint: str) -> None:
             "reference_q_world": reference.tolist(),
         }
         acceptance = contact_acceptance(actual["pairs"], gt_contact, gt_surface, limits=limits_acceptance)
-        limits = TerminationLimits(penetration_m=limits_acceptance.shallow_penetration_m)
+        limits = TerminationLimits(penetration_m=limits_acceptance.shallow_penetration_m,
+            joint_excess_rad=limits_acceptance.joint_excess_rad)
         failure = pose_failure(next_world, model.fk.joint_lower.cpu().numpy(),
                                model.fk.joint_upper.cpu().numpy(), limits)
         failure = failure or geometry_failure(actual["separation"], limits)
@@ -617,7 +672,13 @@ def evaluate(args: argparse.Namespace, endpoint: str) -> None:
                     point = np.zeros((6, 3), dtype=np.float32)
                     mask = np.zeros(6, dtype=bool)
                     point[part], mask[part] = witness, True
-                    if checkpoint.get("dataset", {}).get("raster_label_semantics") == "nearest_observed_3d_cell_v1":
+                    if mesh_scan_router is not None:
+                        from somaforge_core.world_mesh_scan import mesh_location_labels
+                        cell_tensor, valid_tensor = mesh_location_labels(
+                            torch.as_tensor(point[None],device=device), torch.as_tensor(mask[None],device=device),
+                            torch.as_tensor(intended_surface[None],device=device), intention['mesh_packet'])
+                        cell, valid = cell_tensor[0].cpu().numpy(), valid_tensor[0].cpu().numpy()
+                    elif checkpoint.get("dataset", {}).get("raster_label_semantics") == "nearest_observed_3d_cell_v1":
                         _, cell_tensor, valid_tensor = contact_points_to_observed_heightmap_map(
                             torch.as_tensor(current_world[None], device=device),
                             torch.as_tensor(mask[None], device=device),
@@ -661,7 +722,8 @@ def evaluate(args: argparse.Namespace, endpoint: str) -> None:
         record['execution_attempts'] = attempt_records
         audit_endpoint_record(record, model=model, checkpoint=checkpoint, prediction=prediction,
             intention=intention, observed=observed, actual=actual, next_world=next_world,
-            device=device, require_observed_support=args.require_observed_support)
+            device=device, require_observed_support=args.require_observed_support,
+            penetration_limits=limits_acceptance)
         if diagnostic_teacher is not None and step < len(rows):
             next_row = rows[step]
             next_heightmap = render_root_yaw_box_heightmaps(
@@ -722,10 +784,7 @@ def evaluate(args: argparse.Namespace, endpoint: str) -> None:
     final_reference = world_motion[int(samples[rows[-1]]["target_frame"])]
     for extra_index in range(1, (0 if records[-1].get('forward_progress_valid') is False else args.extra_steps) + 1):
         observed = observe_pose(current_world)
-        heightmap = render_root_yaw_box_heightmaps(
-            world_center[None], world_rotation[None], world_half, world_ground,
-            current_world[None], supersample=args.heightmap_supersample,
-        )
+        heightmap = render_observation(current_world)
         prediction, intention = infer(current_world, observed, heightmap)
         next_world = prediction.qpos[0].detach().cpu().numpy()
         actual = observe_pose(next_world)
@@ -767,7 +826,9 @@ def evaluate(args: argparse.Namespace, endpoint: str) -> None:
             "extra_prediction": True,
             "predicted_contact": intended_contact.tolist(),
             "predicted_surface": None if intended_surface is None else intended_surface.tolist(),
-            "predicted_heightmap_cell": None if intended_cell is None else intended_cell.tolist(),
+            "predicted_heightmap_cell": None if intended_cell is None or mesh_scan_router is not None else intended_cell.tolist(),
+            "predicted_mesh_node_index": intended_cell.tolist() if mesh_scan_router is not None else None,
+            "predicted_mesh_point_id": intention.get("point_id"),
             "predicted_contact_point_w": (
                 None if intention["point_world"] is None else intention["point_world"].tolist()
             ),
@@ -797,7 +858,8 @@ def evaluate(args: argparse.Namespace, endpoint: str) -> None:
         record['actual_abnormal_contact_pairs'] = actual['abnormal_pairs']
         record['task_acceptance'] = None  # No future demonstration target exists.
         own = contact_acceptance(actual['pairs'], intended_contact, intended_surface, limits=limits_acceptance)
-        limits = TerminationLimits(penetration_m=limits_acceptance.shallow_penetration_m)
+        limits = TerminationLimits(penetration_m=limits_acceptance.shallow_penetration_m,
+            joint_excess_rad=limits_acceptance.joint_excess_rad)
         failure = pose_failure(next_world, model.fk.joint_lower.cpu().numpy(),
                                model.fk.joint_upper.cpu().numpy(), limits)
         failure = failure or geometry_failure(actual['separation'], limits)
@@ -805,7 +867,8 @@ def evaluate(args: argparse.Namespace, endpoint: str) -> None:
             accepted=bool(intended_contact.any() and own['contact_accepted'] and failure is None))
         audit_endpoint_record(record, model=model, checkpoint=checkpoint, prediction=prediction,
             intention=intention, observed=observed, actual=actual, next_world=next_world,
-            device=device, require_observed_support=args.require_observed_support)
+            device=device, require_observed_support=args.require_observed_support,
+            penetration_limits=limits_acceptance)
         if progress_gate is not None:
             record.update(progress_gate.update(next_world[:2]))
             if not record['forward_progress_valid']:
@@ -838,6 +901,8 @@ def evaluate(args: argparse.Namespace, endpoint: str) -> None:
         "task_accepted_prefix": accepted_prefix,
         "task_accepted_steps": sum(row["task_acceptance"]["accepted"] for row in records[:len(rows)]),
         "steps": len(records),
+        "penetration_exceeded_steps": sum(row['penetration_exceeded'] for row in records),
+        "penetration_and_contact_steps": sum(row['penetration_and_contact'] for row in records),
         "continuous_groups": 1,
         "demonstrated_steps": len(rows),
         "extra_steps": args.extra_steps,
@@ -882,12 +947,15 @@ def evaluate(args: argparse.Namespace, endpoint: str) -> None:
             own_spatial_plan_realized_steps=sum(row.get("own_spatial_plan_realized", False) for row in records),
             own_spatial_plan_safe_steps=sum(row.get("own_spatial_plan_safe", False) for row in records),
             empty_predicted_plan_steps=sum(not any(row["predicted_contact"]) for row in records),
-            spatial_realization_contract="nonempty plan; actual Newton primary-face active+allocated terrain witness in each intended observation raster cell; topology exact",
+            spatial_realization_contract=("nonempty plan; actual Newton active+allocated primary-face witnesses; same-surface world mesh node diagnostics"
+                if mesh_scan_router is not None else "nonempty plan; actual Newton primary-face active+allocated terrain witness in each intended observation raster cell; topology exact"),
             exact_cell_metrics_diagnostic_only=True,
             mean_relative_layout_rms_cm_on_realized_plans=float(np.mean(relative_errors)) if relative_errors else None,
             relative_layout_evaluable_steps=len(relative_errors),
             relative_layout_minimum_parts=2,
         )
+    if mesh_scan_router is not None:
+        (args.output/"world_mesh_scan_contract.json").write_text(json.dumps(mesh_scan_router.contract(), indent=2))
     report = {
         "schema": "interaction_predictor_only_closed_loop_v2",
         "checkpoint": str(args.checkpoint.resolve()),
@@ -922,9 +990,19 @@ def evaluate(args: argparse.Namespace, endpoint: str) -> None:
                 "world_offset_m": initial_offset.tolist(),
                 "reference_initial_q": reference_initial_world.tolist(),
                 "terrain_unchanged": True,
-                "contacts_and_heightmap_requeried": True,
+                "contacts_and_environment_requeried": True,
+                "environment_observation": '2D optical depth' if getattr(model, 'depth_observation', False) else 'heightmap',
             },
             "task_acceptance": acceptance_contract(limits_acceptance),
+            "endpoint_tolerance_source": dict(source='checkpoint config; optional explicit penetration override',
+                historical_defaults_used=[key for key in ('acceptance_penetration_m',
+                    'endpoint_position_tolerance_m', 'joint_excess_rad') if key not in checkpoint['config']]),
+            "trained_objective_contract": checkpoint.get('dataset', {}).get('objective_contract',
+                {'schema': 'historical_unrecorded_objective', 'faithful_gradient_audit': 'archived source required'}),
+            "penetration_contract": penetration_contract(limits_acceptance,
+                penalty=checkpoint['config'].get('penetration_penalty', 'log1p'),
+                scale_m=checkpoint['config'].get('penetration_scale_m', PENETRATION_LOSS_SCALE_M)),
+            "trained_penetration_contract": checkpoint.get('dataset', {}).get('penetration_contract'),
             "recurrence": (
                 "reference event start is restored before every prediction"
                 if args.teacher_forced
@@ -934,8 +1012,10 @@ def evaluate(args: argparse.Namespace, endpoint: str) -> None:
             "contact_intention": (
                 "contact transition physically realized by the single emitted action"
                 if schema == "embodied_interaction_predictor_v1"
+                else "predicted six-part role and observed world mesh XYZ condition the pose decoder" if mesh_scan_router is not None
                 else "predicted six-part role and observed heightmap cell condition the pose decoder"
                 if schema in ("planned_contact_predictor_v1", *POSITION_SCHEMAS)
+                else "limb role + observed world mesh point and surface identity" if mesh_scan_router is not None
                 else "limb role + observed 2cm heightmap cell"
                 if schema == "contact_location_predictor_v1"
                 else "limb role + semantic surface"
@@ -960,7 +1040,12 @@ def evaluate(args: argparse.Namespace, endpoint: str) -> None:
     if checkpoint.get('dataset', {}).get('relative_layout_contract'):
         report['contract']['trained_relative_layout_contract'] = checkpoint['dataset']['relative_layout_contract']
     report['contract']['relative_layout_contract'] = 'historical_centered_witness_diagnostic_only'
-    report['contract']['endpoint_position_contract'] = model.native_position_router.contract()
+    from contact_solver.endpoint_contact_points import CONTACT_POINT_SCHEMA
+    from contact_solver.contact_point_sets import CONTACT_SET_SCHEMA
+    report['contract']['endpoint_position_contract'] = (
+        checkpoint['dataset']['position_interface_loss']
+        if checkpoint.get('dataset', {}).get('contact_position_contract') in (CONTACT_POINT_SCHEMA, CONTACT_SET_SCHEMA)
+        else model.native_position_router.contract())
     report['contract']['failure_policy'] = ('independent_teacher_inputs' if args.teacher_forced else
         'diagnostic_continue_after_failure' if args.diagnostic_continue else 'stop_on_first_failure')
     passed = next((i for i, r in enumerate(records) if not r.get('endpoint_accepted', False)), len(records))

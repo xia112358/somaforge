@@ -3,8 +3,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 
-spec=importlib.util.spec_from_file_location('valid_contact_continuation',Path(__file__).parents[1]/'tmp/train_valid_contact_continuation.py')
-m=importlib.util.module_from_spec(spec);sys.modules[spec.name]=m;spec.loader.exec_module(m)
+from generator.research.archived_experiments import adjacent_events as m
 
 
 def test_only_adjacent_climbing_transitions():

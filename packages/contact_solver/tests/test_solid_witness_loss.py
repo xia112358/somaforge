@@ -60,7 +60,8 @@ def test_fully_contained_body_does_not_require_triangle_contacts():
     assert updated.distances[0] > rows.distances[0]
 
 
-def test_unified_loss_replaces_the_inward_triangle_penetration_gradient():
+@pytest.mark.parametrize('penalty', ['log1p', 'huber'])
+def test_unified_loss_replaces_the_inward_triangle_penetration_gradient(penalty):
     from types import SimpleNamespace
     from contact_solver.contact_regions import unified_region_objective
     from contact_solver.device_contact_objective import DeviceWitnessRows
@@ -97,7 +98,8 @@ def test_unified_loss_replaces_the_inward_triangle_penetration_gradient():
     assert old_gradient[0, 2] > 0  # descent follows the triangle downwards
     rows.solid = router(FK(), q, torch.tensor([0]))
     loss, metrics = unified_region_objective(SimpleNamespace(fk=FK(), region_geometry=Regions()),
-        rows, torch.zeros(1, 6, dtype=torch.bool), torch.zeros(1, 6, dtype=torch.long), {})
+        rows, torch.zeros(1, 6, dtype=torch.bool), torch.zeros(1, 6, dtype=torch.long), {},
+        penetration_penalty=penalty)
     gradient = torch.autograd.grad(loss.sum(), q)[0]
     assert gradient[0, 2] < 0  # descent follows the complete solid upwards
     torch.testing.assert_close(metrics['solid_penetration_cm'], q.new_tensor([15.]))

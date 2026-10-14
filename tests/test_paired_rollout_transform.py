@@ -1,5 +1,5 @@
 import numpy as np
-from generate_paired_surface_rollout import transform_q,yaw_basis
+from generator.research.archived_experiments.paired_pose_transform import transform_q,yaw_basis
 
 
 def test_roundtrip_and_scene_frame():

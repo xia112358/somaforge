@@ -1,5 +1,5 @@
 import torch
-from climb00_pipeline.surface_contact_proxy import primary_face_cost
+from contact_solver.surface_contact_proxy import primary_face_cost
 
 
 def evaluate(point,infinite=False):

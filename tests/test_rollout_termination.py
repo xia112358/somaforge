@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from climb00_pipeline.rollout_termination import (
+from generator.rollout_termination import (
     pose_failure, geometry_failure, ProgressWatch, training_rollout_safety_mask,
 )
 

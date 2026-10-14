@@ -122,14 +122,29 @@ class PlannedHeightmapContactPredictor(HeightmapContactLocationPredictor):
 
 
 def contact_plan_objective(prediction, target):
+    if not bool(torch.isfinite(prediction.role_logits.gather(-1, target['role'][..., None])).all()):
+        raise ValueError('Supervised role is outside the actual-contact action space')
     role = F.cross_entropy(prediction.role_logits.transpose(1, 2), target["role"], reduction="none").mean(-1)
     valid = target["contact_cell_valid"] & (target["role"] != 0)
-    cells = F.cross_entropy(prediction.location_logits.transpose(1, 2), target["contact_cell"], reduction="none")
+    if getattr(prediction, 'keep_uses_current_point', False):
+        valid &= target['role'] != 2
+    locations = (prediction.location_logits_for_roles(target['role'])
+        if hasattr(prediction, 'location_logits_for_roles') else prediction.location_logits)
+    safe_cells = torch.where(valid, target['contact_cell'], locations.argmax(-1))
+    if bool((valid & ~torch.isfinite(locations.gather(-1, safe_cells[..., None]).squeeze(-1))).any()):
+        raise ValueError('Supervised keep location is outside the observed contact relation')
+    cells = F.cross_entropy(locations.transpose(1, 2), safe_cells, reduction="none")
     location = (cells * valid).sum(-1) / valid.sum(-1).clamp_min(1)
     exact_contact = (prediction.contact == (target["role"] != 0)).all(-1)
-    row_error = prediction.cell // HEIGHTMAP_COLS - target["contact_cell"] // HEIGHTMAP_COLS
-    col_error = prediction.cell % HEIGHTMAP_COLS - target["contact_cell"] % HEIGHTMAP_COLS
-    location_error = (row_error.square() + col_error.square()).float().sqrt() * (100 * HEIGHTMAP_RESOLUTION_M)
+    candidates = getattr(prediction, 'candidate_points_local', None)
+    if candidates is not None:
+        reference = candidates.gather(1, safe_cells[..., None].expand(-1, -1, 3))
+        predicted = candidates.gather(1, prediction.cell[..., None].expand(-1, -1, 3))
+        location_error = 100*(predicted-reference).norm(dim=-1)
+    else:
+        row_error = prediction.cell // HEIGHTMAP_COLS - target["contact_cell"] // HEIGHTMAP_COLS
+        col_error = prediction.cell % HEIGHTMAP_COLS - target["contact_cell"] % HEIGHTMAP_COLS
+        location_error = (row_error.square() + col_error.square()).float().sqrt() * (100 * HEIGHTMAP_RESOLUTION_M)
     return role + location, {
         "plan_role_loss": role,
         "plan_location_loss": location,

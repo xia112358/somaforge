@@ -12,7 +12,7 @@ src/holosoma_retargeting/   Retargeting tools (separate environment)
 packages/motion_edit/       Contact editing and validated kinematic candidates
 packages/generator/         Predictor, Infiller, datasets and generation training
 packages/contact_solver/    Contact objectives, collision gradients and projection
-packages/climb00_pipeline/  Legacy import and module CLI compatibility
+packages/climb00_pipeline/  Optional historical import/CLI compatibility
 packages/somaforge_core/    Shared assets, FK, contracts and Newton contact semantics
 OmniRetarget_Dataset/       Imported preprocessing tools
 runtime/current/            Outputs made with the canonical robot asset
@@ -22,6 +22,7 @@ configs/training_pipeline_manifest.json Shared training data contract
 
 See [repository maintenance](docs/repository-maintenance.md) for active entrypoints,
 historical compatibility, data retention and validation commands.
+Past experiment reports are separated under [docs/history](docs/history/README.md).
 
 ## Canonical assets
 
@@ -125,7 +126,7 @@ do not establish held-out recursive generalization or executed support/load/slip
 The previous pretrained Predictor recipe and its entrypoints have been retired.
 Its raw recursive evaluation uses Predictor outputs alone; it is not an
 acceptance result for an integrated Predictor + Infiller + WBT deployment.
-The older [pairwise48 report](docs/climb00-pairwise48-production.md) is historical.
+The older [pairwise48 report](docs/history/climb00-pairwise48-production.md) is historical.
 
 Previous Predictor recipes and comparison checkpoints are
 [archived in place](baselines/README.md), including scratch_recipe.20261002,

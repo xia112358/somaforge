@@ -1,9 +1,8 @@
 import json
 import numpy as np
 import pytest
-import predictor_preprocessing_cache as cache
-import train_climb00_contact_conditioned_infiller as builder
-from train_climb00_contact_event_predictor import ContactEventSample, action_labels, observed_action_vocabulary
+from generator.research.archived_experiments import preprocessing_cache as cache
+from generator.research.archived_experiments.contact_event_sample import ContactEventSample, action_labels, observed_action_vocabulary
 
 
 def test_settled_pose_is_a_real_zero_touchdown_action():
@@ -36,9 +35,8 @@ def test_cache_roundtrip_and_corruption(tmp_path, monkeypatch):
     def build(*a):
         calls.append(1)
         return {'positions':np.arange(9).reshape(1,3,3)}, [sample], {'samples':1}
-    monkeypatch.setattr(builder, 'build_dataset', build)
-    a = cache.load_or_build_dataset('ignored', 64, cache_directory=tmp_path)
-    b = cache.load_or_build_dataset('ignored', 64, cache_directory=tmp_path)
+    a = cache.load_or_build_dataset('ignored', 64, build_dataset=build, cache_directory=tmp_path)
+    b = cache.load_or_build_dataset('ignored', 64, build_dataset=build, cache_directory=tmp_path)
     assert len(calls) == 1
     assert not a[3]['cache_hit'] and b[3]['cache_hit']
     np.testing.assert_array_equal(a[0]['positions'], b[0]['positions'])
@@ -46,15 +44,14 @@ def test_cache_roundtrip_and_corruption(tmp_path, monkeypatch):
     assert a[2] == b[2]
     with (tmp_path/'test.pt').open('ab') as stream: stream.write(b'corrupt')
     with pytest.raises(ValueError, match='integrity'):
-        cache.load_or_build_dataset('ignored', 64, cache_directory=tmp_path)
+        cache.load_or_build_dataset('ignored', 64, build_dataset=build, cache_directory=tmp_path)
 
 
 def test_inputs_changed_during_build_are_not_published(tmp_path, monkeypatch):
     identities = iter([('one',{'dataset_fingerprint':'a'}),('two',{'dataset_fingerprint':'b'})])
     monkeypatch.setattr(cache,'cache_identity',lambda *a:next(identities))
-    monkeypatch.setattr(builder,'build_dataset',lambda *a:({},[],{}))
     with pytest.raises(ValueError,match='changed during'):
-        cache.load_or_build_dataset('ignored',64,cache_directory=tmp_path)
+        cache.load_or_build_dataset('ignored',64,build_dataset=lambda *a:({},[],{}),cache_directory=tmp_path)
     assert not list(tmp_path.glob('*.pt'))
 
 
@@ -64,7 +61,8 @@ def test_identity_includes_plan_catalog_manifest_and_frames(tmp_path, monkeypatc
     catalog = tmp_path/'surface.jsonl'; catalog.write_text('original surface')
     plan = tmp_path/'plan.json'; plan.write_text(json.dumps({'metadata':{'target_surface_catalog':str(catalog)}}))
     manifest = tmp_path/'manifest.json'
-    m = {'event_contract':{'v':1},'training_ready':True,'motion_files':[{'edit_plan_file':str(plan)}]}
+    from somaforge_core.newton_runtime_compat import NEWTON_RUNTIME_ID
+    m = {'newton_runtime': {'runtime_id': NEWTON_RUNTIME_ID}, 'event_contract':{'v':1},'training_ready':True,'motion_files':[{'edit_plan_file':str(plan)}]}
     manifest.write_text(json.dumps(m))
     original = cache.cache_identity(manifest,64)[0]
     assert original != cache.cache_identity(manifest,32)[0]

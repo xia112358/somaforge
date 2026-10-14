@@ -232,13 +232,13 @@ def test_versioned_gradient_audit_never_constructs_optimizer_or_imports_archive(
     monkeypatch.setattr(torch, 'save', lambda *a, **k: None)
     read_bytes = Path.read_bytes
     monkeypatch.setattr(Path, 'read_bytes',
-        lambda p: b'fixture' if p == Path('tmp/audit_fixture.pt') else read_bytes(p))
+        lambda p: b'fixture' if p == Path('fixtures/audit_fixture.pt') else read_bytes(p))
     monkeypatch.setattr(Path, 'write_text', lambda p, text: reports.update({p.name: json.loads(text)}))
     monkeypatch.setattr(module, 'write_witness_manifest', lambda cfg: None)
     def forbidden_optimizer(*args, **kwargs):
         pytest.fail('Read-only audit cannot construct an optimizer')
     monkeypatch.setattr(torch.optim, 'AdamW', forbidden_optimizer)
-    cfg = SimpleNamespace(audit_checkpoint=Path('tmp/audit_fixture.pt'), output=Path('tmp/audit_fixture'),
+    cfg = SimpleNamespace(audit_checkpoint=Path('fixtures/audit_fixture.pt'), output=Path('fixtures/audit_fixture'),
                           static_audit_samples=2, static_audit_pool=None)
     def objective(prediction, observation, ids, labels):
         plan = prediction.role_logits.square().mean((1, 2))

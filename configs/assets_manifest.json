@@ -1,6 +1,7 @@
 {
   "schema": "somaforge_asset_manifest_v1",
   "root": "..",
+  "external_roots": ["runtime/current"],
   "assets": [
     {
       "id": "robot.g1.spherehand",
@@ -178,11 +179,12 @@
         "baseline": "baselines/predictor_control500_20261009/baseline.json"
       },
       "sha256": {
-        "baseline": "4ac2e71239c0c4d7a72398a040a807131f17c97868534d1765e5980e8ebf08f8"
+        "baseline": "8dfd571296146d23112a2a5d3c22371757099a53b2ac47af53bec1af7493cca8"
       },
       "metadata": {
         "superseded_by": "predictor.v1_latest.20261010",
-        "purpose": "Historical source550 plus500 low-LR updates and architecture comparison evidence"
+        "purpose": "Historical source550 plus500 low-LR updates and architecture comparison evidence",
+        "path_migration_original_baseline_sha256": "4ac2e71239c0c4d7a72398a040a807131f17c97868534d1765e5980e8ebf08f8"
       }
     }
   ]

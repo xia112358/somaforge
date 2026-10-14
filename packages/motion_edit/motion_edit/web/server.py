@@ -13,11 +13,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from somaforge_core import AssetManifest
 from somaforge_core.robot_assets import canonical_g1_urdf_path, somaforge_root
 
 from motion_edit.contact import read_contact_surfaces
 from motion_edit.contact.plans import read_contact_edit_plan, validate_contact_edit_plan, write_contact_edit_plan
-from motion_edit.generation.contact_aware import ContactAwareGenerationResult, apply_contact_aware_edit_plan_to_motion
+from motion_edit.generation import ContactAwarePreviewResult, generate_contact_aware_pyroki_preview
+from motion_edit.generation.jobs import generate_candidate
 from motion_edit.paths import LAYERS_ROOT, WORKBENCH_ROOT
 from motion_edit.storage import (
     MotionVersionRecord,
@@ -70,6 +72,8 @@ def _editor_contact_handles(anchors: Any) -> list[Any]:
 class ReviewRequest(BaseModel):
     path: str
     terrain: str | None = None
+    case_index: int = 0
+    reference_index: int | None = None
 
 
 class LoadRequest(BaseModel):
@@ -93,18 +97,18 @@ class HandleMoveRequest(BaseModel):
 
 
 class SettingsRequest(BaseModel):
+    model_config = {"extra": "forbid"}
     edit_plan_path: str | None = None
     output_contact_layer: str | None = None
     output_motion_path: str | None = None
-    output_segment_layer: str | None = None
     output_motion_id: str | None = None
     register_motion: bool | None = None
     overwrite: bool | None = None
 
 
 class GenerateRequest(BaseModel):
+    model_config = {"extra": "forbid"}
     output_motion_path: str | None = None
-    output_segment_layer: str | None = None
     output_motion_id: str | None = None
     register_motion: bool | None = None
     overwrite: bool | None = None
@@ -149,7 +153,6 @@ class EditorState:
     redo_stack: list[tuple[Any, list[Any]]] = field(default_factory=list)
     initial_snapshot: tuple[Any, list[Any]] | None = None
     output_motion_path: str | None = None
-    output_segment_layer: str | None = None
     output_motion_id: str | None = None
     register_motion: bool = True
     overwrite: bool = False
@@ -201,13 +204,8 @@ def _require_editable(state: EditorState) -> None:
 
 
 def _repo_url(path: str | Path) -> str:
-    root = somaforge_root().resolve()
-    candidate = Path(path).expanduser()
-    resolved = (root / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
-    try:
-        relative = resolved.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(f"asset is outside the Somaforge repository: {resolved}") from exc
+    manifest = AssetManifest.load(somaforge_root() / "configs/assets_manifest.json")
+    relative = manifest.logical_path(path)
     return "/repo/" + relative.as_posix()
 
 
@@ -325,11 +323,6 @@ def _reset_generation_settings(state: EditorState, motion_id: str) -> None:
     stem = f"{motion.motion_id}_edited"
     output_motion_path = _default_output_motion_path(motion.motion_id)
     state.output_motion_path = str(output_motion_path)
-    state.output_segment_layer = (
-        f"candidates/{stem}"
-        if motion.motion_version_id
-        else (record.output_segment_layer or f"candidates/{stem}")
-    )
     state.output_motion_id = stem
     state.register_motion = True
     state.overwrite = output_motion_path.exists()
@@ -342,8 +335,6 @@ def _reset_generation_settings(state: EditorState, motion_id: str) -> None:
 def _apply_generation_settings(state: EditorState, request: SettingsRequest | GenerateRequest) -> None:
     if request.output_motion_path is not None:
         state.output_motion_path = request.output_motion_path.strip()
-    if request.output_segment_layer is not None:
-        state.output_segment_layer = request.output_segment_layer.strip()
     if request.output_motion_id is not None:
         state.output_motion_id = request.output_motion_id.strip()
     if request.register_motion is not None:
@@ -469,7 +460,8 @@ def _session_payload(state: EditorState) -> dict[str, Any]:
     surfaces = read_contact_surfaces(session.surface_catalog) if session.surface_catalog else []
     qpos, fps, joint_names = load_motion_sequence(session.motion_path)
     state.fps = float(fps)
-    force = load_contact_force_payload(session.contact_force_path or session.motion_path, frame_count=qpos.shape[0])
+    force = load_contact_force_payload(session.contact_force_path or session.motion_path,
+                                       frame_count=qpos.shape[0], motion_path=session.motion_path)
     return {
         "motion_id": state.motion_id,
         "read_only": state.read_only,
@@ -497,7 +489,6 @@ def _session_payload(state: EditorState) -> dict[str, Any]:
             "output_contact_layer": session.output_contact_layer,
             "source_contact_layer": session.contact_layer,
             "output_motion_path": state.output_motion_path,
-            "output_segment_layer": state.output_segment_layer,
             "output_motion_id": state.output_motion_id,
             "register_motion": state.register_motion,
             "overwrite": state.overwrite,
@@ -541,11 +532,13 @@ def _save_session(state: EditorState, *, validate: bool = False) -> dict[str, An
     if plan_path is not None and plan_path.exists():
         plan = read_contact_edit_plan(plan_path)
         status = "draft"
-        if previous_plan is not None and previous_plan.edits == plan.edits:
+        if (previous_plan is not None and previous_plan.edits == plan.edits
+                and previous_plan.source_motion_path == plan.source_motion_path
+                and previous_plan.source_contact_layer == plan.source_contact_layer
+                and previous_plan.metadata == plan.metadata):
             same_outputs = (
                 previous_plan.output_motion_path == state.output_motion_path
                 and previous_plan.output_contact_layer == state.session.output_contact_layer
-                and previous_plan.output_segment_layer == state.output_segment_layer
             )
             if previous_plan.status == "generated" and same_outputs:
                 status = "generated"
@@ -558,7 +551,7 @@ def _save_session(state: EditorState, *, validate: bool = False) -> dict[str, An
                 status=status,
                 output_motion_path=state.output_motion_path,
                 output_contact_layer=state.session.output_contact_layer,
-                output_segment_layer=state.output_segment_layer,
+                output_segment_layer=None,
             ),
         )
     if validate:
@@ -579,20 +572,17 @@ def _save_session(state: EditorState, *, validate: bool = False) -> dict[str, An
 
 def _run_generation(
     state: EditorState,
-    generation_fn: Callable[..., ContactAwareGenerationResult],
+    generation_fn: Callable[..., ContactAwarePreviewResult],
     *,
     plan_path: Path,
     source_contact_layer: str,
-    output_contact_layer: str,
     output_motion_path: str,
-    output_segment_layer: str | None,
     output_motion_id: str | None,
     register_motion: bool,
     overwrite: bool,
     fps: float,
     motion_asset_id: str | None = None,
     parent_motion_version_id: str | None = None,
-    force_source_motion_path: str | None = None,
 ) -> None:
     def update_stage(stage: str) -> None:
         with state.generation_lock:
@@ -601,67 +591,45 @@ def _run_generation(
     try:
         update_stage("reading_plan")
         plan = read_contact_edit_plan(plan_path)
-        result = generation_fn(
-            plan,
+        update_stage("fullbody_ik")
+        result = generate_candidate(
+            plan_path,
+            generation_fn=generation_fn,
             output_motion_path=output_motion_path,
-            bake_force=False,
-            overwrite=overwrite,
-            source_plan_path=plan_path,
             source_contact_layer=source_contact_layer,
-            force_source_motion_path=force_source_motion_path,
-            output_contact_layer=output_contact_layer,
-            output_segment_layer=output_segment_layer,
-            output_motion_version_id=output_motion_id,
-            fps=fps,
-            register_motion_version=register_motion,
-            fullbody_solver="batch_contact_laplacian",
-            contact_laplacian_iters=8,
-            contact_laplacian_damping=1.0e-4,
-            contact_laplacian_trust=0.05,
-            edit_contact_weight=1000.0,
-            fixed_contact_weight=1000.0,
-            temporal_laplacian_weight=40.0,
-            body_relative_weight=10.0,
-            q_prior_weight=0.02,
-            q_smooth_weight=0.0,
-            mesh_laplacian_weight=1.0,
-            contact_laplacian_proxy_only=False,
-            progress_callback=update_stage,
+            overwrite=overwrite,
         )
         update_stage("saving_plan")
-        generated_plan = replace(
-            plan,
-            status="generated",
-            output_motion_path=str(result.output_motion_path),
-            output_contact_layer=result.generation.output_contact_layer,
-            output_segment_layer=result.generation.output_segment_layer,
-        )
-        write_contact_edit_plan(plan_path, generated_plan)
-        generated_version_id = result.generation.output_motion_version_id
-        if register_motion and generated_version_id and motion_asset_id:
-            registered = read_motion_version(generated_version_id)
-            metadata = dict(registered.metadata)
-            metadata["parent_motion_id"] = parent_motion_version_id or motion_asset_id
-            write_motion_version(
-                MotionVersionRecord(
-                    motion_version_id=registered.motion_version_id,
-                    motion_path=registered.motion_path,
-                    kind=registered.kind,
-                    base_motion_id=registered.base_motion_id,
-                    motion_asset_id=motion_asset_id,
-                    parent_motion_version_id=parent_motion_version_id,
-                    contact_layer=registered.contact_layer,
-                    canonical_segment_path=registered.canonical_segment_path,
-                    token_catalog_path=registered.token_catalog_path,
-                    edit_plan_id=registered.edit_plan_id,
-                    metadata=metadata,
-                )
-            )
+        write_contact_edit_plan(plan_path, replace(
+            plan, status="generated", output_motion_path=str(result.output_motion_path),
+            output_segment_layer=None,
+        ))
+        generated_version_id = None
+        if register_motion:
+            if not output_motion_id or not motion_asset_id:
+                raise ValueError("Registration requires a Motion ID and source asset")
+            update_stage("registering")
+            write_motion_version(MotionVersionRecord(
+                motion_version_id=output_motion_id,
+                motion_path=str(result.output_motion_path.resolve()),
+                kind="augmented", base_motion_id=plan.source_motion_id,
+                motion_asset_id=motion_asset_id,
+                parent_motion_version_id=parent_motion_version_id,
+                contact_layer=None, edit_plan_id=plan.plan_id,
+                metadata={
+                    "parent_motion_id": parent_motion_version_id or motion_asset_id,
+                    "generation_receipt": str(result.output_motion_path.with_suffix(".generation.json")),
+                    "training_ready": False, "status": "requires_native_validation",
+                    "generation_backend": "contact_aware_rollout_authority",
+                    "source_fps": fps,
+                },
+            ))
+            generated_version_id = output_motion_id
         with state.generation_lock:
             state.generation.status = "succeeded"
             state.generation.stage = "complete"
             state.generation.output_motion_path = str(result.output_motion_path)
-            state.generation.output_motion_id = result.generation.output_motion_version_id
+            state.generation.output_motion_id = generated_version_id
             state.generation.warnings = list(result.warnings)
             state.generation.finished_at = time.time()
             state.overwrite = True
@@ -679,17 +647,19 @@ def create_app(
     review_path: str | None = None,
     review_terrain: str | None = None,
     reset_recent_on_start: bool = False,
-    generation_fn: Callable[..., ContactAwareGenerationResult] = apply_contact_aware_edit_plan_to_motion,
+    generation_fn: Callable[..., ContactAwarePreviewResult] = generate_contact_aware_pyroki_preview,
 ) -> FastAPI:
     app = FastAPI(title="Motion Edit Contact Editor")
     state = EditorState()
     app.state.editor_state = state
 
-    def open_review(path: str, terrain: str | None = None) -> dict:
+    def open_review(path: str, terrain: str | None = None, *, case_index: int = 0,
+                    reference_index: int | None = None) -> dict:
         from .review import load_review
         _require_generation_idle(state)
         payload = load_review(Path(_repo_path(path)), url=_repo_url,
-                              terrain=Path(_repo_path(terrain)) if terrain else None)
+                              terrain=Path(_repo_path(terrain)) if terrain else None,
+                              case_index=case_index, reference_index=reference_index)
         state.session = None
         state.motion_id = None
         state.read_only = True
@@ -699,12 +669,19 @@ def create_app(
     @app.post("/api/review/load")
     def review_load(request: ReviewRequest) -> dict:
         try:
-            return open_review(request.path, request.terrain)
+            return open_review(request.path, request.terrain, case_index=request.case_index,
+                               reference_index=request.reference_index)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if review_path:
         open_review(review_path, review_terrain)
+    manifest = AssetManifest.load(somaforge_root() / "configs/assets_manifest.json")
+    # Mount only declared data roots, before the general checkout route. Keep
+    # StaticFiles' default refusal of symlinks escaping each physical root.
+    for alias, directory in sorted(manifest.external_roots, key=lambda item: len(item[0].parts), reverse=True):
+        app.mount("/repo/" + alias.as_posix(), StaticFiles(directory=str(directory)),
+                  name="repo-" + alias.as_posix().replace("/", "-"))
     app.mount("/repo", StaticFiles(directory=str(somaforge_root())), name="repo")
 
     @app.get("/api/motions")
@@ -977,16 +954,13 @@ def create_app(
                 "generation_fn": generation_fn,
                 "plan_path": Path(state.session.edit_plan_path).expanduser(),
                 "source_contact_layer": state.session.contact_layer,
-                "output_contact_layer": state.session.output_contact_layer or "",
                 "output_motion_path": state.output_motion_path,
-                "output_segment_layer": state.output_segment_layer,
-                "output_motion_id": state.output_motion_id,
+                    "output_motion_id": state.output_motion_id,
                 "register_motion": state.register_motion,
                 "overwrite": state.overwrite,
                 "fps": float(state.fps),
                 "motion_asset_id": state.motion_asset_id,
                 "parent_motion_version_id": state.motion_version_id,
-                "force_source_motion_path": getattr(state.session, "contact_force_path", None),
             }
             worker = threading.Thread(
                 target=_run_generation,

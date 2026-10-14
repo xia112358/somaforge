@@ -14,7 +14,7 @@ from holosoma.config_values import randomization, terrain
 from holosoma.config_values.wbt.g1 import command, observation
 from holosoma.config_values.wbt.g1.experiment import g1_29dof_wbt_baseline_29
 
-CLIMB00_TRIMMED_207_MANIFEST = "tmp/climb00_continuous_coverage_trimmed/training_manifest_207_trimmed.json"
+CLIMB00_TRIMMED_207_MANIFEST = "runtime/current/motions/wbt/climb00_continuous_coverage_trimmed/training_manifest_207_trimmed.json"
 CLIMB00_SINGLE_FULL_MANIFEST = "runtime/current/manifests/wbt_single_climb_00.json"
 _COMMAND_PATH = "holosoma.managers.command.terms.climb_reference_goal:ClimbReferenceGoalCommand"
 

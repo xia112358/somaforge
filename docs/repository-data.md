@@ -4,6 +4,28 @@ This document describes the data that is visible in the remote GitHub repository
 versus data that must stay local or external. It is intentionally about the repo
 state, not a full local workstation dump.
 
+## Physical separation
+
+The code checkout is `/home/xiaz/somaforge`; local runtime data is stored in the
+sibling `/home/xiaz/somaforge-data/current`. The checkout's `runtime/current`
+is a relative directory symlink to `../../somaforge-data/current`. Existing
+manifests, launch recipes, and root `data`, `logs`, `tmp` aliases keep their
+logical paths, without copying or relabeling their inputs. Motion Edit's
+`packages/motion_edit/data` link uses the same external tree.
+The asset manifest explicitly declares `external_roots: ["runtime/current"]`.
+Resolution verifies the declared directory's real target and preserves asset hash
+checks. Motion Edit mounts that physical directory under its logical resource URL
+while retaining each static mount's normal path and symlink boundary checks.
+
+Code, configs, baseline recipes and the authoritative robot assets remain
+versioned in the checkout. Python environments remain under
+`runtime/environments` because installed scripts and packages contain absolute
+paths. Data backup and code backup are separate operations; code-only Git clones
+need the external data restored and the directory link created before use.
+
+Migration and runtime checks are recorded in
+`runtime/current/archives/data_code_separation_20261010/`.
+
 ## Tracked in git
 
 These are small enough and useful enough to keep in the repository:
@@ -18,7 +40,9 @@ These are small enough and useful enough to keep in the repository:
 - `packages/generator/`: Predictor and Infiller implementations.
 - `packages/contact_solver/`: contact optimization and research.
 - `packages/climb00_pipeline/`: import/CLI aliases for historical reproduction only.
-- `baselines/predictor_scratch_recipe_20261002/`: current scratch Predictor recipe and recorded results.
+- `baselines/current.json`: current Predictor baseline pointer.
+- `baselines/predictor_v1_latest_20261010/`: current recipe and recorded results.
+- `baselines/archives.json`: historical recipe and comparison records, retained for reproduction.
 - `docs/data-policy.md`,
   `docs/cleanup-scope.md`: current project scope and data rules.
 
@@ -30,8 +54,10 @@ These must remain local, ignored, or stored externally:
   motion datasets.
 - `data/`: generated contact-force demos, motion viewer exports, and rollout
   derived datasets.
-- `tmp/`: scratch scripts and diagnostics. Historical datasets and checkpoints still
-  referenced here must be retained until an explicit hash-verified migration.
+- `tmp/`: temporary diagnostics and disposable outputs only. Required inputs,
+  persistent build caches and frozen launch records live under formal runtime
+  categories. The 2026-10-10 migration ledger is
+  `runtime/current/archives/preserved_inputs_20261010/migration.json`.
 - `runtime/current/{motions,models,manifests,generated}/`: formal data and models.
 - `logs/`, `logs_eval/`, `runs/`, `wandb/`: training/eval outputs and videos.
 - `*.npz`, `*.pt`, `*.pth`, `*.ckpt`, `*.onnx`, `*.pdf`: generated arrays,

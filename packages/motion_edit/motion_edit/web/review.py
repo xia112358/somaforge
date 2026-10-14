@@ -48,14 +48,77 @@ def _base(title, qpos, names, terrain, url):
     )
 
 
-def load_review(path: Path, *, url: Callable, terrain: Path | None = None):
+def _relative_path(value, report: Path):
+    if not value:
+        return None
+    candidate = Path(value).expanduser()
+    return candidate.resolve() if candidate.is_absolute() else (report.parent / candidate).resolve()
+
+
+def _case_review(path, data, *, url, terrain, case_index, reference_index):
+    cases = data['cases']
+    if not isinstance(cases, list) or not cases:
+        raise ValueError('review collection requires a nonempty cases list')
+    if not 0 <= case_index < len(cases):
+        raise ValueError('review case index is out of range')
+    entries = []
+    for index, row in enumerate(cases):
+        motion = _relative_path(row.get('motion') or row.get('path'), path)
+        if motion is None or motion.suffix.lower() != '.npz':
+            raise ValueError(f'review case {index} requires an NPZ motion')
+        entries.append(dict(index=index, label=str(row.get('name') or motion.stem),
+                            motion=motion, terrain=terrain or _relative_path(row.get('terrain') or data.get('terrain'), path)))
+    selected = entries[case_index]
+    payload = load_review(selected['motion'], url=url, terrain=selected['terrain'])
+    row = cases[case_index]
+    if reference_index is None:
+        # Only pair records that explicitly identify the same corpus segments.
+        reference_index = next((i for i, other in enumerate(cases)
+                                if i != case_index and other.get('reference') is True
+                                and row.get('corpus_indices')
+                                and row['corpus_indices'] == other.get('corpus_indices')), -1)
+    if reference_index < -1 or reference_index >= len(cases):
+        raise ValueError('review reference index is out of range')
+    if reference_index == case_index:
+        reference_index = -1
+    review = payload['review']
+    review['collection'] = dict(path=str(path), case_index=case_index, reference_index=reference_index,
+                                terrain_override=str(terrain) if terrain else None,
+                                cases=[dict(index=e['index'], label=e['label']) for e in entries])
+    review['segments'] = []
+    for segment in row.get('segments', []):
+        start, length = int(segment['first_frame']), int(segment['frames'])
+        if start < 0 or length <= 0 or start + length > len(payload['qpos']):
+            raise ValueError('review segment is outside the motion')
+        review['segments'].append(dict(start=start, end=start + length - 1,
+                                       label=str(segment.get('corpus_index', start))))
+    depth = row.get('native_depth_mm')
+    if depth is not None:
+        values = np.asarray(depth, dtype=float)
+        if values.shape != (len(payload['qpos']),) or not np.isfinite(values).all() or (values < 0).any():
+            raise ValueError('native_depth_mm must contain one finite nonnegative value per frame')
+        review['depth_mm'] = values.tolist()
+    # Aggregate booleans in older manifests lack raw solver evidence. Never turn
+    # these into current contact masks or use them as an editing layer.
+    review['notice'] += ' 案例清单中的接触布尔值不作为已验证接触；穿透值仅为报告诊断。'
+    if reference_index >= 0:
+        reference = entries[reference_index]
+        loaded = load_review(reference['motion'], url=url, terrain=reference['terrain'])
+        review['comparison'] = dict(label=reference['label'], qpos=loaded['qpos'], fps=loaded['fps'],
+                                    joint_names=loaded['joint_names'], terrain_obj_url=loaded['terrain_obj_url'])
+    payload['motion_id'] = selected['label']
+    return payload
+
+
+def load_review(path: Path, *, url: Callable, terrain: Path | None = None,
+                case_index: int = 0, reference_index: int | None = None):
     """Validate a canonical NPZ sequence or a pose-record JSON report."""
     if path.suffix.lower() == '.npz':
         with np.load(path, allow_pickle=False) as data:
             decode_robot_asset_json(data.get('robot_asset_json'), context=str(path))
         qpos, fps, names = load_motion_sequence(path)
         _validate_names(names)
-        if not len(qpos) or fps <= 0:
+        if not len(qpos) or not np.isfinite(fps) or fps <= 0:
             raise ValueError('review requires nonempty motion and positive fps')
         poses = [_validate_pose(q, names) for q in qpos]
         payload = _base(path.stem, poses, list(names), terrain, url)
@@ -66,6 +129,9 @@ def load_review(path: Path, *, url: Callable, terrain: Path | None = None):
     if path.suffix.lower() != '.json':
         raise ValueError('review accepts canonical .npz motion or .json pose report')
     data = json.loads(path.read_text())
+    if 'cases' in data:
+        return _case_review(path, data, url=url, terrain=terrain,
+                            case_index=case_index, reference_index=reference_index)
     if data.get('kind') == 'support_slip':
         from somaforge_core.contact_face_selection import select_contact_pairs
         from somaforge_core.newton_contact_data import load_raw_contact_labels
@@ -97,7 +163,7 @@ def load_review(path: Path, *, url: Callable, terrain: Path | None = None):
                     points.append(dict(part=int(pair['part']),surface=int(pair['surface']),body=pair['body_name'],position=point.tolist(),
                                        delta=delta.tolist(),motion_cm=float(np.linalg.norm(delta)*100)))
             frames.append(points)
-        mesh=terrain or data.get('terrain')
+        mesh=terrain or _relative_path(data.get('terrain'), path)
         payload=_base(data.get('title',path.stem),[_validate_pose(q,names) for q in qpos],list(names),Path(mesh) if mesh else None,url)
         payload['fps']=fps
         payload['review']=dict(kind='support_slip',source=str(path),slip_frames=frames,
@@ -131,6 +197,8 @@ def load_review(path: Path, *, url: Callable, terrain: Path | None = None):
             decode_robot_asset_json(source.get('robot_asset_json'), context=str(motion))
         qpos, fps, names = load_motion_sequence(motion)
         _validate_names(names)
+        if not len(qpos) or not np.isfinite(fps) or fps <= 0:
+            raise ValueError('review requires nonempty motion and positive fps')
         poses = [_validate_pose(q, names) for q in qpos]
         phases = []
         for row in data['phases']:
@@ -147,7 +215,7 @@ def load_review(path: Path, *, url: Callable, terrain: Path | None = None):
                                aggregate=trajectory.tolist(), rollouts=raw.tolist(),
                                aggregate_net_cm=float(row['aggregate_net_cm']),
                                rollout_median_net_cm=float(row['rollout_median_net_cm'])))
-        mesh = terrain or data.get('terrain')
+        mesh = terrain or _relative_path(data.get('terrain'), path)
         payload = _base(path.stem, poses, list(names), Path(mesh) if mesh else None, url)
         payload['fps'] = fps
         payload['review'] = dict(kind='support_motion', source=str(path), phases=phases,
@@ -177,7 +245,7 @@ def load_review(path: Path, *, url: Callable, terrain: Path | None = None):
     if not records:
         raise ValueError('review report has no records')
     original = next((row for row in records if row['label'] == 'original'), records[0])
-    mesh = terrain or data.get('terrain')
+    mesh = terrain or _relative_path(data.get('terrain'), path)
     payload = _base(path.stem, [original['q']], names, mesh, url)
     payload['review'] = dict(kind='report', source=str(path), records=records,
                             reference=original['label'],

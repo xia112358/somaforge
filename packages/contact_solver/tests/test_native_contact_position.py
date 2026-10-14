@@ -136,6 +136,20 @@ def test_router_matches_direct_geometry_and_retains_prediction_gradient():
         router(fk,q,torch.tensor([9]),points,active,surfaces,None,bounds)
 
 
+def test_regional_target_interval_keeps_xyz_and_matches_existing_minimum():
+    metadata,fk,q,bounds,points,active,surfaces=fixture()
+    q[:,2]+=.2;points[:,:,1]+=.22;q.requires_grad_()
+    router=NativeContactPositionRouter({5:metadata})
+    args=(fk,q,torch.tensor([5]),points,active,surfaces,None,bounds)
+    regional=router(*args,per_region=True)
+    assert regional.shape==(1,6,4)
+    assert regional[:,1:].count_nonzero()==0
+    torch.testing.assert_close(regional[:,0].amin(-1),router(*args)[:,0])
+    gradient=torch.autograd.grad(regional.sum(),q)[0]
+    assert bool(gradient.isfinite().all())
+    assert gradient[0,0]<0 and gradient[0,1]<0 and gradient[0,2]>0
+
+
 def test_world_chart_preserves_value_and_q_gradient():
     metadata,fk,q,bounds,points,active,surfaces=fixture();q.requires_grad_()
     first=NativeContactRegionGeometry(metadata,fk,bounds.low,bounds.high)

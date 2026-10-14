@@ -321,7 +321,7 @@ class NativeContactRegionGeometry:
                 self.patch[part,region]=(torch.from_numpy(tri),spheres,torch.from_numpy(n),torch.from_numpy(b))
 
     def distances(self,q,points,active,surfaces,regions,*,world_frame=None,
-                  _normal_heights=None,_margin=None):
+                  _normal_heights=None,_margin=None,per_region=False):
         # Actual task contract is horizontal primary faces. No contact inference.
         if q.device.type!='cpu' or q.dtype!=torch.float64:
             raise ValueError('Native contact position requires CPU float64 geometry; tensor transfers preserve autograd')
@@ -344,6 +344,7 @@ class NativeContactRegionGeometry:
             p=origin.to(q)[:,None]+torch.einsum('bij,bpj->bpi',basis,p)
             r=basis[:,None]@r
         result=q.sum(-1,keepdim=True).expand(-1,6)*0
+        regional=q.sum(-1)[:,None,None].expand(-1,6,4)*0 if per_region else None
         for part in range(6):
             costs=[]
             for region in range((4,4,2,2,3,3)[part]):
@@ -361,8 +362,12 @@ class NativeContactRegionGeometry:
                         a,b,p[ids,part],r[ids,part]))
                 distance=torch.stack(values).amin(0)
                 cost=q.new_full((len(q),),torch.inf);cost=cost.index_put((ids,),distance)
+                if per_region:
+                    regional[:,part,region]=q.new_zeros(len(q)).index_put((ids,),distance)
                 costs.append(cost)
             if costs:result[:,part]=torch.stack(costs).amin(0)
+        if per_region:
+            return regional
         return torch.where(active,result,0.)
 
     def surface_heights(self,active,surfaces,q):
@@ -398,7 +403,8 @@ class NativeContactPositionRouter:
             shapes=[s for s in value['solid_geometry']['shapes'] if s['body'] is not None]),sort_keys=True)
             for key,value in self.metadata.items()}
 
-    def __call__(self,fk,q,scene_ids,points,active,surfaces,regions,region_geometry,*,world_frame=None):
+    def __call__(self,fk,q,scene_ids,points,active,surfaces,regions,region_geometry,*,world_frame=None,
+                 per_region=False):
         from somaforge_core.g1_kinematics import CanonicalG1ForwardKinematics
         low,high=region_geometry.low.detach().cpu(),region_geometry.high.detach().cpu()
         if self.cpu_fk is None:
@@ -416,7 +422,8 @@ class NativeContactPositionRouter:
         active,surfaces=active.detach().cpu(),surfaces.detach().cpu()
         regions=None if regions is None else regions.detach().cpu()
         frame=None if world_frame is None else tuple(x.detach().to(device='cpu',dtype=torch.float64) for x in world_frame)
-        distance=pose.sum(-1,keepdim=True).expand(-1,6)*0
+        distance=(pose.sum(-1)[:,None,None].expand(-1,6,4)*0 if per_region
+                  else pose.sum(-1,keepdim=True).expand(-1,6)*0)
         heights=pose.new_zeros(len(pose),6);margins=pose.new_zeros(len(pose));groups={}
         for key in routes.unique().tolist():
             if key not in self.metadata:raise ValueError('Missing initialized contact-position scene')
@@ -431,7 +438,7 @@ class NativeContactPositionRouter:
             value=self.geometries[key].distances(pose[selected],target[selected],active[selected],surfaces[selected],
                 None if regions is None else regions[selected],
                 world_frame=None if frame is None else tuple(x[selected] for x in frame),
-                _normal_heights=heights[selected],_margin=margins[selected])
+                _normal_heights=heights[selected],_margin=margins[selected],per_region=per_region)
             distance=distance.index_copy(0,selected,value)
         return distance.to(q)
 

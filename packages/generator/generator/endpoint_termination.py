@@ -1,7 +1,9 @@
 """One next-contact prediction per event; no retry or pose correction."""
+from contact_solver.endpoint_task import ENDPOINT_POSITION_TOLERANCE_M
 
 
-def endpoint_failure_reasons(record, *, require_spatial=False, tolerance_cm=4., require_observed_support=False):
+def endpoint_failure_reasons(record, *, require_spatial=False,
+                             tolerance_cm=100*ENDPOINT_POSITION_TOLERANCE_M, require_observed_support=False):
     reasons=[]
     # Historical endpoint displacement fields cannot judge loaded path motion.
     # Actual contact/safety stay mandatory; physical support is checked only

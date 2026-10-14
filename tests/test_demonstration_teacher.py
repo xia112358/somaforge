@@ -1,10 +1,10 @@
 import numpy as np
 import pytest
-from climb00_pipeline.demonstration_teacher import DemonstrationTeacher
+from generator.demonstration_teacher import DemonstrationTeacher
 
 
 def test_pose_check_accepts_quaternion_sign_but_not_position_error():
-    from climb00_pipeline.demonstration_teacher import assert_same_pose
+    from generator.demonstration_teacher import assert_same_pose
     q=np.zeros(36);q[3]=1
     same=q.copy();same[3]=-1
     assert_same_pose(q,same)

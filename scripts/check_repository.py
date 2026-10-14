@@ -16,6 +16,61 @@ RETIRED_SUPPORT_PATHS = (
     'packages/somaforge_core/somaforge_core/support_aggregation.py',
     'packages/somaforge_core/tests/test_support_aggregation.py',
 )
+RETIRED_ENTRYPOINT_PATHS = (
+    'scripts/train_climb00_direct_baseline.py',
+    'packages/motion_edit/motion_edit/workbench/stable_transition_rebuild.py',
+    'packages/motion_edit/motion_edit/generation/newton_collision.py',
+    'packages/motion_edit/motion_edit/generation/newton_collision_filter.py',
+)
+CANONICAL_ENVIRONMENT_PATHS = (
+    'scripts/source_somaforge.sh',
+    'scripts/setup_isaaclab3_newton.sh',
+    'scripts/extract_all_rollout_ref_contact_force_demos.py',
+    'packages/motion_edit/motion_edit/physics_retarget/newton_runner.py',
+)
+
+
+def temporary_input_errors(name: str, tree: ast.AST) -> list[str]:
+    """Reject temporary code imports and file reads; diagnostic writes are allowed."""
+    errors = []
+    def temporary_path(node):
+        return any(isinstance(n, ast.Constant) and isinstance(n.value, str)
+                   and (n.value == 'tmp' or n.value.startswith('tmp/')
+                        or '/holosoma/tmp/' in n.value)
+                   for n in ast.walk(node))
+    def call_name(node):
+        if isinstance(node, ast.Name): return node.id
+        if isinstance(node, ast.Attribute): return call_name(node.value) + '.' + node.attr
+        return ''
+    temporary_names = set()
+    for _ in range(4):
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)): continue
+            value = node.value
+            if value is None: continue
+            if temporary_path(value) or any(isinstance(n, ast.Name) and n.id in temporary_names for n in ast.walk(value)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                temporary_names.update(n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name))
+    def temporary_input(node):
+        return temporary_path(node) or any(isinstance(n, ast.Name) and n.id in temporary_names for n in ast.walk(node))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None and temporary_input(node.value):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names = [n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)]
+            if any(n.lower().endswith(('manifest', 'corpus', 'checkpoint', 'cache')) for n in names):
+                errors.append(f'{name}:{node.lineno}: persistent input/cache assigned a temporary path')
+        if not isinstance(node, ast.Call): continue
+        function = call_name(node.func)
+        if function in ('sys.path.insert', 'sys.path.append') and temporary_path(node):
+            errors.append(f'{name}:{node.lineno}: temporary directory on import path')
+        if function.endswith('spec_from_file_location') and temporary_path(node):
+            errors.append(f'{name}:{node.lineno}: import of temporary source file')
+        if isinstance(node.func, ast.Attribute) and node.func.attr in ('read_text', 'read_bytes'):
+            if temporary_input(node.func.value):
+                errors.append(f'{name}:{node.lineno}: temporary file used as required input')
+        if function in ('torch.load', 'np.load', 'numpy.load') and node.args and temporary_input(node.args[0]):
+            errors.append(f'{name}:{node.lineno}: temporary data/model used as required input')
+    return errors
 
 
 def audit(root: Path = ROOT) -> dict:
@@ -28,6 +83,13 @@ def audit(root: Path = ROOT) -> dict:
     for name in RETIRED_SUPPORT_PATHS:
         if (root / name).exists():
             errors.append(f'{name}: retired support judgment/aggregation path; use native support evidence')
+    for name in RETIRED_ENTRYPOINT_PATHS:
+        if (root / name).exists():
+            errors.append(f'{name}: retired entrypoint; use the owning package or historical records')
+    for name in CANONICAL_ENVIRONMENT_PATHS:
+        path = root / name
+        if path.is_file() and 'packages/climb00_pipeline' in path.read_text():
+            errors.append(f'{name}: default environment must not add the historical compatibility package')
     binaries, temporary_references = [], []
     python_count = 0
     for name in paths:
@@ -43,11 +105,21 @@ def audit(root: Path = ROOT) -> dict:
             except (SyntaxError, UnicodeError) as exc:
                 errors.append(f'{name}: {exc}')
                 continue
+            errors.extend(temporary_input_errors(name, tree))
             for node in ast.walk(tree):
                 modules = ([node.module or ''] if isinstance(node, ast.ImportFrom) else
                            [a.name for a in node.names] if isinstance(node, ast.Import) else [])
                 if any(m == 'somaforge_core.support_aggregation' for m in modules):
                     errors.append(f'{name}:{node.lineno}: retired support aggregation import')
+                retired_newton_import = any(m in ('motion_edit.generation.newton_collision',
+                                                  'motion_edit.generation.newton_collision_filter') for m in modules)
+                if isinstance(node, ast.ImportFrom) and node.level and name.startswith('packages/motion_edit/motion_edit/generation/'):
+                    retired_newton_import |= node.module in ('newton_collision', 'newton_collision_filter')
+                if retired_newton_import:
+                    errors.append(f'{name}:{node.lineno}: shared Newton geometry belongs to somaforge_core')
+                if name.startswith('packages/contact_solver/contact_solver/'):
+                    if any(m == 'motion_edit' or m.startswith('motion_edit.') for m in modules):
+                        errors.append(f'{name}:{node.lineno}: solver must not import the editing application')
                 if name.startswith(('packages/motion_edit/', 'packages/contact_solver/', 'src/holosoma_retargeting/')):
                     if any(m == 'viser' or m.startswith('viser.') or m == 'viser_utils' for m in modules):
                         errors.append(f'{name}:{node.lineno}: retired Viser UI; use motion-edit contact-editor')
@@ -64,15 +136,27 @@ def audit(root: Path = ROOT) -> dict:
                 json.loads(path.read_text())
             except (ValueError, UnicodeError) as exc:
                 errors.append(f'{name}: {exc}')
-            refs = sorted(set(re.findall(r'"(tmp/[^"\n]+)"', path.read_text())))
-            temporary_references.extend(dict(config=name, path=p, exists=(root/p).exists()) for p in refs)
+                continue
+            def config_inputs(value, key=''):
+                if isinstance(value, dict):
+                    for k, v in value.items(): yield from config_inputs(v, k)
+                elif isinstance(value, list):
+                    for v in value: yield from config_inputs(v, key)
+                elif isinstance(value, str) and value.startswith('tmp/') and key not in ('output', 'log'):
+                    yield value
+            refs = sorted(set(config_inputs(json.loads(path.read_text()))))
+            for p in refs:
+                temporary_references.append(dict(config=name, path=p, exists=(root/p).exists()))
+                errors.append(f'{name}: temporary path used as configuration input: {p}')
+        if path.suffix in {'.yaml', '.yml'} and name.startswith('.github/workflows/'):
+            for script in re.findall(r'\bpython(?:3)?\s+(scripts/[\w./-]+\.py)\b', path.read_text()):
+                if not (root / script).is_file():
+                    errors.append(f'{name}: workflow calls missing script {script}')
     for path in root.iterdir():
         if path.is_symlink() and not path.exists():
             errors.append(f'Broken root symlink: {path.name}')
     if binaries:
         warnings.append('Tracked data/examples require dependency review; never blanket-delete them.')
-    if temporary_references:
-        warnings.append('Historical config paths still reference tmp; preserve until explicit validated migration.')
     status = git('status', '--porcelain', '--untracked-files=all')
     return dict(schema='somaforge_repository_audit_v1', root=str(root),
                 tracked_files=len(tracked), python_files_parsed=python_count,

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from motion_edit.generation.newton_collision import _effective_surface_witnesses, _quat_rotate_xyzw
+from somaforge_core.newton_collision import _effective_surface_witnesses, _quat_rotate_xyzw
 
 
 def test_sphere_surface_penetrates_even_when_center_is_above_plane():
@@ -44,7 +44,7 @@ def test_captured_collision_requeries_changed_poses_with_identical_native_fields
     from dataclasses import fields
     import pytest
     pytest.importorskip('newton')
-    from motion_edit.generation.newton_collision import DirectNewtonCollisionScene
+    from somaforge_core.newton_collision import DirectNewtonCollisionScene
 
     scene = DirectNewtonCollisionScene(None)
     poses = np.zeros((3, 36), dtype=np.float32)

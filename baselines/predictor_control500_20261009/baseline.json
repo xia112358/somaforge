@@ -6,7 +6,7 @@
   "designation_date": "2026-10-09",
   "definition": "Legacy v1 control architecture at source550 plus 500 matched constant-low-LR optimizer updates; fixed baseline for further diagnosis. Not a new scratch training recipe or production acceptance.",
   "checkpoint": {
-    "path": "tmp/baseline_factor_finetune_20261008/experiment/control/update_0500.pt",
+    "path": "runtime/current/archives/preserved_inputs_20261010/baseline_factor_finetune_20261008/experiment/control/update_0500.pt",
     "sha256": "95c72146267da4ed47554192243076d0e62d61bb07db98e52cc1166f52397b0b",
     "schema": "baseline_factor_finetune_v1_20261008",
     "variant": "control",
@@ -37,7 +37,7 @@
     "scope": "single-factor v1 descendant; not a complete v2 recreation"
   },
   "checkpoint_loader": {
-    "path": "tmp/baseline_factor_finetune_20261008/models.py",
+    "path": "runtime/current/archives/preserved_inputs_20261010/baseline_factor_finetune_20261008/models.py",
     "function": "load",
     "sha256": "67290e360065335460a31c839679239b4fed4fb782bea6d1f8a819cff5fc3e63",
     "note": "Checkpoint uses explicit factor-experiment schema. Do not silently treat its stored step550 as an unmodified source550 checkpoint."
@@ -62,7 +62,7 @@
     "pool_commits": 0,
     "teacher_q_or_qp": false,
     "material_bank": {
-      "path": "tmp/baseline_factor_finetune_20261008/experiment/common_material_bank.pt",
+      "path": "runtime/current/archives/preserved_inputs_20261010/baseline_factor_finetune_20261008/experiment/common_material_bank.pt",
       "sha256": "770971cd11894b62bd706806d87e1484b94e5ec96fbb879afaaca526aafc1935"
     }
   },
@@ -100,36 +100,44 @@
   "height_comparison": "baselines/predictor_control500_20261009/height_comparison.json",
   "evidence": [
     {
-      "path": "tmp/baseline_factor_finetune_20261008/experiment/report.json",
-      "sha256": "c41f7d1cc3664187cdd97343b3d8eb149f8acab9328790ce172cdec2883f7d12"
+      "path": "runtime/current/archives/preserved_inputs_20261010/baseline_factor_finetune_20261008/experiment/report.json",
+      "sha256": "0cc93aa93b1d6c4c24f06996d7a0304d8d2584746a15cd81a6c43e07203f5ce3",
+      "original_sha256": "c41f7d1cc3664187cdd97343b3d8eb149f8acab9328790ce172cdec2883f7d12"
     },
     {
-      "path": "tmp/baseline_characteristics_20261009/height_generalization_audit/report.json",
-      "sha256": "8ef782ca41a33a992064d8d6c3141828e710a7aedccf0d852634d6d763eb376e"
+      "path": "runtime/current/archives/preserved_inputs_20261010/baseline_characteristics_20261009/height_generalization_audit/report.json",
+      "sha256": "785108021128bb297a585519097b1310468f728080bc46eee2894f519a9e388f",
+      "original_sha256": "8ef782ca41a33a992064d8d6c3141828e710a7aedccf0d852634d6d763eb376e"
     },
     {
-      "path": "tmp/baseline_height110_20261009/report.json",
-      "sha256": "bb2f2a5ba067c70f138a1c5f0d206316163545c3a8fe69f8edfe074741fa4d79"
+      "path": "runtime/current/archives/preserved_inputs_20261010/baseline_height110_20261009/report.json",
+      "sha256": "dad7102e6b748367a06651d9844edf012e6278a6a02d0d40aa872aba441bb7d4",
+      "original_sha256": "bb2f2a5ba067c70f138a1c5f0d206316163545c3a8fe69f8edfe074741fa4d79"
     },
     {
-      "path": "tmp/baseline_factor_finetune_20261008/experiment/objective_verification.json",
-      "sha256": "13aaf56285931f1b756b888e78655ed30895704257a9ae516fc3e501b9cd52af"
+      "path": "runtime/current/archives/preserved_inputs_20261010/baseline_factor_finetune_20261008/experiment/objective_verification.json",
+      "sha256": "c405d4f723ef80062ed865eb32e2f103acbc35243eae86ff86e864032b03f0d9",
+      "original_sha256": "13aaf56285931f1b756b888e78655ed30895704257a9ae516fc3e501b9cd52af"
     },
     {
-      "path": "tmp/baseline_factor_finetune_20261008/source_hashes.json",
-      "sha256": "a9490b77a965adadd2f91454c8e9fd2489a91741b77ba97b15e0ab13a298ba07"
+      "path": "runtime/current/archives/preserved_inputs_20261010/baseline_factor_finetune_20261008/source_hashes.json",
+      "sha256": "a8a0253d34740e1a86a837c4b0ff92034e1930fc6eccaf72793bc4739b469098",
+      "original_sha256": "a9490b77a965adadd2f91454c8e9fd2489a91741b77ba97b15e0ab13a298ba07"
     },
     {
-      "path": "tmp/baseline_control500_mechanism_20261009/report.json",
-      "sha256": "3fe5c827982258ed0d19750e34a4af332ba0caee7f2bbf44ecc411130caccc99"
+      "path": "runtime/current/archives/preserved_inputs_20261010/baseline_control500_mechanism_20261009/report.json",
+      "sha256": "23ccea3ed50ab0b70b15c526d345bb3d14fe8237c9de673928632802260d2393",
+      "original_sha256": "3fe5c827982258ed0d19750e34a4af332ba0caee7f2bbf44ecc411130caccc99"
     },
     {
-      "path": "tmp/baseline_control500_mechanism_20261009/reference_pose_comparison.json",
-      "sha256": "f97e373d6d19c5cd86ec1aeddddc820211c4518ba87e3c9bbbd837b72f361da7"
+      "path": "runtime/current/archives/preserved_inputs_20261010/baseline_control500_mechanism_20261009/reference_pose_comparison.json",
+      "sha256": "c48ecdcfdc6965614727bf60d65def0b789e0182ea3629c07c256f22d00a1703",
+      "original_sha256": "f97e373d6d19c5cd86ec1aeddddc820211c4518ba87e3c9bbbd837b72f361da7"
     },
     {
-      "path": "tmp/baseline_height110_20261009/solid_link_attribution.json",
-      "sha256": "f5063f9a2da54433a9d08722c973e784123b53bb49806bc2a5464e77bcbf938b"
+      "path": "runtime/current/archives/preserved_inputs_20261010/baseline_height110_20261009/solid_link_attribution.json",
+      "sha256": "5180e15cb609cd9e897a2b8ac6f2d59779589885b1711565a156c90941d19974",
+      "original_sha256": "f5063f9a2da54433a9d08722c973e784123b53bb49806bc2a5464e77bcbf938b"
     }
   ],
   "remaining_analysis": [

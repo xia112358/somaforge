@@ -41,8 +41,10 @@ def test_scene_fixed_selection_uses_endpoint_error_not_centered_diagnostic(contr
         recursive_selection(data)
 
 
-def test_native_interval_selection_uses_verified_endpoint_error():
-    from contact_solver.native_contact_position import CONTACT_POSITION_SCHEMA
+@pytest.mark.parametrize('CONTACT_POSITION_SCHEMA', [
+    'native_part_surface_to_normal_interval_rms_v1', 'newton_endpoint_contact_points_xyz_v1',
+    'newton_matched_endpoint_contact_points_xyz_v2'])
+def test_native_interval_selection_uses_verified_endpoint_error(CONTACT_POSITION_SCHEMA):
     data = report([True, True], [True, True])
     data['contract'].update(failure_policy='stop_on_first_failure',
         trained_relative_layout_contract=CONTACT_POSITION_SCHEMA,

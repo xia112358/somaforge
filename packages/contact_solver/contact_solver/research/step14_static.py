@@ -39,7 +39,7 @@ def run(query):
     torch.set_num_threads(2)
     out=Path(os.environ['STEP14_RESEARCH_OUTPUT']);out.mkdir(exist_ok=True,parents=True)
     (out/'queries').mkdir(exist_ok=True)
-    saved=json.loads(Path('tmp/baseline1000_step14_gradient_20260925_v2/diagnostic.json').read_text())
+    saved=json.loads(Path('runtime/current/archives/preserved_inputs_20261010/baseline1000_step14_gradient_20260925_v2/diagnostic.json').read_text())
     decode_robot_asset_json(saved['robot_asset_json'],context='static SQP research')
     device=str(query.model.device)
     fk=CanonicalG1ForwardKinematics().double().to(device)

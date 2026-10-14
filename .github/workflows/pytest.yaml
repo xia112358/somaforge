@@ -7,11 +7,16 @@ on:
   pull_request:
     paths:
       - 'src/holosoma/**'
+      - 'packages/**'
+      - 'tests/**'
+      - 'apps/**'
+      - 'baselines/**'
       - 'scripts/**'
       - 'configs/**'
       - 'docs/**'
       - '.github/workflows/**'
       - 'README.md'
+      - 'pyproject.toml'
     types:
       - opened
       - reopened
@@ -38,17 +43,10 @@ jobs:
           test -f apps/holosoma.isaaclab3_newton.kit
           test -f apps/holosoma.isaaclab3_newton.headless.kit
 
-      - name: Compile lightweight Python files
+      - name: Audit maintained source and configuration
         shell: bash
         run: |
-          python -m compileall scripts
-          python -m compileall src/holosoma/holosoma/managers/command/tests || true
-          python -m compileall src/holosoma/holosoma/managers/reward/tests || true
-
-      - name: Check manifest path hygiene
-        shell: bash
-        run: |
-          python scripts/gmvq_ref/check_data_layout.py --all --no-require-files
+          python scripts/check_repository.py
 
       - name: Check cleanup scope
         shell: bash

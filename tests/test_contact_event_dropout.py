@@ -4,8 +4,7 @@ import numpy as np
 import pytest
 from somaforge_core.contact_events import bridge_dropouts, group_endpoint
 
-sys.path.insert(0, str(Path(__file__).absolute().parents[1] / 'tmp'))
-from segment_original28_interactions import Config, cluster_events, events_for_part
+from generator.research.archived_experiments.event_clustering import Config, cluster_events, events_for_part
 
 
 @pytest.mark.parametrize('gap', [1, 2, 3, 4, 40])

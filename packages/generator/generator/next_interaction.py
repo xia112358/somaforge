@@ -13,9 +13,11 @@ from contact_solver.collision_geometry import CanonicalG1CollisionPoints, full_g
 
 
 from contact_solver.surface_geometry import joint_feasibility_loss
+from generator.endpoint_objective import (POSE_POSITION_SCALE_M,
+    POSE_ROTATION_MATRIX_SCALE, POSE_JOINT_SCALE_RAD)
 
 
-def structural_pose_loss(model, q, position, rotation, target):
+def structural_pose_loss(model, q, position, rotation, target, *, joint_max_weight=0.):
     """Keep every limb near its demonstrated endpoint without averaging it away.
 
     This is label-only supervision.  It does not alter predictor inputs, define
@@ -27,12 +29,15 @@ def structural_pose_loss(model, q, position, rotation, target):
     # Exclude the root body here: root translation/orientation is already in
     # the global pose term.  mean+max preserves ordinary whole-body fitting
     # while preventing one free limb from disappearing among six bodies.
-    body_position_error = ((position[:, 1:7] - target['body_position'][:, 1:7]) / .10).square().sum(-1)
-    body_rotation_error = ((rotation[:, 1:7] - target_rotation[:, 1:7]) / .30).square().mean((-1, -2))
-    joint_error = ((q[:, 7:] - target['q'][:, 7:]) / .50).square()
+    body_position_error = ((position[:, 1:7] - target['body_position'][:, 1:7]) / POSE_POSITION_SCALE_M).square().sum(-1)
+    body_rotation_error = ((rotation[:, 1:7] - target_rotation[:, 1:7]) / POSE_ROTATION_MATRIX_SCALE).square().mean((-1, -2))
+    joint_error = ((q[:, 7:] - target['q'][:, 7:]) / POSE_JOINT_SCALE_RAD).square()
     value = (body_position_error.mean(-1) + body_position_error.amax(-1)
-             + body_rotation_error.mean(-1) + body_rotation_error.amax(-1)
-             + joint_error.amax(-1))
+             + body_rotation_error.mean(-1) + body_rotation_error.amax(-1))
+    # New endpoint training supervises joints once in the pose term. The
+    # explicit opt-in only reproduces historical non-endpoint objectives.
+    if joint_max_weight:
+        value = value + joint_max_weight*joint_error.amax(-1)
     return value, dict(
         body_position_max_cm=100 * (position[:, 1:7] - target['body_position'][:, 1:7]).norm(dim=-1).amax(-1),
         body_orientation_max=body_rotation_error.sqrt().amax(-1),
@@ -148,7 +153,7 @@ def objective(model,prediction,target,scene,*,contact_override=None,additional_p
     duration=(prediction.duration.log()-target['duration'].log()).square()
     rotation_error=(_quaternion_matrix_wxyz(q[:,3:7])-_quaternion_matrix_wxyz(target['q'][:,3:7])).square().mean((1,2))
     pose=((q[:,:3]-target['q'][:,:3])/.1).square().mean(-1)+rotation_error/.3**2+((q[:,7:]-target['q'][:,7:])/.5).square().mean(-1)
-    structure,structure_metrics=structural_pose_loss(model,q,pos,rot,target)
+    structure,structure_metrics=structural_pose_loss(model,q,pos,rot,target,joint_max_weight=1.)
     points,parts=model.geometry(model.fk,q)
     box,ground=full_geometry_box_ground_penetration(points[:,None],parts,q.new_zeros(len(q),1,6),**scene,
                                                    margin_m=0.,planned_contact_tolerance_m=0.)

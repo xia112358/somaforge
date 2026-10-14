@@ -28,6 +28,25 @@ const handleParts: Record<string, string[]> = {
   right_knee: ['RK'],
 };
 
+// Session masks are immutable until the next API payload. Cache interval scans
+// so scrubbing a long rollout does not rescan every frame of every channel.
+const intervalCache = new WeakMap<Session, [number, number][][]>();
+function contactIntervals(session: Session): [number, number][][] {
+  const cached = intervalCache.get(session);
+  if (cached) return cached;
+  const lanes = session.contact_force.part_order.map((_, lane) => {
+    const intervals: [number, number][] = [];
+    let start = -1;
+    for (let frame = 0; frame <= session.qpos.length; frame++) {
+      const active = frame < session.qpos.length && Boolean(session.contact_force.masks[frame]?.[lane]);
+      if (active && start < 0) start = frame;
+      if (!active && start >= 0) { intervals.push([start, frame]); start = -1; }
+    }
+    return intervals;
+  });
+  intervalCache.set(session, lanes); return lanes;
+}
+
 export function getTimelineMetrics(canvas: HTMLCanvasElement, rows = 8): TimelineMetrics {
   const rect = canvas.getBoundingClientRect();
   const laneCount = Math.max(1, rows);
@@ -74,8 +93,9 @@ export function renderTimeline(state: TimelineRenderState): void {
   if (!context) return;
 
   const dpr = Math.min(window.devicePixelRatio, 2);
-  canvas.width = Math.max(1, Math.round(metrics.width * dpr));
-  canvas.height = Math.max(1, Math.round(metrics.height * dpr));
+  const width = Math.max(1, Math.round(metrics.width * dpr)), height = Math.max(1, Math.round(metrics.height * dpr));
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
   context.setTransform(dpr, 0, 0, dpr, 0, 0);
   context.clearRect(0, 0, metrics.width, metrics.height);
   context.fillStyle = '#0b1117';
@@ -109,7 +129,10 @@ export function renderTimeline(state: TimelineRenderState): void {
   const majorSeconds = niceStep(duration / Math.max(2, Math.floor(metrics.plotW / 92)));
   const majorFrames = Math.max(1, Math.round(majorSeconds * session.fps));
   const minorFrames = Math.max(1, Math.round(majorFrames / 5));
-  for (let tick = 0; tick < frameCount; tick += minorFrames) {
+  const ticks = new Set<number>();
+  for (let tick = 0; tick < frameCount; tick += minorFrames) ticks.add(tick);
+  for (let tick = 0; tick < frameCount; tick += majorFrames) ticks.add(tick);
+  for (const tick of [...ticks].sort((a, b) => a - b)) {
     const x = Math.round(frameToX(tick, metrics, frameCount)) + 0.5;
     const major = tick % majorFrames === 0;
     context.strokeStyle = major ? '#344451' : '#1d2a34';
@@ -133,12 +156,9 @@ export function renderTimeline(state: TimelineRenderState): void {
   context.fillText('TIME', 8, 9);
   context.fillText('FRAME', 8, 21);
 
-  for (let lane = 0; lane < metrics.rows; lane++) {
-    let start = -1;
-    for (let tick = 0; tick <= frameCount; tick++) {
-      const active = tick < frameCount && Boolean(session.contact_force.masks[tick]?.[lane]);
-      if (active && start < 0) start = tick;
-      if (!active && start >= 0) {
+  const intervals = contactIntervals(session);
+  for (let lane = 0; lane < intervals.length; lane++) {
+    for (const [start, tick] of intervals[lane]) {
         const x0 = frameToX(start, metrics, frameCount);
         const x1 = frameToX(Math.max(start, tick - 1), metrics, frameCount) + Math.max(1, metrics.plotW / frameCount);
         context.fillStyle = `#${partColors[lane % partColors.length].toString(16).padStart(6, '0')}`;
@@ -147,13 +167,23 @@ export function renderTimeline(state: TimelineRenderState): void {
         context.roundRect(x0, metrics.rulerH + lane * metrics.rowH + 3, Math.max(2, x1 - x0), Math.max(2, metrics.rowH - 6), 2);
         context.fill();
         context.globalAlpha = 1;
-        start = -1;
-      }
+    }
+  }
+
+  if (!session.contact_force.part_order.length || (session.contact_force.mask_status && session.contact_force.mask_status !== 'verified_newton_primary_faces')) {
+    context.fillStyle = '#8c9aaa'; context.font = '12px sans-serif';
+    context.fillText('接触状态未知 · 时间轴用于回放定位', metrics.labelW + 12, metrics.rulerH + 24);
+    for (const segment of session.review?.segments ?? []) {
+      const x0 = frameToX(segment.start, metrics, frameCount), x1 = frameToX(segment.end, metrics, frameCount);
+      context.fillStyle = '#27505e';
+      context.fillRect(x0, metrics.rulerH + 42, Math.max(2, x1 - x0), 18);
+      if (x1 - x0 > 36) { context.fillStyle = '#dce7ed'; context.fillText(segment.label, x0 + 3, metrics.rulerH + 55); }
     }
   }
 
   if (selectedHandle) {
-    const selectedParts = handleParts[selectedHandle.body] || [selectedHandle.body];
+    const selectedParts = session.contact_force.part_order.includes(selectedHandle.body)
+      ? [selectedHandle.body] : handleParts[selectedHandle.body] || [selectedHandle.body];
     const x0 = frameToX(selectedHandle.start_frame, metrics, frameCount);
     const x1 = frameToX(Math.max(selectedHandle.start_frame, selectedHandle.end_frame - 1), metrics, frameCount);
     for (const part of selectedParts) {

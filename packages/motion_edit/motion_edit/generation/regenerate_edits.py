@@ -14,7 +14,7 @@ import time
 
 import numpy as np
 from somaforge_core.loaded_material_motion import DEFAULT_MATERIAL_RESIDUAL_SCALE_M
-from .newton_collision import COLLISION_WITNESS_SCHEMA
+from somaforge_core.newton_collision import COLLISION_WITNESS_SCHEMA
 from .stable_contact_material import MATERIAL_SAMPLE_SCHEMA
 from .continuous_ik import SOLVER_SCHEMA
 from .optimization_geometry import OPTIMIZATION_GEOMETRY_SCHEMA, SPHERE_DISTANCE_SCHEMA
@@ -76,7 +76,7 @@ def verify_effective_objective(diagnostics, requested):
 
 def validate_completed_generation(record, plan, residual_scale_m, *,
         environment_depth_residual_scale_m=DEFAULT_ENVIRONMENT_DEPTH_RESIDUAL_SCALE_M,
-        collision_refinements=DEFAULT_COLLISION_REFINEMENTS):
+        collision_refinements=DEFAULT_COLLISION_REFINEMENTS, source_prefix_reference=None):
     if record.get('schema') != GENERATION_SCHEMA:
         raise ValueError('Completed edit predates the current contact-only objective; use a fresh output version')
     reference = record['loaded_reference']
@@ -96,6 +96,13 @@ def validate_completed_generation(record, plan, residual_scale_m, *,
             raise ValueError('Completed edit uses changed observed source event reference')
     if record['plan_sha256'] != hashlib.sha256(Path(plan).read_bytes()).hexdigest():
         raise ValueError('Completed edit belongs to an obsolete plan')
+    from .source_prefix_reference import prefix_implementation_fingerprints
+    if source_prefix_reference is None:
+        source_prefix_reference = json.loads(Path(plan).read_text()).get('metadata', {}).get('source_prefix_reference')
+    if record.get('source_prefix_reference') != source_prefix_reference:
+        raise ValueError('Completed edit uses a different or missing source prefix reference')
+    if source_prefix_reference and record.get('source_prefix_implementation') != prefix_implementation_fingerprints():
+        raise ValueError('Completed edit uses changed source prefix implementation')
 
 
 def seal_clip_velocities(path,contract):
@@ -172,7 +179,8 @@ def serve_generation_cache(output,workers):
 
 def generate(plan,folder,holds,crop_evidence,iterations, *, material_motion_residual_scale_m=DEFAULT_MATERIAL_RESIDUAL_SCALE_M,
              collision_refinements=DEFAULT_COLLISION_REFINEMENTS,
-             environment_depth_residual_scale_m=DEFAULT_ENVIRONMENT_DEPTH_RESIDUAL_SCALE_M):
+             environment_depth_residual_scale_m=DEFAULT_ENVIRONMENT_DEPTH_RESIDUAL_SCALE_M,
+             source_prefix_reference=None, source_prefix_provenance=None):
     from .rollout_authority import generate_contact_aware_pyroki_preview
     from .newton_direct_fk import canonicalize_motion_with_direct_newton_fk
     from .rebase_edit_plan import crop_events
@@ -200,7 +208,9 @@ def generate(plan,folder,holds,crop_evidence,iterations, *, material_motion_resi
     requested_objective = generation_objective(material_motion_residual_scale_m,
         environment_depth_residual_scale_m, collision_refinements)
     authored['metadata']['environment_depth_residual_scale_m'] = environment_depth_residual_scale_m
-    loaded_plan = ContactEditPlan(**authored)
+    from .source_prefix_reference import configure_plan_prefix, prefix_implementation_fingerprints, verify_prefix_diagnostics
+    loaded_plan = configure_plan_prefix(ContactEditPlan(**authored), source_prefix_reference,
+                                        source_prefix_provenance, required=True)
     folder.mkdir(parents=True,exist_ok=False)
     generated=folder/'generated.npz';motion=folder/'motion.npz'
     with generation_cache(folder) as cache:
@@ -209,6 +219,8 @@ def generate(plan,folder,holds,crop_evidence,iterations, *, material_motion_resi
             ik_collision_max_refinements=collision_refinements,
             ik_collision_reference_cache=cache)
         effective_objective = verify_effective_objective(preview.diagnostics, requested_objective)
+        verify_prefix_diagnostics(preview.diagnostics, loaded_plan.metadata.get('source_prefix_reference'),
+                                  loaded_plan.metadata.get('root_yaw_condition'))
         canonicalize_motion_with_direct_newton_fk(generated,motion)
     contract=compact(motion,folder/'cropped_seed.npz',holds,crop_evidence)
     cropped=folder/'motion_cropped.npz'
@@ -223,6 +235,10 @@ def generate(plan,folder,holds,crop_evidence,iterations, *, material_motion_resi
         environment_depth_residual_scale_m=environment_depth_residual_scale_m,
         requested_objective=requested_objective, effective_objective=effective_objective,
         loaded_reference=evidence, event_reference=event_reference,
+        source_prefix_reference=loaded_plan.metadata.get('source_prefix_reference'),
+        source_prefix_configuration=loaded_plan.metadata.get('source_prefix_configuration'),
+        source_prefix_implementation=(prefix_implementation_fingerprints()
+            if loaded_plan.metadata.get('source_prefix_reference') else None),
         plan_sha256=hashlib.sha256(Path(plan).read_bytes()).hexdigest()))
     return result
 
@@ -297,9 +313,12 @@ def main():
     parser.add_argument('--events',type=Path)
     parser.add_argument('--old-events',type=Path)
     parser.add_argument('--plans',type=Path)
+    parser.add_argument('--source-prefix-config',type=Path)
+    parser.add_argument('--prepare-from-collection',type=Path,
+        help='Prepare new plans from an existing plan manifest/edit index and its unchanged native sources; requires --prepare-only')
     parser.add_argument('--checkpoint',type=Path)
     parser.add_argument('--output',type=Path)
-    parser.add_argument('--hold',nargs=2,type=int,action='append',required=True)
+    parser.add_argument('--hold',nargs=2,type=int,action='append')
     parser.add_argument('--crop-evidence',type=Path)
     parser.add_argument('--workers',type=int,default=3)
     parser.add_argument('--label-workers',type=int,default=5)
@@ -313,19 +332,42 @@ def main():
     parser.add_argument('--serve-generation-cache',action='store_true')
     parser.add_argument('--resume',action='store_true')
     args=parser.parse_args()
+    from .source_prefix_reference import (
+        load_prefix_configuration, configure_plan_prefix, prefix_implementation_fingerprints,
+    )
+    prefix, prefix_provenance = (load_prefix_configuration(args.source_prefix_config)
+        if args.source_prefix_config else (None, None))
+    if args.prepare_from_collection:
+        if not args.prepare_only or not args.output or not args.source_prefix_config:
+            parser.error('--prepare-from-collection requires --prepare-only, --output and --source-prefix-config')
+        if args.generate_plan or args.serve_generation_cache:
+            parser.error('--prepare-from-collection cannot launch generation or workers')
+        from .source_prefix_collection import prepare_prefix_collection
+        manifest=prepare_prefix_collection(args.prepare_from_collection,args.output,args.source_prefix_config,
+            resume=args.resume,material_motion_residual_scale_m=args.material_motion_residual_scale_m)
+        print(json.dumps(dict(stage='prepared',plans=len(manifest['plans']),output=str(args.output.resolve()),gpu_started=False)))
+        return
     objective = generation_objective(args.material_motion_residual_scale_m,
         args.environment_depth_residual_scale_m, args.collision_refinements)
     if args.serve_generation_cache:
         serve_generation_cache(args.output,args.workers)
         return
     if args.generate_plan:
+        if not args.hold:parser.error('--generate-plan requires --hold')
         generate(args.generate_plan,args.generate_folder,args.hold,args.crop_evidence,args.iterations,
             material_motion_residual_scale_m=args.material_motion_residual_scale_m,
             environment_depth_residual_scale_m=args.environment_depth_residual_scale_m,
-            collision_refinements=args.collision_refinements)
+            collision_refinements=args.collision_refinements,
+            source_prefix_reference=prefix,source_prefix_provenance=prefix_provenance)
         return
     for key in ('source_motion','source_labels','source_observations','original_state','events','old_events','plans','checkpoint','output'):
         if getattr(args,key) is None:parser.error('--'+key.replace('_','-')+' is required')
+    if not args.hold:parser.error('--hold is required for full source regeneration')
+    if not any(args.plans.glob('*.json')):
+        parser.error('Standard augmentation requires a nonempty plan collection')
+    if prefix is None and any(not json.loads(p.read_text()).get('metadata', {}).get('source_prefix_reference')
+                              for p in args.plans.glob('*.json')):
+        parser.error('Standard augmentation requires --source-prefix-config or source_prefix_reference on every input plan')
     if args.workers<1:raise ValueError('Positive worker count required')
     if args.label_workers<1:raise ValueError('Positive label worker count required')
     from somaforge_core.robot_assets import somaforge_root
@@ -343,6 +385,9 @@ def main():
         objective=objective,
         plans={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(args.plans.glob('*.json'))},
         schema=GENERATION_SCHEMA)
+    if prefix is not None:
+        signature.update(source_prefix_reference=prefix,source_prefix_configuration=prefix_provenance,
+                         source_prefix_implementation=prefix_implementation_fingerprints())
     if not args.resume:
         out.mkdir(parents=True,exist_ok=False)
         (out/'source').mkdir();(out/'plans').mkdir();(out/'motions').mkdir();(out/'scenes').mkdir()
@@ -391,6 +436,7 @@ def main():
             layer=out/'source/contact_layer',labels=out/'source/contact_layer/contact_labels/climb_00.npz',
             events=out/'source/events.jsonl',initial_q=q[0],surfaces=surfaces)
         from motion_edit.contact.plans import ContactEditPlan
+        plan=configure_plan_prefix(ContactEditPlan(**plan),prefix,prefix_provenance).to_dict()
         ContactEditPlan(**plan).validate(allow_free=True)
         dump(out/'plans'/path.name,plan)
     if args.prepare_only:return

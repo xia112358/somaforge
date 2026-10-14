@@ -34,6 +34,7 @@ class SurfaceEditorSession:
     request_path: Path
     contact_layer_snapshot: Path
     contact_force_path: str | None = None
+    terrain_mesh: str | None = None
 
     def to_manifest(self) -> dict:
         data = asdict(self)
@@ -67,6 +68,7 @@ def _session_paths(
     output_contact_layer: str | None,
     workbench_root: Path,
     contact_force_path: str | None = None,
+    terrain_mesh: str | None = None,
 ) -> SurfaceEditorSession:
     session_dir = surface_session_dir(session_name, workbench_root=workbench_root)
     return SurfaceEditorSession(
@@ -86,6 +88,7 @@ def _session_paths(
         request_path=session_dir / f"{motion_id}.surface_editor_requests.jsonl",
         contact_layer_snapshot=session_dir / "contact_layer",
         contact_force_path=contact_force_path,
+        terrain_mesh=terrain_mesh,
     )
 
 
@@ -126,6 +129,7 @@ def prepare_surface_editor_session(
     edit_plan_path: str | None = None,
     output_contact_layer: str | None = None,
     contact_force_path: str | None = None,
+    terrain_mesh: str | None = None,
     layers_root: Path = LAYERS_ROOT,
     workbench_root: Path = WORKBENCH_ROOT,
 ) -> SurfaceEditorSession:
@@ -141,6 +145,7 @@ def prepare_surface_editor_session(
         output_contact_layer=output_contact_layer,
         workbench_root=workbench_root,
         contact_force_path=contact_force_path,
+        terrain_mesh=terrain_mesh,
     )
     _write_session_files(session, graph, surfaces)
     return session
@@ -499,6 +504,15 @@ def save_surface_editor_session(
     destination = output_contact_layer or session.output_contact_layer
     graph = _load_session_graph(session)
     surfaces = _load_session_surfaces(session)
+    pending = coalesce_pending_surface_edits(session)
+    plan_metadata = {"surface_editor_session": session.session_name}
+    if session.terrain_mesh:
+        from .generation_plan import editor_generation_metadata
+        plan_metadata.update(editor_generation_metadata(
+            motion_path=session.motion_path, motion_id=session.motion_id,
+            contact_layer=session.contact_layer, terrain_mesh=session.terrain_mesh,
+            edits=pending, layers_root=layers_root,
+        ))
     out_layer: Path | None = None
     if destination:
         out_layer = write_contact_layer(layers_root / destination, graph)
@@ -507,7 +521,7 @@ def save_surface_editor_session(
     plan_path = edit_plan_path or session.edit_plan_path
     if plan_path:
         edits: list[dict] = []
-        for edit in coalesce_pending_surface_edits(session):
+        for edit in pending:
             metadata = dict(edit.metadata)
             metadata.update(
                 {
@@ -529,7 +543,7 @@ def save_surface_editor_session(
                 edits=edits,
                 status="draft",
                 output_contact_layer=destination,
-                metadata={"surface_editor_session": session.session_name},
+                metadata=plan_metadata,
             ),
         )
     _write_json(

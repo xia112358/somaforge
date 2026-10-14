@@ -12,6 +12,8 @@ from somaforge_core import CONTACT_BODY_NAMES_BY_PART
 from somaforge_core.motion_contracts import BODY_NAMES
 from contact_solver.part_collision_geometry import PartCollisionGeometry
 from contact_solver.constraint_penalty import constraint_penalty
+from contact_solver.endpoint_penetration import huber_squared
+from contact_solver.endpoint_task import PENETRATION_LOSS_SCALE_M
 from contact_solver.contact_surface_interval import finite_face_band_cost, SurfaceIntervalBounds
 from somaforge_core.heightmap import HEIGHTMAP_ROWS, HEIGHTMAP_COLS, HEIGHTMAP_FORWARD_MIN_M, HEIGHTMAP_LATERAL_MIN_M, HEIGHTMAP_RESOLUTION_M
 
@@ -155,9 +157,14 @@ class ContactRegions(nn.Module):
 
 
 def unified_region_objective(model, rows, active, surface, scene, planned_regions=None, *, audit_path=None, release_mask=None,
-                             surface_interval=None):
+                             surface_interval=None, penetration_penalty='log1p',
+                             penetration_scale_m=PENETRATION_LOSS_SCALE_M,
+                             target_recovery=None, target_recovery_mask=None):
     """One interval-violation objective across intended regions and all bodies."""
     from contact_solver.device_contact_objective import reduce_groups, group_any
+    import math
+    if penetration_penalty not in ('log1p', 'huber') or not math.isfinite(penetration_scale_m) or penetration_scale_m <= 0:
+        raise ValueError('Invalid penetration penalty or scale')
     geometry = model.region_geometry
     if release_mask is not None:
         if release_mask.shape != active.shape or release_mask.dtype != torch.bool:
@@ -233,8 +240,36 @@ def unified_region_objective(model, rows, active, surface, scene, planned_region
     native_upper = torch.where(exists, near, 0)
     material_query_selected = approach > native_upper
     near = torch.maximum(native_upper, approach)
+    if (target_recovery is None) != (target_recovery_mask is None):
+        raise ValueError('Target recovery requires both regional distances and actual missing-contact mask')
+    if target_recovery is not None:
+        if (target_recovery.shape != (batch,6,4) or target_recovery_mask.shape != active.shape
+                or target_recovery_mask.dtype != torch.bool
+                or bool((target_recovery_mask & ~active).any())):
+            raise ValueError('Invalid regional target recovery')
+        if bool((target_recovery_mask & geometry.actual_mask(model.fk, rows, surface).any(-1)).any()):
+            raise ValueError('Target recovery cannot replace an actual same-part/surface contact')
+        recovery_candidates = desired & target_recovery_mask[...,None]
+        if bool((target_recovery_mask & ~recovery_candidates.any(-1)).any()):
+            raise ValueError('Target recovery requires a nonempty intended anatomical region')
+        if not bool((torch.isfinite(target_recovery[recovery_candidates]) & (target_recovery[recovery_candidates]>=0)).all()):
+            raise ValueError('Undefined target recovery geometry; no fallback')
+        recovery_region = target_recovery.masked_fill(~recovery_candidates, torch.inf).argmin(-1)
+        recovered = torch.nn.functional.one_hot(recovery_region,4).bool() & target_recovery_mask[...,None]
+        # Replace the generic native/material attraction, never add a second
+        # approach residual. Recovery is one full XYZ shape-to-target segment
+        # query for the closest intended region of each missing relation.
+        # A single representative point must not force heel and toe onto the
+        # same location. Other intended regions retain their surface interval.
+        # Complete solids below still own physical penetration; different
+        # queries cannot be deduplicated.
+        near = torch.where(recovered, target_recovery/scale[:,None,None].square(), near)
+        field_lower = torch.where(recovered, 0., field_lower)
+        material_query_selected &= ~recovered
     if planned_regions is None:
         best = near.masked_fill(~geometry.valid, torch.inf).argmin(-1)
+        if target_recovery is not None:
+            best = torch.where(target_recovery_mask, recovery_region, best)
         desired = torch.nn.functional.one_hot(best, 4).bool() & active[..., None]
     near = torch.where(desired, near, 0)
     field_lower=torch.where(desired,field_lower,0)
@@ -243,7 +278,7 @@ def unified_region_objective(model, rows, active, surface, scene, planned_region
     link_names = rows.observed['link_names']; groups_per_sample = 24+len(link_names)
     mapping = {name:i for i,key in enumerate(PART_NAMES) for name in CONTACT_BODY_NAMES_BY_PART[key]}
     link_part = torch.tensor([mapping.get(n, -1) for n in link_names], device=q.device)
-    costs, groups, valid, target_valid = [], [], [], []
+    costs, groups, valid, target_valid, physical = [], [], [], [], []
     target_mask=None if bounds is None else bounds.solid_target_mask
     if target_mask is not None:
         if target_mask.shape!=(len(solid.sample),2) or target_mask.dtype!=torch.bool:
@@ -270,6 +305,7 @@ def unified_region_objective(model, rows, active, surface, scene, planned_region
         groups.append(sample*groups_per_sample+slot)
         valid.append(relevant & (link >= 0) & unwanted & rows.normal_valid)
         target_valid.append(torch.zeros_like(valid[-1]))
+        physical.append(torch.zeros_like(valid[-1]))
     sp = solid.pair; ss = sp['sample']
     for side in (0, 1):
         link = sp[f'body_link{side}']; lp = link_part[link.clamp_min(0)]
@@ -287,6 +323,7 @@ def unified_region_objective(model, rows, active, surface, scene, planned_region
                 & material_query_selected[ss,lp.clamp_min(0),region]
                 & same_interval_query(solid,bounds.query,link_names,lp,region,side,bounds=bounds))
         target_valid.append(belongs)
+        physical.append(torch.ones_like(valid[-1]))
     flat_cost,flat_group,flat_valid=torch.cat(costs),torch.cat(groups),torch.cat(valid)
     lower_cost = reduce_groups(flat_cost,flat_group,flat_valid,batch*groups_per_sample).reshape(batch,groups_per_sample)
     # Entity/region matches are only candidates for duplicate evidence. Merge
@@ -304,7 +341,26 @@ def unified_region_objective(model, rows, active, surface, scene, planned_region
     # Robustify each complete query once. A native candidate and a material
     # query are alternatives here; taking bounds from different queries
     # would invent a new residual and alter their derivatives.
-    if bounds is not None:
+    if penetration_penalty == 'huber':
+        # Keep release/extra-contact penalties unchanged. Penetration uses one
+        # metric scale, independent of solver activation margins. Only exact
+        # shared material queries may remove a duplicate solid lower bound.
+        physical = torch.cat(physical)
+        matched = torch.cat(target_valid)
+        release_cost = reduce_groups(flat_cost, flat_group, flat_valid & ~physical,
+            batch*groups_per_sample).reshape(batch, groups_per_sample)
+        solid_cost = reduce_groups(flat_cost, flat_group, flat_valid & physical & ~matched,
+            batch*groups_per_sample).reshape(batch, groups_per_sample)
+        factor = (scale/penetration_scale_m).square()[:, None]
+        lower_penalty = constraint_penalty(release_cost) + huber_squared(solid_cost*factor)
+        # Split the two bounds of the SAME selected material query. Do not
+        # penalize the solid witness again when its lower bound lives here.
+        selected_lower = torch.cat((torch.where(material_query_selected,
+            field_lower[:, :24].reshape(batch, 6, 4), 0).flatten(1),
+            q.new_zeros(batch, len(link_names))), -1)
+        upper_penalty = (constraint_penalty((upper_cost-selected_lower).clamp_min(0))
+                         + huber_squared(selected_lower*factor))
+    elif bounds is not None:
         # Only the actually bound target entity shares this interval. Self,
         # other static components and release constraints remain independent;
         # their derivative cannot disappear behind a large recovery bound.

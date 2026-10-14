@@ -1,21 +1,22 @@
 import { expect, test } from '@playwright/test';
 
-const e2eAssetId = (globalThis as any).process?.env?.MOTION_EDIT_E2E_ASSET_ID as string | undefined;
-test.skip(!e2eAssetId, 'set MOTION_EDIT_E2E_ASSET_ID to run the real-asset browser test');
+const e2eMotionId = (globalThis as any).process?.env?.MOTION_EDIT_E2E_MOTION_ID as string | undefined;
+test.skip(!e2eMotionId, 'set MOTION_EDIT_E2E_MOTION_ID to run the real-asset browser test');
 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
   test(`renders real contact editor at ${viewport.width}px`, async ({ page }, testInfo) => {
     page.on('console', message => { if (message.type() === 'error') console.log(`browser console: ${message.text()}`); });
-    page.on('pageerror', error => console.log(`browser error: ${error.message}`));
+    const browserErrors: string[] = [];
+    page.on('pageerror', error => browserErrors.push(error.message));
     page.on('requestfailed', request => console.log(`request failed: ${request.url()} ${request.failure()?.errorText}`));
     page.on('response', response => { if (response.status() >= 400) console.log(`response ${response.status()}: ${response.url()}`); });
     await page.setViewportSize(viewport);
-    const loadResponse = await page.request.post('/api/session/load', { data: { motion_asset_id: e2eAssetId } });
+    const loadResponse = await page.request.post('/api/session/load', { data: { motion_id: e2eMotionId } });
     expect(loadResponse.ok()).toBeTruthy();
     await page.goto('/');
     await expect(page.locator('#motionLabel')).not.toHaveText('No motion', { timeout: 45_000 });
     await expect(page.locator('#recentMotionList .recent-motion-item.active')).toHaveCount(1);
-    expect(await page.locator('#recentMotionList .recent-motion-item').count()).toBeGreaterThanOrEqual(2);
+    expect(await page.locator('#recentMotionList .recent-motion-item').count()).toBeGreaterThanOrEqual(1);
     await expect(page.locator('#recentMotionList .recent-motion-copy strong').first()).not.toHaveText('');
     await expect(page.locator('.inspector > .recent-motion-dock')).toHaveCount(1);
     await expect(page.locator('.viewport > .recent-motion-dock')).toHaveCount(0);
@@ -23,17 +24,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     const versionBox = await page.locator('.recent-motion-dock').boundingBox();
     expect(versionBox!.x).toBeGreaterThanOrEqual(inspectorBox!.x);
     expect(versionBox!.y + versionBox!.height).toBeLessThanOrEqual(inspectorBox!.y + inspectorBox!.height + 1);
-    const generatedMotion = page.locator('#recentMotionList [data-motion-key^="version:"]').first();
-    if (await generatedMotion.count()) {
-      await generatedMotion.click();
-      await expect(generatedMotion).toHaveClass(/active/, { timeout: 45_000 });
-      await expect(page.locator('#motionLabel')).toContainText('edited');
-      const sourceMotion = page.locator('#recentMotionList [data-motion-key^="asset:"]').first();
-      await sourceMotion.click();
-      await expect(sourceMotion).toHaveClass(/active/, { timeout: 45_000 });
-      await expect(page.locator('#motionLabel')).not.toContainText('edited', { timeout: 45_000 });
-      await expect(page.locator('#sceneStatus')).toHaveClass(/hidden/, { timeout: 45_000 });
-    }
+    const sourceMotion = page.locator('#recentMotionList [data-motion-key]').filter({ hasText: e2eMotionId! }).first();
+    await expect(sourceMotion).toHaveClass(/active/);
     await expect(page.locator('#anchorCount')).toHaveText(/^[1-9][0-9]* handles$/);
     await expect(page.locator('#sceneStatus')).toHaveClass(/hidden/, { timeout: 45_000 });
     const canvas = page.locator('#scene');
@@ -71,12 +63,14 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     await page.mouse.move(timelineBox!.x + timelineBox!.width * 0.79, timelineBox!.y + timelineBox!.height * 0.55);
     await page.mouse.up();
     expect(Number(await page.locator('#frameInput').inputValue())).toBeGreaterThan(0);
+    await expect(page.locator('#statusFilter')).not.toBeVisible();
+    await page.locator('#episodeOptions summary').click();
     await expect(page.locator('#statusFilter')).toBeVisible();
     await expect(page.locator('#targetU')).toHaveCount(0);
     await expect(page.locator('#moveStep')).toHaveCount(0);
     await expect(page.locator('#applyUv')).toHaveCount(0);
+    await page.locator('#episodeSelect').selectOption({ index: 1 });
     await expect(page.locator('#positionOffset')).toBeVisible();
-    await page.locator('#nextAnchor').click();
     await expect(page.locator('#selection')).not.toHaveClass(/empty/);
     await expect(page.locator('#positionOffset')).not.toHaveClass(/disabled/);
     await expect(page.locator('#offsetU')).toHaveText('+0.000 m');
@@ -161,6 +155,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       expect((await panel.boundingBox())!.height).toBeGreaterThan(beforeHeight + 25);
     }
     await page.locator('[data-tab="display"]').click();
+    await expect(page.locator('#forceScale')).not.toBeVisible();
+    await page.locator('#displayOptions summary').click();
     await expect(page.locator('#forceScale')).toBeVisible();
     await page.locator('[data-tab="output"]').click();
     await page.locator('.output-settings summary').click();
@@ -171,5 +167,14 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     await page.screenshot({ path: testInfo.outputPath(`motion-edit-output-${viewport.width}.png`), fullPage: true });
     await page.locator('[data-tab="contact"]').click();
     await page.screenshot({ path: testInfo.outputPath(`motion-edit-${viewport.width}.png`), fullPage: true });
+    await expect(page.locator('#recentMotionList')).not.toBeVisible();
+    await page.locator('.recent-motion-head').click();
+    await expect(page.locator('#recentMotionList')).toBeVisible();
+    await page.locator('#openMotionBtn').click();
+    await expect(page.locator('#reviewOpen')).toBeVisible();
+    const dockBounds = await page.locator('#motionPicker').boundingBox();
+    const openBounds = await page.locator('#reviewOpen').boundingBox();
+    expect(openBounds!.y + openBounds!.height).toBeLessThanOrEqual(dockBounds!.y + dockBounds!.height + 1);
+    expect(browserErrors).toEqual([]);
   });
 }

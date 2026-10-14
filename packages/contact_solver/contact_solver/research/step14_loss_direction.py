@@ -18,7 +18,7 @@ def experiment(c):
     out, initial = c['out'], c['initial']
     anchors, scale = c['anchors'], c['scale']
     observe, record = c['observe'], c['record']
-    report = json.loads(Path('tmp/baseline1000_motion8_raw29_20260925/report.json').read_text())
+    report = json.loads(Path('runtime/current/archives/preserved_inputs_20261010/baseline1000_motion8_raw29_20260925/report.json').read_text())
     def terms(q):
         _, old = c['objective'](q, initial, 'sdf_sum')
         _, sep = geo.evaluate(q)
