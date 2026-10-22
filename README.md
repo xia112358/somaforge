@@ -9,6 +9,7 @@ endpoint-conditioned trajectory infilling. Simulation uses the pinned Isaac Lab
 
 - [Fresh-machine installation](docs/install.md) and [runtime compatibility](docs/environments.md)
 - [Modular WBT experts, contact-reference recording and distillation](docs/wbt-modular-experiments.md)
+- [Download training inputs, reference models and extracted demonstrations](docs/data-downloads.md)
 - [Motion Edit and browser playback](packages/motion_edit/README.md)
 - [Predictor baseline and reproduction records](baselines/README.md)
 - [Local data layout](docs/repository-data.md), [data policy](docs/data-policy.md),
@@ -25,8 +26,9 @@ python -m holosoma.train_agent --help
 ```
 
 Bootstrap creates local runtime directories and aliases; setup installs the
-pinned environment. Datasets, expert/student checkpoints, and historical experiment
-outputs are separate inputs and are not downloaded by cloning this repository.
+pinned environment. Training inputs, fixed reference checkpoints and extracted
+demonstrations are available separately through the
+[component downloader](docs/data-downloads.md); cloning Git does not download them.
 Follow the [installation guide](docs/install.md) before launching simulation.
 
 ## Layout

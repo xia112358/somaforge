@@ -3,7 +3,6 @@
 Only workers created by this instance are terminated. Source scene and checkpoint
 paths are explicit inputs; historical defaults are supplied by the training config.
 """
-from pathlib import Path
 import copy
 import hashlib
 import json
@@ -12,6 +11,7 @@ import socket
 import subprocess
 import sys
 import time
+from somaforge_core.published_data import load_published_json, resolve_published_path
 
 def terrain_text(source, scale):
     """Exact vertical scaling of this single box, preserving ground and faces."""
@@ -30,9 +30,9 @@ class Workers:
         from somaforge_core.world_mesh_scan import LEGACY_DEPTH_PROFILE, depth_camera_profile
         self.depth_scan_profile = LEGACY_DEPTH_PROFILE if depth_scan_profile is None else depth_scan_profile
         depth_camera_profile(self.depth_scan_profile)
-        self.checkpoint = str(checkpoint)
-        self.source_manifest = Path(source_manifest)
-        self.source_model = Path(source_model)
+        self.checkpoint = str(resolve_published_path(checkpoint))
+        self.source_manifest = resolve_published_path(source_manifest)
+        self.source_model = resolve_published_path(source_model)
         self.processes = []; self.logs = []; self.entries = {}
         self.root, self.heights, self.device = root, heights, device
         self.query_worlds = query_worlds
@@ -42,8 +42,8 @@ class Workers:
         self.tensor_clients = {}
 
     def __enter__(self):
-        base = json.loads(self.source_manifest.read_text())
-        mesh = Path(base['terrains'][0]['terrain_file']).read_text()
+        base = load_published_json(self.source_manifest)
+        mesh = resolve_published_path(base['terrains'][0]['terrain_file'], self.source_manifest.parent).read_text()
         self.root.mkdir(parents=True)
         try:
             for h in self.heights:
@@ -82,7 +82,7 @@ class Workers:
                 levels = [z for b in e['model']['terrain_mesh_bounds'] for z in b['z_levels']]
                 # This corpus uses a height SCALE, not a box height in metres.
                 # The scene builder adds a 4 cm thick ground slab below z=0.
-                reference=json.loads(self.source_model.read_text())
+                reference=load_published_json(self.source_model)
                 reference_levels=[z for b in reference['terrain_mesh_bounds'] for z in b['z_levels']]
                 if (abs(max(levels)-0.70449438*h)>2e-5 or 0. not in levels
                         or min(levels)!=min(reference_levels)):

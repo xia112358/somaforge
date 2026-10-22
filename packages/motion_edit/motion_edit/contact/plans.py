@@ -8,6 +8,8 @@ from typing import Any, Literal
 
 import numpy as np
 
+from somaforge_core.published_data import load_published_json
+
 from motion_edit.contact.schema import ContactAnchorEditRecord, PoseEditRecord
 from motion_edit.contact.surface_frame import map_points_between_surface_frames
 
@@ -52,7 +54,7 @@ def write_contact_edit_plan(path: str | Path, plan: ContactEditPlan) -> Path:
 
 
 def read_contact_edit_plan(path: str | Path) -> ContactEditPlan:
-    data = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    data = load_published_json(path)
     return ContactEditPlan(**data)
 
 

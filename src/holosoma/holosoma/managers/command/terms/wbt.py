@@ -2825,7 +2825,10 @@ class MotionCommand(CommandTermBase):
         )
 
     def _checkpoint_motion_keys(self) -> list[str]:
-        return [str(Path(path).expanduser().resolve()) for path in self.motion.motion_files]
+        from somaforge_core.published_data import relocate_published_values
+
+        paths = relocate_published_values(self.motion.motion_files)
+        return [str(Path(path).expanduser().resolve()) for path in paths]
 
     def _checkpoint_group_keys(self) -> list[str]:
         motion_keys = self._checkpoint_motion_keys()
@@ -2928,7 +2931,10 @@ class MotionCommand(CommandTermBase):
             )
             return
 
-        saved_keys = [str(Path(path).expanduser().resolve()) for path in state.get("motion_keys", [])]
+        from somaforge_core.published_data import relocate_published_values
+
+        paths = relocate_published_values(state.get("motion_keys", []))
+        saved_keys = [str(Path(path).expanduser().resolve()) for path in paths]
         current_keys = self._checkpoint_motion_keys()
         saved_index_by_key = {key: index for index, key in enumerate(saved_keys)}
         matched_pairs = [
@@ -2991,6 +2997,20 @@ class MotionCommand(CommandTermBase):
             self._init_recent_probe_window(group=True)
             saved_group = state.get("group_probe", {})
             group_keys = saved_group.get("keys", [])
+            # Group identity is a JSON-encoded set of canonical motion paths.
+            # Relocate each member before matching; never alter saved tensors.
+            relocated_group_keys = []
+            for key in group_keys:
+                try:
+                    members = json.loads(key)
+                except (TypeError, ValueError):
+                    relocated_group_keys.append(key)
+                    continue
+                if isinstance(members, list) and all(isinstance(member, str) for member in members):
+                    members = relocate_published_values(members)
+                    key = json.dumps(sorted(str(Path(member).expanduser().resolve()) for member in members))
+                relocated_group_keys.append(key)
+            group_keys = relocated_group_keys
             group_tensors = saved_group.get("tensors", {})
             if current_statistics and self._valid_recent_probe_checkpoint(group_tensors, "_group_probe", len(group_keys)):
                 lookup = {key: index for index, key in enumerate(group_keys)}

@@ -255,6 +255,24 @@ def temporary_input_errors(name: str, tree: ast.AST) -> list[str]:
     return errors
 
 
+def configuration_temporary_inputs(document):
+    """Inspect inputs while retaining explicitly non-operational release notes."""
+    release = isinstance(document, dict) and document.get('schema') == 'somaforge_data_release_catalog_v1'
+    def inputs(value, key='', trail=()):
+        if (release and len(trail) == 3 and trail[0] == 'components'
+                and trail[2] == 'provenance_notes'):
+            return
+        if isinstance(value, dict):
+            for name, item in value.items():
+                yield from inputs(item, name, (*trail, name))
+        elif isinstance(value, list):
+            for item in value:
+                yield from inputs(item, key, trail)
+        elif isinstance(value, str) and value.startswith('tmp/') and key not in ('output', 'log'):
+            yield value
+    return sorted(set(inputs(document)))
+
+
 def audit(root: Path = ROOT) -> dict:
     def git(*args):
         return subprocess.check_output(['git', '-C', str(root), *args], text=True).splitlines()
@@ -315,18 +333,11 @@ def audit(root: Path = ROOT) -> dict:
                         errors.append(f'{name}:{node.lineno}: production import through historical alias')
         if path.suffix == '.json' and name.startswith('configs/'):
             try:
-                json.loads(path.read_text())
+                document = json.loads(path.read_text())
             except (ValueError, UnicodeError) as exc:
                 errors.append(f'{name}: {exc}')
                 continue
-            def config_inputs(value, key=''):
-                if isinstance(value, dict):
-                    for k, v in value.items(): yield from config_inputs(v, k)
-                elif isinstance(value, list):
-                    for v in value: yield from config_inputs(v, key)
-                elif isinstance(value, str) and value.startswith('tmp/') and key not in ('output', 'log'):
-                    yield value
-            refs = sorted(set(config_inputs(json.loads(path.read_text()))))
+            refs = configuration_temporary_inputs(document)
             for p in refs:
                 temporary_references.append(dict(config=name, path=p, exists=(root/p).exists()))
                 errors.append(f'{name}: temporary path used as configuration input: {p}')

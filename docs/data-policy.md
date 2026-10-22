@@ -8,6 +8,8 @@ retargeting. Keep the Git tree small enough for practical review and checkout.
 
 - Source code, tests, and small scripts.
 - Small JSON/YAML/TOML configuration files.
+- The small data-release catalog and checksums identifying externally hosted
+  immutable component indexes and archives.
 - Small motion/scene/contact manifests that are needed to reproduce a training command.
 - Small terrain or robot example assets when they are required by an active test or documented example.
 - The canonical G1 URDF/meshes and fingerprinted USD bundle needed to configure
@@ -21,6 +23,14 @@ retargeting. Keep the Git tree small enough for practical review and checkout.
 - WandB directories, training logs, videos, plots, CSV dumps, and temporary analysis outputs.
 - Large copied HTML/vendor documentation dumps.
 - Full external datasets or generated retargeting result directories.
+
+Optional published inputs are hosted as GitHub Release assets rather than Git
+history. [Download selected components](data-downloads.md) using the tracked
+`configs/data_releases.json` catalog. Bytes, hashes, licenses, status and
+provenance stay intact; archived data does not acquire new training admission.
+Keep source-specific attribution with each component. The code license does
+not grant a blanket license to third-party data; restricted retargeted LAFAN1
+inputs are excluded from the published in-house robot-terrain demonstrations.
 
 Formal datasets, references, checkpoints and manifests belong in
 `runtime/current/{motions,models,manifests,generated}/`; persistent caches and
@@ -52,6 +62,12 @@ ${DATA_ROOT}/relative/path
 ```
 
 If a manifest depends on large files outside git, document the expected layout in `docs/repository-maintenance.md` or a nearby README.
+
+Published catalogs may record original absolute paths as provenance aliases.
+The downloader installs host-local `source`/`target` mappings in ignored
+`runtime/current/manifests/published_data_paths.json`; readers use those
+declarations without rewriting old JSON/NPZ/model files or their hashes.
+This metadata is neither published evidence nor a training-readiness certificate.
 
 Do not commit one workstation's absolute dataset/checkpoint paths as current
 defaults. Explicit local teacher specifications and launch records may use them;

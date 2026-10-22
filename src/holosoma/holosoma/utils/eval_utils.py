@@ -124,7 +124,9 @@ def _load_config_from_checkpoint(checkpoint_path: Path) -> tuple[ExperimentConfi
 def _experiment_config_from_serialized(config_data: dict) -> ExperimentConfig:
     """Restore dataclass subtypes that are lost in plain dict checkpoint metadata."""
 
-    config_data = dict(config_data)
+    from somaforge_core.published_data import relocate_published_values
+
+    config_data = relocate_published_values(dict(config_data))
     training_data = config_data.get("training")
     legacy_max_steps = None
     legacy_export_onnx = False

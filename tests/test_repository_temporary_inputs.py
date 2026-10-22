@@ -1,7 +1,25 @@
 """Repository boundaries distinguish temporary outputs from required inputs."""
 import ast
 import pytest
-from scripts.check_repository import temporary_input_errors
+from scripts.check_repository import configuration_temporary_inputs, temporary_input_errors
+
+
+def test_release_notes_retain_unavailable_historical_paths_without_using_them_as_inputs():
+    catalog = dict(schema='somaforge_data_release_catalog_v1', components={
+        'demo': dict(index={'path': 'runtime/current/archive/index.json'},
+                     provenance_notes=[{'historical_or_unavailable_embedded_references': ['tmp/old/source.npz']}])})
+    assert not configuration_temporary_inputs(catalog)
+    catalog['components']['demo']['index']['path'] = 'tmp/required/index.json'
+    assert configuration_temporary_inputs(catalog) == ['tmp/required/index.json']
+
+
+@pytest.mark.parametrize('document', [
+    {'provenance_notes': ['tmp/required/source.json']},
+    {'schema': 'another_schema', 'components': {'demo': {'provenance_notes': ['tmp/required/source.json']}}},
+    {'schema': 'somaforge_data_release_catalog_v1', 'provenance_notes': ['tmp/required/source.json']},
+])
+def test_only_release_component_notes_are_nonoperational_metadata(document):
+    assert configuration_temporary_inputs(document) == ['tmp/required/source.json']
 
 
 @pytest.mark.parametrize('source', [

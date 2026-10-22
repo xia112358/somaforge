@@ -4,6 +4,11 @@ This document describes the data that is visible in the remote GitHub repository
 versus data that must stay local or external. It is intentionally about the repo
 state, not a full local workstation dump.
 
+Selected training inputs, fixed reference models and extracted demonstrations
+are distributed separately through [component downloads](data-downloads.md).
+The release catalog records contents, dependencies and original status; the
+source checkout alone does not contain those payloads.
+
 ## Physical separation
 
 On the original workstation, the code checkout is `/home/xiaz/somaforge`; runtime data is stored in the
@@ -26,10 +31,16 @@ need the external data restored and the directory link created before use.
 Other machines need not reproduce these absolute paths. Run
 `python3 scripts/bootstrap_runtime.py` from the clone for a local runtime tree,
 or add `--data-root /path/to/data` for an external root. Existing directories and
-links are preserved. Transfer any required datasets/checkpoints separately and
+links are preserved. Fetch selected components or transfer required inputs separately and
 provide their manifests explicitly; an empty runtime tree is enough to configure
 the environment, but not to reproduce data-dependent experiments. See
 [installation](install.md).
+
+Published JSON/NPZ/checkpoint bytes and SHA256 hashes are retained. The downloader
+records the destination host's path aliases in
+`runtime/current/manifests/published_data_paths.json`; it does not rebuild old
+manifests or restamp admission metadata. The download guide covers cross-root
+relative references, offline indexes and integrity verification.
 
 Migration and runtime checks are recorded in
 `runtime/current/archives/data_code_separation_20261010/`.

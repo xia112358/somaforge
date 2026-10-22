@@ -99,7 +99,8 @@ jobs:
             packages/somaforge_core/tests/test_motion_schema.py \
             packages/somaforge_core/tests/test_contact_schema.py \
             packages/somaforge_core/tests/test_native_model_binding.py \
-            packages/somaforge_core/tests/test_runtime_paths.py
+            packages/somaforge_core/tests/test_runtime_paths.py \
+            packages/somaforge_core/tests/test_published_data.py
 
       - name: Check repository and contact selection contracts
         run: |
@@ -107,6 +108,7 @@ jobs:
           python -m pytest -q -p no:cacheprovider --confcutdir=tests \
             --basetemp="$test_tmp" -o tmp_path_retention_policy=all \
             tests/test_bootstrap_runtime.py \
+            tests/test_data_release.py \
             tests/test_repository_temporary_inputs.py \
             tests/test_contact_face_selection.py \
             tests/test_contact_order_acceptance.py

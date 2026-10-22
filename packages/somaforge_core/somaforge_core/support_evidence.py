@@ -1,11 +1,11 @@
 """Keep recorded support evidence separate from edited targets and intentions."""
 import hashlib
 import json
-from pathlib import Path
 
 import numpy as np
 
 from .support_semantics import SUPPORT_ASSESSMENT_SCHEMA, assess_support
+from .published_data import resolve_published_path
 
 
 def reference_only_support(payload, *, reason, retain_force_targets=False):
@@ -43,7 +43,7 @@ def load_support_observations(motion_path, evidence_path):
     The sidecar explicitly binds source recording and motion. Pose/time mapping
     is producer-verified; edited trajectories require a new physical execution.
     """
-    motion_path, evidence_path = Path(motion_path), Path(evidence_path)
+    motion_path, evidence_path = resolve_published_path(motion_path), resolve_published_path(evidence_path)
     with np.load(evidence_path, allow_pickle=False) as z:
         meta = json.loads(z['support_assessment_json'].item())
         if meta.get('schema') != SUPPORT_ASSESSMENT_SCHEMA or meta.get('status') != 'observed':
@@ -54,7 +54,7 @@ def load_support_observations(motion_path, evidence_path):
         recording = meta.get('recording', {})
         if not recording.get('path') or not recording.get('sha256') or not meta.get('sampling'):
             raise ValueError('Support observation provenance or solve sampling missing')
-        if hashlib.sha256(Path(recording['path']).read_bytes()).hexdigest() != recording['sha256']:
+        if hashlib.sha256(resolve_published_path(recording['path']).read_bytes()).hexdigest() != recording['sha256']:
             raise ValueError('Stale original support recording')
         from .robot_assets import validate_g1_asset_metadata
         validate_g1_asset_metadata(meta.get('robot_asset'), context=str(evidence_path))

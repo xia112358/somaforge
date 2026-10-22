@@ -1,7 +1,5 @@
 """Independent observed support metadata; contact roles remain intentions."""
-import json
 import hashlib
-from pathlib import Path
 
 import numpy as np
 import torch
@@ -9,11 +7,12 @@ import torch
 from somaforge_core.support_evidence import load_support_observations
 from somaforge_core.support_semantics import SUPPORT_ASSESSMENT_SCHEMA
 from somaforge_core.loaded_material_motion import unknown_material_path
+from somaforge_core.published_data import load_published_json, resolve_published_path
 
 
 def prepare_support_supervision(manifest_path, target, samples):
-    manifest_path = Path(manifest_path)
-    entries = json.loads(manifest_path.read_text())['motion_files']
+    manifest_path = resolve_published_path(manifest_path)
+    entries = load_published_json(manifest_path)['motion_files']
     size = (len(samples), 6)
     arrays = {}
     for end in ('start', 'target'):
@@ -26,8 +25,7 @@ def prepare_support_supervision(manifest_path, target, samples):
         motion_id = sample['motion_id'] if isinstance(sample, dict) else sample.motion_id
         grouped.setdefault(int(motion_id), []).append(i)
     def resolve(value):
-        p = Path(value)
-        return p if p.is_absolute() else manifest_path.parent / p
+        return resolve_published_path(value, manifest_path.parent)
     for motion_id, indices in grouped.items():
         entry = entries[motion_id]
         if 'support_observations_file' not in entry:

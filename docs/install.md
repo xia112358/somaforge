@@ -51,7 +51,21 @@ Export metadata inside the fixed USD may mention the original workstation; its
 actual layer references are relative. Re-running the URDF converter is an asset
 development operation and does not guarantee the same byte fingerprint.
 
-Git does not distribute training datasets, expert/student checkpoints or logs.
+The Git source checkout does not contain training datasets or checkpoint arrays.
+Optional training inputs, fixed reference models and extracted demonstrations are
+published separately; see [data downloads](data-downloads.md):
+
+```bash
+python3 scripts/download_data.py list
+python3 scripts/download_data.py fetch wbt_baseline29
+python3 scripts/download_data.py verify wbt_baseline29
+```
+
+Choose components for the intended experiment. `fetch all` is available but not
+required for installation; logs and unrelated checkpoint histories are excluded.
+The downloader verifies original hashes and installs local path aliases. It does
+not start training or choose a different checkpoint.
+
 Bootstrap prepares their directories without manufacturing data or certifying old
 labels. Supply your own canonical motion/terrain manifests, or restore the data
 used by a particular registered baseline. See [data layout](repository-data.md)
@@ -59,8 +73,10 @@ and [data policy](data-policy.md). Baseline records retain hashes of external
 inputs; their presence in Git does not mean those inputs were downloaded.
 
 Motion and terrain paths in new manifests should be relative to the manifest.
-For existing workstation exports with absolute paths, rebuild their manifests
-against the copied assets before training. Teacher-spec paths can be relative to
+Published workstation exports retain their original bytes: the downloader writes
+`runtime/current/manifests/published_data_paths.json` so readers relocate declared
+paths without modifying old manifests, evidence or checkpoints.
+Teacher-spec paths can be relative to
 their JSON file. Both motion command and terrain configuration must receive the
 same chosen manifest. Missing required inputs fail explicitly.
 

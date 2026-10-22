@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter, defaultdict
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 import hashlib
 import json
 import math
@@ -40,6 +40,7 @@ from somaforge_core.motion_contracts import BODY_NAMES, CONTACT_PARTS
 from somaforge_core.newton_contacts import constraint_decision, SCHEMA as NEWTON_CONTACT_SCHEMA
 from somaforge_core.newton_contact_tensors import validate_observed
 from somaforge_core.contact_schema import CONTACT_BODY_NAMES_BY_PART
+from somaforge_core.published_data import load_published_json, relocate_published_values, resolve_published_path
 
 
 @dataclass
@@ -96,10 +97,25 @@ class Config:
 
 
 def evidence(path):
-    path = Path(path)
+    path = resolve_published_path(path)
     with path.open('rb') as stream:
         digest = hashlib.file_digest(stream, 'sha256').hexdigest()
     return dict(path=str(path.resolve()), sha256=digest)
+
+
+def load_published_infiller_input(path):
+    """Relocate input metadata without traversing model/optimizer/record tensors."""
+    loaded = torch.load(resolve_published_path(path), map_location='cpu', weights_only=False)
+    result = dict(loaded)
+    for key in ('baseline', 'predictor', 'corpus', 'parent_corpus', 'material_source_corpus',
+                'source_audit', 'refinement', 'initialization', 'metadata', 'extension', 'config'):
+        if key in loaded:
+            result[key] = relocate_published_values(loaded[key])
+    if isinstance(result.get('config'), dict):
+        # torch-saved dataclass configurations can contain actual Path objects.
+        result['config'] = {key: resolve_published_path(value) if isinstance(value, Path) else value
+                            for key, value in result['config'].items()}
+    return result
 
 
 def dump(path, value):
@@ -114,9 +130,10 @@ def cpu_tree(value):
 
 
 def checkpoint_corpus_matches(saved,corpus,path):
-    if saved['corpus']==evidence(path):return True
-    parent=corpus.get('parent_corpus')
-    return parent==saved['corpus'] and evidence(parent['path'])==parent
+    saved_corpus=relocate_published_values(saved['corpus'])
+    if saved_corpus==evidence(path):return True
+    parent=relocate_published_values(corpus.get('parent_corpus'))
+    return parent==saved_corpus and evidence(parent['path'])==parent
 
 
 class NativeQueries:
@@ -258,11 +275,16 @@ def audit_prediction(model,query,prediction,q0,initial,scene_id,limits):
 
 
 def make_corpus(cfg,baseline,predictor,query,device):
-    deps=baseline['dependencies']
-    prep_cfg=argparse.Namespace(manifest=Path(deps['manifest']['path']),data_cache=Path(deps['data_cache']['path']),
-        q_cache=Path(deps['q_cache']['path']),heightmap_supersample=1,mode='full')
+    deps=relocate_published_values(baseline['dependencies'])
+    prep_cfg=argparse.Namespace(manifest=resolve_published_path(deps['manifest']['path']),
+        data_cache=resolve_published_path(deps['data_cache']['path']),
+        q_cache=resolve_published_path(deps['q_cache']['path']),heightmap_supersample=1,mode='full')
     inputs,target,scenes,splits,samples,summary=prepare(predictor,prep_cfg,torch.device('cpu'))
-    manifest=json.loads(prep_cfg.manifest.read_text())
+    manifest=load_published_json(prep_cfg.manifest)
+    for entry in manifest['motion_files']:
+        for key in ('motion_file', 'newton_contact_file', 'event_segments_file'):
+            if entry.get(key):
+                entry[key] = str(resolve_published_path(entry[key], prep_cfg.manifest.parent))
     require_current_newton_manifest(manifest,context='Infiller source')
     names=query.names
     records=[]; by_sample={}; source_audit=[]
@@ -546,20 +568,20 @@ def attach_shared_materials(model,corpus,cfg,query):
     from contact_solver.contact_regions import ContactRegions
     from contact_solver.contact_material_skin import ContactMaterialSkin
     model.region_geometry=ContactRegions(model.fk)
-    reference=json.loads(cfg.baseline.read_text())['training_geometry_materials']['contact_material_skin.pt']
+    reference=load_published_json(cfg.baseline)['training_geometry_materials']['contact_material_skin.pt']
     if evidence(reference['path'])['sha256']!=reference['sha256']: raise ValueError('Stale training contact materials')
-    bank=torch.load(reference['path'],map_location='cpu',weights_only=False)
+    bank=load_published_infiller_input(reference['path'])
     decode_robot_asset_json(bank['robot_asset_json'],context='Shared Predictor training materials')
     meta=bank['metadata']
     if meta['contact_semantics']!=NEWTON_CONTACT_SCHEMA or meta['face_selection']!=FACE_POLICY:
         raise ValueError('Training materials require current Newton/primary-face rematerialization')
     if tuple(meta['link_names'])!=query.names: raise ValueError('Shared contact material link mapping changed')
     training_ids={r['sample_id'] for r in corpus['records'] if r['split']=='train'}
-    material_source=corpus.get('material_source_corpus')
+    material_source=relocate_published_values(corpus.get('material_source_corpus'))
     if material_source is not None:
         if evidence(material_source['path'])!=material_source:
             raise ValueError('Stale inherited material training corpus')
-        source=torch.load(material_source['path'],map_location='cpu',weights_only=False)
+        source=load_published_infiller_input(material_source['path'])
         if source['robot_asset_json']!=corpus['robot_asset_json'] or source['predictor']!=corpus['predictor']:
             raise ValueError('Inherited materials require the same asset and Predictor')
         source_train={r['sample_id'] for r in source['records'] if r['split']=='train'}
@@ -583,7 +605,7 @@ def train(cfg,corpus,query,predictor,device):
                          residual_extension=cfg.residual_extension)
     initialization=None; initial=None
     if cfg.initialization_checkpoint is not None:
-        initial=torch.load(cfg.initialization_checkpoint,map_location='cpu',weights_only=False)
+        initial=load_published_infiller_input(cfg.initialization_checkpoint)
         decode_robot_asset_json(initial['robot_asset_json'],context='Infiller initialization')
         compatible=checkpoint_corpus_matches(initial,corpus,cfg.corpus)
         if initial['schema']!=SCHEMA or not compatible or initial['predictor']!=corpus['predictor']:
@@ -605,7 +627,7 @@ def train(cfg,corpus,query,predictor,device):
     if cfg.objective=='unified':
         dump(cfg.output/'shared_contact_materials.json',attach_shared_materials(model,corpus,cfg,query))
     model=model.to(device)
-    reference=json.loads(Path('configs/climb00/direct_infiller_v1.json').read_text())
+    reference=load_published_json('configs/climb00/direct_infiller_v1.json')
     limits={k:torch.tensor(v,device=device) for k,v in reference['smoothness_limits'].items()}
     records=corpus['records']
     train_records=smoke_records(supervision_records(records,'train',cfg.training_source),cfg)
@@ -766,7 +788,8 @@ def aggregate(rows):
 
 @torch.no_grad()
 def evaluate(cfg,corpus,checkpoint_path,query,device):
-    saved=torch.load(checkpoint_path,map_location='cpu',weights_only=False)
+    checkpoint_path=resolve_published_path(checkpoint_path)
+    saved=load_published_infiller_input(checkpoint_path)
     decode_robot_asset_json(saved['robot_asset_json'],context='Direct Infiller checkpoint')
     if saved['schema']!=SCHEMA or not checkpoint_corpus_matches(saved,corpus,cfg.corpus): raise ValueError('Infiller/corpus mismatch')
     model=load_infiller(saved,device).eval()
@@ -928,7 +951,8 @@ def recursive_segments(predictor,infiller,query,initial_q,scene,scene_id,limits,
 
 
 def rollout(cfg,corpus,checkpoint_path,query,predictor,device,limits):
-    saved=torch.load(checkpoint_path,map_location='cpu',weights_only=False)
+    checkpoint_path=resolve_published_path(checkpoint_path)
+    saved=load_published_infiller_input(checkpoint_path)
     decode_robot_asset_json(saved['robot_asset_json'],context='recursive Infiller checkpoint')
     if saved['schema']!=SCHEMA or not checkpoint_corpus_matches(saved,corpus,cfg.corpus) or saved['predictor']!=corpus['predictor']:
         raise ValueError('Recursive Infiller/Predictor/corpus mismatch')
@@ -1022,6 +1046,10 @@ def rollout(cfg,corpus,checkpoint_path,query,predictor,device,limits):
 
 
 def run(cfg,device):
+    for field in fields(cfg):
+        value = getattr(cfg, field.name)
+        if isinstance(value, Path):
+            setattr(cfg, field.name, Path(relocate_published_values(str(value))))
     if cfg.witnessed_budgets and not cfg.conditional_boundary:
         raise ValueError('Witnessed segment/seam pilot requires the conditional boundary architecture')
     if cfg.conditional_boundary and (not cfg.boundary_velocity or cfg.velocity_warmup_steps):
@@ -1059,15 +1087,15 @@ def run(cfg,device):
         raise ValueError('Invalid recursive rollout schedule')
     if device=='cpu': raise ValueError('Current Newton tensor queries require CUDA; no alternate contact backend')
     torch.set_num_threads(2); torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
-    baseline=json.loads(cfg.baseline.read_text())
+    baseline=load_published_json(cfg.baseline)
     for name,reference in dict(predictor=baseline['checkpoint'],**baseline['dependencies']).items():
         if evidence(reference['path'])['sha256']!=reference['sha256']: raise ValueError(f'Stale {name}')
-    predictor_ckpt=torch.load(baseline['checkpoint']['path'],map_location='cpu',weights_only=False)
+    predictor_ckpt=load_published_infiller_input(baseline['checkpoint']['path'])
     predictor=load_position_predictor(predictor_ckpt,device=device).eval()
     for parameter in predictor.parameters(): parameter.requires_grad_(False)
     baseline['configuration_dict']=predictor_ckpt['config']
     deps=baseline['dependencies']
-    payload=torch.load(deps['data_cache']['path'],map_location='cpu',weights_only=False)
+    payload=load_published_infiller_input(deps['data_cache']['path'])
     heights=sorted({round(float(s['height']),8) for s in payload['samples']})
     del payload
     cfg.report.mkdir(parents=True,exist_ok=True)
@@ -1087,7 +1115,7 @@ def run(cfg,device):
             from generator.extend_recursive_corpus import extend_corpus
             corpus=extend_corpus(cfg,baseline,predictor,query,device)
         else:
-            corpus=torch.load(cfg.corpus,map_location='cpu',weights_only=False)
+            corpus=load_published_infiller_input(cfg.corpus)
             decode_robot_asset_json(corpus['robot_asset_json'],context='Infiller corpus')
             if corpus['predictor']!=evidence(baseline['checkpoint']['path']): raise ValueError('Predictor/corpus mismatch')
             if corpus['scene_fingerprints']!={str(e['scene_id']):e['fp'] for e in workers.entries.values()}:
@@ -1107,7 +1135,7 @@ def run(cfg,device):
         if cfg.mode=='rollout':
             if checkpoint_path is None: raise ValueError('Rollout requires an Infiller checkpoint')
             if cfg.rollout_predictor_checkpoint is not None:
-                alternative=torch.load(cfg.rollout_predictor_checkpoint,map_location='cpu',weights_only=False)
+                alternative=load_published_infiller_input(cfg.rollout_predictor_checkpoint)
                 if alternative.get('refinement',{}).get('parent_predictor')!=corpus['predictor']:
                     raise ValueError('Alternative Predictor must record the same frozen parent')
                 predictor=load_position_predictor(alternative,device=device).eval()

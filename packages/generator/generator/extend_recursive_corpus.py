@@ -22,10 +22,13 @@ def recursive_seed_records(records):
 @torch.no_grad()
 def extend_corpus(cfg,baseline,predictor,query,device):
     from generator.train_frozen_predictor_infiller import (evidence,dump,cpu_tree,
-        audit_prediction,inference_contract,configured_acceptance,SCHEMA)
+        audit_prediction,inference_contract,configured_acceptance,SCHEMA,load_published_infiller_input)
+    from somaforge_core.published_data import resolve_published_path
+    if cfg.source_corpus is not None:
+        cfg.source_corpus = resolve_published_path(cfg.source_corpus)
     if cfg.source_corpus is None or cfg.corpus.exists():
         raise ValueError('Extension requires an immutable source and a fresh corpus path')
-    source=torch.load(cfg.source_corpus,map_location='cpu',weights_only=False)
+    source=load_published_infiller_input(cfg.source_corpus)
     decode_robot_asset_json(source['robot_asset_json'],context='recursive parent corpus')
     if source['schema']!=SCHEMA or source['predictor']!=evidence(baseline['checkpoint']['path']):
         raise ValueError('Parent corpus/Predictor mismatch')
