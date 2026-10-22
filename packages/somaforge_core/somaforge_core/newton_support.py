@@ -12,13 +12,13 @@ SUPPORT_FIELDS = ('force_on_body1_w', 'torque_on_body1_w', 'point_velocity0_w', 
                   'application_point0_local', 'application_point1_local')
 
 
-def observed_support(snapshot, binding, body_labels, num_envs):
+def observed_support(snapshot, binding, body_labels, num_envs, *, selection=None):
     """Assess a complete native solve; zero load and missing evidence differ.
 
     This is a passive read. It does not change physics, poses, margins or policy.
     The six-part arrays retain solve sampling, not post-integration pose time.
     """
-    selected = select_support_contacts(snapshot, binding, body_labels)
+    selected = selection if selection is not None else select_support_contacts(snapshot, binding, body_labels)
     measured = support_motion(snapshot, eligible=selected['eligible'],
                               robot_side=selected['robot_side'], groups=selected['groups'],
                               group_count=num_envs * 6)
@@ -27,7 +27,7 @@ def observed_support(snapshot, binding, body_labels, num_envs):
              'normal_force_n', 'loaded_motion_known', 'rms_tangent_speed_m_s', 'slip_state')}
 
 
-def select_support_contacts(snapshot, binding, body_labels):
+def select_support_contacts(snapshot, binding, body_labels, *, face_indexes=None):
     """Resolve actual force application points to native primary mesh faces.
 
 This attributes an existing active constraint, never creates contact from
@@ -35,7 +35,7 @@ distance. All faces, including sides, compete before shared face eligibility.
 """
     from .contact_schema import CONTACT_BODY_NAMES_BY_PART
     from .contact_face_selection import select_contact_pairs
-    from .newton_contacts import PARTS, actual_contact_faces, constraint_decision
+    from .newton_contacts import PARTS, actual_primary_face_indices, constraint_decision
     n=int(snapshot['count']);body_env={int(k):v for k,v in binding['body_env'].items()}
     shape_faces={int(k):v for k,v in binding['shape_surface'].items()}
     active,allocated=constraint_decision(snapshot['dist'],snapshot['includemargin'],
@@ -43,6 +43,7 @@ distance. All faces, including sides, compete before shared face eligibility.
     if not np.array_equal(active[:n],snapshot['active'][:n]) or not np.array_equal(allocated[:n],snapshot['constraint_allocated'][:n]):
         raise ValueError('Inconsistent saved solver activation/allocation')
     side=np.full(n,-1,int);group=np.full(n,-1,int);surface=np.full(n,-1,int);records=[]
+    pending={}
     for i in np.flatnonzero(active[:n]):
         if not allocated[i]:raise ValueError('Unallocated active support constraint')
         bodies=[int(snapshot[f'body{k}'][i]) for k in (0,1)]
@@ -56,9 +57,20 @@ distance. All faces, including sides, compete before shared face eligibility.
         external=int(snapshot[f'shape{1-k}'][i])
         if external not in shape_faces:raise ValueError('Unknown actual external shape')
         position=np.asarray(snapshot['position_w'][i]);normal=np.asarray(snapshot['frame_w'][i,0])*(1 if k==1 else -1)
-        faces=actual_contact_faces(position,normal,shape_faces[external])
-        face=faces[0];side[i]=k;group[i]=int(snapshot['worldid'][i])*6+part;surface[i]=int(face['surface'])
-        records.append(dict(row=i,part=part,surface=int(face['surface']),allocated=True,
+        side[i]=k;group[i]=int(snapshot['worldid'][i])*6+part
+        pending.setdefault(external,[]).append((i,part,position,normal))
+    resolved={}
+    for external, rows in pending.items():
+        faces=shape_faces[external]
+        points, normals = [r[2] for r in rows], [r[3] for r in rows]
+        chosen=(face_indexes[external].query(points, normals) if face_indexes is not None
+                else actual_primary_face_indices(points,normals,faces))
+        for (i,part,position,normal),face_index in zip(rows,chosen):
+            surface[i]=int(faces[int(face_index)]['surface'])
+            resolved[i]=(part,position)
+    for i in sorted(resolved):
+        part,position=resolved[i]
+        records.append(dict(row=i,part=part,surface=int(surface[i]),allocated=True,
             position_w=position.tolist(),dist=float(snapshot['dist'][i]),
             includemargin=float(snapshot['includemargin'][i]),
             position_semantics='solver_force_application_point',surface_attribution='native_finite_triangle_primary_at_force_application_point'))

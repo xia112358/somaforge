@@ -198,6 +198,42 @@ def release_supervision(active, certified_release=None):
     return ((~active & certified_release).sum(axis=0) > len(active) / 2)
 
 
+def match_pose_anchors(reference, source, output_anchors, source_centers, *, band=10):
+    """Original ordered pose-match DP, with independently observed source centers.
+
+    Centers are sampling-clock evidence, not reference-frame deadlines. Returns
+    anchors only; continuous callers must separately constrain the whole clock.
+    """
+    a, b = pose_features(reference), pose_features(source)
+    edges, centers = np.asarray(output_anchors, float), np.asarray(source_centers, float)
+    if (len(a) != len(b) or edges.shape != centers.shape or edges.ndim != 1 or len(edges) < 2
+            or not np.isfinite(edges).all() or not np.isfinite(centers).all()
+            or edges[0] != 0 or edges[-1] != len(a)-1
+            or centers[0] != 0 or centers[-1] != len(a)-1
+            or np.any(np.diff(edges) <= 0) or type(band) is not int or band < 0):
+        raise ValueError('Invalid observed pose anchor clocks')
+    candidates = [np.array([int(t)]) if i in (0, len(edges)-1)
+                  else np.arange(max(1, int(np.ceil(t-band))), min(len(a)-2, int(np.floor(t+band)))+1)
+                  for i, t in enumerate(centers)]
+    if any(not len(c) for c in candidates):
+        raise ValueError('No event-order-preserving alignment')
+    costs = np.array([0.]); backs = []
+    for i in range(1, len(edges)):
+        previous, current = candidates[i-1], candidates[i]
+        options = np.where(previous[:, None] < current[None, :], costs[:, None], np.inf)
+        back = options.argmin(axis=0)
+        target = np.asarray([np.interp(edges[i], np.arange(len(a)), channel) for channel in a.T])
+        local = ((b[current]-target)**2).mean(-1)+1e-9*(current-centers[i])**2
+        costs = options[back, np.arange(len(current))]+local
+        backs.append(back)
+    if not np.isfinite(costs).any():
+        raise ValueError('No event-order-preserving alignment')
+    j = int(costs.argmin()); selected = [int(candidates[-1][j])]
+    for i in range(len(edges)-1, 0, -1):
+        j = int(backs[i-1][j]); selected.append(int(candidates[i-1][j]))
+    return np.asarray(selected[::-1])
+
+
 def align_event_anchors(reference, source, boundaries, *, band=10):
     """Match an explicit shared event sequence using pose evidence, not dropouts.
 
@@ -213,23 +249,7 @@ def align_event_anchors(reference, source, boundaries, *, band=10):
             or edges[0] != 0 or edges[-1] != len(a)-1
             or np.any(np.diff(edges) <= 0) or type(band) is not int or band < 0):
         raise ValueError('Expected complete, strictly ordered event boundaries')
-    candidates = [np.array([t]) if i in (0, len(edges)-1)
-                  else np.arange(max(1, t-band), min(len(a)-2, t+band)+1)
-                  for i, t in enumerate(edges)]
-    costs = np.array([0.]); backs = []
-    for i in range(1, len(edges)):
-        previous, current = candidates[i-1], candidates[i]
-        options = np.where(previous[:, None] < current[None, :], costs[:, None], np.inf)
-        back = options.argmin(axis=0)
-        local = ((b[current] - a[edges[i]])**2).mean(axis=-1) + 1e-9*(current-edges[i])**2
-        costs = options[back, np.arange(len(current))] + local
-        backs.append(back)
-    if not np.isfinite(costs).any():
-        raise ValueError('No event-order-preserving alignment')
-    j = int(costs.argmin()); selected = [int(candidates[-1][j])]
-    for i in range(len(edges)-1, 0, -1):
-        j = int(backs[i-1][j]); selected.append(int(candidates[i-1][j]))
-    selected = np.array(selected[::-1])
+    selected = match_pose_anchors(reference, source, edges, edges, band=band)
     continuous = PchipInterpolator(edges, selected)(np.arange(len(a)))
     # Bound the shared clock as well as its anchors; this preserves monotonicity.
     clock = np.arange(len(a))

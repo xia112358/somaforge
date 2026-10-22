@@ -67,12 +67,15 @@ def test_candidate_manifest_binds_canonical_motion_to_pyroki_source(tmp_path: Pa
             encode_contact_force_provenance(newton_contact_provenance(solver_config={"solver": "mjwarp"}))
         ),
     )
+    venv_python = tmp_path / "venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.symlink_to("/usr/bin/python3")
     runner = NewtonSubprocessRunner(
         base_manifest_path=base_manifest,
         target_force_motion_path=target_force,
         motion_id="00",
         checkpoint_path=checkpoint,
-        python_executable=Path("/usr/bin/python3"),
+        python_executable=venv_python,
         repo_root=Path(__file__).resolve().parents[3],
     )
 
@@ -101,12 +104,14 @@ def test_candidate_manifest_binds_canonical_motion_to_pyroki_source(tmp_path: Pa
         assert "contact_force_provenance_json" in data
 
     canonicalize = runner._canonicalize_command(candidate=candidate, canonical_dir=tmp_path / "canonical")
+    assert canonicalize[0] == str(venv_python)
     assert "holosoma_joint_pos" in canonicalize
     eval_command = runner._eval_command(
         manifest_path=output_manifest,
         recording_path=tmp_path / "recording.npz",
         frame_count=2,
     )
+    assert eval_command[0] == str(venv_python)
     assert eval_command[eval_command.index("--recording.config.enabled") + 1] == "True"
     assert eval_command[eval_command.index("--recording.config.record-initial-state") + 1] == "True"
     assert eval_command[eval_command.index("--max-steps") + 1] == "1"
@@ -115,4 +120,5 @@ def test_candidate_manifest_binds_canonical_motion_to_pyroki_source(tmp_path: Pa
         recording_path=tmp_path / "recording.npz",
         rollout_path=tmp_path / "rollout.npz",
     )
+    assert extract[0] == str(venv_python)
     assert "--forces-only" in extract

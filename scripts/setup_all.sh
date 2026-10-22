@@ -18,6 +18,7 @@ cat <<'EOF'
 
 Newton WBT setup complete.
 
-Retargeting setup is intentionally not run by this cleanup-scoped helper.
-Run scripts/setup_retargeting.sh separately only when working on retargeting.
+Optional Motion Edit IK: scripts/setup_motion_edit_ik.sh
+Optional source retargeting: scripts/setup_retargeting.sh
+These use separate environments; see docs/install.md.
 EOF

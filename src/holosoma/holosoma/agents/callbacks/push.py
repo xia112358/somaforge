@@ -151,7 +151,7 @@ class EvalPushCallback(RLEvalCallback):
         if self._push_active:
             assert self._current_force_w is not None
             force_w = self._current_force_w.detach().cpu().numpy().copy()
-            body_pos = self._sim._robot.data.body_pos_w[eid, self._current_isaac_body_id].detach().cpu().numpy().copy()
+            body_pos = self._sim._robot.data.body_pos_w.torch[eid, self._current_isaac_body_id].detach().cpu().numpy().copy()
             body_idx = self._current_body_names_idx
             active = 1.0
         else:
@@ -227,7 +227,7 @@ class EvalPushCallback(RLEvalCallback):
 
         # Transform world-frame force to body-local frame
         # (IsaacLab 2.1 hardcodes is_global=False)
-        body_quat_w = self._sim._robot.data.body_quat_w[eid, isaac_body_id]
+        body_quat_w = self._sim._robot.data.body_quat_w.torch[eid, isaac_body_id]
         force_body = quat_apply_inverse(body_quat_w, self._current_force_w)
 
         forces = force_body.unsqueeze(0).unsqueeze(0)  # [1, 1, 3]

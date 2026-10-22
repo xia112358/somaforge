@@ -1,6 +1,20 @@
 # Newton contact pipeline migration
 
-## Status
+Historical migration record. The status, remaining work, test counts and local
+artifact paths below describe the original28 migration at that time; they are
+not the current setup or a training admission. The file stays at its original
+path to preserve existing references.
+
+Current interfaces are listed in the [documentation index](README.md).
+Use the [contact-label contract](contact_label_contract.md),
+[support evidence](support-semantics.md) and shared
+[`contact_face_selection`](../packages/somaforge_core/README.md) rules for new
+work: effective task contacts are ground or horizontal upward top faces;
+side contacts remain raw audit evidence, not a reason to promote a side face to
+top. Current [Generator defaults](../packages/generator/README.md) and
+[modular WBT experiments](wbt-modular-experiments.md) are documented separately.
+
+## Status at the time of this record
 
 The shared contact implementation and original28 relabeling are implemented and
 tested. **The whole predictor → infiller → online Newton loop is not yet
@@ -81,7 +95,7 @@ support counts. Reduction excludes self contacts before producing part masks.
    They cannot simply be declared fixed-q training labels; the loader requires
    same-state re-evaluation for that contract.
 
-## Remaining work
+## Remaining work recorded at the time
 
 - Extend the predictor's surface vocabulary and associated input, target,
   candidate-surface, geometry-loss and cache formats. Never map side contacts to

@@ -19,7 +19,8 @@ from isaaclab.assets import RigidObject, RigidObjectCfg
 import isaaclab.terrains as terrain_gen
 import torch
 from isaaclab.actuators import IdealPDActuatorCfg
-from isaaclab.assets import Articulation, ArticulationCfg
+from isaaclab.assets import Articulation, ArticulationCfg, AssetBaseCfg
+from isaaclab.cloner import clone_plan_from_env_0, replicate
 from isaaclab.envs import ViewerCfg, mdp
 from isaaclab.managers import EventManager, SceneEntityCfg
 from isaaclab.managers import EventTermCfg as EventTerm
@@ -51,6 +52,7 @@ from holosoma.simulator.isaacsim.usd_file_loader import USDFileLoader
 from holosoma.simulator.isaacsim.registry_utils import register_objects
 from holosoma.simulator.isaacsim.proxy_utils import AllRootStatesProxy, RootStatesProxy
 from holosoma.simulator.isaacsim.state_adapter import IsaacSimStateAdapter
+from holosoma.simulator.isaacsim.quaternion_utils import depth_rotation_to_xyzw
 from holosoma.simulator.isaacsim.prim_utils import (
     log_robot_properties,
     print_prim_tree,
@@ -409,27 +411,28 @@ class IsaacSim(BaseSimulator):
 
         if height_scanner_body is not None:
             height_scanner_body_path = self._resolve_env0_robot_child_path(height_scanner_body)
-            height_scanner_spawn_path = f"{height_scanner_body_path}/height_scanner"
-            height_scanner_prim_path = f"{self._env0_path_to_env_regex(height_scanner_body_path)}/height_scanner"
+            height_scanner_prim_path = self._env0_path_to_env_regex(height_scanner_body_path)
             height_scanner_config = RayCasterCfg(
                 prim_path=height_scanner_prim_path,
+                spawn=None,
                 offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
                 ray_alignment="yaw",
                 pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[0.6, 0.6]),
                 debug_vis=False,
                 mesh_prim_paths=[terrain_prim_path],
             )
-            if height_scanner_config.spawn is not None:
-                height_scanner_config.spawn.spawn_path = height_scanner_spawn_path
 
         depth_cfg = self.simulator_config.depth_ray_camera
         if depth_cfg.enabled:
             depth_body_path = self._resolve_env0_robot_child_path(depth_cfg.body_name)
-            depth_spawn_path = f"{depth_body_path}/php_depth_camera"
-            depth_prim_path = f"{self._env0_path_to_env_regex(depth_body_path)}/php_depth_camera"
+            depth_prim_path = self._env0_path_to_env_regex(depth_body_path)
             php_depth_camera_config = RayCasterCfg(
                 prim_path=depth_prim_path,
-                offset=RayCasterCfg.OffsetCfg(pos=depth_cfg.offset_pos, rot=depth_cfg.offset_rot_wxyz),
+                spawn=None,
+                offset=RayCasterCfg.OffsetCfg(
+                    pos=depth_cfg.offset_pos,
+                    rot=depth_rotation_to_xyzw(depth_cfg.offset_rot_wxyz, depth_cfg.rotation_convention),
+                ),
                 ray_alignment="base",
                 pattern_cfg=patterns.PinholeCameraPatternCfg(
                     focal_length=depth_cfg.focal_length,
@@ -443,8 +446,6 @@ class IsaacSim(BaseSimulator):
                 mesh_prim_paths=[terrain_prim_path],
             )
             object.__setattr__(php_depth_camera_config, "angular_drift_degrees", depth_cfg.angular_drift_degrees)
-            if php_depth_camera_config.spawn is not None:
-                php_depth_camera_config.spawn.spawn_path = depth_spawn_path
 
         print_prim_tree("/World/envs/env_0/Robot")
         log_robot_properties("/World/envs/env_0/Robot", "*")
@@ -462,14 +463,9 @@ class IsaacSim(BaseSimulator):
             self._php_depth_camera = HolosomaNewtonRayCaster(php_depth_camera_config)
             self.scene.sensors["php_depth_camera"] = self._php_depth_camera
 
-        # clone, filter, and replicate
-        self.scene.clone_environments(copy_from_source=False)
-
         if hasattr(self.simulator_config.scene, "usd_file"):
             # Activate collisions with the entire scene
             global_collision_prims.append("/World/scene")
-
-        self.scene.filter_collisions(global_prim_paths=global_collision_prims)
 
         # add objects if object is provided
         if self.robot_config.object.object_urdf_path:
@@ -513,6 +509,31 @@ class IsaacSim(BaseSimulator):
             color=(0.98, 0.95, 0.88),
         )
         light_config1.func("/World/DomeLight", light_config1, translation=(1, 0, 10))
+
+        # GA imports only explicitly declared assets. Build the plan after all
+        # manually authored scene entities (including optional objects) exist.
+        asset_cfgs = [
+            entity.cfg
+            for group in (
+                self.scene.articulations,
+                self.scene.rigid_objects,
+                self.scene.sensors,
+            )
+            for entity in group.values()
+        ]
+        declared_paths = {cfg.prim_path for cfg in asset_cfgs}
+        asset_cfgs.extend(
+            AssetBaseCfg(prim_path=path)
+            for path in dict.fromkeys(global_collision_prims)
+            if path not in declared_paths
+        )
+        plan = clone_plan_from_env_0(
+            self.scene.cloner_cfg, asset_cfgs,
+            self.training_config.num_envs, self.simulator_config.scene.env_spacing,
+        )
+        replicate(plan, replicate_physics=self.simulator_config.scene.replicate_physics)
+        if "physx" in self.scene.physics_backend:
+            self.scene.filter_collisions(global_prim_paths=global_collision_prims)
 
     def _get_base_body_name(self, preference_order: list[str]) -> str:
         """Get the base body name with fallback logic.
@@ -798,7 +819,7 @@ class IsaacSim(BaseSimulator):
         register_objects(self)
 
         # Create before state adapter, needs a reference
-        self.robot_root_states = RootStatesProxy(self._robot.data.root_state_w)  # (num_envs, 13)
+        self.robot_root_states = RootStatesProxy(self._robot.data.root_state_w.torch)  # (num_envs, 13)
 
         # Create state adapter after object registry and robot root states are set
         self._state_adapter = IsaacSimStateAdapter(
@@ -861,21 +882,21 @@ class IsaacSim(BaseSimulator):
 
     def refresh_sim_tensors(self):
         # Newton stores root/body quaternions in xyzw order.
-        self.robot_root_states.reset(self._robot.data.root_state_w)  # (num_envs, 13)
+        self.robot_root_states.reset(self._robot.data.root_state_w.torch)  # (num_envs, 13)
 
         self.base_quat = self.robot_root_states[:, 3:7]  # (num_envs, 4), xyzw
-        self.dof_pos = self._robot.data.joint_pos[:, self.dof_ids]  # (num_envs, num_dof)
-        self.dof_vel = self._robot.data.joint_vel[:, self.dof_ids]
+        self.dof_pos = self._robot.data.joint_pos.torch[:, self.dof_ids]  # (num_envs, num_dof)
+        self.dof_vel = self._robot.data.joint_vel.torch[:, self.dof_ids]
 
         # The body ordering of contact_sensor is different from the body ordering of the robot.
-        self.contact_forces = self.contact_sensor.data.net_forces_w[
+        self.contact_forces = self.contact_sensor.data.net_forces_w.torch[
             :, self._contact_to_robot_body_ids
         ]  # (num_envs, num_bodies, 3)
 
         # Issue: data.net_forces_w_history is not cleared after a reset.
         # Solution: We only read the most recent decimation_factor steps.
         control_decimation = self.simulator_config.sim.control_decimation
-        sensor_force_history = self.contact_sensor.data.net_forces_w_history
+        sensor_force_history = self.contact_sensor.data.net_forces_w_history.torch
         effective_history_length = min(
             control_decimation,
             self.simulator_config.contact_sensor_history_length,
@@ -883,17 +904,17 @@ class IsaacSim(BaseSimulator):
         )
         self.contact_forces_history.zero_()
         self.contact_link_forces_history.zero_()
-        self.contact_forces_history[:, :effective_history_length, :, :] = self.contact_sensor.data.net_forces_w_history[
+        self.contact_forces_history[:, :effective_history_length, :, :] = self.contact_sensor.data.net_forces_w_history.torch[
             :, :effective_history_length, self._contact_to_robot_body_ids
         ]  # (num_envs, history_length, num_bodies, 3), the first index is the most recent
         self.contact_link_forces_history[:, :effective_history_length, :, :] = sensor_force_history[
             :, :effective_history_length
         ]
 
-        self._rigid_body_pos = self._robot.data.body_pos_w[:, self.body_ids, :]
-        self._rigid_body_rot = self._robot.data.body_quat_w[:, self.body_ids, :]
-        self._rigid_body_vel = self._robot.data.body_lin_vel_w[:, self.body_ids, :]
-        self._rigid_body_ang_vel = self._robot.data.body_ang_vel_w[:, self.body_ids, :]
+        self._rigid_body_pos = self._robot.data.body_pos_w.torch[:, self.body_ids, :]
+        self._rigid_body_rot = self._robot.data.body_quat_w.torch[:, self.body_ids, :]
+        self._rigid_body_vel = self._robot.data.body_lin_vel_w.torch[:, self.body_ids, :]
+        self._rigid_body_ang_vel = self._robot.data.body_ang_vel_w.torch[:, self.body_ids, :]
 
     @staticmethod
     def _split_warp_transform_array(transforms: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -935,7 +956,7 @@ class IsaacSim(BaseSimulator):
     def get_solver_contact_snapshot(self) -> dict[str, np.ndarray]:
         from isaaclab_newton.physics.newton_manager import NewtonManager
         from holosoma.simulator.isaaclab3_newton.contact_snapshot import snapshot_solver_contacts
-        return snapshot_solver_contacts(NewtonManager._solver, NewtonManager._model,include_support=True)
+        return snapshot_solver_contacts(NewtonManager._solver, NewtonManager.get_model(),include_support=True)
 
     def get_raw_rigid_contacts(self) -> dict[str, np.ndarray] | None:
         """Return Newton raw rigid contacts for the latest physics step, with world-space points."""
@@ -945,8 +966,8 @@ class IsaacSim(BaseSimulator):
             return None
 
         contacts = getattr(NewtonManager, "_contacts", None)
-        model = getattr(NewtonManager, "_model", None)
-        state = getattr(NewtonManager, "_state_0", None)
+        model = NewtonManager.get_model()
+        state = NewtonManager.get_state_0()
         if contacts is None or model is None or state is None:
             return None
         if getattr(contacts, "rigid_contact_count", None) is None:
@@ -1010,7 +1031,7 @@ class IsaacSim(BaseSimulator):
             self.contact_link_forces_history[env_id, :, :, :] = 0.0
 
     def apply_torques_at_dof(self, torques):
-        self._robot.set_joint_effort_target(torques, joint_ids=self.dof_ids)
+        self._robot.actuators.target_command.set_effort_index(value=torques, joint_ids=self.dof_ids)
 
     def draw_debug_viz(self):
         if self.virtual_gantry:
@@ -1083,8 +1104,8 @@ class IsaacSim(BaseSimulator):
                 logger.warning("Newton rollout stats unavailable: {}", exc)
 
         # Need to update these tensors after each step, since they are used in `_apply_force_in_physics_step`
-        self.dof_pos = self._robot.data.joint_pos[:, self.dof_ids]  # (num_envs, num_dof)
-        self.dof_vel = self._robot.data.joint_vel[:, self.dof_ids]
+        self.dof_pos = self._robot.data.joint_pos.torch[:, self.dof_ids]  # (num_envs, num_dof)
+        self.dof_vel = self._robot.data.joint_vel.torch[:, self.dof_ids]
         t_tensors = _profile_mark()
         if profile_this_step:
             logger.info(
@@ -1316,8 +1337,8 @@ class IsaacSim(BaseSimulator):
             raise ValueError(f"Unexpected root states type: {type(root_states)}")
 
         root_states_xyzw = robot_root_states._get_xyzw(env_ids)
-        self._robot.write_root_pose_to_sim(root_states_xyzw[:, :7], env_ids)
-        self._robot.write_root_velocity_to_sim(root_states_xyzw[:, 7:], env_ids)
+        self._robot.write_root_pose_to_sim_index(root_pose=root_states_xyzw[:, :7], env_ids=env_ids)
+        self._robot.write_root_velocity_to_sim_index(root_velocity=root_states_xyzw[:, 7:], env_ids=env_ids)
 
     def set_dof_state_tensor_robots(self, env_ids=None, dof_states=None):
         """See base class.
@@ -1341,7 +1362,8 @@ class IsaacSim(BaseSimulator):
             dof_states = self.dof_state
 
         dof_pos, dof_vel = dof_states[env_ids, :, 0], dof_states[env_ids, :, 1]
-        self._robot.write_joint_state_to_sim(dof_pos, dof_vel, self.dof_ids, env_ids)
+        self._robot.write_joint_position_to_sim_index(position=dof_pos, joint_ids=self.dof_ids, env_ids=env_ids)
+        self._robot.write_joint_velocity_to_sim_index(velocity=dof_vel, joint_ids=self.dof_ids, env_ids=env_ids)
 
     def get_actor_indices(self, names: str | ActorNames, env_ids: EnvIds | None = None) -> ActorIndices:
         """See base class."""
@@ -1388,7 +1410,7 @@ class IsaacSim(BaseSimulator):
             elif obj_name in self.scene.rigid_objects:
                 # Get individual object pose from rigid object
                 rigid_object = self.scene.rigid_objects[obj_name]
-                default_state = rigid_object.data.default_root_state[0]  # [13]
+                default_state = rigid_object.data.default_root_state.torch[0]  # [13]
                 pose = default_state[:7]  # [x,y,z,qx,qy,qz,qw]
                 base_poses.append(pose)
 
@@ -1494,7 +1516,7 @@ class IsaacSim(BaseSimulator):
         - Used internally for initial pose extraction and reset operations
         """
         object_index = self._get_object_index_in_collection(object_name, scene_collection)
-        return scene_collection.data.default_object_state[0, object_index]  # [13]
+        return scene_collection.data.default_body_state.torch[0, object_index]  # [13]
 
     def _get_object_states(self, object_name: str, env_ids: torch.Tensor) -> torch.Tensor:
         """Get object states for any object type - delegates to state adapter.
@@ -1555,7 +1577,7 @@ class IsaacSim(BaseSimulator):
             return torch.zeros(self.num_dof, device=self.device)
 
         # Get applied torques which represent the forces being applied to joints
-        applied_torques = self._robot.data.applied_torque[env_id, self.dof_ids]
+        applied_torques = self._robot.actuators.applied_effort.torch[env_id, self.dof_ids]
         return applied_torques
 
     def write_state_updates(self):

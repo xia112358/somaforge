@@ -3,6 +3,11 @@
 Predictor 和 Infiller 的独立实现，以及数据、训练、生成 rollout 工具。
 WBT policy、环境、仿真训练与执行仍位于 `src/holosoma/`。
 
+入口导航：[环境配置](../../docs/environments.md)、
+[共享资产与接触契约](../somaforge_core/README.md)、
+[WBT expert 与蒸馏模块](../../docs/wbt-modular-experiments.md)、
+[文档索引](../../docs/README.md)。各阶段独立调用，本文不自动启动 WBT 或选择 checkpoint。
+
 新 scratch 训练默认启用 `depth_observation` 和 `world_surface_scan`：环境输入是
 按相机像素排列的二维光轴深度图，使用 2D CNN 编码深度、有效像素和标定射线坐标，
 不使用点云网络或体素。Role、位置选择和姿态执行都读取深度图特征；部位区域特征
@@ -38,9 +43,9 @@ keep 位置监督从起点实际点集中选择离示范终点点集最近的起
 连续未断触是 keep 示范标签的前提；
 仅凭两个端点不能验证生成运动中间未断触，仍须由 Infiller／实际轨迹检查。
 
-2026-10-10：当前统一基线为
+2026-10-10 登记的固定比较基线为
 [`predictor.v1_latest.20261010`](../../baselines/predictor_v1_latest_20261010/README.md)。
-训练入口使用 `full1000_position_predictor_v1`，默认共享观测
+其训练入口使用 `full1000_position_predictor_v1`，共享观测
 编码器梯度，保留原 root＋部位平均读出。新的形状—目标表面统一区间 loss 默认启用；
 网络架构版本与区间 loss 语义版本是独立的。
 训练从零初始化，采用100轮预热＋1000轮反馈日程，使用

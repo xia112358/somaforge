@@ -59,7 +59,8 @@ class ParallelRolloutPool:
         return slots, self.indices[slots], {k:v[slots] for k,v in self.observation.items()}
 
     @torch.no_grad()
-    def update(self, slots, q, observed, completed, continuable, make_observation, *, reset_reasons=None):
+    def update(self, slots, q, observed, completed, continuable, make_observation, *, reset_reasons=None,
+               reset_on_rejection=False):
         indices = self.indices[slots]
         no_progress = torch.zeros_like(continuable)
         if self.progress_directions is not None:
@@ -89,8 +90,9 @@ class ParallelRolloutPool:
         self.supervised[slots] = supervised
         self.attempts[slots] += 1
         terminal = exhausted & (not self.allow_post_demo)
-        periodic = (self.attempts[slots] >= self.resample_interval) & ~terminal
-        resample = periodic | terminal
+        rejected_reset = retry & reset_on_rejection
+        periodic = (self.attempts[slots] >= self.resample_interval) & ~terminal & ~rejected_reset
+        resample = periodic | terminal | rejected_reset
         refresh_slots = slots[resample]
         if len(refresh_slots):
             references = self.draw_references(len(refresh_slots))
@@ -109,6 +111,7 @@ class ParallelRolloutPool:
         result = dict(advances=advance.sum(), retries=retry.sum(), rollbacks=(retry & ~resample).sum(),
             accepted_transitions=accepted.sum(), resets=resample.sum(),
             periodic_resamples=periodic.sum(),
+            rejection_resets=rejected_reset.sum(),
             terminal_resets=terminal.sum(), invalid_resets=zero, timeout_resets=periodic.sum(),
             demo_exhausted=exhausted.sum(), autonomous_states=(~self.supervised[slots]).sum(),
             generated_inputs=(self.age[slots] > 0).sum(),
@@ -130,3 +133,32 @@ class ParallelRolloutPool:
                 history=self.progress_history.detach().cpu(), directions=self.progress_directions.detach().cpu(),
                 window=self.progress_window, minimum_m=self.progress_minimum)),
             observation={k:v.detach().cpu() for k,v in self.observation.items()})
+
+    def load_state_dict(self, state):
+        if (state.get('schema') != 'bounded_attempt_rollout_v5'
+                or state['allow_post_demo'] != self.allow_post_demo
+                or state['resample_interval'] != self.resample_interval):
+            raise ValueError('Resume pool contract differs')
+        for key in ('indices', 'attempts', 'age', 'retries', 'supervised'):
+            destination = getattr(self, key); value = state[key]
+            if destination.shape != value.shape or destination.dtype != value.dtype:
+                raise ValueError(f'Resume pool shape/dtype differs: {key}')
+            destination.copy_(value.to(destination.device))
+        if set(self.observation) != set(state['observation']):
+            raise ValueError('Resume pool observation keys differ')
+        for key, destination in self.observation.items():
+            value = state['observation'][key]
+            if destination.shape != value.shape or destination.dtype != value.dtype:
+                raise ValueError(f'Resume pool observation differs: {key}')
+            destination.copy_(value.to(destination.device))
+        if not 0 <= state['cursor'] < self.size:
+            raise ValueError('Resume pool cursor out of range')
+        self.cursor = state['cursor']
+        progress = state['progress']
+        if (progress is None) != (self.progress_directions is None):
+            raise ValueError('Resume pool progress mode differs')
+        if progress is not None:
+            if (progress['window'] != self.progress_window or progress['minimum_m'] != self.progress_minimum
+                    or not torch.equal(progress['directions'].to(self.indices.device), self.progress_directions)):
+                raise ValueError('Resume progress contract differs')
+            self.progress_history.copy_(progress['history'].to(self.indices.device))

@@ -40,6 +40,10 @@ DEFAULTS = {
     ),
 }
 
+from holosoma.config_values.wbt.g1.modular import DEFAULTS as MODULAR_WBT_DEFAULTS
+
+DEFAULTS.update(MODULAR_WBT_DEFAULTS)
+
 AnnotatedExperimentConfig = Annotated[
     ExperimentConfig,
     tyro.conf.arg(

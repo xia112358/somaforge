@@ -1,3 +1,5 @@
+> Historical migration report. Current setup: [environments.md](environments.md).
+
 # Newton main runtime — 2026-09-14
 
 The default `scripts/source_isaaclab3_newton_setup.sh` profile is now `main`.

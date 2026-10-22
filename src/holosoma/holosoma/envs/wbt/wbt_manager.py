@@ -59,6 +59,12 @@ class WholeBodyTrackingManager(BaseTask):
 
     def _pre_compute_observations_callback(self):
         self.base_quat[:] = self.simulator.base_quat[:]
+        # Capture the completed solve before either episode resets or command
+        # window transitions can teleport an articulation. Only configurations
+        # that requested measured contacts create this reader.
+        contact_reader = getattr(self, "_wbt_measured_contact_reader", None)
+        if contact_reader is not None:
+            contact_reader.read()
 
     def _reset_buffers_callback(self, env_ids, target_buf=None):
         self.need_to_refresh_envs[env_ids] = True

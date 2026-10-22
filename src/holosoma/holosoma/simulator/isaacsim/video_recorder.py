@@ -117,12 +117,9 @@ class IsaacSimVideoRecorder(VideoRecorderInterface):
         self.camera_prim.GetHorizontalApertureAttr().Set(horizontal_aperture)
         self.camera_prim.GetVerticalApertureAttr().Set(vertical_aperture)
 
-        # Create a view for the sensor
-        from isaacsim.core.prims import XFormPrim
-
-        self._view = XFormPrim(self._camera_prim_path, reset_xform_properties=True)
-
-        self._view.initialize()
+        # Isaac Sim 6.2 removed the legacy XFormPrim wrapper.
+        from isaaclab.sim.utils.prims import standardize_xform_ops
+        standardize_xform_ops(self.camera_prim.GetPrim())
 
         # Create render product using replicator
         resolution = (self.config.width, self.config.height)
@@ -212,11 +209,12 @@ class IsaacSimVideoRecorder(VideoRecorderInterface):
                 create_rotation_matrix_from_view(position, target, up_axis, device=self.simulator.device)
             )
 
-            self._view.set_world_poses(
-                position,
-                orientations,
-                torch.tensor([self.config.record_env_id], device=self.simulator.device, dtype=torch.int32),
+            from isaaclab.sim.utils.prims import convert_world_pose_to_local, standardize_xform_ops
+            prim = self.camera_prim.GetPrim()
+            local_pos, local_quat = convert_world_pose_to_local(
+                position[0].tolist(), orientations[0].tolist(), ref_prim=prim.GetParent()
             )
+            standardize_xform_ops(prim, local_pos, local_quat)
 
         except Exception as e:
             logger.warning(f"Failed to update camera position: {e}")

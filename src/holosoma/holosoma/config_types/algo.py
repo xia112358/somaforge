@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import field
-from typing import Any, List
+from typing import Annotated, Any, List
+
+import tyro
 
 from pydantic.dataclasses import dataclass
 
@@ -188,6 +190,10 @@ class PPOConfig:
 
     load_optimizer: bool = True
     """Whether to load optimizer state."""
+    full_checkpoints: bool = False
+    """Deprecated compatibility option; checkpoints always use the ordinary format."""
+    warm_start: bool = False
+    """Start a new reference experiment from policy/optimizer weights, without old environment state."""
 
     anchor_kl_checkpoint: str | None = None
     """Optional checkpoint for a frozen reference actor used as an anchor KL prior."""
@@ -237,6 +243,15 @@ class KLEarlyStopPPOConfig(PPOConfig):
 
 
 @dataclass(frozen=True)
+class TeacherActorConfig:
+    """One manually supplied expert and its observation groups in the student environment."""
+
+    checkpoint: str
+    manifest: str
+    observation_keys: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class DistillConfig:
     """Optional frozen-teacher distillation settings for DistillPPO."""
 
@@ -245,6 +260,18 @@ class DistillConfig:
 
     teacher_checkpoint_path: str | None = None
     """Checkpoint containing a frozen teacher actor state dict."""
+
+    teachers: Annotated[tuple[TeacherActorConfig, ...], tyro.conf.Suppress] = ()
+    """Explicit experts for RoutedDistillPPO; no checkpoint discovery or selection."""
+
+    teacher_spec_file: str | None = None
+    """JSON list of manually supplied {checkpoint, manifest} experts."""
+
+    motion_schedule_start: int = 1000
+    """Iteration at which routed student motion allocation becomes adaptive."""
+
+    probes_per_motion: int = 1
+    """Full-motion probes per motion after adaptive allocation starts."""
 
     lambda_kl_init: float = 0.0
     """Initial teacher-prior curriculum weight."""

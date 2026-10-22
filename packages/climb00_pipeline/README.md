@@ -1,11 +1,15 @@
 # Climb00 compatibility package
 
 Implementations now live in [`generator`](../generator/README.md),
-[`contact_solver`](../contact_solver/README.md), and `somaforge_core`.
+[`contact_solver`](../contact_solver/README.md), and
+[`somaforge_core`](../somaforge_core/README.md).
 Old imports and `python -m climb00_pipeline.<module>` remain available for
 explicit historical reproduction. The package is not added to the default
 workspace, setup installation or sourced environment.
 New code should use the canonical packages; WBT remains in `src/holosoma`.
+Current expert/distillation entrypoints are documented in
+[modular WBT experiments](../../docs/wbt-modular-experiments.md); the
+[documentation index](../../docs/README.md) lists the maintained interfaces.
 
 Tests now live beside their canonical implementations in `generator/tests`,
 `contact_solver/tests`, and `somaforge_core/tests`. This package contains no

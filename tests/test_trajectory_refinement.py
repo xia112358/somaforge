@@ -169,14 +169,27 @@ def test_train_dry_run_is_single_joint_command_and_no_process(monkeypatch, workd
     assert not (workdir / "training").exists()
 
 
-def test_collection_requires_same_policy_evaluation(monkeypatch, workdir):
+def test_historical_full_checkpoint_option_uses_ordinary_resume_commands(workdir):
+    base = workdir / "base.pt"
+    plan = dict(output_dir=str(workdir), base_checkpoint=str(base), max_episode_length_s=22,
+                config=dict(train=dict(num_envs=4096, save_interval=100, full_checkpoints=True)))
+    for checkpoint, expected in ((base, "--warm-start"), (workdir / "model_00100.pt", "--no-warm-start")):
+        command = workflow.train_command(plan, checkpoint, 10, workdir / "train",
+                                         device="cuda:0", visualizer=None, headless=True)
+        assert "--full-checkpoints" not in command
+        assert expected in command
+
+
+def test_collection_has_no_preliminary_evaluation_gate(monkeypatch, workdir):
     root = workdir / "policy"
     (workdir / "plan.json").write_text("{}")
     workflow.write_json(root / "evaluation_summary.json", dict(checkpoint={"sha256": "old"}, plan_sha256="old"))
     monkeypatch.setattr(workflow, "policy_run", lambda *_: ({"sha256": "new"}, root))
-    plan = dict(output_dir=str(workdir), cases=[], config=dict(collection={}))
-    with pytest.raises(ValueError, match="frozen policy"):
-        workflow.evaluate_or_collect(plan, "collect", "new.pt", execute=False)
+    plan = dict(output_dir=str(workdir), cases=[dict(key="a",frames=4)],
+                config=dict(collection=dict(seed=4,initial_pose_noise=0)))
+    report = workflow.evaluate_or_collect(plan, "collect", "new.pt", execute=False)
+    assert report["preliminary_evaluation"] is False
+    assert report["num_envs"] == 16
 
 
 def test_evaluation_options_parse_with_existing_tyro_contract():
@@ -266,7 +279,7 @@ def test_per_motion_contracts_support_different_trajectory_lengths(workdir, asse
     assert [c["contract"]["frame_count"] for c in plan["cases"]] == [4, 7]
 
 
-def test_full_stage_flow_excludes_failed_motions_and_resumes_without_relaunch(workdir, asset, monkeypatch):
+def test_optional_evaluation_resumes_but_does_not_filter_the_collection_batch(workdir, asset, monkeypatch):
     config = make_generic_input(workdir, asset)
     plan = workflow.prepare(config, execute=True)
     policy = workflow.fingerprint(workdir / "base.pt")
@@ -289,10 +302,42 @@ def test_full_stage_flow_excludes_failed_motions_and_resumes_without_relaunch(wo
     assert len(calls) == 4
     workflow.evaluate_or_collect(plan, "evaluate", "policy.pt", execute=True, **launcher)
     assert len(calls) == 4
-    collected = workflow.evaluate_or_collect(plan, "collect", "policy.pt", execute=True, **launcher)
-    assert collected["omitted_motion_count"] == 1 and len(calls) == 6
-    exported = workflow.export_dataset(plan, "policy.pt", execute=True)
-    assert len(exported["motion_files"]) == 2
-    assert all(e["motion_name"].startswith("custom/0/") for e in exported["motion_files"])
-    workflow.export_dataset(plan, "policy.pt", execute=True)
-    assert len(calls) == 6
+    collected = workflow.evaluate_or_collect(plan, "collect", "policy.pt", execute=False, **launcher)
+    assert collected["num_envs"] == 32 and len(calls) == 4
+    assert collected["preliminary_evaluation"] is False
+
+
+def test_batch_extraction_preserves_local_pose_heading_and_motion_clock(workdir, asset):
+    from somaforge_core.parallel_rollout_collection import extract_batch,load_candidates
+    arrays, case = recording_fixture(workdir/"single.npz",asset)
+    original=arrays["root_pos"].copy(); quaternion=arrays["root_quat_xyzw"].copy()
+    meta=json.loads(arrays.pop("_metadata_json").item())
+    meta.update(env_id=-1,num_envs=2,env_done_steps=[None,None],env_done_is_timeout=[False,False])
+    for key in dataset.STATE_FIELDS:
+        arrays[key]=np.repeat(arrays[key][:,None],2,axis=1)
+    origin=np.broadcast_to(np.array([[2.,3.,0.],[7.,8.,0.]]),(5,2,3))
+    arrays["root_pos"]+=origin
+    arrays["body_pos_w"]+=origin[:,:,None]
+    arrays["env_origins"]=origin
+    arrays["motion_id"]=np.broadcast_to([0,1],(5,2))
+    arrays["motion_start_step"]=np.broadcast_to([0,4],(5,2))
+    arrays["motion_time_step"]=np.repeat(arrays["motion_time_step"][:,None],2,axis=1)+arrays["motion_start_step"]
+    for key in ("terminated","timeout"):
+        arrays[key]=np.repeat(arrays[key][:,None],2,axis=1)
+    arrays["solver_contact_task_group"]=np.zeros((5,1),int)
+    arrays["solver_contact_task_surface"]=np.zeros((5,1),int)
+    arrays["solver_contact_task_eligible"]=np.ones((5,1),bool)
+    arrays["solver_contact_position_w"]+=origin[:,0,None]
+    np.savez(workdir/"chunk.npz",**arrays)
+    recording=workdir/"recording.json"
+    workflow.write_json(recording,dict(schema="somaforge_chunked_recording_v1",complete=True,frames=5,
+        metadata=meta,chunks=[dict(**workflow.fingerprint(workdir/"chunk.npz"),start=0,end=5)]))
+    cases=[dict(case,key="first"),dict(case,key="second")]
+    extract_batch(dict(cases=cases),recording,workdir,repeats=1)
+    first=load_candidates(workdir/"candidates"/"first")
+    second=load_candidates(workdir/"candidates"/"second")
+    np.testing.assert_allclose(first["root_pos"][:,0],original,atol=1e-15)
+    np.testing.assert_allclose(second["root_pos"][:,0],original,atol=1e-15)
+    np.testing.assert_array_equal(second["root_quat_xyzw"][:,0],quaternion)
+    np.testing.assert_array_equal(second["motion_time_step"][:,0]-second["motion_start_step"][:,0],[0,0,1,2,3])
+    assert len(first["pair_frame"])==5 and len(second["pair_frame"])==0

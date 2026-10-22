@@ -57,7 +57,7 @@ def map_surfaces(expected, actual):
 def task_check(case, contacts, actual_catalog):
     if case["task"]["kind"] == "completion_only":
         return dict(passed=None, status="not_requested", scope="complete execution only; task intent unverified")
-    from motion_edit.generation.event_acceptance import audit_events
+    from .contact_order_acceptance import audit_contact_order
     mapping = map_surfaces(case["expected_surface_catalog"], actual_catalog)
     required = {r["surface"] for a in case["contract"]["actions"] for r in a["requirements"] if r["surface"] >= 0}
     if not required.issubset(mapping.values()):
@@ -69,11 +69,11 @@ def task_check(case, contacts, actual_catalog):
     mask = np.asarray(contacts["contact_part_mask"], bool)
     if np.any(mask & (mapped < 0)):
         raise ValueError("An observed contact has no explicit task surface mapping")
-    report, _ = audit_events(case["contract"], mask, mapped)
+    report = audit_contact_order(case["contract"], mask, mapped)
     if report["check_count"] <= 0:
         raise ValueError("An empty contact-event contract cannot certify task acceptance")
     report["surface_mapping"] = mapping
-    report["scope"] = "actual activation/allocation and intended events; loads/slip are separate observations"
+    report["contact_truth"] = "actual activation/allocation; loads/slip are separate observations"
     return report
 
 

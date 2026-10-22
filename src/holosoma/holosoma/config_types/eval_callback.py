@@ -32,6 +32,11 @@ class RecordingConfig:
     stop_when_done: bool = True
     """Stop recording after the selected environment(s) finish their first episode."""
 
+    chunk_frames: int = 0
+    """Flush bounded lossless chunks; zero retains the existing single NPZ format.
+    Chunked recordings publish <output_path>.json and retain every raw contact.
+    """
+
 
 @dataclass(frozen=True)
 class RecordingCallbackConfig:

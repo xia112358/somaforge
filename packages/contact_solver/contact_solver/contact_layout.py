@@ -116,7 +116,8 @@ def relative_plan_objective(prediction, target, heightmap):
         raise ValueError('plan objective requires the observed raster')
     if not bool(torch.isfinite(prediction.role_logits.gather(-1, target['role'][..., None])).all()):
         raise ValueError('Supervised role is outside the actual-contact action space')
-    role = F.cross_entropy(prediction.role_logits.transpose(1, 2), target['role'], reduction='none').mean(-1)
+    from generator.limb_contact import role_objective
+    role = role_objective(prediction, target['role'])
     valid = target['contact_cell_valid'] & (target['role'] != 0)
     locations = (prediction.location_logits_for_roles(target['role'])
         if hasattr(prediction, 'location_logits_for_roles') else prediction.location_logits)

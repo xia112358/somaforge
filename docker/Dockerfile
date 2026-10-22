@@ -1,4 +1,5 @@
-# Base CUDA image. Isaac Sim is installed into the project-scoped conda env.
+# Isaac Sim is installed into the project GA environment.
+# PyTorch's CUDA 13 wheels require a compatible host NVIDIA driver.
 FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 
 # Switch to root user for installation
@@ -20,13 +21,11 @@ RUN mkdir -p /var/lib/apt/lists/partial && \
     wget \
     unzip \
     git \
-    sudo \
-    && rm -rf /var/lib/apt/lists/*
+    sudo
 
 # Install Miniconda
 RUN curl https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o /miniconda.sh && \
-    bash /miniconda.sh -b -u -p $CONDA_ROOT && \
-    rm /miniconda.sh
+    bash /miniconda.sh -b -u -p $CONDA_ROOT
 
 # Configure conda for non-interactive use
 RUN echo ". $CONDA_ROOT/etc/profile.d/conda.sh" >> ~/.bashrc && \
@@ -40,7 +39,9 @@ WORKDIR $WORKSPACE_DIR
 COPY . ./holosoma
 
 ##### Run setup
-RUN bash /workspace/holosoma/scripts/setup_all.sh
+RUN conda create -y -n somaforge_setup python=3.12 && \
+    SOMAFORGE_SETUP_PYTHON=$CONDA_ROOT/envs/somaforge_setup/bin/python \
+    bash /workspace/holosoma/scripts/setup_all.sh
 
 # Set up conda activation for runtime
 RUN echo "source $CONDA_ROOT/etc/profile.d/conda.sh" >> ~/.bashrc

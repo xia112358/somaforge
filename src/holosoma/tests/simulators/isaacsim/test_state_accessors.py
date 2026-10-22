@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from unittest.mock import Mock
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -23,7 +24,7 @@ class TestStateAccessors:
     # Test data constants
     env_ids = torch.tensor([0])
 
-    # Robot test data - wxyz format (IsaacSim internal)
+    # Authored fixture data is WXYZ; GA runtime mocks below store XYZW.
     robot_wxyz = torch.tensor([[
         1.0, 0.0, 1.0,
         1.0, 0.0, 0.0, 0.0,
@@ -94,20 +95,20 @@ class TestStateAccessors:
         mock_object = Mock()
         mock_data = Mock()
 
-        # Store the state tensor (mutable, in wxyz format like IsaacSim)
-        state_tensor = wxyz_state.clone()
-        mock_data.root_state_w = state_tensor  # For rigid objects
+        # GA exposes native XYZW through a TensorBridge's .torch view.
+        state_tensor = fullstate_wxyz_to_xyzw(wxyz_state).clone()
+        mock_data.root_state_w = SimpleNamespace(torch=state_tensor)
 
         # Functional write methods that update the internal tensor
-        def write_root_pose_to_sim(pose_tensor, env_ids):
-            state_tensor[env_ids, 0:7] = pose_tensor
+        def write_root_pose_to_sim_index(*, root_pose, env_ids):
+            state_tensor[env_ids, 0:7] = root_pose
 
-        def write_root_velocity_to_sim(velocity_tensor, env_ids):
-            state_tensor[env_ids, 7:13] = velocity_tensor
+        def write_root_velocity_to_sim_index(*, root_velocity, env_ids):
+            state_tensor[env_ids, 7:13] = root_velocity
 
         # Attach the working write methods
-        mock_object.write_root_pose_to_sim = write_root_pose_to_sim
-        mock_object.write_root_velocity_to_sim = write_root_velocity_to_sim
+        mock_object.write_root_pose_to_sim_index = write_root_pose_to_sim_index
+        mock_object.write_root_velocity_to_sim_index = write_root_velocity_to_sim_index
         mock_object.data = mock_data  # For rigid objects
         mock_object._internal_state = state_tensor  # For direct access
 
@@ -203,13 +204,17 @@ class TestStateAccessors:
             # Create mock object_state_w tensor for scene objects
             scene_state_tensor = torch.zeros(num_envs, len(scene_objects), 13, dtype=torch.float32)
             scene_state_tensor[:, :, 6] = 1.0  # Set identity quaternions
-            scene_collection_data.object_state_w = scene_state_tensor
+            scene_collection_data.body_state_w = SimpleNamespace(torch=scene_state_tensor)
             scene_collection_mock.data = scene_collection_data
 
-            def write_object_state_to_sim(states, env_ids):
-                scene_collection_data.object_state_w[env_ids] = states
+            def write_body_pose_to_sim_index(*, body_poses, env_ids):
+                scene_state_tensor[env_ids, :, :7] = body_poses
 
-            scene_collection_mock.write_object_state_to_sim = write_object_state_to_sim
+            def write_body_velocity_to_sim_index(*, body_velocities, env_ids):
+                scene_state_tensor[env_ids, :, 7:] = body_velocities
+
+            scene_collection_mock.write_body_pose_to_sim_index = write_body_pose_to_sim_index
+            scene_collection_mock.write_body_velocity_to_sim_index = write_body_velocity_to_sim_index
 
             # Add to rigid objects
             all_rigid_objects["usd_scene_objects"] = scene_collection_mock
@@ -264,7 +269,7 @@ class TestStateAccessors:
     def test_robot_state_roundtrip_via_root_states_proxy(self):
         """Test robot state read/write using RootStatesProxy."""
 
-        proxy = RootStatesProxy(self.robot_wxyz)
+        proxy = RootStatesProxy(self.robot_xyzw.clone())
 
         # Test read
         actual_state = proxy[self.env_ids, :]

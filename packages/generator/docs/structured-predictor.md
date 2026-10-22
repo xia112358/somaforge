@@ -90,7 +90,9 @@ attention 本身仍是内容与查询决定的加权混合；这里移除的是�
 - 当前正式基线为[latest v1](../../../baselines/predictor_v1_latest_20261010/README.md)；
   本文v2独立编码器与逐关节token改版保留为未采用的显式实验。
 - `python -m generator.train_full1000_position` 当前默认v1、scratch初始化，
-  `execution_observation_gradients` 默认True。显式v2实验须传
+  `execution_observation_gradients` 默认False，规划表征仅由规划损失更新。
+  历史共享梯度对照需显式传 `--execution-observation-gradients`。
+  显式v2实验须传
   `--architecture full1000_position_predictor_v2 --no-execution-observation-gradients`；
   v2 仍拒绝共享梯度。以下独立 token、参数组和读出描述仅适用于v2。
 - Planner/executor 各自独立裁剪，所有训练参数恰好归属一组，无 shared 参数组。
@@ -239,3 +241,160 @@ BF16 入口仅为 `tmp/predictor_batch_bf16_20261008/train_probe.py` 的诊断�
 112.77→118.12 ms，已经撤回。采用的提速仅来自 C++ 批量调用，未采用 BF16。
 全部有限实验正常结束，未自动启动正式长训练。脚本、launch、逐轮日志及报告在
 `tmp/predictor_native_batch_20261008/`。
+
+### Nearby same-surface location supervision
+
+New training defaults to `--location-supervision surface_region`. For each active
+non-keep demonstrated role, the location objective is the negative log of the
+summed probability of observed candidates on the demonstrated surface and within
+`scan_spacing_m * --location-region-spacing-multiplier` of the demonstrated
+world-space endpoint. The multiplier defaults to 1.0. This replaces single-point
+cross entropy; `--location-supervision point` retains the point objective for
+ablations. Teacher conditioning still uses the nearest available candidate.
+
+Surface identities only group training candidates. They are not learned ID
+embeddings or inference constraints. Keep uses its actual starting contact anchor
+and is excluded from location supervision. Targets without any valid candidate in
+the region are counted as uncovered and excluded, with no synthetic positive.
+Region radius defines a training proxy, not Newton contact truth or execution
+acceptance. The endpoint contact objective and inference interface are unchanged.
+Checkpoints record the supervision mode and radius rule. Region coverage,
+selected-region accuracy and positive candidate counts are logged alongside the
+existing point diagnostics.
+
+### Shared-gradient attribution experiment
+
+For v1 with explicitly enabled `--execution-observation-gradients`, the experimental option
+`--isolate-unsupervised-execution-gradients` detaches only the executor's reads of
+terrain/root/part shared features for rollout samples with `supervised=False`.
+Demonstrated executor samples and planner gradients retain their original paths.
+It does not change forward predictions or mask the entire batch. Here
+`supervised=False` means the rollout has no remaining demonstration target; it is
+not a general distribution-outlier detector.
+
+Every saved milestone now retains a complete `training_state_NNNN.pt`, including
+initialization and pre-pool warmup. `parallel_training_state.pt` remains a latest
+copy; older milestone states are never overwritten. The historical
+`--capture-training-state-steps` option remains accepted for existing launch files
+but is no longer needed to retain a milestone.
+`--stop-after-step 1075` stops without changing the 1100-step learning-rate schedule.
+Use `--resume-training-state <training_state_1075.pt>` to branch from the same model,
+AdamW state, scheduler, rollout observations/cursor, pending plans, and Torch/CUDA,
+NumPy and Python RNG states. Resume validates the training configuration; only
+output, state capture/stop controls and the selective gradient option may differ,
+unless the explicit shared-to-isolated migration described below is requested.
+Historical partial state files are rejected. Resume currently supports parallel
+training without keep-patch caches or a constrained optimizer.
+
+The paired branches share initial training state. Their own rollout pools can
+subsequently diverge as changed updates alter predictions and acceptance. Compare
+fixed-input Query/Key scores separately from closed-loop results. A replay must be
+compared with the historical checkpoint before claiming reproduction of an old
+training interval; matching the seed alone is insufficient.
+
+### Planner-owned training updates (2026-10-15)
+
+New v1 scratch runs default to `--no-execution-observation-gradients` and
+`--optimizer-gradient-ownership planner_supervised_v1`. The executor reads detached
+terrain/root/part features and detached plans. Planner losses still train the
+depth encoder, state encoders, fusion layers and planning heads; execution losses
+still train the execution adapters and decoder. The forward interface and network
+weights/shapes are unchanged. This is full execution-gradient isolation, distinct
+from the selective unsupervised-only experiment above.
+
+After backward, a rollout batch with no demonstration supervision sets planning
+parameter gradients to `None` before clipping/AdamW. This skips both parameter
+updates and optimizer-state advancement, including historical momentum and weight
+decay. In selective isolation mode the same rule also skips the isolated shared
+group. Mixed batches retain their supervised planner gradients; reference batches
+retain planner learning. The explicit historical shared-gradient mode still lets
+execution train its shared group. `--optimizer-gradient-ownership legacy` retains
+historical zero-gradient optimizer behavior for matched control experiments.
+
+Ordinary resume preserves all optimizer moments. Historical states missing the
+ownership field mean `legacy`; resuming them unchanged requires their original
+shared-gradient flag and `--optimizer-gradient-ownership legacy` in addition to
+the original recipe. A change of ownership is otherwise rejected.
+
+To explicitly migrate a complete shared v1 state, retain the original recipe and
+add `--resume-training-state <state.pt> --resume-gradient-isolation
+--no-execution-observation-gradients --optimizer-gradient-ownership planner_supervised_v1`
+(disable selective isolation if it was enabled). Migration resets only the old
+shared encoder's mixed AdamW moments and per-parameter counters. Planner-head and
+executor moments, model weights, scheduler, pool/cursor, pending plans, RNG and
+training progress are restored. The reset parameter list is recorded in
+`resume_gradient_isolation.json`; `restored_initial_state.pt` captures the resulting
+full state. A subsequent same-mode resume does not reset again. This migration
+changes optimizer state and must not be presented as the matched-state selective
+gradient A/B experiment.
+
+The historical baseline records remain immutable. An already running process keeps
+its original training policy; changing defaults does not retrofit that process.
+# Four-limb contact modes
+
+The opt-in `--limb-contact-modes` v1 contract groups left foot/knee and
+right foot/knee into two leg decisions, alongside the two hand decisions.
+Each leg has seven legal states: no contact, or one of the three active roles
+for either foot or knee/shin. Joint scores sum the selected and inactive part
+potentials; both cross-entropy supervision and hard selection use this joint
+distribution. Actual-contact validity still masks unavailable keep states.
+Teacher and repair plans with simultaneous same-leg foot/knee targets fail
+explicitly. Observed Newton contacts are never modified by this intent rule.
+
+Regional subsets remain unchanged: heel/toe and hand regions may contact
+together. A selected part has one target with its regional contact subset.
+Historical checkpoints without this option retain independent part decisions;
+new checkpoints must include `four_limb_single_contact_mode_v1` in their
+architecture contract. Complete training-state resume cannot change this mode.
+
+## Independently runnable training stages
+
+`train_full1000_position` now defaults to `--training-stage single_segment`.
+It never switches stages implicitly. Each invocation writes to its own new
+output directory. The old blended recipe is available only with explicit
+`--training-stage legacy_mixed`; its checkpoints must resume in that mode.
+
+- `single_segment`: shuffled demonstrated segments, teacher-conditioned plans,
+  planning and execution supervision, no generated-state feedback.
+- `demonstration_rollout`: random demonstrated starting rows, then the model's
+  own plans and accepted predicted poses; demonstrated targets supervise each
+  step. Reset at demonstration end or the attempt budget. No independent
+  demonstration batches and no continuation beyond the demonstrated endpoint.
+- `post_demonstration`: start exclusively from actual accepted stage-2 terminal
+  states stored in the full checkpoint. No teacher conditioning or demonstration
+  loss. Only execution parameters update: shared/planner gradients are skipped,
+  including their AdamW moment/decay updates. An empty terminal bank is an error.
+  Every rejected prediction ends the episode immediately and samples a fresh
+  start from that bank; it is never retried from the last accepted state. The
+  failed output still contributes its execution loss before reset. Accepted
+  outputs continue normally until rejection or the attempt budget. Stage 2
+  retains rollback and supervised retries. The rejection policy is recorded in
+  resumable pool states; historical stage-3 rollback states cannot silently
+  resume under the new policy.
+
+Use the same data, architecture, optimizer and schedule configuration throughout.
+`--steps` is the absolute end step, not the number of additional iterations.
+For example, with a common `--schedule-steps 1100`, run stage 1 with `--steps 100`;
+run stage 2 with `--steps 600 --resume-training-state <stage1>/training_state_0100.pt`;
+then stage 3 with `--steps 1100 --resume-training-state <stage2>/training_state_0600.pt`.
+Specify the appropriate `--training-stage` and a separate `--output` each time.
+These lengths are examples, not automatic stage-switch thresholds. Repeating
+stage 3 from the same stage-2 checkpoint does not rerun stages 1 or 2. Same-stage
+resume may extend `--steps` while preserving the original scheduler state.
+
+Stage changes preserve weights, optimizer, scheduler and RNG. Stage 2 starts a
+new demonstration pool; stage 3 starts a new pool from the saved terminal bank.
+The source state is audited in `restored_initial_state.pt`; the new stage's entry
+also receives same-step model and full-state milestone files. Terminal banks,
+current extra depth, first failure, retry counters and aggregate episode
+histograms are included in subsequent resumable states.
+
+`stage_rollouts.jsonl` records each reporting interval separately. In stage 3,
+`accepted_steps` counts successful advances **after** the demonstration endpoint;
+failed attempts do not increase it. `first_failure_depth` counts successful steps
+before the first rejection, with `-1` meaning no failure observed yet (censored,
+not an infinite successful chain). Retries and attempt-budget resets are recorded
+separately. Completed-episode histograms and active, unfinished depths are kept
+separate. Single-segment validation remains explicitly labelled as a diagnostic,
+not the recursive stage's success rate. Historical blended states lack verified
+stage-2 seed provenance and cannot be relabelled as completed staged training.

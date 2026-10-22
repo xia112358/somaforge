@@ -162,6 +162,9 @@ def train(
         If None, creates and manages sim app automatically.
     """
 
+    from holosoma.utils.wbt_experiment import prepare_wbt_experiment
+
+    tyro_config = prepare_wbt_experiment(tyro_config)
     tyro_config = normalize_motion_matched_config(tyro_config)
     from somaforge_core import stage_spec
     from somaforge_core.robot_assets import validate_g1_robot_config

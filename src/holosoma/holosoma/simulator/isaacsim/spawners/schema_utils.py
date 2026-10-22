@@ -46,7 +46,7 @@ ensure_api_and_modify(
 
 from typing import Any, Callable, Type
 
-import isaacsim.core.utils.stage as stage_utils
+from isaaclab.sim.utils import stage as stage_utils
 import omni.log
 import omni.usd
 from pxr import Usd

@@ -108,6 +108,7 @@ class MotionConfig:
         "uniform",
         "adaptive",
         "failure_window",
+        "completion_recent30_failure_window",
         "completion_ema_failure_window",
         "hotspot_failure_window",
     ] = "uniform"
@@ -116,16 +117,21 @@ class MotionConfig:
     canonicalize_motion_order_on_load: bool = False
     """Reorder motion tensors to simulator body/joint order during load instead of at each property access."""
 
+    fixed_motion_assignment_in_eval: bool = False
+    """Assign eval environment i to motion i % motion_count, including resets.
+    Independent complete recordings do not require segment chaining.
+    """
+
     touchdown_lift_min_window_frames: int = 2
     """Minimum proto bin length, in motion frames, to use for reset sampling."""
 
-    failure_window_pre_frames: int = 20
+    failure_window_pre_frames: int = 50
     """Number of frames before a bad-tracking failure frame to sample from."""
 
     failure_window_post_frames: int = 20
     """Number of frames after a bad-tracking failure frame to sample from."""
 
-    failure_window_before_prob: float = 0.5
+    failure_window_before_prob: float = 0.7
     """Probability of sampling from the pre-failure side of the failure window."""
 
     failure_window_log_bin_frames: int = 25
@@ -243,7 +249,9 @@ class MotionConfig:
     """Number of fixed from-zero probe environments assigned to each motion when use_start_probe_envs is True."""
 
     probe_completion_alpha: float = 0.02
-    """EMA update rate for per-motion start-probe completion, success, and failure statistics."""
+    """EMA rate for the separate ordinary completion-learning sampler.
+    Start/group probes use a rolling window of 30 finished episodes.
+    """
 
     probe_weight_beta: float = 0.05
     """EMA update rate for normal-env motion sampling weights derived from start-to-end probe success."""

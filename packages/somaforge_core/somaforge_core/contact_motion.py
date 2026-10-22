@@ -69,9 +69,11 @@ def loaded_motion_statistics(speed, load, groups, size):
     count=np.bincount(groups[load>0],minlength=size)
     rms=np.full(size,np.nan);maximum=np.full(size,np.nan);minimum=np.full(size,np.nan)
     known=total>0;rms[known]=np.sqrt(square[known]/total[known])
-    for g in np.flatnonzero(known):
-        values=speed[(groups==g)&(load>0)]
-        minimum[g]=values.min();maximum[g]=values.max()
+    low=np.full(size,np.inf);high=np.full(size,-np.inf)
+    positive=load>0
+    np.minimum.at(low,groups[positive],speed[positive])
+    np.maximum.at(high,groups[positive],speed[positive])
+    minimum[known]=low[known];maximum[known]=high[known]
     return dict(normal_force_n=total,rms_tangent_speed_m_s=rms,
                 minimum_loaded_speed_m_s=minimum,maximum_loaded_speed_m_s=maximum,
                 loaded_constraint_count=count,load_bearing=known,loaded_motion_known=known)

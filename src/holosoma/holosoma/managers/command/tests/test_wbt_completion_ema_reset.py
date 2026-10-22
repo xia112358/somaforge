@@ -26,14 +26,15 @@ def _command() -> MotionCommand:
     command._use_start_probe_envs = True
     command._use_group_probe_envs = False
     command._probe_count = torch.tensor([4, 4])
-    command._probe_completion_ema = torch.tensor([0.4, 0.6])
+    command._probe_recent30_count = torch.tensor([4, 4])
+    command._probe_completion_recent30 = torch.tensor([0.4, 0.6])
     return command
 
 
 def test_completion_ema_branch_uses_each_motions_own_progress() -> None:
     command = _command()
 
-    sampled = command._sample_completion_ema_failure_window_time_steps(
+    sampled = command._sample_completion_recent30_failure_window_time_steps(
         torch.tensor([0, 1])
     )
 
@@ -46,9 +47,10 @@ def test_completion_ema_branch_uses_each_motions_own_progress() -> None:
 def test_completion_ema_branch_is_uniform_until_probe_has_reported() -> None:
     command = _command()
     command._probe_count.zero_()
+    command._probe_recent30_count.zero_()
 
     torch.manual_seed(7)
-    sampled = command._sample_completion_ema_failure_window_time_steps(
+    sampled = command._sample_completion_recent30_failure_window_time_steps(
         torch.tensor([0, 1])
     )
 
@@ -60,9 +62,10 @@ def test_completion_ema_branch_is_uniform_until_probe_has_reported() -> None:
 def test_completion_ema_branch_keeps_unreported_motion_uniform() -> None:
     command = _command()
     command._probe_count = torch.tensor([4, 0])
+    command._probe_recent30_count = torch.tensor([4, 0])
 
     torch.manual_seed(7)
-    sampled = command._sample_completion_ema_failure_window_time_steps(
+    sampled = command._sample_completion_recent30_failure_window_time_steps(
         torch.tensor([0, 1])
     )
 
@@ -86,10 +89,10 @@ def test_probe_success_logging_uses_fixed_tracking_qualification() -> None:
         motion_end_idx=torch.tensor([101]),
     )
     command.motion_cfg = SimpleNamespace(probe_completion_alpha=0.02)
-    command._probe_completion_ema = torch.zeros(1)
-    command._probe_success_ema = torch.zeros(1)
-    command._probe_fail_ema = torch.zeros(1)
-    command._probe_timeout_ema = torch.zeros(1)
+    command._probe_completion_recent30 = torch.zeros(1)
+    command._probe_success_recent30 = torch.zeros(1)
+    command._probe_fail_recent30 = torch.zeros(1)
+    command._probe_timeout_recent30 = torch.zeros(1)
     command._probe_count = torch.zeros(1, dtype=torch.long)
     command._probe_fail_bin_count = 10
     command._probe_fail_bin_hist = torch.zeros(1, 10)
@@ -107,7 +110,7 @@ def test_probe_success_logging_uses_fixed_tracking_qualification() -> None:
 
     command._update_start_probe_stats(torch.tensor([0]))
 
-    assert command._probe_completion_ema.tolist() == pytest.approx([0.02])
-    assert command._probe_success_ema.tolist() == pytest.approx([0.0])
-    assert command._probe_fail_ema.tolist() == pytest.approx([0.02])
+    assert command._probe_completion_recent30.tolist() == pytest.approx([1.0])
+    assert command._probe_success_recent30.tolist() == pytest.approx([0.0])
+    assert command._probe_fail_recent30.tolist() == pytest.approx([1.0])
     assert command._probe_count.tolist() == [1]

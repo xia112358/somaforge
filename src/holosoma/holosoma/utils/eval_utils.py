@@ -154,7 +154,10 @@ def _experiment_config_from_serialized(config_data: dict) -> ExperimentConfig:
     config_data["evaluation"] = EvaluationConfig(**evaluation_data)
 
     algo_data = config_data.get("algo")
-    if isinstance(algo_data, dict) and algo_data.get("_target_") == "holosoma.agents.ppo.distill_ppo.DistillPPO":
+    if isinstance(algo_data, dict) and algo_data.get("_target_") in {
+        "holosoma.agents.ppo.distill_ppo.DistillPPO",
+        "holosoma.agents.ppo.routed_distill_ppo.RoutedDistillPPO",
+    }:
         algo_config = algo_data.get("config")
         if isinstance(algo_config, dict):
             algo_data = dict(algo_data)

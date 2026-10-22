@@ -1,0 +1,2 @@
+# PyRoki declares a floating jaxls Git URL; override that transitive source.
+jaxls @ git+https://github.com/brentyi/jaxls.git@f8f8dbb54b3e0c16e8bf014496462a4e675e9389

@@ -4,6 +4,12 @@
 
 代码和说明放在本目录；导入的历史记录、运行结果、图表和汇总统一放在 `tmp/contact_observability/`。
 
+相关入口：[环境配置](../../docs/environments.md)、
+[共享资产与接触契约](../somaforge_core/README.md)、[Generator](../generator/README.md)、
+[WBT expert 与蒸馏](../../docs/wbt-modular-experiments.md)、
+[文档索引](../../docs/README.md)。本目录是独立观测诊断工具，不是训练启动器或接触标签生产入口。
+下面的 `tmp/` 报告只存在于本机生成结果中，不随 Git 仓库分发；新机器需运行对应命令。
+
 ## 历史实验与配置诊断
 
 ### 起始帧审计
@@ -40,7 +46,7 @@
 
 来源：`tmp/predictor_root_depth_20261013/final_report.json`。最终根相机配置报告的 3,840 / 3,840 个目标位于观测范围内，且达到同表面 4 cm 像素覆盖容差。该结果仍是几何观测诊断，不含身体遮挡，不能扩展为真实接触或实际传感器全覆盖结论。
 
-独立入口也已用 `root_depth_87x58_fov89p5_pitch85_yaw_v1` 完整扫描上述同一条 700 帧动作：当前起始帧、截至起始帧累计、接触前和全程覆盖均为 19 / 19。产物位于 [route_root87/](../../tmp/contact_observability/route_root87/index.html)；这项单条动作复跑与历史 207 条动作起始帧审计分别保存。
+独立入口也已用 `root_depth_87x58_fov89p5_pitch85_yaw_v1` 完整扫描上述同一条 700 帧动作：当前起始帧、截至起始帧累计、接触前和全程覆盖均为 19 / 19。本机产物位于 `tmp/contact_observability/route_root87/index.html`；这项单条动作复跑与历史 207 条动作起始帧审计分别保存。
 
 ## 观测与接触约定
 
@@ -62,7 +68,7 @@ G1 资产必须经 `somaforge_core.robot_assets` 使用唯一权威资产 `src/h
 
 历史 `run.py` 等脚本作为来源快照保存在 `history/` 中供审计。正式入口不执行这些含硬编码路径和配置的历史脚本。
 
-已导入 6 个历史实验的 98 个文件，约 158 MB，复制结果全部经过 SHA256 核验。总索引位于 [tmp/contact_observability/index.html](../../tmp/contact_observability/index.html)，可访问导入记录；独立复跑的查看器位于 [tmp/contact_observability/route/index.html](../../tmp/contact_observability/route/index.html)。
+本机历史导入记录包含 6 个实验的 98 个文件，约 158 MB，复制结果全部经过 SHA256 核验。生成的总索引为 `tmp/contact_observability/index.html`；独立复跑的查看器为 `tmp/contact_observability/route/index.html`。这些是本地报告路径，不是远程仓库可下载的资产。
 
 ```bash
 # 导入历史记录，保留来源快照、清单和摘要。
@@ -73,10 +79,10 @@ python3 packages/contact_observability/run.py summarize
 python3 packages/contact_observability/run.py summarize --write
 
 # 使用原相机重新扫描整条动作。
-PYTHONPATH=packages/somaforge_core /home/xiaz/miniforge3/envs/env_somaforge/bin/python packages/contact_observability/run.py route
+runtime/environments/isaaclab-ga-3.0.0-newton-1.7.0/bin/python packages/contact_observability/run.py route
 
 # 指定根相机配置和独立输出目录。
-PYTHONPATH=packages/somaforge_core /home/xiaz/miniforge3/envs/env_somaforge/bin/python packages/contact_observability/run.py route \
+runtime/environments/isaaclab-ga-3.0.0-newton-1.7.0/bin/python packages/contact_observability/run.py route \
   --profile root_depth_87x58_fov89p5_pitch85_yaw_v1 \
   --output tmp/contact_observability/route_root87
 

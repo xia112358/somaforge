@@ -1,5 +1,7 @@
 """Whole Body Tracking observation presets for the G1 robot."""
 
+from dataclasses import replace
+
 from holosoma.config_types.observation import ObservationManagerCfg, ObsGroupCfg, ObsTermCfg
 
 actor_obs_shared = ObsGroupCfg(
@@ -518,6 +520,63 @@ g1_29dof_wbt_php_student_observation = ObservationManagerCfg(
         ),
     }
 )
+
+# Independently composable native-contact observation blocks. Reference targets
+# occur only in expert blocks; all student input functions are checked at launch.
+g1_29dof_wbt_sparse_native_observation = replace(
+    g1_29dof_wbt_sparse_climb_observation,
+    groups={
+        **g1_29dof_wbt_sparse_climb_observation.groups,
+        "actor_obs": replace(
+            g1_29dof_wbt_sparse_climb_observation.groups["actor_obs"],
+            terms={
+                **g1_29dof_wbt_sparse_climb_observation.groups["actor_obs"].terms,
+                "00_sparse_climb_reference_window": ObsTermCfg(
+                    func="holosoma.managers.observation.terms.wbt_experiment:sparse_reference",
+                    params={"add_noise": True},
+                ),
+            },
+        ),
+    },
+)
+
+g1_29dof_wbt_native_force_observation = replace(
+    g1_29dof_wbt_observation,
+    groups={name: replace(group, terms={**group.terms,
+        "reference_force": ObsTermCfg(func="holosoma.managers.observation.terms.wbt_experiment:reference_force"),
+        "actual_contacts": ObsTermCfg(func="holosoma.managers.observation.terms.wbt_experiment:actual_contacts"),
+    }) for name, group in g1_29dof_wbt_observation.groups.items()},
+)
+
+g1_29dof_wbt_sparse_native_force_observation = replace(
+    g1_29dof_wbt_sparse_native_observation,
+    groups={**g1_29dof_wbt_sparse_native_observation.groups,
+        "actor_obs": replace(g1_29dof_wbt_sparse_native_observation.groups["actor_obs"], terms={
+            **g1_29dof_wbt_sparse_native_observation.groups["actor_obs"].terms,
+            "reference_force": ObsTermCfg(func="holosoma.managers.observation.terms.wbt_experiment:reference_force"),
+            "actual_contacts": ObsTermCfg(func="holosoma.managers.observation.terms.wbt_experiment:actual_contacts"),
+        })},
+)
+
+
+def student_contact_observation(mode):
+    terms = {**php_student_actor_terms,
+        "velocity_command": ObsTermCfg(func="holosoma.managers.observation.terms.wbt_experiment:velocity_command",
+            params={"source": "dataset", "command": (1., 0.)}),
+    }
+    if mode != "none":
+        terms["actual_contacts"] = ObsTermCfg(
+            func="holosoma.managers.observation.terms.wbt_experiment:actual_contacts", params={"mode": mode})
+    return ObservationManagerCfg(groups={
+        "actor_obs": ObsGroupCfg(terms=terms, enable_noise=True),
+        "depth_obs": g1_29dof_wbt_php_student_observation.groups["depth_obs"],
+        "critic_obs": g1_29dof_wbt_observation.groups["critic_obs"],
+    })
+
+
+g1_29dof_wbt_student_contact_state_observation = student_contact_observation("state")
+g1_29dof_wbt_student_contact_force_observation = student_contact_observation("state_force")
+g1_29dof_wbt_student_proprio_depth_observation = student_contact_observation("none")
 
 __all__ = [
     "CURRENT_REF_TERM_NAMES",

@@ -24,6 +24,16 @@ class Full1000PositionPrediction(PlannedContactPrediction):
     conditioned_surface: torch.Tensor | None = None
     conditioned_point_id: torch.Tensor | None = None
     keep_uses_current_point: bool = False
+    candidate_surfaces: torch.Tensor | None = None
+    candidate_valid: torch.Tensor | None = None
+    limb_role_logits: torch.Tensor | None = None
+
+    @property
+    def role(self):
+        if self.limb_role_logits is not None:
+            from generator.limb_contact import decode_limb_roles
+            return decode_limb_roles(self.limb_role_logits)
+        return self.role_logits.argmax(-1)
 
     def location_logits_for_roles(self, roles):
         raw = self.location_logits if self.raw_location_logits is None else self.raw_location_logits
@@ -49,6 +59,9 @@ class PositionPlan:
     conditioned_surface: torch.Tensor | None = None
     conditioned_point_id: torch.Tensor | None = None
     keep_uses_current_point: bool = False
+    candidate_surfaces: torch.Tensor | None = None
+    candidate_valid: torch.Tensor | None = None
+    limb_role_logits: torch.Tensor | None = None
 
     def prediction(self, qpos):
         return Full1000PositionPrediction(qpos, self.role_logits, self.location_logits,
@@ -56,7 +69,8 @@ class PositionPlan:
             self.conditioned_points_local, self.teacher_conditioned, self.region_logits,
             self.planned_regions, self.conditioned_role, self.raw_role_logits,
             self.raw_location_logits, self.keep_location_allowed, self.candidate_points_local,
-            self.conditioned_surface, self.conditioned_point_id, self.keep_uses_current_point)
+            self.conditioned_surface, self.conditioned_point_id, self.keep_uses_current_point,
+            self.candidate_surfaces, self.candidate_valid, self.limb_role_logits)
 
 
 def select_position_plan(model, current_q, heightmap, basis, part, *, current_contact,
@@ -110,9 +124,14 @@ def select_position_plan(model, current_q, heightmap, basis, part, *, current_co
     raw_location = torch.einsum('bpd,bnd->bpn', model.location_query(part), keys) / keys.shape[-1] ** .5
     if mesh:
         raw_location = raw_location.masked_fill(~scan_valid[:, None], -torch.inf)
-    logits = conditional_location_logits(raw_location, role.argmax(-1), keep_allowed)
-    contact, cell = role.argmax(-1) != 0, logits.argmax(-1)
+    joint_roles = None
     conditioned_role = role.argmax(-1)
+    if getattr(model, "limb_contact_modes", False):
+        from generator.limb_contact import limb_logits, decode_limb_roles
+        joint_roles = limb_logits(role)
+        conditioned_role = decode_limb_roles(joint_roles)
+    logits = conditional_location_logits(raw_location, conditioned_role, keep_allowed)
+    contact, cell = conditioned_role != 0, logits.argmax(-1)
     predicted_points = geometry.gather(1, cell[..., None].expand(-1, -1, 3))
     if teacher_mask is None:
         teacher_mask = torch.zeros(len(current_q), dtype=torch.bool, device=current_q.device)
@@ -222,6 +241,9 @@ def select_position_plan(model, current_q, heightmap, basis, part, *, current_co
                     raise ValueError('Regional repair requires stored regional intent')
                 planned_regions = torch.where(repair_mask[:, None, None], repair_regions, planned_regions)
 
+    if joint_roles is not None:
+        from generator.limb_contact import limb_targets
+        limb_targets(conditioned_role)  # Also validate teacher and repair plans.
     if bound_keep:
         keep = conditioned_role == 2
         if bool(keep.any()):
@@ -251,4 +273,5 @@ def select_position_plan(model, current_q, heightmap, basis, part, *, current_co
     return PositionPlan(role, logits, predicted_points, contact, cell, points, teacher_mask,
                         region_logits, planned_regions, conditioned_role,
                         raw_role if validity else None, raw_location if validity else None, keep_allowed,
-                        geometry if mesh else None, selected_surface, selected_point_id, bound_keep)
+                        geometry if mesh else None, selected_surface, selected_point_id, bound_keep,
+                        scan_surface if mesh else None, scan_valid if mesh else None, joint_roles)

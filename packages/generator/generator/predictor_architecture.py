@@ -32,6 +32,10 @@ def build_position_predictor(config, *, schema=STRUCTURED_SCHEMA):
                   role_validity=config.get('role_validity', False),
                   world_surface_scan=config.get('world_surface_scan', False),
                   depth_observation=config.get('depth_observation', False))
+    if config.get("limb_contact_modes", False):
+        if schema != LEGACY_SCHEMA:
+            raise ValueError("Limb contact modes currently require v1")
+        kwargs["limb_contact_modes"] = True
     model = cls(**kwargs)
     from somaforge_core.world_mesh_scan import LEGACY_DEPTH_PROFILE, depth_camera_profile
     model.depth_scan_profile = config.get('depth_scan_profile', LEGACY_DEPTH_PROFILE)
@@ -42,6 +46,10 @@ def build_position_predictor(config, *, schema=STRUCTURED_SCHEMA):
 def load_position_predictor(checkpoint, *, device='cpu'):
     decode_robot_asset_json(checkpoint['robot_asset_json'], context='versioned position checkpoint')
     model = build_position_predictor(checkpoint['config'], schema=checkpoint['schema']).to(device)
+    if getattr(model, "limb_contact_modes", False):
+        from generator.limb_contact import SCHEMA
+        if checkpoint.get("architecture_contract", {}).get("limb_contact_modes") != SCHEMA:
+            raise ValueError("Checkpoint lacks its four-limb contact contract")
     if model.role_validity:
         from generator.role_validity import ROLE_VALIDITY_SCHEMA
         if checkpoint.get('architecture_contract', {}).get('role_validity') != ROLE_VALIDITY_SCHEMA:

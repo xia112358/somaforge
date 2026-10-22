@@ -26,7 +26,7 @@ class Full1000PositionPredictor(ConditionedHeightmapPosePredictor):
     def __init__(self, width=192, layers=3, location_width=32, *, body_geometry=False, part_geometry=False,
                  region_plan=False, unified_contact=False, execution_plan_gradients=False, event_roles=False,
                  execution_observation_gradients=False, role_validity=False, world_surface_scan=False,
-                 depth_observation=False):
+                 depth_observation=False, limb_contact_modes=False):
         super().__init__(width, layers)
         self.width, self.layers, self.location_width = width, layers, location_width
         self.unified_contact = unified_contact
@@ -40,6 +40,9 @@ class Full1000PositionPredictor(ConditionedHeightmapPosePredictor):
         self.location_query = nn.Linear(width, location_width)
         self.location_key = nn.Sequential(nn.Linear(3, width), nn.GELU(), nn.Linear(width, location_width))
         self.plan_position_encoder = nn.Linear(4, width)
+        self.limb_contact_modes = limb_contact_modes
+        if limb_contact_modes and not (event_roles and role_validity):
+            raise ValueError("Limb contact modes require event roles and actual-contact validity")
         self.event_roles = event_roles
         self.role_validity = role_validity
         self.world_surface_scan = world_surface_scan
@@ -133,6 +136,9 @@ class Full1000PositionPredictor(ConditionedHeightmapPosePredictor):
             execution_plan_gradients=self.execution_plan_gradients,
             execution_observation_gradients=self.execution_observation_gradients,
             readout='legacy root+part mean')
+        if self.limb_contact_modes:
+            from generator.limb_contact import SCHEMA
+            contract["limb_contact_modes"] = SCHEMA
         if self.role_validity:
             from generator.role_validity import ROLE_VALIDITY_SCHEMA
             contract['role_validity'] = ROLE_VALIDITY_SCHEMA
@@ -228,6 +234,7 @@ class Full1000PositionPredictor(ConditionedHeightmapPosePredictor):
     def forward(self, current_q, current_contact, current_anchor, heightmap=None, *,
                 current_contact_relations=None, contact_surface_ids=None, heightmap_surface=None,
                 contact_relation_points=None,
+                execution_observation_supervised=None,
                 contact_patch_points=None, contact_patch_part=None, contact_patch_surface=None, contact_patch_valid=None,
                 scan_points_world=None, scan_surface=None, scan_valid=None, scan_point_id=None, scan_spacing_m=None,
                 depth_image=None, depth_valid=None, depth_intrinsics=None, depth_camera_rotation_world=None,
@@ -258,6 +265,14 @@ class Full1000PositionPredictor(ConditionedHeightmapPosePredictor):
         # contact/position/role/region intent detached below.
         if not self.execution_observation_gradients:
             terrain, body, part = terrain.detach(), body.detach(), part.detach()
+        elif execution_observation_supervised is not None:
+            mask = execution_observation_supervised
+            if mask.dtype != torch.bool or mask.shape != (len(current_q),):
+                raise ValueError('Execution observation supervision must be boolean [B]')
+            # Only the execution read of shared features is gated. Planner
+            # reads above retain their original gradients on every sample.
+            terrain, body, part = [torch.where(mask[:, None, None], x, x.detach())
+                for x in (terrain, body, part)]
         body = body+self.execution_adapter(body)
         part = part+self.execution_adapter(part)
         if geometry_features is not None:

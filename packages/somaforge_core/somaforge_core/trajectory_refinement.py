@@ -5,7 +5,6 @@ remain in the existing WBT entrypoints. Collection size is entirely data driven.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 from pathlib import Path
@@ -60,14 +59,14 @@ def load_config(path):
     config = read_json(path)
     if config.get("schema") != SCHEMA:
         raise ValueError(f"Expected configuration schema {SCHEMA}")
-    allowed = {"schema", "input", "base_checkpoint", "output_dir", "train", "evaluation", "collection", "task"}
+    allowed = {"schema", "input", "base_checkpoint", "output_dir", "train", "evaluation", "collection", "task", "policy_training_manifest", "aggregation"}
     if set(config) - allowed:
         raise ValueError(f"Unknown configuration keys: {sorted(set(config) - allowed)}")
     for section, fields in {
         "input": {"kind", "path"},
-        "train": {"num_envs", "iterations", "save_interval"},
+        "train": {"num_envs", "iterations", "save_interval", "full_checkpoints"},
         "evaluation": {"attempts", "min_success_rate", "seed", "initial_pose_noise"},
-        "collection": {"attempts", "seed", "initial_pose_noise"},
+        "collection": {"attempts", "seed", "initial_pose_noise", "envs_per_motion", "chunk_frames"},
         "task": {"kind", "contract", "max_abnormal_contacts"},
     }.items():
         if not isinstance(config.get(section), dict) or set(config[section]) - fields:
@@ -78,6 +77,16 @@ def load_config(path):
             value = config[section][key]
             if type(value) is not int or value <= 0:
                 raise ValueError(f"{section}.{key} must be a positive integer")
+    if type(config["train"].get("full_checkpoints",False)) is not bool:
+        raise ValueError("train.full_checkpoints must be boolean")
+    for key in ('envs_per_motion','chunk_frames'):
+        value=config['collection'].get(key,16)
+        if type(value) is not int or value<1:
+            raise ValueError(f'collection.{key} must be a positive integer')
+    if config['collection'].get('envs_per_motion',16)<3:
+        raise ValueError('Consensus collection requires at least three environments per reference')
+    from .extraction_standard import fit_options
+    fit_options(config.get("aggregation"))
     rate = config["evaluation"]["min_success_rate"]
     if not isinstance(rate, (float, int)) or not math.isfinite(rate) or not 0 < rate <= 1:
         raise ValueError("evaluation.min_success_rate must be in (0, 1]")
@@ -210,6 +219,12 @@ def prepare(config_path, *, execute=False):
         raise ValueError("Joint trainer uses three start probes per motion; increase train.num_envs")
     manifest = dict(manifest_header(backends.pop()), motion_files=motions, terrains=list(terrains.values()),
                     purpose="kinematic references for joint WBT refinement; not executed demonstrations")
+    training_manifest=config.get('policy_training_manifest')
+    if training_manifest:
+        training_manifest=resolve(training_manifest,root)
+        if read_json(training_manifest)!=manifest:
+            raise ValueError('Collection references differ from the policy training manifest')
+        files[str(training_manifest)]=fingerprint(training_manifest)
     # Pin implementation as well as input files; do not resume across silently
     # changed extraction/acceptance semantics.
     dependencies = [Path(__file__), root / "scripts/train_motion_edit_policy_finetune.py",
@@ -220,12 +235,17 @@ def prepare(config_path, *, execute=False):
     dependencies += [Path(__file__).with_name(name + ".py") for name in
                      ("rollout_dataset", "contact_face_selection", "contact_labels", "newton_contacts",
                       "newton_support", "newton_contact_data", "newton_runtime_compat", "support_semantics")]
+    dependencies += [root/"src/holosoma/holosoma/agents/base_algo/base_algo.py",
+                     root/"src/holosoma/holosoma/agents/ppo/ppo.py",
+                     root/"src/holosoma/holosoma/config_types/algo.py",
+                     root/"src/holosoma/holosoma/agents/modules/logging_utils.py"]
     for path in dependencies:
         files[str(path.resolve())] = fingerprint(path)
     plan = dict(schema=SCHEMA, config=config, base_checkpoint=str(checkpoint), output_dir=str(output),
                 files=list(files.values()), manifest=manifest, cases=cases,
                 max_episode_length_s=max(c["frames"] / c["fps"] for c in cases) + 2,
                 gpu_validation="not_run", prepared_reference_count=len(cases))
+    if training_manifest:plan['policy_training_manifest']=str(training_manifest)
     if execute:
         output.mkdir(parents=True, exist_ok=True)
         write_json(output / "plan.json", plan, immutable=True)
@@ -254,9 +274,9 @@ def load_plan(config_path):
 
 def checkpoint_info(path):
     """Read the local, user-selected checkpoint on CPU; never initialize CUDA."""
-    import torch
     from .robot_assets import validate_g1_asset_metadata
-    value = torch.load(path, map_location="cpu", weights_only=False)
+    from .checkpoint_inference import load_inference_fields
+    value = load_inference_fields(path)
     validate_g1_asset_metadata(value.get("robot_asset"), context=str(path))
     config = value["experiment_config"]
     if not config["robot"]["asset"]["enable_self_collisions"]:
@@ -274,6 +294,7 @@ def train_command(plan, checkpoint, iterations, directory, *, device, visualizer
            "--num-envs", str(cfg["num_envs"]), "--iterations", str(iterations),
            "--save-interval", str(cfg["save_interval"]),
            "--max-episode-length-s", str(plan["max_episode_length_s"])]
+    cmd += ["--warm-start" if Path(checkpoint).resolve()==Path(plan["base_checkpoint"]).resolve() else "--no-warm-start"]
     return cmd + launcher_flags(device, visualizer, headless)
 
 
@@ -308,14 +329,15 @@ def recording_command(plan, case, checkpoint, recording, *, seed, noise, device,
     return cmd + launcher_flags(device, visualizer, headless)
 
 
-def run_command(command, directory):
+def run_command(command, directory, *, environment=None):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=False)
     write_json(directory / "command.json", command, immutable=True)
     print(shlex.join(command), flush=True)
     # argv, never a shell; launching is only possible in an explicit execute stage.
     with (directory / "process.log").open("x") as log:
-        result = subprocess.run(command, cwd=somaforge_root(), stdout=log, stderr=subprocess.STDOUT, check=False)
+        result = subprocess.run(command, cwd=somaforge_root(), stdout=log, stderr=subprocess.STDOUT,
+                                check=False,env=environment)
     write_json(directory / "process_result.json", dict(returncode=result.returncode), immutable=True)
     if result.returncode:
         raise RuntimeError(f"Process failed ({result.returncode}); see {directory / 'process.log'}")
@@ -359,7 +381,8 @@ def policy_run(plan, checkpoint):
     checkpoint = Path(checkpoint).resolve()
     info = checkpoint_info(checkpoint)
     manifest = info["config"]["command"]["setup_terms"]["motion_command"]["params"]["motion_config"]["motion_manifest"]
-    if Path(manifest).resolve() != Path(plan["output_dir"]) / "references.json":
+    expected=Path(plan.get('policy_training_manifest',Path(plan['output_dir'])/'references.json')).resolve()
+    if Path(manifest).resolve() != expected:
         raise ValueError("Evaluation checkpoint must be trained on this prepared joint manifest")
     policy = fingerprint(checkpoint)
     return policy, Path(plan["output_dir"]) / "policies" / policy["sha256"]
@@ -380,21 +403,46 @@ def completed_attempt(directory, context):
     return None
 
 
+def prepare_inference_policy(checkpoint, policy, root):
+    """Copy inference tensors verbatim; retain the complete training snapshot."""
+    import torch
+    destination=root/'inference_policy.pt';receipt=root/'inference_policy.json'
+    if receipt.exists():
+        saved=read_json(receipt)
+        if saved['source_checkpoint']!=policy:raise ValueError('Inference policy belongs to another checkpoint')
+        verify_files([saved['inference_checkpoint']])
+        return saved['inference_checkpoint']
+    if destination.exists():raise ValueError(f'Unpublished inference policy retained for inspection: {destination}')
+    from .checkpoint_inference import load_inference_fields
+    value=load_inference_fields(checkpoint)
+    names=('actor_model_state_dict','critic_model_state_dict','actor_obs_normalizer_state_dict',
+           'critic_obs_normalizer_state_dict','experiment_config','robot_asset','iter','iteration','infos')
+    payload={name:value[name] for name in names if name in value}
+    for name in ('actor_model_state_dict','critic_model_state_dict','experiment_config','robot_asset','iter'):
+        if name not in payload:raise ValueError(f'Missing inference checkpoint field: {name}')
+    payload.update(source_training_checkpoint=policy,recovery_scope='inference_only; complete recovery requires source_training_checkpoint')
+    root.mkdir(parents=True,exist_ok=True)
+    staged=destination.with_name(f'.{destination.name}.{uuid.uuid4().hex}.writing')
+    torch.save(payload,staged);staged.replace(destination)
+    artifact=fingerprint(destination)
+    write_json(receipt,dict(source_checkpoint=policy,inference_checkpoint=artifact,
+        transformation='verbatim inference tensors and experiment/asset metadata; no optimizer or runtime snapshot'),immutable=True)
+    return artifact
+
+
+def collect_policy_rollouts(plan, checkpoint, *, execute=False, **launcher):
+    from .parallel_rollout_collection import collect
+    return collect(plan, checkpoint, execute=execute, **launcher)
+
+
 def evaluate_or_collect(plan, stage, checkpoint, *, execute=False, **launcher):
+    if stage=='collect':
+        return collect_policy_rollouts(plan,checkpoint,execute=execute,**launcher)
     from .rollout_dataset import inspect_recording
     policy, root = policy_run(plan, checkpoint)
     cfg = plan["config"]["evaluation" if stage == "evaluate" else "collection"]
     plan_sha = sha256_file(Path(plan["output_dir"]) / "plan.json")
     cases = plan["cases"]
-    if stage == "collect":
-        summary = read_json(root / "evaluation_summary.json")
-        if summary["checkpoint"] != policy or summary["plan_sha256"] != plan_sha:
-            raise ValueError("Evaluation does not belong to this frozen policy/plan")
-        verify_files(summary["artifacts"])
-        eligible = {row["key"] for row in summary["motions"] if row["eligible"]}
-        cases = [c for c in cases if c["key"] in eligible]
-        if not cases:
-            raise ValueError("No motion has passed this policy's per-motion evaluation gate")
     rows, commands, reports = [], [], []
     for case in cases:
         attempts = []
@@ -454,6 +502,18 @@ def evaluate_or_collect(plan, stage, checkpoint, *, execute=False, **launcher):
 def export_dataset(plan, checkpoint, *, execute=False):
     from .rollout_dataset import export_recording
     policy, root = policy_run(plan, checkpoint)
+    collection_root = Path(plan["output_dir"])/"collections"/policy["sha256"]
+    if (collection_root/"collection_summary.json").exists():
+        from .rollout_consensus import export_manifest
+        summary = read_json(collection_root/"collection_summary.json")
+        if not execute:
+            if {c["task"]["kind"] for c in plan["cases"]} == {"contact_events"}:
+                from .extraction_standard import verified_manifest
+                manifest = verified_manifest(collection_root/"dataset_manifest.json")
+                return dict(collection_root=str(collection_root), stage=summary["stage"],
+                            exported_variant_count=len(manifest["motion_files"]), extraction_standard=manifest["extraction_standard"])
+            return dict(collection_root=str(collection_root), stage=summary["stage"])
+        return export_manifest(plan, collection_root, summary["motions"])
     summary = read_json(root / "collection_summary.json")
     if summary["checkpoint"] != policy or summary["plan_sha256"] != sha256_file(Path(plan["output_dir"]) / "plan.json"):
         raise ValueError("Collection belongs to another plan/checkpoint")
@@ -502,4 +562,7 @@ def status(plan):
                 training_runs=[str(p) for p in sorted((root / "training").glob("*/completed.json"))],
                 evaluations=[str(p) for p in sorted((root / "policies").glob("*/evaluation_summary.json"))],
                 datasets=[str(p) for p in sorted((root / "policies").glob("*/dataset/manifest.json"))],
+                extractions=[dict(path=str(p), **{k:v for k,v in read_json(p).items() if k != "motions"})
+                             for p in sorted((root/"extractions").glob("*/progress.json"))],
+                collections=[str(p) for p in sorted((root/"collections").glob("*/collection_summary.json"))],
                 gpu_validation=plan["gpu_validation"])

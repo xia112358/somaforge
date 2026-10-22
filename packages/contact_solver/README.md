@@ -2,13 +2,18 @@
 
 与 `generator`、`motion_edit`、`somaforge_core` 并列的接触解算包。
 
-当前训练目标及配置统一登记于
-[最新v1基线](../../baselines/predictor_v1_latest_20261010/README.md)。
-正式路径由`unified_region_objective`、`ShapeTargetIntervalProvider`、
+登记的固定比较配方见
+[v1基线](../../baselines/predictor_v1_latest_20261010/README.md)。
+该历史配方由`unified_region_objective`、`ShapeTargetIntervalProvider`、
 完整实体距离、位置区间及keep材料区域保持组成；共享查询的上下界保留同一材料身份，
 其他实体和自碰撞独立覆盖。罚函数为`log1p(r²)`，经真实几何/FK导数回传。
 接触区间来自实际margin；递推穿透验收5 mm与位置RMS容差4 cm仅是任务验收配置。
 投影、QP教师、AL及形状cap替换等研究入口不属于该基线训练链路。
+
+当前 Generator scratch 默认使用深度图、实际端点接触点目标，独立
+`keep_patch_weight` 为 0；它与上述冻结配方分别记录，见
+[Generator 当前说明](../generator/README.md)。本包提供几何与约束能力，调用方
+显式选择损失及配置，不据旧基线覆盖新训练参数。
 
 - `newton_witness_loss.py`：冻结当前 Newton witness 后经 FK 计算距离梯度。
 - `contact_constrained_projector.py`、`heightmap_contact_projector.py`：姿态投影。
@@ -33,6 +38,11 @@ from contact_solver.trajectory_projection import project_interaction_q_trajector
 实际接触继续使用当前 Newton/MJWarp 的 CONSTRAINT、dist < includemargin、
 efc_address 分配状态，并经 `somaforge_core.contact_face_selection` 选择真实水平主表面。
 原始点对保留审计；模型预测接触仍仅为意图。
+
+共享职责见 [Core](../somaforge_core/README.md)，接触、载荷和滑移口径见
+[支撑证据](../../docs/support-semantics.md)。WBT 的稀疏／带力 expert 与蒸馏使用
+[原生模块配置](../../docs/wbt-modular-experiments.md)；本包不会自动启动这些训练。
+全部入口见 [文档索引](../../docs/README.md)。
 
 研究中的多面 SQP 尚未替换生产梯度，也不代表连续轨迹已满足承重或无滑动。
 研究输出和大文件保留于根目录 `tmp/`。

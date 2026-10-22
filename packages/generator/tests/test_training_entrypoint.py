@@ -63,7 +63,15 @@ def test_shared_observation_training_flag_fails_before_output_or_workers(monkeyp
         module.main()
 
 
-def test_v1_scratch_defaults_roundtrip_with_shared_encoder_and_new_interval():
+def test_gradient_isolation_migration_requires_full_resume_before_workers(monkeypatch):
+    import pytest
+    from generator import train_full1000_position as module
+    monkeypatch.setattr(sys, 'argv', ['train', '--resume-gradient-isolation'])
+    with pytest.raises(ValueError, match='requires a full v1 resume'):
+        module.main()
+
+
+def test_v1_scratch_defaults_roundtrip_with_planner_owned_encoder_and_new_interval():
     import io
     from dataclasses import asdict
     import torch
@@ -73,9 +81,10 @@ def test_v1_scratch_defaults_roundtrip_with_shared_encoder_and_new_interval():
     from somaforge_core.robot_assets import encode_robot_asset_json
     cfg = Config(width=24, layers=1, location_width=8)
     assert cfg.architecture == LEGACY_SCHEMA and cfg.shared_shape_target_interval
-    assert cfg.execution_observation_gradients and not cfg.execution_plan_gradients
+    assert not cfg.execution_observation_gradients and not cfg.execution_plan_gradients
+    assert cfg.optimizer_gradient_ownership == 'planner_supervised_v1'
     model = build_position_predictor(asdict(cfg), schema=cfg.architecture).eval()
-    assert set(model.training_parameter_groups()) == {'planner', 'executor', 'shared'}
+    assert set(model.training_parameter_groups()) == {'planner', 'executor'}
     before = state_fingerprint(model)
     _, loaded, _, provenance = initialize_predictor(model, seed=cfg.seed)
     assert not loaded and not provenance['predictor_checkpoints_loaded']
@@ -90,19 +99,25 @@ def test_v1_scratch_defaults_roundtrip_with_shared_encoder_and_new_interval():
     assert restored.architecture_contract() == model.architecture_contract()
 
 
-def test_current_baseline_defaults_and_manifests_are_consistent():
+def test_historical_baseline_recipe_and_manifests_remain_consistent():
     import json
     from dataclasses import asdict
-    from pathlib import Path
     from generator.train_full1000_position import Config, ROOT
 
     pointer = json.loads((ROOT / 'baselines/current.json').read_text())
     baseline = json.loads((ROOT / pointer['record']).read_text())
     recorded = json.loads((ROOT / pointer['training_config']).read_text())
     defaults = asdict(Config())
-    normalized = {key: str(value.relative_to(ROOT)) if isinstance(value, Path) else value
-                  for key, value in defaults.items()}
-    assert normalized == recorded
+    # The designated historical baseline is immutable; new scratch defaults
+    # must not rewrite it to claim it used the new gradient-isolation policy.
+    assert recorded['architecture'] == baseline['architecture']['schema']
+    for key in ('width', 'layers', 'location_width', 'execution_observation_gradients',
+                'execution_plan_gradients'):
+        assert recorded[key] == baseline['architecture'][key]
+    assert recorded['execution_observation_gradients'] is True
+    assert recorded['keep_patch_weight'] == baseline['training_course']['keep_patch_weight']
+    assert recorded['steps'] == baseline['training_course']['planned_total_intervals']
+    assert recorded['acceptance_penetration_m'] == baseline['acceptance']['shallow_penetration_m']
     assert baseline['id'] == pointer['id']
     assert baseline['status'] == 'current_training_and_analysis_baseline'
     assert baseline['checkpoint']['step'] == 1000
