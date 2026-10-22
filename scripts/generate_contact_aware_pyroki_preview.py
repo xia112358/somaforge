@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from somaforge_core.runtime_paths import default_ik_conda_environment
 
 from motion_edit.generation import generate_contact_aware_pyroki_preview
 
@@ -36,7 +37,7 @@ def main() -> None:
     parser.add_argument("--source-reference-weight", type=float, default=0.01)
     parser.add_argument("--boundary-ramp-frames", type=int, default=10)
     parser.add_argument("--min-raw-contact-force-norm", type=float, default=0.0)
-    parser.add_argument("--ik-conda-env", default="env_somaforge")
+    parser.add_argument("--ik-conda-env", default=default_ik_conda_environment())
     parser.add_argument("--ik-script", type=Path, default=None)
     parser.add_argument("--ik-max-nfev", type=int, default=None)
     parser.add_argument(

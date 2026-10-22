@@ -4,6 +4,7 @@ import argparse
 import shutil
 from dataclasses import replace
 from pathlib import Path
+from somaforge_core.runtime_paths import default_ik_conda_environment
 
 from .adapters.omniretarget import detect_omniretarget_paths
 from .adapters.asset_manifest import load_asset_manifest
@@ -1356,7 +1357,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--allow-draft", action="store_true")
     p.add_argument("--allow-free", action="store_true")
     p.add_argument("--overwrite", action="store_true")
-    p.add_argument("--ik-conda-env", default="env_somaforge")
+    p.add_argument("--ik-conda-env", default=default_ik_conda_environment())
     p.add_argument("--ik-max-nfev", type=int, default=None)
     p.add_argument("--ik-q-acceleration-weight", type=float, default=None)
     p.add_argument("--source-prefix-config", type=Path, help="Source-clock JSON prefix; standard batches require this or a prefix on every plan")

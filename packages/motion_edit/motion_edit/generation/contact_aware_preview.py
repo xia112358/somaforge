@@ -114,6 +114,42 @@ def _contact_binding_motion(
     return contact_motion, str(candidate)
 
 
+def pyroki_subprocess_context(
+    ik_conda_env: str, *, environment: dict[str, str] | None = None, capture_output: bool = True,
+) -> tuple[list[str], dict[str, str]]:
+    """Select one IK interpreter without inheriting another runtime's Python paths."""
+    subprocess_env = dict(os.environ if environment is None else environment)
+    target_env = str(ik_conda_env)
+    current_env = subprocess_env.get("CONDA_DEFAULT_ENV", "")
+    current_env_name = Path(current_env).name if current_env else ""
+    target_prefix = Path(target_env).expanduser()
+    if target_prefix.is_absolute():
+        target_env = str(target_prefix.resolve())
+        current_interpreter = target_prefix.resolve() == Path(sys.prefix).resolve()
+        environment_selector = ["--prefix", target_env]
+    else:
+        current_interpreter = bool(target_env) and target_env in {current_env, current_env_name}
+        environment_selector = ["-n", target_env]
+    interpreter = (
+        [sys.executable]
+        if current_interpreter
+        else [subprocess_env.get("SOMAFORGE_CONDA_EXE", "conda"), "run",
+              *([] if capture_output else ["--no-capture-output"]), *environment_selector, "python"]
+    )
+    package_root = Path(__file__).resolve().parents[2]
+    python_paths = [
+        str(package_root),
+        str(package_root.parent / "somaforge_core"),
+        str(package_root.parent / "contact_solver"),
+    ]
+    # Preserve main markers so later native workers return to their main runtime.
+    for name in ("PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE"):
+        subprocess_env.pop(name, None)
+    subprocess_env["PYTHONNOUSERSITE"] = "1"
+    subprocess_env["PYTHONPATH"] = os.pathsep.join(python_paths)
+    return interpreter, subprocess_env
+
+
 def _run_pyroki_preview_subprocess(
     *,
     taskspace_path: Path,
@@ -171,14 +207,7 @@ def _run_pyroki_preview_subprocess(
         return
     script = Path(ik_script).expanduser() if ik_script is not None else Path(__file__).with_name("pyroki_fullbody_ik.py")
     package_root = Path(__file__).resolve().parents[2]
-    target_env = str(ik_conda_env)
-    current_env = os.environ.get("CONDA_DEFAULT_ENV", "")
-    current_env_name = Path(current_env).name if current_env else ""
-    interpreter = (
-        [sys.executable]
-        if target_env in {current_env, current_env_name}
-        else ["conda", "run", "-n", target_env, "python"]
-    )
+    interpreter, subprocess_env = pyroki_subprocess_context(ik_conda_env)
     cmd = [
         *interpreter,
         str(script.resolve()),
@@ -214,15 +243,6 @@ def _run_pyroki_preview_subprocess(
                 str(Path(ik_collision_reference_cache).expanduser().resolve()),
             ]
         )
-    subprocess_env = dict(os.environ)
-    python_paths = [
-        str(package_root),
-        str(package_root.parent / "somaforge_core"),
-    ]
-    inherited_python_path = subprocess_env.get("PYTHONPATH")
-    if inherited_python_path:
-        python_paths.append(inherited_python_path)
-    subprocess_env["PYTHONPATH"] = os.pathsep.join(python_paths)
     subprocess.run(
         cmd,
         cwd=str(package_root),

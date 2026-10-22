@@ -1,5 +1,11 @@
 # SomaForge runtime environments
 
+The new [Miniforge + pip profiles](python-environments.md) provide an independent
+installation for qualification. Select them explicitly with
+`scripts/manage_environment.py`; creating them does not replace the current GA
+runtime or redirect an existing launcher. The paths and activation commands below
+describe that existing runtime.
+
 All Isaac Lab, Isaac Sim, native Newton, contact workers, and Motion Edit service
 entry points use the pinned GA environment:
 

@@ -1,5 +1,11 @@
 # Install SomaForge on another machine
 
+For the new independent Miniforge + pip workflow, see
+[Python environment profiles](python-environments.md). It creates separate
+prefixes and requires explicit profile selection; existing launch defaults and
+running training remain unchanged. The earlier GA installation below remains
+available for reproducing the current runtime.
+
 The supported simulator profile is Linux x86_64, Ubuntu 22.04 or newer, Python
 3.12, an NVIDIA GPU and a driver compatible with the official Isaac Lab 3.0.0 /
 Isaac Sim 6.2 runtime. Its PyTorch wheels include CUDA 13; the Docker base image's

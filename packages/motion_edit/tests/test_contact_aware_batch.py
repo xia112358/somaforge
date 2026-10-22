@@ -127,3 +127,35 @@ def test_batch_environment_uses_one_source_topology_cache(tmp_path) -> None:
     assert environment["SOMAFORGE_LAPLACIAN_TOPOLOGY_CACHE"] == str(
         work_root / "source_laplacian_topology.npz"
     )
+
+
+@pytest.mark.parametrize("prefix", [False, True])
+def test_persistent_worker_selects_ik_environment_and_isolates_imports(tmp_path, monkeypatch, prefix) -> None:
+    module = _batch_module()
+    calls = []
+    conda = str(tmp_path / "miniforge" / "bin" / "conda")
+    target = str(tmp_path / "ik prefix") if prefix else "legacy_ik"
+    expected_selector = ["--prefix", target] if prefix else ["-n", target]
+
+    class Process:
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(module.subprocess, "Popen", lambda cmd, **kwargs: calls.append((cmd, kwargs)) or Process())
+    monkeypatch.setattr(module, "_worker_request", lambda *args: {"ok": True})
+    _, _, log = module._start_ik_worker(
+        index=0, work_root=tmp_path, ik_conda_env=target,
+        environment={"CONDA_DEFAULT_ENV": "main", "SOMAFORGE_CONDA_EXE": conda,
+                     "PYTHONPATH": "/main/IsaacLab:/old/site-packages", "PYTHONHOME": "/old/python",
+                     "SOMAFORGE_ENV_PROFILE": "main", "SOMAFORGE_ENV_PREFIX": str(tmp_path / "main"),
+                     "SOMAFORGE_NEWTON_ENV": str(tmp_path / "main")},
+    )
+    log.close()
+    command, kwargs = calls[0]
+    assert command[:6] == [conda, "run", "--no-capture-output", *expected_selector, "python"]
+    assert "--worker-socket" in command
+    assert "/main/IsaacLab" not in kwargs["env"]["PYTHONPATH"]
+    assert "/old/site-packages" not in kwargs["env"]["PYTHONPATH"]
+    assert "PYTHONHOME" not in kwargs["env"]
+    assert kwargs["env"]["SOMAFORGE_ENV_PROFILE"] == "main"
+    assert kwargs["env"]["SOMAFORGE_NEWTON_ENV"] == str(tmp_path / "main")

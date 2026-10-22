@@ -1,5 +1,9 @@
 # motion_edit
 
+For the independent Miniforge + pip `main` / `ik` profiles, see
+[Python environment profiles](../../docs/python-environments.md). Existing GA and
+named-Conda commands below retain their current defaults until explicitly switched.
+
 Contact-centered motion editing workbench for surface-bound contact-anchor editing, explicit ContactEditPlan generation, and Newton-validated policy-reference trajectories.
 
 Motion Edit writes an edited kinematic reference through contact-Laplacian,

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
+from somaforge_core.runtime_paths import default_ik_conda_environment
 
 
 _REQUIRED_ROLLOUT_FIELDS: tuple[str, ...] = (
@@ -133,7 +134,7 @@ def generate_contact_aware_pyroki_preview(
     source_reference_weight: float = 0.01,
     boundary_ramp_frames: int = 10,
     min_raw_contact_force_norm: float = 0.0,
-    ik_conda_env: str = "env_somaforge",
+    ik_conda_env: str | None = None,
     ik_script: str | Path | None = None,
     ik_max_nfev: int | None = None,
     ik_q_acceleration_weight: float | None = None,
@@ -431,7 +432,7 @@ def generate_contact_aware_pyroki_preview(
         source_motion_path=source_path,
         ik_output_path=ik_output_path,
         ik_script=ik_script,
-        ik_conda_env=ik_conda_env,
+        ik_conda_env=default_ik_conda_environment() if ik_conda_env is None else ik_conda_env,
         ik_max_nfev=ik_max_nfev,
         ik_q_acceleration_weight=ik_q_acceleration_weight,
         ik_collision_similarity_weight=ik_collision_similarity_weight,

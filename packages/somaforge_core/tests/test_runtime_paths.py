@@ -1,6 +1,7 @@
 """Native workers use maintained packages without inheriting legacy search paths."""
 from pathlib import Path
 import os
+import json
 
 import pytest
 
@@ -9,6 +10,8 @@ from somaforge_core import runtime_paths
 
 @pytest.fixture
 def worker_environment(monkeypatch):
+    monkeypatch.delenv('SOMAFORGE_ENV_PROFILE', raising=False)
+    monkeypatch.delenv('SOMAFORGE_ENV_PREFIX', raising=False)
     root = Path('/workspace')
     lab = Path('/isaaclab')
     monkeypatch.setattr(runtime_paths, 'project_root', lambda: root)
@@ -56,3 +59,78 @@ def test_worker_environment_drops_ambient_paths_without_mutating_parent(worker_e
         assert key not in env
     assert env['CUDA_VISIBLE_DEVICES'] == '2' and env['PYTHONNOUSERSITE'] == '1'
     assert dict(os.environ) == before
+
+
+def test_explicit_main_profile_routes_native_worker_to_new_prefix(worker_environment, monkeypatch):
+    root, _ = worker_environment
+    prefix = root / 'runtime/environments/conda/somaforge'
+    monkeypatch.setenv('SOMAFORGE_ENV_PROFILE', 'main')
+    monkeypatch.setenv('SOMAFORGE_ENV_PREFIX', str(prefix))
+    monkeypatch.setenv('CONDA_PREFIX', '/old/ik')
+    monkeypatch.setenv('VIRTUAL_ENV', '/old/venv')
+    monkeypatch.setenv('PYTHONUSERBASE', '/old/user')
+    monkeypatch.setenv('PATH', '/old/ik/bin:/usr/bin')
+    before = dict(os.environ)
+    env = runtime_paths.newton_subprocess_environment()
+    assert runtime_paths.newton_environment() == prefix
+    assert env['SOMAFORGE_NEWTON_ENV'] == str(prefix)
+    assert env['CONDA_PREFIX'] == str(prefix)
+    assert env['PATH'].split(os.pathsep)[0] == str(prefix / 'bin')
+    assert '/old' not in env['PATH']
+    assert 'VIRTUAL_ENV' not in env and 'PYTHONUSERBASE' not in env
+    assert dict(os.environ) == before
+
+
+@pytest.mark.parametrize('value', ['', 'relative/path', '/outside/env', '/workspace/runtime/environments/conda'])
+def test_explicit_main_profile_rejects_missing_or_unmanaged_prefix(worker_environment, monkeypatch, value):
+    monkeypatch.setenv('SOMAFORGE_ENV_PROFILE', 'main')
+    monkeypatch.setenv('SOMAFORGE_ENV_PREFIX', value)
+    with pytest.raises(RuntimeError, match='Managed'):
+        runtime_paths.newton_environment()
+
+
+def test_ik_profile_does_not_override_legacy_newton_runtime(worker_environment, monkeypatch):
+    root, _ = worker_environment
+    monkeypatch.setenv('SOMAFORGE_ENV_PROFILE', 'ik')
+    monkeypatch.setenv('SOMAFORGE_ENV_PREFIX', str(root / 'runtime/environments/conda/somaforge-ik'))
+    assert runtime_paths.newton_environment() == root / 'runtime/environments' / runtime_paths.NEWTON_ENV_NAME
+
+
+def test_legacy_ik_default_does_not_read_new_catalog(monkeypatch):
+    monkeypatch.delenv('SOMAFORGE_ENV_PROFILE', raising=False)
+    monkeypatch.setattr(Path, 'read_text', lambda *a, **k: pytest.fail('Legacy runtime must not read managed config'))
+    assert runtime_paths.default_ik_conda_environment() == 'env_somaforge'
+
+
+@pytest.mark.parametrize('profile', ['main', 'ik'])
+def test_managed_ik_default_uses_catalog_prefix(tmp_path, monkeypatch, profile):
+    monkeypatch.setattr(runtime_paths, 'project_root', lambda: tmp_path)
+    monkeypatch.setenv('SOMAFORGE_ENV_PROFILE', profile)
+    monkeypatch.delenv('SOMAFORGE_ENV_CATALOG', raising=False)
+    config = tmp_path / 'configs/environments/profiles.json'
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({'schema': 'somaforge_environment_profiles_v1',
+        'profiles': {'ik': {'prefix': 'runtime/environments/conda/custom-ik'}}}))
+    assert runtime_paths.default_ik_conda_environment() == str(tmp_path / 'runtime/environments/conda/custom-ik')
+
+
+def test_managed_ik_default_rejects_external_prefix(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_paths, 'project_root', lambda: tmp_path)
+    monkeypatch.setenv('SOMAFORGE_ENV_PROFILE', 'main')
+    monkeypatch.delenv('SOMAFORGE_ENV_CATALOG', raising=False)
+    config = tmp_path / 'configs/environments/profiles.json'
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({'schema': 'somaforge_environment_profiles_v1',
+        'profiles': {'ik': {'prefix': '../external'}}}))
+    with pytest.raises(RuntimeError, match='Managed IK environment'):
+        runtime_paths.default_ik_conda_environment()
+
+
+def test_managed_ik_default_uses_explicit_catalog(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_paths, 'project_root', lambda: tmp_path)
+    monkeypatch.setenv('SOMAFORGE_ENV_PROFILE', 'main')
+    config = tmp_path / 'custom-profiles.json'
+    monkeypatch.setenv('SOMAFORGE_ENV_CATALOG', str(config))
+    config.write_text(json.dumps({'schema': 'somaforge_environment_profiles_v1',
+        'profiles': {'ik': {'prefix': 'runtime/environments/conda/explicit-ik'}}}))
+    assert runtime_paths.default_ik_conda_environment() == str(tmp_path / 'runtime/environments/conda/explicit-ik')

@@ -122,7 +122,8 @@ def test_parallel_workers_have_isolated_queues_environments_and_reuse_results(ru
     path.write_text(json.dumps(config))
     starts=[];commands=[];shutdown=[];affinities=[]
     count=min(workers,2);barrier=threading.Barrier(count)
-    def start(*,index,environment,work_root):
+    def start(*,index,environment,work_root,ik_conda_env):
+        assert ik_conda_env==config['generation']['ik_conda_env']
         starts.append(dict(environment));name=f'worker-{index}'
         process=SimpleNamespace(pid=100+index,wait=lambda **kw:0,poll=lambda:0)
         return name,process,(work_root/f'fake_worker_{index}.log').open('x')

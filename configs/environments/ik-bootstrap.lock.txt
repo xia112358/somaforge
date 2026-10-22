@@ -1,0 +1,12 @@
+# Source-build bootstrap for fixed JAXLS (hatchling) and PyRoki (setuptools).
+# Installed before the runtime lock with --no-deps --no-build-isolation.
+--index-url https://pypi.org/simple
+
+hatchling==1.31.0
+packaging==26.0
+pathspec==1.1.1
+pip==26.2.2
+pluggy==1.7.0
+setuptools==81.0.0
+trove-classifiers==2026.9.21.13
+wheel==0.45.1

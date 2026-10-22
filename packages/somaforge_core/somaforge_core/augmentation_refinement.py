@@ -202,7 +202,8 @@ def generate_parallel(config_path, config, jobs, output, status):
     try:
         for index in range(count):
             worker_environment=dict(environment,SOMAFORGE_LAPLACIAN_TOPOLOGY_CACHE=str(attempt/f'topology_{index}.npz'))
-            name,process,log=_start_ik_worker(index=index,environment=worker_environment,work_root=attempt)
+            name,process,log=_start_ik_worker(index=index,environment=worker_environment,work_root=attempt,
+                ik_conda_env=config['generation']['ik_conda_env'])
             pool.append((name,process,log,worker_environment,cpus[index*threads:(index+1)*threads]))
             set_affinity(process.pid,pool[-1][4])
         def queue(index):

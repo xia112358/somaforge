@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from somaforge_core.runtime_paths import default_ik_conda_environment
 
 
 @dataclass(frozen=True)
@@ -170,7 +171,15 @@ def _start_ik_worker(
     index: int,
     environment: dict[str, str],
     work_root: Path,
+    ik_conda_env: str | None = None,
 ) -> tuple[str, subprocess.Popen[str], Any]:
+    from motion_edit.generation.contact_aware_preview import pyroki_subprocess_context
+
+    interpreter, worker_environment = pyroki_subprocess_context(
+        default_ik_conda_environment() if ik_conda_env is None else ik_conda_env,
+        environment=environment,
+        capture_output=False,
+    )
     name = f"@somaforge-ik-{os.getpid()}-{index}"
     script = (
         Path(__file__).resolve().parents[1]
@@ -180,8 +189,8 @@ def _start_ik_worker(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_stream = log_path.open("w", encoding="utf-8")
     process = subprocess.Popen(
-        [sys.executable, str(script), "--worker-socket", name],
-        env=environment,
+        [*interpreter, str(script), "--worker-socket", name],
+        env=worker_environment,
         stdout=log_stream,
         stderr=subprocess.STDOUT,
         text=True,
@@ -238,7 +247,7 @@ def main() -> None:
     parser.add_argument("--semantic-proxy-basis", type=Path, default=None)
     parser.add_argument("--collision-reference-cache", type=Path, default=None)
     parser.add_argument("--workers", type=int, default=2)
-    parser.add_argument("--ik-conda-env", default="env_somaforge")
+    parser.add_argument("--ik-conda-env", default=default_ik_conda_environment())
     parser.add_argument("--newton-device", default="cpu")
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
@@ -336,6 +345,7 @@ def main() -> None:
                 index=index,
                 environment=environment,
                 work_root=work_root,
+                ik_conda_env=args.ik_conda_env,
             )
             for index in range(min(args.workers, len(jobs)))
         ]

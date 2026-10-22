@@ -8,6 +8,7 @@ endpoint-conditioned trajectory infilling. Simulation uses the pinned Isaac Lab
 ## Start here
 
 - [Fresh-machine installation](docs/install.md) and [runtime compatibility](docs/environments.md)
+- [New Miniforge + pip profiles](docs/python-environments.md), selected explicitly while existing runtime defaults remain unchanged
 - [Modular WBT experts, contact-reference recording and distillation](docs/wbt-modular-experiments.md)
 - [Download training inputs, reference models and extracted demonstrations](docs/data-downloads.md)
 - [Motion Edit and browser playback](packages/motion_edit/README.md)
@@ -35,7 +36,7 @@ Follow the [installation guide](docs/install.md) before launching simulation.
 
 ```text
 src/holosoma/               WBT training, evaluation, and simulator integration
-src/holosoma_retargeting/   Retargeting tools (separate environment)
+src/holosoma_retargeting/   Retargeting tools (main or optional standalone profile)
 packages/motion_edit/       Contact editing and validated kinematic candidates
 packages/generator/         Predictor, Infiller, datasets and generation training
 packages/contact_solver/    Contact objectives, collision gradients and projection
