@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from somaforge_core.published_data import relocate_published_values
+
 if sys.version_info >= (3, 9):
     from importlib.resources import files
 else:
@@ -43,6 +45,9 @@ def resolve_data_file_path(file_path: str) -> str:
         >>> print(path)
         /current/working/dir/my_data/custom.npz
     """
+    # An explicitly installed publication map resolves old absolute locations
+    # without changing package paths, URIs or ordinary unmapped inputs.
+    file_path = relocate_published_values(file_path)
     # 1. If it's an S3 path, return as-is
     if file_path.startswith("s3://"):
         return file_path

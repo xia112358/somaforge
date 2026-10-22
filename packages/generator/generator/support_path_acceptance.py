@@ -6,21 +6,21 @@ Old filtered-event manifests must be explicitly rebuilt.
 """
 import hashlib
 import json
-from pathlib import Path
 
 from somaforge_core.demonstration_events import SCHEMA as EVENT_SCHEMA
+from somaforge_core.published_data import load_published_json, relocate_published_values, resolve_published_path
 
 SCHEMA = 'predictor_demonstration_observation_evidence_v1'
 
 
 def file_evidence(path):
-    path = Path(path).resolve()
+    path = resolve_published_path(path)
     return dict(path=str(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest())
 
 
 def validate_support_paths(manifest_path, samples):
-    manifest_path = Path(manifest_path)
-    manifest = json.loads(manifest_path.read_text())
+    manifest_path = resolve_published_path(manifest_path)
+    manifest = load_published_json(manifest_path)
     declarations = manifest.get('demonstration_event_evidence')
     if declarations is None:
         raise ValueError('Rebuild predictor labels from each demonstration; old filtered event manifests are unsupported')
@@ -28,13 +28,12 @@ def validate_support_paths(manifest_path, samples):
         raise ValueError('Empty demonstration evidence declaration')
     observed, motion_ids, verified = set(), set(), []
     def resolve(value):
-        path = Path(value)
-        return path if path.is_absolute() else manifest_path.parent / path
+        return resolve_published_path(value, manifest_path.parent)
     for declaration in declarations:
         path = resolve(declaration['path'])
         if file_evidence(path)['sha256'] != declaration['sha256']:
             raise ValueError('Stale demonstration certificate')
-        certificate = json.loads(path.read_text())
+        certificate = load_published_json(path)
         if certificate.get('schema') != SCHEMA:
             raise ValueError('Unknown demonstration observation schema')
         for evidence in certificate['evidence'].values():
@@ -52,10 +51,11 @@ def validate_support_paths(manifest_path, samples):
         event_path = resolve(entry['event_segments_file'])
         if file_evidence(event_path)['sha256'] != entry['event_segments_sha256']:
             raise ValueError('Stale observed event table')
-        events = [json.loads(line) for line in event_path.read_text().splitlines() if line.strip()]
+        events = [relocate_published_values(json.loads(line))
+                  for line in event_path.read_text().splitlines() if line.strip()]
         if events != certificate['segments']:
             raise ValueError('Event table differs from demonstration certificate')
-        clock = json.loads(Path(certificate['evidence']['action_clock']['path']).read_text())['intervals']
+        clock = load_published_json(certificate['evidence']['action_clock']['path'])['intervals']
         boundaries = [dict(start_frame=e['start_frame'], end_frame=e['end_frame']) for e in events]
         if clock != boundaries:
             raise ValueError('Observed events do not preserve the demonstration action clock')

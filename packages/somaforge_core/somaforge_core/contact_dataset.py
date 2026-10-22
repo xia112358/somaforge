@@ -1,17 +1,16 @@
 """Cache identity includes actual motions, terrain, labels and label policy."""
 import hashlib
 import json
-from pathlib import Path
 import numpy as np
 from .contact_face_selection import effective_contact_contract as label_contract
+from .published_data import load_published_json, resolve_published_path
 
 
 def contact_dataset_fingerprint(manifest_path):
-    manifest_path = Path(manifest_path)
-    manifest = json.loads(manifest_path.read_text())
+    manifest_path = resolve_published_path(manifest_path)
+    manifest = load_published_json(manifest_path)
     def resolve(value):
-        path = Path(value)
-        return path if path.is_absolute() else manifest_path.parent/path
+        return resolve_published_path(value, manifest_path.parent)
     rows = []
     for entry in manifest['motion_files']:
         motion = resolve(entry['motion_file'])
@@ -29,9 +28,8 @@ def contact_dataset_fingerprint(manifest_path):
             rows[-1]['event_contract'] = manifest['event_contract']
         if entry.get('edit_plan_file'):
             plan_path = resolve(entry['edit_plan_file'])
-            plan = json.loads(plan_path.read_text())
-            catalog = Path(plan['metadata']['target_surface_catalog'])
-            if not catalog.is_absolute(): catalog = plan_path.parent/catalog
+            plan = load_published_json(plan_path)
+            catalog = resolve_published_path(plan['metadata']['target_surface_catalog'], plan_path.parent)
             rows[-1]['scene_geometry'] = dict(
                 schema='primary_horizontal_upward_faces_v1',
                 plan_sha256=hashlib.sha256(plan_path.read_bytes()).hexdigest(),

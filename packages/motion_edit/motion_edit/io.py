@@ -5,10 +5,13 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Iterable
 
+from somaforge_core.published_data import relocate_published_values, resolve_published_path
+
 from .schema import SegmentRecord
 
 
 def read_jsonl(path: Path) -> list[dict]:
+    path = resolve_published_path(path)
     records: list[dict] = []
     if not path.exists():
         return records
@@ -17,7 +20,7 @@ def read_jsonl(path: Path) -> list[dict]:
             line = line.strip()
             if line:
                 records.append(json.loads(line))
-    return records
+    return relocate_published_values(records)
 
 
 def write_jsonl(path: Path, records: Iterable[dict]) -> None:

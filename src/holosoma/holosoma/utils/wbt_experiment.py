@@ -82,18 +82,17 @@ def prepare_routed_distillation(config):
     from holosoma.config_types.observation import ObsGroupCfg, ObsTermCfg
     from holosoma.utils.eval_utils import _experiment_config_from_serialized
     from holosoma.utils.motion_terrain_manifest import load_motion_terrain_manifest
+    from somaforge_core.published_data import load_published_json, resolve_published_path
     from somaforge_core.robot_assets import validate_g1_asset_metadata
 
     distill = config.algo.config.distill
     if distill.teacher_spec_file:
-        import json
         from holosoma.config_types.algo import TeacherActorConfig
-        spec_path = Path(distill.teacher_spec_file).expanduser().resolve()
-        payload = json.loads(spec_path.read_text())
+        spec_path = resolve_published_path(distill.teacher_spec_file)
+        payload = load_published_json(spec_path)
         rows = payload["teachers"] if isinstance(payload, dict) else payload
         def resolve(value):
-            p = Path(value).expanduser()
-            return str((spec_path.parent / p).resolve() if not p.is_absolute() else p.resolve())
+            return str(resolve_published_path(value, base_dir=spec_path.parent))
         specs = tuple(TeacherActorConfig(checkpoint=resolve(row["checkpoint"]),
             manifest=resolve(row["manifest"])) for row in rows)
         distill = dataclasses.replace(distill, teachers=specs)
@@ -104,7 +103,7 @@ def prepare_routed_distillation(config):
     teachers, obs_keys = [], []
     covered = set()
     for index, spec in enumerate(distill.teachers):
-        checkpoint = Path(spec.checkpoint).expanduser().resolve()
+        checkpoint = resolve_published_path(spec.checkpoint)
         loaded = torch.load(checkpoint, map_location="cpu", weights_only=False, mmap=True)
         validate_g1_asset_metadata(loaded.get("robot_asset"), context=str(checkpoint))
         expert = _experiment_config_from_serialized(loaded["experiment_config"])

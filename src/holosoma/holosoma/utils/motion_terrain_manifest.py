@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path
 from typing import Any
 
 from somaforge_core.robot_assets import canonical_g1_asset_metadata
 from somaforge_core.motion_schema import NEWTON_KINEMATICS_BACKENDS
+from somaforge_core.published_data import load_published_json, relocate_published_values, resolve_published_path
 
 from holosoma.utils.path import resolve_data_file_path
 
@@ -20,9 +20,9 @@ def _load_manifest_file(path: Path) -> dict[str, Any]:
             import yaml
         except ImportError as exc:  # pragma: no cover - depends on optional local install
             raise ImportError(f"PyYAML is required to read motion-terrain manifest: {path}") from exc
-        data = yaml.safe_load(text)
+        data = relocate_published_values(yaml.safe_load(text))
     else:
-        data = json.loads(text)
+        data = load_published_json(path)
     if not isinstance(data, dict):
         raise ValueError(f"Motion-terrain manifest must contain a mapping: {path}")
     return data
@@ -131,10 +131,7 @@ def _validate_canonical_manifest(
 
 
 def _resolve_manifest_path(value: str, base_dir: Path) -> str:
-    path = Path(value).expanduser()
-    if not path.is_absolute():
-        path = base_dir / path
-    return str(path.resolve())
+    return str(resolve_published_path(value, base_dir=base_dir))
 
 
 def _normalize_terrains(data: dict[str, Any], base_dir: Path) -> list[dict[str, Any]]:

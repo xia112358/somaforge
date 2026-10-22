@@ -52,6 +52,22 @@ def write_verified_inspection(path, info):
         json.dump(info, stream, indent=2)
 
 
+def _relocate_query_inputs(cfg):
+    """Resolve declared published input aliases without changing output paths."""
+    from dataclasses import replace
+    from somaforge_core.published_data import relocate_published_values
+
+    updates = {}
+    for name in ('checkpoint', 'binding', 'probe_motion', 'motion_manifest', 'relabel_motion',
+                 'relabel_jobs', 'consensus_jobs', 'query_poses', 'tensor_auth'):
+        value = getattr(cfg, name)
+        if value is not None:
+            mapped = relocate_published_values(str(value))
+            if mapped != str(value):
+                updates[name] = Path(mapped)
+    return replace(cfg, **updates) if updates else cfg
+
+
 def main():
     import tyro
     from dataclasses import replace
@@ -62,8 +78,9 @@ def main():
     from somaforge_core.motion_schema import G1_29DOF_JOINT_ORDER
     from somaforge_core.newton_contact_query import DedicatedNewtonSceneQuery
     from somaforge_core.newton_contacts import SCHEMA
+    from somaforge_core.published_data import load_published_json
     official = parse_isaaclab_launcher_args('Dedicated Newton contact queries')
-    cfg = tyro.cli(Config)
+    cfg = _relocate_query_inputs(tyro.cli(Config))
     import os
     # Queries run outside the simulation graph. Lazy buffers allocated during
     # capture are not valid for ad-hoc conversion/constraint launches.
@@ -165,7 +182,7 @@ def main():
                 json.dump(native_binding(model,info),stream,indent=2)
         if cfg.inspect_only:
             return
-        binding = json.loads(cfg.binding.read_text())
+        binding = load_published_json(cfg.binding)
         if binding['model_fingerprint'] != info['model_fingerprint']:
             raise ValueError('Surface binding belongs to a different realized Newton model')
         labels = [label.rsplit('/', 1)[-1] for label in model.joint_label]
@@ -260,7 +277,7 @@ def main():
                     raise ValueError('relabel-motion requires labels-output')
                 jobs = [dict(motion=str(cfg.relabel_motion), labels_output=str(cfg.labels_output))]
             else:
-                batch = json.loads(cfg.relabel_jobs.read_text())
+                batch = load_published_json(cfg.relabel_jobs)
                 if batch['model_fingerprint'] != info['model_fingerprint']:
                     raise ValueError('Relabel batch belongs to a different native scene')
                 jobs = batch['jobs']

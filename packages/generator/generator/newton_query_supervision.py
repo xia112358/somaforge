@@ -1,11 +1,11 @@
 """Loss-only scene identity and local-to-native frame, not predictor features."""
 import json
-from pathlib import Path
 import numpy as np
 import torch
 from somaforge_core.g1_kinematics import _quaternion_matrix_wxyz
 from somaforge_core.robot_assets import decode_robot_asset_json
 from somaforge_core.contact_face_selection import upward_face_mask
+from somaforge_core.published_data import load_published_json, resolve_published_path
 
 
 def validate_native_box_scene(center, rotation, half, ground, native_scene):
@@ -44,11 +44,10 @@ def validate_native_box_scene(center, rotation, half, ground, native_scene):
 
 
 def prepare_query_metadata(manifest, inputs, target, samples, *, scene=None):
-    manifest = Path(manifest)
-    entries = json.loads(manifest.read_text())['motion_files']
+    manifest = resolve_published_path(manifest)
+    entries = load_published_json(manifest)['motion_files']
     def resolve(value):
-        path = Path(value)
-        return path if path.is_absolute() else manifest.parent/path
+        return resolve_published_path(value, manifest.parent)
     grouped = {}
     for i, sample in enumerate(samples):grouped.setdefault(sample.motion_id, []).append(i)
     device = inputs['current_q'].device

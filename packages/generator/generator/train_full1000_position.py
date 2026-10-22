@@ -4,7 +4,7 @@ import argparse
 import atexit
 import copy
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 import json
 from pathlib import Path
 import sys
@@ -44,6 +44,7 @@ from generator.endpoint_objective import (OBJECTIVE_SCHEMA, LOSS_GROUPS, DIAGNOS
 from somaforge_core.contact_face_selection import select_contact_pairs
 from somaforge_core.robot_assets import encode_robot_asset_json, decode_robot_asset_json
 from somaforge_core.newton_contact_data import require_current_newton_manifest
+from somaforge_core.published_data import load_published_json, relocate_published_values
 from generator.full1000_training_variants import (event_consistent_roles,
     teacher_mask_for_batch, training_course, endpoint_layout_pass, endpoint_feedback_checks, endpoint_rejection_masks,
     reference_batch_teacher_probability, endpoint_validation_score)
@@ -179,6 +180,10 @@ def main():
     AppLauncher.add_app_launcher_args(parser)
     official, remaining = parser.parse_known_args()
     cfg = tyro.cli(Config, args=remaining)
+    for field in fields(cfg):
+        value = getattr(cfg, field.name)
+        if isinstance(value, Path):
+            setattr(cfg, field.name, Path(relocate_published_values(str(value))))
     if cfg.training_stage != "legacy_mixed":
         if not cfg.parallel_rollouts or cfg.pending_plan_repair or cfg.constraint_training or cfg.rollout_batch_fraction:
             raise ValueError("Separate stages require parallel infrastructure without mixed nested rollouts/repair/constraint training")
@@ -273,7 +278,7 @@ def main():
     torch.set_num_threads(2)
     torch.manual_seed(cfg.seed)
     device = torch.device('cpu' if official.cpu else official.device)
-    manifest = json.loads(cfg.manifest.read_text())
+    manifest = load_published_json(cfg.manifest)
     if cfg.pending_plan_repair and not (cfg.parallel_rollouts and cfg.gpu_pipeline and cfg.event_roles and cfg.region_plan):
         raise ValueError('Pending-plan repair requires parallel GPU regional event-role model')
     if cfg.pending_plan_repair and cfg.relative_plan_supervision:

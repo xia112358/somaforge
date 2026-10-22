@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Iterable
 from uuid import uuid4
 
+from somaforge_core.published_data import load_published_json, resolve_published_path
+
 from motion_edit.io import read_jsonl, segment_from_dict, segment_to_dict, write_jsonl
 from motion_edit.paths import MOTION_ASSETS_ROOT, MOTION_VERSIONS_ROOT, MOTIONS_ROOT, SEGMENTS_ROOT, TOKENS_ROOT
 from motion_edit.schema import SegmentRecord
@@ -58,13 +60,13 @@ def read_motion_asset(motion_asset_id: str, path: str | Path | None = None) -> M
         source = motion_asset_path(motion_asset_id)
         if not source.exists():
             source = legacy_motion_asset_path(motion_asset_id)
-    data = json.loads(source.read_text(encoding="utf-8"))
+    data = load_published_json(source)
     return MotionAssetRecord(**data)
 
 
 def list_motion_assets(root: str | Path | None = None) -> list[MotionAssetRecord]:
     if root is not None:
-        source = Path(root).expanduser()
+        source = resolve_published_path(root)
         if not source.exists():
             return []
         return [read_motion_asset(path.stem, path) for path in sorted(source.glob("*.json"))]
@@ -87,12 +89,12 @@ def write_motion_version(record: MotionVersionRecord, path: str | Path | None = 
 
 def read_motion_version(motion_version_id: str, path: str | Path | None = None) -> MotionVersionRecord:
     source = Path(path).expanduser() if path is not None else motion_version_path(motion_version_id)
-    data = json.loads(source.read_text(encoding="utf-8"))
+    data = load_published_json(source)
     return MotionVersionRecord(**data)
 
 
 def list_motion_versions(root: str | Path | None = None) -> list[MotionVersionRecord]:
-    source = Path(root).expanduser() if root is not None else MOTION_VERSIONS_ROOT
+    source = resolve_published_path(root) if root is not None else MOTION_VERSIONS_ROOT
     if not source.exists():
         return []
     return [read_motion_version(path.stem, path) for path in sorted(source.glob("*.json"))]

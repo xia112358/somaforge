@@ -77,13 +77,13 @@ class BoundaryRecordCache:
 def profile_training(cfg, corpus, query, device):
     """Same batches/weights, no optimizer updates and no test examples."""
     import json
-    from pathlib import Path
+    from somaforge_core.published_data import load_published_json
     from generator import train_frozen_predictor_infiller as trainer
     from generator.direct_infiller import load_infiller,collate,prepare_frame_prediction,decode_batch
     from generator.recursive_refinement import adjacent_records,seam_objective
     from generator.infiller_boundary_velocity import SelfGeneratedHistory
     from somaforge_core.robot_assets import decode_robot_asset_json
-    saved=torch.load(cfg.checkpoint,map_location='cpu',weights_only=False)
+    saved=trainer.load_published_infiller_input(cfg.checkpoint)
     decode_robot_asset_json(saved['robot_asset_json'],context='Infiller profile checkpoint')
     if saved['corpus']!=trainer.evidence(cfg.corpus) or saved['predictor']!=corpus['predictor']:
         raise ValueError('Profiling checkpoint/corpus/Predictor mismatch')
@@ -98,7 +98,7 @@ def profile_training(cfg, corpus, query, device):
         subset=[indices for indices in schedule if records[indices[0]]['kind']==kind]
         subset.sort(key=lambda indices:(len(records[indices[0]]['q']),-len(indices)))
         chosen.extend([subset[0],subset[len(subset)//2],subset[-1]])
-    reference=json.loads(Path('configs/climb00/direct_infiller_v1.json').read_text())
+    reference=load_published_json('configs/climb00/direct_infiller_v1.json')
     limits={k:torch.tensor(v,device=device) for k,v in reference['smoothness_limits'].items()}
     successors=adjacent_records(records)
     results=[];reference_batches={};equivalence=[]

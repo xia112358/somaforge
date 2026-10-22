@@ -9,6 +9,7 @@ have separate preparation or restoration requirements.
 | Task | Guide |
 | --- | --- |
 | Install the pinned Isaac Lab / Newton runtime; check quaternion conventions | [Environments](environments.md) |
+| Download selected training inputs, reference models or extracted demonstrations | [Data downloads](data-downloads.md) |
 | Find package ownership, entrypoints and verification scope | [Repository maintenance](repository-maintenance.md) |
 | Configure dense, sparse or force experts and distillation independently | [Modular WBT experiments](wbt-modular-experiments.md) |
 | Edit contacts, generate references or review trajectories in the browser | [Motion Edit](../packages/motion_edit/README.md) |
