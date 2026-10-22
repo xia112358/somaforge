@@ -55,17 +55,20 @@ def test_normalize():
     assert torch.allclose(norm_zero, expected, atol=1e-6)
 
 
-def test_to_torch():
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda:0", marks=pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="CUDA device is unavailable"))])
+def test_to_torch(device):
     # Test numpy array conversion with explicit dtype
     np_array = np.array([1.0, 2.0, 3.0], dtype=np.float32)
-    torch_tensor = to_torch(np_array)
+    torch_tensor = to_torch(np_array, device=device)
     assert isinstance(torch_tensor, torch.Tensor)
+    assert str(torch_tensor.device) == device
     expected = torch.tensor(np_array, dtype=torch.float32, device=torch_tensor.device)
     assert torch.allclose(torch_tensor, expected)
 
     # Test list conversion
     py_list = [1.0, 2.0, 3.0]
-    torch_tensor = to_torch(py_list)
+    torch_tensor = to_torch(py_list, device=device)
     assert isinstance(torch_tensor, torch.Tensor)
     expected = torch.tensor(py_list, dtype=torch.float32, device=torch_tensor.device)
     assert torch.allclose(torch_tensor, expected)

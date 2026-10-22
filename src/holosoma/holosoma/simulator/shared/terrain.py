@@ -112,7 +112,11 @@ class Terrain(TerrainInterface):
                 mesh = mesh.dump(concatenate=True)  # type: ignore[assignment]
             if not isinstance(mesh, trimesh.Trimesh):
                 raise ValueError(f"Motion-matched terrain is not a valid Trimesh: {type(mesh)} from {terrain_path}")
-            loaded_meshes[terrain_id] = self._add_motion_matched_ground_patch(mesh)
+            # Imported paired terrains may already contain the complete floor.
+            # Adding a coincident second floor creates duplicate contacts.
+            loaded_meshes[terrain_id] = (
+                mesh if terrain.get("includes_ground", False) else self._add_motion_matched_ground_patch(mesh)
+            )
 
         tiles = []
         origin_lists: dict[int, list[np.ndarray]] = {int(terrain["terrain_id"]): [] for terrain in terrains}

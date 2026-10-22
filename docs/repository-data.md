@@ -6,7 +6,7 @@ state, not a full local workstation dump.
 
 ## Physical separation
 
-The code checkout is `/home/xiaz/somaforge`; local runtime data is stored in the
+On the original workstation, the code checkout is `/home/xiaz/somaforge`; runtime data is stored in the
 sibling `/home/xiaz/somaforge-data/current`. The checkout's `runtime/current`
 is a relative directory symlink to `../../somaforge-data/current`. Existing
 manifests, launch recipes, and root `data`, `logs`, `tmp` aliases keep their
@@ -23,6 +23,14 @@ versioned in the checkout. Python environments remain under
 paths. Data backup and code backup are separate operations; code-only Git clones
 need the external data restored and the directory link created before use.
 
+Other machines need not reproduce these absolute paths. Run
+`python3 scripts/bootstrap_runtime.py` from the clone for a local runtime tree,
+or add `--data-root /path/to/data` for an external root. Existing directories and
+links are preserved. Transfer any required datasets/checkpoints separately and
+provide their manifests explicitly; an empty runtime tree is enough to configure
+the environment, but not to reproduce data-dependent experiments. See
+[installation](install.md).
+
 Migration and runtime checks are recorded in
 `runtime/current/archives/data_code_separation_20261010/`.
 
@@ -32,6 +40,11 @@ These are small enough and useful enough to keep in the repository:
 
 - `configs/assets_manifest.json`: canonical robot and terrain asset registry.
 - `configs/training_pipeline_manifest.json`: stage-level training data contract.
+- `configs/*requirements.txt` and pinned setup scripts: runtime/optional optimizer
+  dependency recipes; the official Isaac Lab lock is fetched at its pinned commit.
+- `assets/g1_spherehand_usd/`: canonical USD bundle installed by bootstrap, with
+  the existing robot fingerprint preserved. URDF/mesh sources remain under
+  `src/holosoma/holosoma/data/robots/g1/`.
 - `configs/motion_matched/README.md`: local runtime manifest layout.
 - `configs/motion_matched/terrain_obj_cache/*/*.obj`: small terrain meshes
   referenced by the committed manifests.
@@ -80,6 +93,35 @@ second machine-specific data index.
 - canonical no-force motion: `runtime/current/motions/`
 - derived Motion Edit and Predictor/Infiller data: paths declared by their stage manifests
 - terrain assets: entries resolved through `configs/assets_manifest.json`
+
+## Expert and student inputs
+
+The [modular WBT workflow](wbt-modular-experiments.md) accepts explicit motion/
+terrain manifests and expert checkpoints. Pass the same manifest to the command
+and terrain managers. A teacher-spec JSON lists each chosen checkpoint and the
+motion manifest it covers; there is no automatic checkpoint selection. A combined
+student manifest must be covered exactly once by those teacher manifests.
+
+Released PHP source motions do not contain native contact/force reference labels.
+For sparse/force experiments, `scripts/record_wbt_contact_reference.py` records
+the executed trajectory of one explicitly supplied expert and motion, alongside
+six-part native contact/force labels, robot/runtime provenance, shape/body binding,
+and raw solver snapshots. Store accepted reference datasets under
+`runtime/current/motions/` and their manifest indexes under a formal runtime
+category. Keep teacher specifications and launch configurations with the run's
+retained input records; small portable examples may be committed without weights.
+
+This data records actual execution, including tracking error. It is a new
+executed-reference dataset, not clean original kinematics with copied force
+labels. Preserve that distinction from clean-reference reconstruction training.
+Last-solve contacts and post-integration pose are explicitly distinguished in the
+recording metadata. Older eight-part force-threshold/hysteresis files do not meet
+the new six-part native activation/face-selection contract merely by renaming keys.
+
+Native student checkpoints belong under `runtime/current/models/` and retain
+normal model, optimizer, normalization, progress and sampler/curriculum state.
+The historical local PHP adapter and the new native student use different schemas;
+copying a checkpoint to another directory does not make them interchangeable.
 
 ## Historical climb00 data issue
 

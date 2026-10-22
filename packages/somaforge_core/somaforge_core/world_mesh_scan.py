@@ -358,7 +358,7 @@ def append_current_contact_nodes(packet, observed):
     return packet
 
 
-def mesh_location_labels(points_world, active, surface, packet):
+def mesh_location_labels(points_world, active, surface, packet, *, radius_m=None):
     """Same-surface 3D supervision; uncovered targets remain unknown.
 
     Coverage tolerance derives from mesh sampling resolution. It is only an
@@ -368,5 +368,10 @@ def mesh_location_labels(points_world, active, surface, packet):
     allowed = packet['scan_valid'][:, None] & (packet['scan_surface'][:, None] == surface[..., None])
     distance = torch.cdist(points_world, candidates).square().masked_fill(~allowed, torch.inf)
     error, cell = distance.min(-1)
-    valid = active & torch.isfinite(error) & (error <= (2*packet['scan_spacing_m'][:, None]).square())
+    radius = 2*packet['scan_spacing_m'] if radius_m is None else radius_m
+    if radius.shape != (len(candidates),) or not bool(torch.isfinite(radius).all()) or bool((radius < 0).any()):
+        raise ValueError('Location label coverage radius must be finite nonnegative [B]')
+    # Unmaterialized corpus rows have zero spacing and no observed candidates.
+    # They remain explicitly uncovered, never synthetic positive labels.
+    valid = active & (radius[:, None] > 0) & torch.isfinite(error) & (error <= radius[:, None].square())
     return torch.where(valid, cell, torch.zeros_like(cell)), valid

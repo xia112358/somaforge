@@ -1093,6 +1093,10 @@ class PPO(BaseAlgo):
         if ckpt_path is not None:
             logger.info(f"Loading checkpoint from {ckpt_path}")
             loaded_dict = self._load_checked_checkpoint(ckpt_path)
+            warm = getattr(self.config, "warm_start", False)
+            # Resume the ordinary training state with a fresh simulator, even
+            # when a historical checkpoint/config contains a runtime snapshot.
+            self._pending_full_runtime_state = None
             self.actor.load_state_dict(loaded_dict["actor_model_state_dict"])
             self.critic.load_state_dict(loaded_dict["critic_model_state_dict"])
             if self.empirical_normalization and loaded_dict.get("actor_obs_normalizer_state_dict") is not None:
@@ -1108,7 +1112,7 @@ class PPO(BaseAlgo):
             # Checkpoints are written after completing ``iter``. Resume at the
             # following iteration instead of applying that update twice.
             self.current_learning_iteration = int(loaded_dict["iter"]) + 1
-            self._pending_env_state = loaded_dict.get("env_state")
+            self._pending_env_state = None if warm else loaded_dict.get("env_state")
             self._pending_env_state_restore = True
             return loaded_dict.get("infos")
         return None
@@ -1131,6 +1135,7 @@ class PPO(BaseAlgo):
             self.critic_obs_normalizer.load_state_dict(loaded_dict["critic_obs_normalizer_state_dict"])
         self._pending_env_state = None
         self._pending_env_state_restore = False
+        self._pending_full_runtime_state = None
         return loaded_dict.get("infos")
 
     def _restore_pending_env_state_after_reset(self) -> None:

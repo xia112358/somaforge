@@ -80,9 +80,9 @@ class BaseAlgo:
         return metadata
 
     def _load_checked_checkpoint(self, path: str, *, weights_only: bool | None = None) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {"map_location": self.device}
-        if weights_only is not None:
-            kwargs["weights_only"] = weights_only
+        # Project-authored runtime snapshots include NumPy buffers and RNG state.
+        kwargs: dict[str, Any] = {"map_location": self.device,
+                                  "weights_only": False if weights_only is None else weights_only}
         checkpoint = torch.load(path, **kwargs)
         if self._uses_g1_asset():
             validate_g1_asset_metadata(checkpoint.get("robot_asset"), context=f"checkpoint {path}")

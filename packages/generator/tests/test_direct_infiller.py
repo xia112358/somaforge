@@ -100,6 +100,10 @@ def test_recursion_continues_rejections_and_feeds_generated_state_and_actual_con
     calls=[]
 
     class Queries:
+        # This synthetic predictor uses the historical heightmap observation
+        # path; it has no world-surface scan or native worker process.
+        workers=SimpleNamespace(scan=None)
+
         def observed(self,q,ids):
             mask=torch.zeros(len(q),6,dtype=torch.bool)
             mask[:,0]=q[:,0]>=.15; mask[:,1]=~mask[:,0]
@@ -124,7 +128,8 @@ def test_recursion_continues_rejections_and_feeds_generated_state_and_actual_con
             contact=torch.tensor([[True,False,False,False,False,False]])
             points=torch.zeros(1,6,3); points[:,0,0]=.3
             return SimpleNamespace(qpos=q,conditioned_contact=contact,
-                conditioned_role=contact.long(),conditioned_points_local=points)
+                conditioned_role=contact.long(),conditioned_points_local=points,
+                conditioned_surface=None)
 
     # These synthetic query results exercise control flow, not Newton physics.
     monkeypatch.setattr(trainer,'audit_prediction',lambda predictor,query,prediction,*args:

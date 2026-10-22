@@ -130,7 +130,8 @@ def test_actual_trainer_feedback_reuses_prediction_and_keeps_rollback_reset_sema
         safe=torch.tensor([True, False, True]), recoverable=torch.ones(3, dtype=torch.bool),
         fresh_observation=lambda q, ids, obs, chosen: {'current_q': q}, reset_reasons={},
         pool_patch_cache=cache, tensor_scene_ids=scenes, model=SimpleNamespace(fk=RigidFK()),
-        bind_keep_patch=bind_keep_patch, pending=None)
+        bind_keep_patch=bind_keep_patch, pending=None,
+        cfg=SimpleNamespace(training_stage='legacy_mixed'))
     exec(code, env)
     torch.testing.assert_close(pool.observation['current_q'][0], output[0])
     torch.testing.assert_close(pool.observation['current_q'][1:], bank['current_q'][1:])

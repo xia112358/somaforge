@@ -20,7 +20,7 @@ dependencies = [
     "mypy==1.14.1",
     "notebook",
     "numpy-stl",
-    "numpy>=1.23.5,<2",
+    "numpy==2.3.5",
     "omegaconf",  # Used for config resolvers and DictConfig type hints
     "onnx",
     "onnxruntime",
@@ -47,7 +47,7 @@ dependencies = [
     "types-tqdm",
     "tyro>=1.0.0",
     "wandb==0.22.0", # pin version until https://github.com/wandb/wandb/issues/10647 is fixed
-    "warp-lang==1.10.0",
+    "warp-lang==1.18.0",
     "yourdfpy>=0.0.58",
     "zmq",
 ]

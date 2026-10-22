@@ -49,6 +49,7 @@ from generator.full1000_training_variants import (event_consistent_roles,
     reference_batch_teacher_probability, endpoint_validation_score)
 from generator.rollout_termination import TerminationLimits, native_continuation_masks, demonstration_loss
 from generator.parallel_rollout_pool import rollout_transition
+from generator.optimizer_ownership import OptimizerOwnership, prepare_optimizer_gradients
 from generator.training_data import prepare, take
 from generator.predictor_initialization import initialize_predictor, initialize_training_joint_bias, state_fingerprint
 from generator.scene_workers import Workers
@@ -86,13 +87,21 @@ class Config:
     continuous_demonstration_training: bool = True
     mode: str = 'full'
     overfit_motion_id: int | None = None
-    steps: int = 1100
+    training_stage: Literal["single_segment", "demonstration_rollout", "post_demonstration", "legacy_mixed"] = "single_segment"
+    steps: int = 1100  # Absolute ending step; resume only runs the remaining interval.
     schedule_steps: int = 1100
+    resume_training_state: Path | None = None
+    resume_gradient_isolation: bool = False  # Explicit shared-to-isolated migration; reset mixed shared moments.
+    stop_after_step: int | None = None
+    capture_training_state_steps: tuple[int, ...] = ()
+    isolate_unsupervised_execution_gradients: bool = False
+    optimizer_gradient_ownership: OptimizerOwnership = 'planner_supervised_v1'
     audit_checkpoint: Path | None = None  # Read-only gradient audit; never training initialization.
     query_worlds: int | None = 16
     gpu_pipeline: bool = True
     execution_only: bool = False
     event_roles: bool = True
+    limb_contact_modes: bool = False
     role_validity: bool = True
     world_surface_scan: bool = True
     depth_observation: bool = True
@@ -101,6 +110,8 @@ class Config:
     pending_plan_repair: bool = False
     anchored_plan_execution: bool = False
     relative_plan_supervision: bool = False
+    location_supervision: Literal['point', 'surface_region'] = 'surface_region'
+    location_region_spacing_multiplier: float = 1.0
     profile_components: bool = False
     defer_statistics: bool = True
     reuse_fk: bool = True
@@ -147,7 +158,7 @@ class Config:
     parallel_allow_post_demo: bool = True
     training_prediction_budget: int | None = None
     execution_plan_gradients: bool = False
-    execution_observation_gradients: bool = True  # V1 control shares observations; explicit v2 uses False.
+    execution_observation_gradients: bool = False  # Planning owns its representation; legacy control opts in.
     pilot_samples: int | None = None
     pilot_visible_only: bool = False
     comparison_batch_order: bool = False
@@ -168,9 +179,27 @@ def main():
     AppLauncher.add_app_launcher_args(parser)
     official, remaining = parser.parse_known_args()
     cfg = tyro.cli(Config, args=remaining)
+    if cfg.training_stage != "legacy_mixed":
+        if not cfg.parallel_rollouts or cfg.pending_plan_repair or cfg.constraint_training or cfg.rollout_batch_fraction:
+            raise ValueError("Separate stages require parallel infrastructure without mixed nested rollouts/repair/constraint training")
+        if cfg.training_stage != "single_segment" and cfg.resume_training_state is None:
+            raise ValueError("Recursive stages require the preceding stage full training state")
+        if cfg.pilot_samples is not None and cfg.training_stage != "single_segment":
+            raise ValueError("Recursive stages require complete demonstration chains, not partial pilot rows")
     runtime_acceptance = configured_acceptance(asdict(cfg))
     penetration_metadata = penetration_contract(runtime_acceptance,
         penalty=cfg.penetration_penalty, scale_m=cfg.penetration_scale_m)
+    if cfg.resume_training_state is not None and (not cfg.parallel_rollouts or cfg.keep_patch_weight or cfg.constraint_training):
+        raise ValueError('Full-state resume requires parallel rollouts without keep cache or constrained optimizer')
+    if cfg.resume_gradient_isolation and (cfg.resume_training_state is None
+            or cfg.architecture != LEGACY_SCHEMA or cfg.execution_observation_gradients
+            or cfg.isolate_unsupervised_execution_gradients
+            or cfg.optimizer_gradient_ownership != 'planner_supervised_v1'):
+        raise ValueError('Gradient-isolation migration requires a full v1 resume with isolated execution and planner-owned optimizer updates')
+    if cfg.stop_after_step is not None and not 1 <= cfg.stop_after_step <= cfg.steps:
+        raise ValueError('Stop step must be within the configured training schedule')
+    if cfg.isolate_unsupervised_execution_gradients and (cfg.architecture != LEGACY_SCHEMA or not cfg.execution_observation_gradients):
+        raise ValueError('Selective isolation requires v1 with shared observation gradients enabled')
     if not cfg.gpu_pipeline:
         raise ValueError('Endpoint training requires complete solids from the initialized GPU Newton scene')
     if not cfg.unified_contact:
@@ -187,6 +216,12 @@ def main():
         raise ValueError('Scratch training requires a trainable planner and executor')
     if not cfg.static_gradient_audit and cfg.architecture == STRUCTURED_SCHEMA and (cfg.execution_plan_gradients or cfg.execution_observation_gradients):
         raise ValueError('Structured scratch training forbids shared planner/executor gradients')
+    if cfg.training_stage != 'legacy_mixed' and cfg.architecture != LEGACY_SCHEMA:
+        raise ValueError('Separate stages currently support the maintained v1 architecture')
+    if not np.isfinite(cfg.location_region_spacing_multiplier) or cfg.location_region_spacing_multiplier <= 0:
+        raise ValueError('Location region spacing multiplier must be finite positive')
+    if cfg.location_supervision == 'surface_region' and not cfg.world_surface_scan:
+        raise ValueError('Surface-region location supervision requires a world scan')
     if cfg.audit_checkpoint is not None and not cfg.static_gradient_audit:
         raise ValueError('An audit checkpoint cannot initialize or resume training')
     if cfg.reference_warmup_steps and cfg.constraint_training:
@@ -277,6 +312,11 @@ def main():
     if cfg.execution_only and cfg.rollout_batch_fraction:
         raise ValueError('execution-only adaptation requires rollout-batch-fraction 0')
     payload = torch.load(cfg.data_cache, map_location='cpu', weights_only=False)
+    if cfg.limb_contact_modes:
+        from generator.limb_contact import limb_targets
+        # Audit actual cached observations without altering their contact truth.
+        for key in ('start_contacts', 'end_contact'):
+            limb_targets(torch.as_tensor(payload['data'][key], dtype=torch.long))
     assert payload['robot_asset_json'] == encode_robot_asset_json()
     inputs, target, scene, split, samples, _ = prepare(model, cfg, device)
     inputs = {key: value for key, value in inputs.items()
@@ -586,15 +626,28 @@ def main():
         if getattr(model, 'world_surface_scan', False):
             from somaforge_core.world_mesh_scan import mesh_location_labels
             cell, valid = mesh_location_labels(endpoint_points, roles != 0,
-                target['planned_surface'][indices], observation)
+                target['planned_surface'][indices], observation,
+                radius_m=(observation['scan_spacing_m']*cfg.location_region_spacing_multiplier
+                    if cfg.location_supervision == 'surface_region' else None))
         else:
             _, cell, valid = contact_points_to_observed_heightmap_map(observation['current_q'],
                 roles != 0, endpoint_points, observation['heightmap'])
         if model.depth_observation:
             # Keep supervision is available from contact observation, not camera coverage.
             valid = valid | (roles == 2)
-        return {'role': roles, 'contact_cell': cell, 'contact_cell_valid': valid,
+        labels = {'role': roles, 'contact_cell': cell, 'contact_cell_valid': valid,
                 'endpoint_points_world': endpoint_points, 'contact_keep_intent': persistent}
+        if cfg.location_supervision == 'surface_region':
+            from somaforge_core.heightmap import _root_yaw_basis
+            basis, _ = _root_yaw_basis(observation['current_q'])
+            radius = observation['scan_spacing_m'] * cfg.location_region_spacing_multiplier
+            nearest = observation['scan_points_world'].gather(1, cell[..., None].expand(-1, -1, 3))
+            covered = (nearest-endpoint_points).norm(dim=-1) <= radius[:, None]
+            labels['contact_cell_valid'] = valid & (covered | (roles == 2))
+            labels.update(location_region_points_local=torch.einsum('bji,bpj->bpi', basis,
+                endpoint_points-observation['current_q'][:, None, :3]),
+                location_region_surface=target['planned_surface'][indices], location_region_radius_m=radius)
+        return labels
 
     def teacher_conditions(indices, labels):
         conditions = dict(teacher_contact=target['planned_contact'][indices],
@@ -852,6 +905,9 @@ def main():
         'deterministic_validity_inputs': ['actual part/surface relations', 'actual upward surface catalog raster association'] if cfg.role_validity else [],
         'own_plan_realization_under_wrong_predicted_plan': True,
         'pose_realization_gradient_reaches_plan_heads': False,
+        'optimizer_gradient_ownership': cfg.optimizer_gradient_ownership,
+        'unsupervised_optimizer_updates': ('skip planner parameters and their moments; also skip isolated shared parameters'
+            if cfg.optimizer_gradient_ownership == 'planner_supervised_v1' else 'historical zero-gradient AdamW updates'),
         'execution_plan_gradient_contract': ('legacy checkpoint flags, read-only audit' if cfg.static_gradient_audit and checkpoint['schema'] != STRUCTURED_SCHEMA
             else ('detached hard contact intent; shared v1 observation encoder' if cfg.architecture == LEGACY_SCHEMA and cfg.execution_observation_gradients
             else 'detached hard contact intent; independent planner/executor observation gradients')),
@@ -898,7 +954,14 @@ def main():
     if model.world_surface_scan:
         dataset['world_mesh_scan'] = dataset_scan_contract
         dataset['raster_label_semantics'] = None
-        dataset['location_label_semantics'] = 'nearest_visible_same_surface_world_xyz_v1'
+        dataset['location_label_semantics'] = ('same_surface_local_region_probability_mass_v1'
+            if cfg.location_supervision == 'surface_region' else 'nearest_visible_same_surface_world_xyz_v1')
+        dataset['location_supervision'] = dict(mode=cfg.location_supervision,
+            radius='scan_spacing_m * location_region_spacing_multiplier',
+            spacing_multiplier=cfg.location_region_spacing_multiplier,
+            replaces_point_classification=True, keep_excluded=True,
+            surface_ids='training grouping only; no learned ID embedding or inference restriction',
+            contact_truth_unchanged=True)
         dataset['deterministic_validity_inputs'] = ['actual part/surface relations', 'registered scanned world surface identity']
         dataset['heightmap_usage'] = ('none; 2D optical-depth image features and raw-pixel world candidates'
             if model.depth_observation else 'context only; interaction XYZ and surface identity come from raw depth/tactile mesh')
@@ -1042,7 +1105,7 @@ def main():
                     'config': config, 'dataset': dataset, 'step': step, 'metrics': metrics,
                     'condition_contract': dataset, 'robot_asset_json': encode_robot_asset_json(),
                     'constraint_training_state': None if constrained_step is None or state is not None else constrained_step.state_dict(),
-                    'optimizer': None if constrained_step is None or state is not None else optimizer.state_dict()}, path)
+                    'optimizer': None if state is not None else optimizer.state_dict()}, path)
 
     @torch.no_grad()
     def evaluate(teacher=False):
@@ -1116,12 +1179,41 @@ def main():
             train=train.tolist(), validation=validation.tolist(),
             excluded=dataset.get('pilot_visibility_excluded', []),
             motion_ids={str(int(i)):int(samples[int(i)]['motion_id']) for i in torch.cat((train, validation))}), indent=2))
+    dataset['training_stage'] = cfg.training_stage
+    if cfg.training_stage != 'legacy_mixed':
+        dataset['continuous_demonstration_training']['enabled'] = False
+        dataset['reference_warmup']['steps'] = None
+        dataset['reference_warmup']['teacher_schedule_clock'] = 'explicit stage; no scheduled mixing'
+        if 'parallel_rollout_contract' in dataset:
+            dataset['parallel_rollout_contract'].update(
+                demo_end_resets=cfg.training_stage == 'demonstration_rollout',
+                allow_post_demo=cfg.training_stage == 'post_demonstration')
+        dataset['stage_contract'] = dict(schema='separate_training_stages_v1',
+            reference_batches=cfg.training_stage == 'single_segment',
+            demonstration_supervision=cfg.training_stage != 'post_demonstration',
+            teacher_conditioning=cfg.training_stage == 'single_segment',
+            starts=('verified_stage2_terminals' if cfg.training_stage == 'post_demonstration' else
+                    'random_demonstration_states' if cfg.training_stage == 'demonstration_rollout' else 'demonstrated_segments'),
+            execution_only_updates=cfg.training_stage == 'post_demonstration',
+            rejection_policy=('reset_episode' if cfg.training_stage == 'post_demonstration' else
+                              'rollback' if cfg.training_stage == 'demonstration_rollout' else 'not_applicable'),
+            validation='single-segment diagnostic, separate from recursive stage statistics')
+        (cfg.output/'dataset.json').write_text(json.dumps(dataset, indent=2))
     history, best_score, best_step, best_state = [], float('inf'), None, None
     performance_history = []
     begun = time.perf_counter()
+    if cfg.resume_training_state is not None:
+        from generator.training_state import restore_training_state, SCHEMA as TRAINING_STATE_SCHEMA
+        resume = torch.load(cfg.resume_training_state, map_location='cpu', weights_only=False)
+        if resume.get('schema') != TRAINING_STATE_SCHEMA:
+            raise ValueError('Historical partial state cannot resume this experiment')
+        model.load_state_dict(resume['model'], strict=True)
+    else:
+        resume = None
     baseline = {'autonomous': evaluate(), 'teacher_conditioned': evaluate(teacher=True)}
     (cfg.output / 'initial_evaluation.json').write_text(json.dumps(baseline, indent=2))
-    save(cfg.output / 'step_0000.pt', 0, baseline['autonomous'])
+    if resume is None:
+        save(cfg.output / 'step_0000.pt', 0, baseline['autonomous'])
     print(json.dumps({'initial_evaluation': baseline}), flush=True)
     # Fixed GT observations have fixed labels; only recursive observations need re-rasterizing.
     fixed_labels = labels_for(inputs, torch.arange(len(samples), device=device))
@@ -1131,9 +1223,13 @@ def main():
     pool=None
     pending=None
     training_predictions=0
-    def make_pool():
+    def make_pool(stage=None, bank=None):
         from generator.parallel_rollout_pool import ParallelRolloutPool
-        return ParallelRolloutPool(inputs,train,successor,cfg.parallel_pool_size,
+        from generator.staged_rollout_pool import StagedRolloutPool
+        stage = stage or cfg.training_stage
+        cls = ParallelRolloutPool if stage == "legacy_mixed" else StagedRolloutPool
+        extra = {} if stage == "legacy_mixed" else dict(stage=stage, terminal_bank=bank)
+        return cls(inputs,train,successor,cfg.parallel_pool_size, **extra,
             recover_failed_states=cfg.recover_failed_states,max_episode_steps=cfg.parallel_episode_limit,
             max_retries=cfg.parallel_retry_limit,
             allow_post_demo=cfg.parallel_allow_post_demo,
@@ -1146,16 +1242,83 @@ def main():
                      'role_validity_invalid_keep', 'role_validity_absent_keep_probability',
                      'reference_keep_point_conflict_parts', 'reference_keep_pose_imitation_masked',
                      *(f'loss_contribution_{name}' for name in LOSS_GROUPS), 'loss_contribution_legacy_keep'):
+            if cfg.training_stage == 'post_demonstration' and name in (
+                    'plan_contact_exact', 'plan_role_exact', 'reference_keep_point_conflict_parts',
+                    'reference_keep_pose_imitation_masked'):
+                continue
             if name in metrics:
                 training_diagnostics[name] = training_diagnostics.get(name, 0.) + metrics[name].detach().sum()
 
-    for step in range(1, cfg.steps + 1):
+    start_step = 1
+    if resume is not None:
+        from generator.staged_rollout_pool import validate_stage_transition
+        stage_changed = validate_stage_transition(resume['config'], config)
+        if resume['pool'] is not None:
+            old_stage = resume['config'].get('training_stage', 'legacy_mixed')
+            bank = resume['pool'].get('staged', {}).get('terminal_bank')
+            pool = make_pool(old_stage, bank)
+        if resume['pending_plan'] is not None:
+            from generator.pending_contact_plan import PendingContactPlans
+            pending = PendingContactPlans(cfg.parallel_pool_size, device)
+        restored = restore_training_state(resume, model=model, optimizer=optimizer, scheduler=scheduler,
+            pool=pool, pending=pending, config=config, robot_asset_json=encode_robot_asset_json())
+        if restored['optimizer_migration'] is not None:
+            (cfg.output/'resume_gradient_isolation.json').write_text(json.dumps(restored['optimizer_migration'], indent=2))
+            print(json.dumps({'optimizer_migration': restored['optimizer_migration']}), flush=True)
+        training_predictions = restored['training_predictions']
+        history, best_score, best_step, best_state = (restored[k] for k in
+            ('history', 'best_score', 'best_step', 'best_state'))
+        from generator.training_state import capture_training_state
+        # Audit the exact fork state before the first resumed update. This also
+        # distinguishes restore errors from CUDA/solver nondeterminism later.
+        fork_state = capture_training_state(step=restored['step'], model=model, optimizer=optimizer,
+            scheduler=scheduler, pool=pool, pending=pending, config=config,
+            robot_asset_json=encode_robot_asset_json(), training_predictions=training_predictions,
+            history=history, best_score=best_score, best_step=best_step, best_state=best_state)
+        if stage_changed:
+            fork_state['config'] = dict(config, training_stage=resume['config']['training_stage'])
+        torch.save(fork_state, cfg.output/'restored_initial_state.pt')
+        del fork_state
+        if stage_changed:
+            bank = None if pool is None else pool.terminal_bank
+            pool = make_pool(cfg.training_stage, bank)
+            best_score, best_step, best_state = float('inf'), None, None
+            (cfg.output/'stage_transition.json').write_text(json.dumps(dict(
+                source=str(cfg.resume_training_state), from_stage=resume['config']['training_stage'],
+                to_stage=cfg.training_stage, at_step=restored['step'],
+                terminal_seed_count=len(pool.terminal_bank)), indent=2))
+            from generator.training_state import save_epoch_training_state
+            entry = capture_training_state(step=restored['step'], model=model, optimizer=optimizer,
+                scheduler=scheduler, pool=pool, pending=pending, config=config,
+                robot_asset_json=encode_robot_asset_json(), training_predictions=training_predictions,
+                history=history, best_score=best_score, best_step=best_step, best_state=best_state)
+            save(cfg.output/f"step_{restored['step']:04d}.pt", restored['step'], baseline['autonomous'])
+            save_epoch_training_state(entry, cfg.output)
+            del entry
+        start_step = restored['step'] + 1
+        if start_step > (cfg.stop_after_step or cfg.steps):
+            raise ValueError('Resume state is already at or beyond the requested stop step')
+        print(json.dumps(dict(resumed_from_step=restored['step'],
+            isolate_unsupervised_execution_gradients=cfg.isolate_unsupervised_execution_gradients)), flush=True)
+        del resume
+    else:
+        from generator.training_state import capture_training_state, save_epoch_training_state
+        initial_state = capture_training_state(step=0, model=model, optimizer=optimizer,
+            scheduler=scheduler, pool=pool, pending=pending, config=config,
+            robot_asset_json=encode_robot_asset_json(), training_predictions=training_predictions,
+            history=history, best_score=best_score, best_step=best_step, best_state=best_state)
+        save_epoch_training_state(initial_state, cfg.output)
+        del initial_state
+    for step in range(start_step, (cfg.stop_after_step or cfg.steps) + 1):
         if device.type == 'cuda': torch.cuda.synchronize(device)
         step_begun = time.perf_counter(); timings = {}
         model.train()
         reference_warmup, probability = training_course(step,
             reference_warmup_steps=cfg.reference_warmup_steps,
             execution_only=cfg.execution_only, fixed=cfg.fixed_teacher_probability)
+        if cfg.training_stage != 'legacy_mixed':
+            reference_warmup = cfg.training_stage == 'single_segment'
+            probability = 1. if reference_warmup else 0.
         if cfg.parallel_rollouts and pool is None and not reference_warmup:
             pool = make_pool()
             if cfg.pending_plan_repair:
@@ -1181,7 +1344,7 @@ def main():
         prediction_start=training_predictions
         pool_counts={key:torch.zeros((),device=device,dtype=torch.long) for key in
             ('generated_inputs','advances','retries','resets','terminal_resets','invalid_resets','timeout_resets',
-             'periodic_resamples','rollbacks','accepted_transitions','invalid_rejections','severe_penetration_rejections',
+             'periodic_resamples','rejection_resets','rollbacks','accepted_transitions','invalid_rejections','severe_penetration_rejections',
              'no_contact_rejections','no_forward_progress_rejections',
              'demo_exhausted','autonomous_states','autonomous_inputs','severe_penetration_resets','no_contact_resets','no_forward_progress_resets')}
         if pool is not None:
@@ -1208,13 +1371,18 @@ def main():
                 if pending is not None: teacher &= ~repair['repair_mask']
                 optimizer.zero_grad(set_to_none=True)
                 with timed('forward'):
-                    prediction=model(**observation, **teacher_conditions(indices, labels), teacher_mask=teacher, **repair)
+                    execution_mask = (dict(execution_observation_supervised=labels['supervised'])
+                        if cfg.isolate_unsupervised_execution_gradients or cfg.training_stage == 'post_demonstration' else {})
+                    prediction=model(**observation, **teacher_conditions(indices, labels), teacher_mask=teacher, **repair, **execution_mask)
                 loss,rm,queried=objective(prediction,observation,indices,labels,
                     patch_cache=pool_patch_cache, patch_keys=slots)
                 record_training_diagnostics(rm)
                 combined=loss.mean()
                 with timed('backward_optimizer'):
                     combined.backward()
+                    prepare_optimizer_gradients(model, labels['supervised'],
+                        policy=("planner_supervised_v1" if cfg.training_stage == "post_demonstration" else cfg.optimizer_gradient_ownership),
+                        isolate_unsupervised_execution_gradients=(cfg.isolate_unsupervised_execution_gradients or cfg.training_stage == "post_demonstration"))
                     gradient_norm=torch.stack(list(model.clip_training_gradients().values())).norm()
                     optimizer.step()
                 gradient_norm_total+=statistic(gradient_norm);batches+=1
@@ -1232,7 +1400,9 @@ def main():
                     # Reset rather than relabeling that endpoint as the old event.
                     recoverable &= ~own_complete
                 with timed('pool_feedback'):
-                    feedback=pool.update(slots,prediction.qpos,queried[1],safe,recoverable,fresh_observation,reset_reasons=reset_reasons)
+                    stage_reasons = (dict(reset_reasons, **endpoint_rejection_masks(checks, reset_reasons))
+                        if cfg.training_stage != 'legacy_mixed' else reset_reasons)
+                    feedback=pool.update(slots,prediction.qpos,queried[1],safe,recoverable,fresh_observation,reset_reasons=stage_reasons)
                     if pool_patch_cache is not None:
                         # Only store committed states that survived periodic resampling.
                         # Rejected states retain their patch; changed reset states miss
@@ -1266,7 +1436,7 @@ def main():
             depth_outputs=age_histogram.cpu().tolist()
             rollout_outputs=sum(depth_outputs[1:])
         order_generator = torch.Generator(device=device).manual_seed(cfg.seed+step) if cfg.comparison_batch_order else None
-        shuffled=(train[:0] if pool is not None and not cfg.continuous_demonstration_training
+        shuffled=(train[:0] if pool is not None and (cfg.training_stage != "legacy_mixed" or not cfg.continuous_demonstration_training)
                   else train[torch.randperm(len(train), device=device, generator=order_generator)])
         for indices in shuffled.split(cfg.batch_size):
             if not len(indices):continue
@@ -1348,7 +1518,8 @@ def main():
                     if remaining <= 0:break
                     rindices=rindices[:remaining];rinput={k:v[:remaining] for k,v in rinput.items()};rsupervised=rsupervised[:remaining]
                 with timed('forward'):
-                    action = model(**rinput)
+                    action = model(**rinput, **(dict(execution_observation_supervised=rsupervised)
+                        if cfg.isolate_unsupervised_execution_gradients or cfg.training_stage == 'post_demonstration' else {}))
                 training_predictions+=len(rindices)
                 rlabels = labels_for(rinput, rindices, recursive=True)
                 rlabels['supervised'] = rsupervised
@@ -1407,7 +1578,9 @@ def main():
                 gradient_norm = torch.stack(list(model.clip_training_gradients().values())).norm()
                 gradient_norm_total += statistic(gradient_norm); batches += 1
                 optimizer.step()
-        if not cfg.constant_learning_rate:
+        # CosineAnnealingLR rises again beyond T_max. Extended staged runs
+        # retain the terminal scheduler state and its minimum learning rate.
+        if not cfg.constant_learning_rate and scheduler.last_epoch < scheduler.T_max:
             scheduler.step()
         if device.type == 'cuda': torch.cuda.synchronize(device)
         train_seconds = time.perf_counter() - step_begun
@@ -1424,9 +1597,16 @@ def main():
         parallel_metrics=({key:int(value) for key,value in zip(pool_counts,torch.stack(list(pool_counts.values())).cpu().tolist())}
             if pool is not None else None)
         diagnostics = {name: float(value.cpu())/total_count for name, value in training_diagnostics.items()}
-        training_phase = 'reference_warmup' if reference_warmup else ('persistent_parallel' if pool is not None else 'nested_rollout')
+        training_phase = (cfg.training_stage if cfg.training_stage != 'legacy_mixed' else
+            ('reference_warmup' if reference_warmup else ('persistent_parallel' if pool is not None else 'nested_rollout')))
+        stage_rollout = pool.stage_metrics() if pool is not None and hasattr(pool, 'stage_metrics') else None
+        if stage_rollout is not None:
+            with (cfg.output/'stage_rollouts.jsonl').open('a') as log:
+                log.write(json.dumps(dict(step=step, **stage_rollout))+'\n')
+            pool.finished_episodes.clear()
         performance_history.append({'step': step, 'training_seconds': train_seconds,
             'training_mode':training_phase, 'training_diagnostics': diagnostics,
+            'stage_rollout': stage_rollout,
             'training_predictions':actual_predictions,'total_training_predictions':training_predictions,
             'demonstration_predictions':demonstration_predictions,
             'predictions_per_second':actual_predictions/train_seconds,'optimizer_updates':constraint_accepted_updates if cfg.constraint_training else batches,
@@ -1440,12 +1620,13 @@ def main():
             'training_component_seconds': train_timings})
         (cfg.output / 'performance.json').write_text(json.dumps(performance_history, indent=2))
         budget_finished=cfg.training_prediction_budget is not None and training_predictions >= cfg.training_prediction_budget
-        if step == 1 or step % cfg.evaluation_every == 0 or step == cfg.steps or budget_finished:
+        if step == 1 or step % cfg.evaluation_every == 0 or step == cfg.steps or step == cfg.stop_after_step or budget_finished:
             metrics = evaluate()
             teacher_metrics = evaluate(teacher=True)
             score = endpoint_validation_score(metrics)
             row = {'step': step, 'teacher_probability': probability, 'teacher_fraction': teacher_count / total_count,
-                   'training_phase': training_phase, 'teacher_schedule_step': max(0, step-cfg.reference_warmup_steps),
+                   'training_phase': training_phase, 'stage_rollout': stage_rollout,
+                   'validation_kind': 'single_segment_diagnostic_not_recursive_stage_success', 'teacher_schedule_step': max(0, step-cfg.reference_warmup_steps),
                    'training_diagnostics': diagnostics,
                    'training_predictions':actual_predictions,'total_training_predictions':training_predictions,
                    'demonstration_predictions':demonstration_predictions,
@@ -1468,14 +1649,14 @@ def main():
             if score < best_score:
                 best_score, best_step, best_state = score, step, copy.deepcopy(model.state_dict())
                 save(cfg.output / 'best_validation_score.pt', step, metrics, best_state)
-            (cfg.output / 'progress.json').write_text(json.dumps({'history': history}, indent=2))
-            if pool is not None:
-                torch.save({'schema':'persistent_parallel_rollout_training_state_v1','step':step,
-                    'training_predictions':training_predictions,'pool':pool.state_dict(),
-                    'pending_plan':pending.state_dict() if pending is not None else None,
-                    'optimizer':optimizer.state_dict(),'scheduler':scheduler.state_dict(),
-                    'torch_rng':torch.get_rng_state(),'cuda_rng':torch.cuda.get_rng_state_all() if device.type=='cuda' else []},
-                    cfg.output/'parallel_training_state.pt')
+            (cfg.output / 'progress.json').write_text(json.dumps({'history': [r for r in history if r.get('training_phase') == training_phase]}, indent=2))
+            from generator.training_state import capture_training_state, save_epoch_training_state
+            training_state = capture_training_state(step=step, model=model, optimizer=optimizer,
+                scheduler=scheduler, pool=pool, pending=pending, config=config,
+                robot_asset_json=encode_robot_asset_json(), training_predictions=training_predictions,
+                history=history, best_score=best_score, best_step=best_step, best_state=best_state)
+            save_epoch_training_state(training_state, cfg.output)
+            del training_state
         if budget_finished:break
     (cfg.output / 'report.json').write_text(json.dumps({'best_validation_score_step': best_step,
         'best_validation_score': best_score, 'history': history,

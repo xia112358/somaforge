@@ -40,7 +40,7 @@ motion_config = MotionConfig(
         "right_wrist_yaw_link",
     ],
     body_name_ref=["torso_link"],
-    reset_sampler="completion_ema_failure_window",
+    reset_sampler="completion_recent30_failure_window",
     noise_to_initial_pose=init_pose_config,
 )
 
@@ -48,7 +48,7 @@ motion_config = MotionConfig(
 def make_wbt_command(
     manifest: str,
     *,
-    reset_sampler: str = "completion_ema_failure_window",
+    reset_sampler: str = "completion_recent30_failure_window",
     use_start_probe_envs: bool = True,
     start_at_timestep_zero_prob: float = 0.0,
 ) -> CommandManagerCfg:

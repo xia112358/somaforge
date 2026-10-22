@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from isaaclab_newton.physics import NewtonManager
-from isaaclab_newton.sensors.ray_caster.ray_caster import RayCaster as NewtonRayCaster
+# Preserve the trained policy's configured terrain-mesh ray queries.
+from isaaclab_newton.sensors.ray_caster import LegacyRayCaster as NewtonRayCaster
 from loguru import logger
 import math
 import torch
@@ -30,6 +31,18 @@ class HolosomaNewtonRayCaster(NewtonRayCaster):
         )
 
     def _initialize_rays_impl(self) -> None:
+        from isaaclab.sensors.ray_caster import patterns
+        if isinstance(self.cfg.pattern_cfg, patterns.PinholeCameraPatternCfg):
+            # Newton's generic pattern API supplies (cfg, device), while the
+            # camera API also requires one intrinsic matrix per sensor.
+            def pinhole(cfg, device):
+                fx = cfg.focal_length / cfg.horizontal_aperture * cfg.width
+                vertical = cfg.vertical_aperture or cfg.horizontal_aperture * cfg.height / cfg.width
+                fy = cfg.focal_length / vertical * cfg.height
+                intrinsic = torch.tensor([[fx, 0., cfg.width/2], [0., fy, cfg.height/2], [0., 0., 1.]], device=device)
+                starts, directions = patterns.pinhole_camera_pattern(cfg, intrinsic[None], device)
+                return starts[0], directions[0]
+            self.cfg.pattern_cfg.func = pinhole
         super()._initialize_rays_impl()
         self._php_canonical_ray_directions = self.ray_directions.torch.clone()
 

@@ -38,6 +38,7 @@ logs/
 # Documentation
 *.md
 docs/
+!**/README.md
 
 # Temporary files
 tmp/
@@ -55,3 +56,11 @@ wandb/
 .jj/
 .omc/
 mise.local.toml
+
+# Workstation runtime storage and converted caches are initialized at build time.
+/runtime/
+/data
+/OmniRetarget_Dataset/
+/packages/motion_edit/data
+/src/holosoma/holosoma/data/robots/converted*/
+NvStreamer-*.etli

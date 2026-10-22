@@ -17,6 +17,15 @@ by `contact_solver`, an explicit dependency of Motion Edit. Neither core nor the
 solver imports this editing application. Contact bindings initialize once in
 the contact package, without repeated installation in generation.
 
+See [Core contracts](../somaforge_core/README.md),
+[Generator](../generator/README.md), [support evidence](../../docs/support-semantics.md),
+and the [documentation index](../../docs/README.md). WBT dense, sparse and force
+experts and student distillation have independent
+[native configuration entrypoints](../../docs/wbt-modular-experiments.md).
+Their six-part contact-reference schema is distinct from this editor's
+eight-part heel/toe force-reference schema; do not relabel or reinterpret arrays
+by changing a part-order field.
+
 ## Layout
 
 ```text
@@ -48,18 +57,24 @@ data/
 
 ## Recommended Workflow
 
-Motion Edit uses the shared Conda environment. Install the Python service and
-build the bundled Three.js frontend before launching the editor:
+Motion Edit uses the pinned Isaac Lab GA / Newton environment. From the
+repository root, install the runtime and build the bundled frontend:
 
 ```bash
-conda run -n env_somaforge \
-  python -m pip install -e .
-npm --prefix web install
-npm --prefix web run build
+./scripts/setup_isaaclab3_newton.sh
+source scripts/source_isaaclab3_newton_setup.sh
+npm --prefix packages/motion_edit/web install
+npm --prefix packages/motion_edit/web run build
 ```
 
-Set `MOTION_EDIT_CONDA_ENV` only when intentionally testing another Conda
-environment. Project-local `.venv` environments are not used.
+The `motion-edit` launcher activates this environment automatically. PyRoki's
+separate optimization environment is selected with `--ik-conda-env`.
+See [environment setup](../../docs/environments.md).
+The commands below run from the repository root and use
+`packages/motion_edit/motion-edit`. An installed `motion-edit` console command is
+also available after activating its environment. Local `data/` paths and runtime
+manifests refer to separately prepared or restored inputs; a code-only clone
+does not include them. See [repository data](../../docs/repository-data.md).
 
 The main user-facing path starts from the canonical asset manifest:
 
@@ -85,24 +100,24 @@ Somaforge Newton 8-part asset manifest
 ```
 
 ```bash
-./motion-edit import-asset-manifest \
-  --manifest ../../runtime/current/manifests/newton_contact_force_8part.json
+packages/motion_edit/motion-edit import-asset-manifest \
+  --manifest runtime/current/manifests/newton_contact_force_8part.json
 
-./motion-edit contact-editor \
+packages/motion_edit/motion-edit contact-editor \
   --motion-asset-id climb_01_newton_8part
 
-./motion-edit validate-contact-edit-plan \
+packages/motion_edit/motion-edit validate-contact-edit-plan \
   --plan data/workbench/climb00_surface_edits.json
 
-./motion-edit generate-ref \
+packages/motion_edit/motion-edit generate-ref \
   --plan data/workbench/climb00_surface_edits.json \
   --output-motion data/motions/generated/climb00_farther.policy_ref_v1.npz
 
-./motion-edit export-manifest \
+packages/motion_edit/motion-edit export-manifest \
   --motion-version-id climb00_farther \
   --output data/exports/manifests/climb00_farther.json
 
-./motion-edit export-split-npz \
+packages/motion_edit/motion-edit export-split-npz \
   --motion-version-id climb00_farther
 ```
 
@@ -136,7 +151,8 @@ orchestration surfaces. The retained production command for reproducible
 contact-aware kinematics is:
 
 ```bash
-conda run --no-capture-output -n env_somaforge python \
+source scripts/source_isaaclab3_newton_setup.sh
+python \
   ../../scripts/generate_contact_aware_edited_motion.py \
   --plan data/workbench/climb00_surface_edits.json \
   --output ../../tmp/motion_edit_run/final_motion.npz \
@@ -304,7 +320,8 @@ queries preserve the source rollout's signed-distance relationship and penalize
 only excess penetration more strongly.
 
 ```bash
-conda run --no-capture-output -n env_somaforge python \
+source scripts/source_isaaclab3_newton_setup.sh
+python \
   ../../scripts/generate_contact_aware_edited_motion.py \
   --plan /path/to/validated_plan.json \
   --output ../../tmp/motion_edit_run/final_motion.npz \
@@ -392,26 +409,26 @@ reject/clamp bounds; the browser does not duplicate this solver.
 Surface binding is explicit and does not generate a trajectory. It writes a new ContactLayer by default.
 
 ```bash
-./motion-edit create-urdf-surface-catalog \
+packages/motion_edit/motion-edit create-urdf-surface-catalog \
   --motion-id climb_00_z_scale_1.0 \
   --terrain-urdf /path/to/multi_boxes_z_scale_1.0.urdf \
   --output data/surfaces/climb_00_surfaces.jsonl
 
-./motion-edit refine-contact-anchor-positions \
+packages/motion_edit/motion-edit refine-contact-anchor-positions \
   --contact-layer contact/force_contact \
   --motion-id climb_00_z_scale_1.0 \
   --motion /path/to/climb_00_with_raw_contacts.npz \
   --surface-catalog data/surfaces/climb_00_surfaces.jsonl \
   --output-contact-layer contact/force_contact_raw_point_refined
 
-./motion-edit merge-contact-anchors \
+packages/motion_edit/motion-edit merge-contact-anchors \
   --contact-layer contact/force_contact_raw_point_refined \
   --motion-id climb_00_z_scale_1.0 \
   --output-contact-layer contact/force_contact_raw_point_merged \
   --max-gap 3 \
   --max-distance 0.06
 
-./motion-edit bind-contact-surfaces \
+packages/motion_edit/motion-edit bind-contact-surfaces \
   --contact-layer contact/force_contact_raw_point_merged \
   --motion-id climb_00_z_scale_1.0 \
   --surface-catalog data/surfaces/climb_00_surfaces.jsonl \
@@ -430,28 +447,28 @@ The overlay export is a lightweight frontend-agnostic JSON file containing
 `surface_quad`, `anchor_point`, `projection_line`, and `normal_axis` objects.
 
 ```bash
-./motion-edit create-urdf-surface-catalog \
+packages/motion_edit/motion-edit create-urdf-surface-catalog \
   --motion-id climb_00_z_scale_1.0 \
   --terrain-urdf /path/to/multi_boxes_z_scale_1.0.urdf \
   --output data/surfaces/climb_00_surfaces.jsonl
 
-./motion-edit bind-contact-surfaces \
+packages/motion_edit/motion-edit bind-contact-surfaces \
   --contact-layer contact/force_contact \
   --motion-id climb_00_z_scale_1.0 \
   --surface-catalog data/surfaces/climb_00_surfaces.jsonl \
   --output-contact-layer contact/force_contact_bound
 
-./motion-edit export-surface-binding-report \
+packages/motion_edit/motion-edit export-surface-binding-report \
   --contact-layer contact/force_contact_bound \
   --motion-id climb_00_z_scale_1.0 \
   --output data/exports/surface_binding_reports/climb_00.json
 
-./motion-edit export-surface-binding-overlay \
+packages/motion_edit/motion-edit export-surface-binding-overlay \
   --contact-layer contact/force_contact_bound \
   --motion-id climb_00_z_scale_1.0 \
   --output data/exports/surface_binding_overlays/climb_00.overlay.json
 
-./motion-edit summarize-surface-bindings \
+packages/motion_edit/motion-edit summarize-surface-bindings \
   --contact-layer contact/force_contact_bound \
   --motion-id climb_00_z_scale_1.0
 ```
@@ -553,7 +570,7 @@ are forbidden. The grouping does not impose heel/sole/toe phases or replace
 the recorded point+force samples with the representative handle.
 
 ```bash
-./motion-edit contact-editor \
+packages/motion_edit/motion-edit contact-editor \
   --motion-asset-id climb_01_newton_8part \
   --port 8094
 ```
@@ -584,8 +601,8 @@ Generate action and the `generate-ref` CLI are two frontends to the same formal
 edited-kinematics implementation; the CLI form is:
 
 ```bash
-./motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
-./motion-edit generate-ref \
+packages/motion_edit/motion-edit validate-contact-edit-plan --plan data/workbench/climb00_farther.json
+packages/motion_edit/motion-edit generate-ref \
   --plan data/workbench/climb00_farther.json \
   --output-motion data/motions/generated/climb00_farther.policy_ref_v1.npz \
   --overwrite
@@ -641,7 +658,7 @@ diagnosis; successful start repair still requires full rollout/contact acceptanc
 Single and batch generation share the contact-aware rollout-authority backend:
 
 ```bash
-./motion-edit generate-ref \
+packages/motion_edit/motion-edit generate-ref \
   --plan-manifest data/workbench/augmentations/climb_jitter/manifest.json \
   --source-prefix-config /path/to/source-clock-prefix.json \
   --output-motion-dir data/motions/generated \
@@ -671,7 +688,7 @@ implementation, and checks that IK actually applied the requested reference.
 Prepare a fresh collection version without starting generation or GPU work:
 
 ```bash
-runtime/environments/newton-main-20260914/bin/python -B \
+runtime/environments/isaaclab-ga-3.0.0-newton-1.7.0/bin/python -B \
   scripts/expand_source_preserving_augmentations.py \
   --prepare-from-collection runtime/current/motions/climb00_contact_dataset/versions/loaded_material_rebuild_20261003/edits207_joint_v12/index.json \
   --source-prefix-config configs/motion_edit/climb00_source_prefix_v1.json \
@@ -700,8 +717,9 @@ Pre-existing authored prefix boundaries are mapped exactly during event rebase;
 missing exact boundaries fail instead of silently changing the start interval.
 
 The standard order is source-clock prefix preparation, contact-aware generation,
-canonical Newton FK and fresh labels, joint policy refinement when needed, fixed
-policy rollout evaluation/collection, and per-trial dataset admission. Complete
+canonical Newton FK, joint policy refinement, fixed-policy rollout evaluation/
+collection, and actual-execution contact labeling and per-trial admission.
+Intermediate training references are not relabeled or contact-accepted. Complete
 tracking alone cannot pass a contact-event task. Only accepted actual policy
 executions enter the dataset; kinematic candidates and failed rollouts stay in
 the audit. Each stage is explicit and preparation never starts training.
@@ -738,8 +756,8 @@ server, camera, and transport controls. Registered source/edited motions continu
 using `--motion-id`; read-only results and research reports use:
 
 ```bash
-./motion-edit contact-editor --review path/to/motion.npz --terrain path/to/terrain.obj
-./motion-edit contact-editor --review path/to/diagnostic.json
+packages/motion_edit/motion-edit contact-editor --review path/to/motion.npz --terrain path/to/terrain.obj
+packages/motion_edit/motion-edit contact-editor --review path/to/diagnostic.json
 ```
 
 The toolbar's “打开轨迹／回放／报告” dialog accepts these paths. No additional

@@ -49,6 +49,14 @@ class EvalRecordingCallback(RLEvalCallback):
         self._initial_state_recorded = False
         self._bootstrap_state_recorded = False
         self._stopped_after_done = False
+        self._chunks: list[dict[str, Any]] = []
+        self._chunk_start = 0
+        if config.chunk_frames < 0:
+            raise ValueError("chunk_frames must be nonnegative")
+        if config.chunk_frames:
+            import faulthandler
+            # A stalled first native snapshot must leave actionable evidence.
+            faulthandler.dump_traceback_later(60, repeat=True)
 
     def _records_initial_state(self) -> bool:
         """Respect the requested reset/bootstrap phase origin recording."""
@@ -61,6 +69,10 @@ class EvalRecordingCallback(RLEvalCallback):
     def _save(self) -> None:
         """Save recorded data to NPZ."""
         if self._step_count == 0:
+            return
+        if self.config.chunk_frames:
+            self._flush_chunk()
+            self._publish_chunks(complete=True)
             return
 
         arrays: dict[str, np.ndarray] = {}
@@ -81,6 +93,42 @@ class EvalRecordingCallback(RLEvalCallback):
             f"{name}{list(arr.shape)}" for name, arr in arrays.items() if name != "_metadata_json"
         )
         logger.info(f"EvalRecordingCallback: saved {self._step_count} steps to {path}\n  Channels: {channel_summary}")
+
+    def _publish_chunks(self, *, complete: bool = False) -> None:
+        from somaforge_core.trajectory_refinement import write_json
+        path = Path(self.output_path + ".json")
+        staged = path.with_suffix(".json.writing")
+        write_json(staged, dict(schema="somaforge_chunked_recording_v1", complete=complete,
+                   frames=self._chunk_start, metadata=self._metadata, chunks=self._chunks))
+        staged.replace(path)
+
+    def _flush_chunk(self) -> None:
+        from somaforge_core.trajectory_refinement import fingerprint
+        arrays = {}
+        for name, values in self._buffers.items():
+            if values:
+                arrays[name] = (stack_contact_channel(values) if
+                    name.startswith(("solver_contact_", "raw_contact_")) and not name.endswith("_count")
+                    else np.stack(values))
+        if not arrays:
+            return
+        lengths = {len(arrays[key]) for key in ("root_pos", "motion_id", "motion_time_step", "solver_contact_count")}
+        if lengths != {self._step_count - self._chunk_start}:
+            raise ValueError("Recording channels do not share the chunk clock")
+        directory = Path(self.output_path + ".parts")
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"chunk_{len(self._chunks):05d}.npz"
+        with path.open("xb") as stream:
+            np.savez_compressed(stream, **arrays)
+        self._chunks.append(dict(**fingerprint(path), start=self._chunk_start, end=self._step_count))
+        self._chunk_start = self._step_count
+        for values in self._buffers.values():
+            values.clear()
+        self._publish_chunks()
+        if len(self._chunks) == 1:
+            import faulthandler
+            faulthandler.cancel_dump_traceback_later()
+        logger.info(f"Recording chunk saved: frames={self._chunk_start}, chunks={len(self._chunks)}")
 
     def on_pre_evaluate_policy(self) -> None:
         env = self._get_env()
@@ -131,7 +179,7 @@ class EvalRecordingCallback(RLEvalCallback):
             try:
                 from isaaclab_newton.physics.newton_manager import NewtonManager
 
-                model = getattr(NewtonManager, "_model", None)
+                model = NewtonManager.get_model()
                 if model is not None:
                     from somaforge_core.newton_runtime_compat import runtime_provenance
                     from scripts.serve_newton_contact_queries import inspect_model, native_binding
@@ -200,6 +248,10 @@ class EvalRecordingCallback(RLEvalCallback):
         )
         for name in channel_names:
             self._buffers[name] = []
+        if self.config.chunk_frames:
+            for name in ("env_origins", "motion_start_step", "solver_contact_task_group",
+                         "solver_contact_task_surface", "solver_contact_task_eligible"):
+                self._buffers[name] = []
 
         if self.profile == "full":
             from holosoma.simulator.isaaclab3_newton.contact_snapshot import FIELDS
@@ -391,6 +443,8 @@ class EvalRecordingCallback(RLEvalCallback):
         if contact_sensor_data is not None and hasattr(contact_sensor_data, "net_forces_w_history"):
             self._buffers["contact_sensor_forces_history"].append(_to_np(contact_sensor_data.net_forces_w_history[eid]))
         if hasattr(sim, "get_raw_rigid_contacts"):
+            if self.config.chunk_frames and self._step_count == 0:
+                logger.info("Initial native recording: reading raw Newton contacts")
             try:
                 raw_contacts = sim.get_raw_rigid_contacts()
             except Exception as exc:
@@ -409,6 +463,8 @@ class EvalRecordingCallback(RLEvalCallback):
                 self._buffers["raw_contact_force_w"].append(np.asarray(raw_contacts["force_w"], dtype=np.float32))
 
         if self.profile == "full":
+            if self.config.chunk_frames and self._step_count == 0:
+                logger.info("Initial native recording: reading same-solve solver/contact load snapshot")
             if not callable(getattr(sim, "get_solver_contact_snapshot", None)):
                 raise RuntimeError(
                     "Full recording requires Newton/MJWarp solver contact snapshots; "
@@ -420,11 +476,20 @@ class EvalRecordingCallback(RLEvalCallback):
                 raise RuntimeError('Full support recording requires same-solve per-contact force and velocity')
             for field, value in snapshot.items():
                 self._buffers[f"solver_contact_{field}"].append(np.asarray(value))
-            from somaforge_core.newton_support import observed_support
+            from somaforge_core.newton_support import observed_support, select_support_contacts
             if 'newton_scene_binding' not in self._metadata or 'newton_body_labels' not in self._metadata:
                 raise RuntimeError('Full support recording requires actual Newton scene/body mapping')
+            selection = None
+            if self.config.chunk_frames:
+                if self._step_count == 0:
+                    logger.info("Initial native recording: resolving actual contact primary faces")
+                selection = select_support_contacts(snapshot, self._metadata['newton_scene_binding'],
+                                                    self._metadata['newton_body_labels'])
+                for key in ("groups", "surfaces", "eligible"):
+                    output = {"groups": "group", "surfaces": "surface", "eligible": "eligible"}[key]
+                    self._buffers["solver_contact_task_" + output].append(selection[key].copy())
             support = observed_support(snapshot, self._metadata['newton_scene_binding'],
-                                       self._metadata['newton_body_labels'], env.num_envs)
+                                       self._metadata['newton_body_labels'], env.num_envs, selection=selection)
             for field, value in support.items():
                 self._buffers[f'observed_support_{field}'].append(np.asarray(value[eid]))
             self._metadata["solver_contact_semantics"] = {
@@ -448,6 +513,10 @@ class EvalRecordingCallback(RLEvalCallback):
                 zero_load='unknown support location; never an automatic static-support certificate')
 
         self._record_motion_and_termination(env, eid, _to_np)
+        if self.config.chunk_frames:
+            self._buffers["env_origins"].append(_to_np(env.terrain_manager.get_state("locomotion_terrain").env_origins[eid]))
+            motion_command = env.command_manager.get_state("motion_command")
+            self._buffers["motion_start_step"].append(_to_np(motion_command.motion.motion_start_idx[motion_command.motion_ids[eid]]))
 
         # substep tensors: [decimation, num_dof] — one row per physics sub-step
         torques_substep, dof_pos_substep, dof_vel_substep = self._extract_substep_data(env, eid)
@@ -469,6 +538,8 @@ class EvalRecordingCallback(RLEvalCallback):
                 pass
 
         self._step_count += 1
+        if self.config.chunk_frames and self._step_count - self._chunk_start >= self.config.chunk_frames:
+            self._flush_chunk()
 
 
     def _record_motion_and_termination(self, env: Any, eid: int | slice, to_np: Any) -> None:

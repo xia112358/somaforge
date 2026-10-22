@@ -116,7 +116,7 @@ def main() -> None:
     parser.add_argument("--iterations", type=int, default=2000)
     parser.add_argument("--learning-rate", type=float, default=1.0e-4)
     parser.add_argument("--save-interval", type=int, default=100)
-    parser.add_argument("--reset-sampler", default="completion_ema_failure_window")
+    parser.add_argument("--reset-sampler", default="completion_recent30_failure_window")
     parser.add_argument("--start-at-timestep-zero-prob", type=float, default=0.2)
     parser.add_argument("--load-optimizer", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
@@ -169,34 +169,8 @@ def main() -> None:
     print(" ".join(cmd), flush=True)
     if args.dry_run:
         return
-    env = os.environ.copy()
-    isaaclab_path = Path(env.get("ISAACLAB_PATH", str(Path.home() / "isaaclab_3.0")))
-    env.setdefault("OMNI_KIT_ACCEPT_EULA", "YES")
-    env.setdefault("ISAACLAB_PATH", str(isaaclab_path))
-    env.setdefault(
-        "HOLOSOMA_ISAACLAB3_NEWTON_HEADLESS_EXPERIENCE",
-        str(REPO_ROOT / "apps" / "holosoma.isaaclab3_newton.headless.kit"),
-    )
-    env.setdefault(
-        "HOLOSOMA_ISAACLAB3_NEWTON_KIT_EXPERIENCE",
-        str(REPO_ROOT / "apps" / "holosoma.isaaclab3_newton.kit"),
-    )
-    package_roots = [
-        str(REPO_ROOT / "src" / "holosoma"),
-        str(REPO_ROOT / "src" / "holosoma_inference"),
-        str(REPO_ROOT / "src" / "holosoma_retargeting"),
-        str(isaaclab_path / "source" / "isaaclab"),
-        str(isaaclab_path / "source" / "isaaclab_assets"),
-        str(isaaclab_path / "source" / "isaaclab_mimic"),
-        str(isaaclab_path / "source" / "isaaclab_newton"),
-        str(isaaclab_path / "source" / "isaaclab_ov"),
-        str(isaaclab_path / "source" / "isaaclab_rl"),
-        str(isaaclab_path / "source" / "isaaclab_tasks"),
-        str(isaaclab_path / "source" / "isaaclab_tasks_experimental"),
-        str(isaaclab_path / "source" / "isaaclab_visualizers"),
-    ]
-    existing_pythonpath = env.get("PYTHONPATH")
-    env["PYTHONPATH"] = os.pathsep.join(package_roots + ([existing_pythonpath] if existing_pythonpath else []))
+    from somaforge_core.runtime_paths import newton_subprocess_environment
+    env = newton_subprocess_environment()
     subprocess.run(cmd, cwd=REPO_ROOT, check=True, env=env)
 
 

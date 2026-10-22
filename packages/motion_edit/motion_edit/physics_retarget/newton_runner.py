@@ -40,7 +40,9 @@ class NewtonSubprocessRunner:
         self.target_force_motion_path = Path(target_force_motion_path).expanduser().resolve()
         self.motion_id = str(motion_id)
         self.checkpoint_path = Path(checkpoint_path).expanduser().resolve()
-        self.python_executable = str(Path(python_executable).expanduser().resolve())
+        # Resolving a venv's python symlink selects its base interpreter and
+        # silently bypasses the pinned GA/Newton packages.
+        self.python_executable = str(Path(python_executable).expanduser().absolute())
         self.repo_root = Path(repo_root).expanduser().resolve()
         self.parallel_envs = int(parallel_envs)
         self.device = str(device)
@@ -282,28 +284,8 @@ class NewtonSubprocessRunner:
         }
 
     def _subprocess_env(self) -> dict[str, str]:
-        env = os.environ.copy()
-        isaaclab_path = Path(env.get("ISAACLAB_PATH", str(Path.home() / "isaaclab_3.0")))
-        env.setdefault("OMNI_KIT_ACCEPT_EULA", "YES")
-        env.setdefault("ISAACLAB_PATH", str(isaaclab_path))
-        env.setdefault(
-            "HOLOSOMA_ISAACLAB3_NEWTON_HEADLESS_EXPERIENCE",
-            str(self.repo_root / "apps/holosoma.isaaclab3_newton.headless.kit"),
-        )
-        paths = [
-            self.repo_root / "packages/somaforge_core",
-            self.repo_root / "packages/motion_edit",
-            self.repo_root / "src/holosoma",
-            self.repo_root / "src/holosoma_retargeting",
-            isaaclab_path / "source/isaaclab",
-            isaaclab_path / "source/isaaclab_assets",
-            isaaclab_path / "source/isaaclab_newton",
-            isaaclab_path / "source/isaaclab_rl",
-            isaaclab_path / "source/isaaclab_tasks",
-        ]
-        existing = env.get("PYTHONPATH")
-        env["PYTHONPATH"] = os.pathsep.join([*(str(path) for path in paths), *([existing] if existing else [])])
-        return env
+        from somaforge_core.runtime_paths import newton_subprocess_environment
+        return newton_subprocess_environment()
 
 
 def load_newton_rollout(

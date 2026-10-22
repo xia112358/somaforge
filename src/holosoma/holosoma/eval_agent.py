@@ -145,6 +145,10 @@ def main() -> None:
     init_eval_logging()
     launcher_args = parse_isaaclab_launcher_args("Evaluate a Holosoma agent.")
     checkpoint_cfg, remaining_args = tyro.cli(CheckpointConfig, return_unknown_args=True, add_help=False)
+    if checkpoint_cfg.checkpoint is None and any(arg in {"--help", "-h"} for arg in remaining_args):
+        tyro.cli(CheckpointConfig, args=remaining_args,
+            description="Select a checkpoint to evaluate. Pass --checkpoint /path/model.pt --help "
+                        "to inspect the saved experiment and evaluation overrides.")
     saved_cfg, saved_wandb_path = load_saved_experiment_config(checkpoint_cfg)
     evaluation, remaining_args = tyro.cli(
         EvaluationConfig,

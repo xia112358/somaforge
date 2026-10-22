@@ -112,7 +112,8 @@ export PYTHONPATH="$PWD/packages/motion_edit:$PWD/packages/somaforge_core:$PYTHO
 RUN_DIR="$PWD/tmp/climb00"
 PLAN="$RUN_DIR/height110.json"
 
-conda run --no-capture-output -n env_somaforge python \
+source scripts/source_isaaclab3_newton_setup.sh
+python \
   scripts/generate_contact_aware_edited_motion.py \
   --plan "$PLAN" \
   --output "$RUN_DIR/final_motion.npz" \
@@ -275,12 +276,11 @@ force timing, and force magnitude.
 
 ## 4. Regression and UI checks
 
-Run the source regression in `env_somaforge`:
+Run the source regression in the pinned GA environment:
 
 ```bash
-PYTHONPATH=packages/motion_edit:packages/somaforge_core:src/holosoma \
-SOMAFORGE_ROOT=/home/xiaz/somaforge \
-conda run --no-capture-output -n env_somaforge pytest -q \
+source scripts/source_isaaclab3_newton_setup.sh
+python -m pytest -q \
   packages/motion_edit/tests \
   packages/somaforge_core/tests \
   src/holosoma/holosoma/agents/modules/tests/test_censored_normal.py \
@@ -291,9 +291,7 @@ The complete command above must pass before the route is admitted. Launch the
 current single-port editor and use its recent list for registered motions:
 
 ```bash
-PYTHONPATH=packages/motion_edit:packages/somaforge_core \
-conda run --no-capture-output -n env_somaforge \
-  python -m motion_edit.cli contact-editor --port 8094
+packages/motion_edit/motion-edit contact-editor --port 8094
 ```
 
 Before admitting a generated reference, inspect the complete motion in the

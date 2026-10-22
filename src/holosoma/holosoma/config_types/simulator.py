@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import field
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import tyro
 from holosoma.config_types.viewer import ViewerConfig
@@ -25,6 +25,13 @@ class DepthRayCameraConfig:
     horizontal_aperture: float = 20.955
     offset_pos: tuple[float, float, float] = (0.12, 0.0, 0.18)
     offset_rot_wxyz: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
+    rotation_convention: Literal["legacy_xyzw", "wxyz"] = "legacy_xyzw"
+    """Old PHP checkpoints passed this field directly as XYZW despite its name.
+
+    Retain their actual camera orientation by default. New camera configurations
+    can explicitly select ``wxyz`` to use the field's named convention.
+    Root/body states and motion tensors always remain XYZW.
+    """
     max_distance: float = 5.0
     translation_drift_range: tuple[float, float] = (-0.025, 0.025)
     angular_drift_degrees: float = 2.5

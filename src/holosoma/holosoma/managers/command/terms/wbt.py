@@ -1156,13 +1156,14 @@ def get_filtered_body_names(body_list: List[str], pattern: str) -> List[str]:
 
 
 class MotionCommand(CommandTermBase):
-    _CHECKPOINT_SCHEMA = "holosoma_wbt_motion_sampler_v1"
+    _CHECKPOINT_SCHEMA = "holosoma_wbt_motion_sampler_v2"
+    _PROBE_WINDOW_SIZE = 30
+    _RECENT_PROBE_FIELDS = ("values", "count", "cursor")
     _PER_MOTION_CHECKPOINT_FIELDS = (
         "_normal_motion_sampling_weights",
-        "_probe_completion_ema",
-        "_probe_success_ema",
-        "_probe_fail_ema",
-        "_probe_timeout_ema",
+        "_probe_recent30_values",
+        "_probe_recent30_count",
+        "_probe_recent30_cursor",
         "_probe_count",
         "_probe_fail_bin_hist",
         "_completion_success_streak",
@@ -1269,19 +1270,22 @@ class MotionCommand(CommandTermBase):
 
         # 4. get the reset timestep sampler
         self._reset_sampler = str(self.motion_cfg.reset_sampler)
+        if self._reset_sampler in ("completion_ema_failure_window", "hotspot_failure_window"):
+            logger.warning(f"reset_sampler={self._reset_sampler!r} now uses completion_recent30_failure_window.")
+            self._reset_sampler = "completion_recent30_failure_window"
         self._uses_failure_window_sampler = self._reset_sampler in (
             "failure_window",
-            "completion_ema_failure_window",
+            "completion_recent30_failure_window",
             "hotspot_failure_window",
         )
-        self._uses_completion_ema_failure_window_sampler = (
+        self._uses_completion_recent30_failure_window_sampler = (
             self._reset_sampler
-            in ("completion_ema_failure_window", "hotspot_failure_window")
+            in ("completion_recent30_failure_window", "hotspot_failure_window")
         )
         if self._reset_sampler == "hotspot_failure_window":
             logger.warning(
                 "reset_sampler='hotspot_failure_window' is deprecated; use "
-                "'completion_ema_failure_window'"
+                "'completion_recent30_failure_window'"
             )
         self._use_completion_learning_sampler = bool(
             self.motion_cfg.use_completion_learning_sampler and int(self.motion.num_motions) > 1
@@ -1295,11 +1299,11 @@ class MotionCommand(CommandTermBase):
                 f"before_prob={float(self.motion_cfg.failure_window_before_prob):.3f}, "
                 f"success_horizon_frames={int(self.motion_cfg.failure_window_success_horizon_frames)}"
             )
-        if self._uses_completion_ema_failure_window_sampler:
+        if self._uses_completion_recent30_failure_window_sampler:
             logger.info(
-                "Completion-EMA failure-window replay enabled: "
+                "Recent-30 probe failure-window replay enabled: "
                 f"uniform_mix={float(self.motion_cfg.hotspot_failure_uniform_mix):.3f}, "
-                "center=completion_ema_mean"
+                "center=completion_recent30_mean, window=30 completed episodes"
             )
         if self._use_completion_learning_sampler:
             logger.info(
@@ -1408,7 +1412,8 @@ class MotionCommand(CommandTermBase):
             if n > 0:
                 if (
                     self._env.is_evaluating
-                    and bool(self.motion_cfg.chain_motion_segments)
+                    and (bool(getattr(self.motion_cfg, "fixed_motion_assignment_in_eval", False))
+                         or bool(self.motion_cfg.chain_motion_segments))
                     and float(self.motion_cfg.start_at_timestep_zero_prob) >= 1.0
                 ):
                     self.motion_ids[sampler_env_ids] = self.env_motion_ids[sampler_env_ids]
@@ -1436,11 +1441,11 @@ class MotionCommand(CommandTermBase):
                 phase[self._probe_env_mask[env_ids]] = 0.0
             motion_len = end_idx - start_idx
             self.time_steps[env_ids] = start_idx + (phase * (motion_len - 1).float()).long()
-            if self._uses_completion_ema_failure_window_sampler:
+            if self._uses_completion_recent30_failure_window_sampler:
                 completion_window_env_ids = normal_env_ids
                 if completion_window_env_ids.numel() > 0:
                     self.time_steps[completion_window_env_ids] = (
-                        self._sample_completion_ema_failure_window_time_steps(
+                        self._sample_completion_recent30_failure_window_time_steps(
                             completion_window_env_ids
                         )
                     )
@@ -2496,10 +2501,10 @@ class MotionCommand(CommandTermBase):
                 f"group_variant_sample_count={self._group_variant_sample_count}."
             )
         self._probe_episode_valid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        self._probe_completion_ema = torch.zeros(num_motions, dtype=torch.float32, device=self.device)
-        self._probe_success_ema = torch.zeros(num_motions, dtype=torch.float32, device=self.device)
-        self._probe_fail_ema = torch.zeros(num_motions, dtype=torch.float32, device=self.device)
-        self._probe_timeout_ema = torch.zeros(num_motions, dtype=torch.float32, device=self.device)
+        self._probe_completion_recent30 = torch.zeros(num_motions, dtype=torch.float32, device=self.device)
+        self._probe_success_recent30 = torch.zeros(num_motions, dtype=torch.float32, device=self.device)
+        self._probe_fail_recent30 = torch.zeros(num_motions, dtype=torch.float32, device=self.device)
+        self._probe_timeout_recent30 = torch.zeros(num_motions, dtype=torch.float32, device=self.device)
         self._probe_count = torch.zeros(num_motions, dtype=torch.long, device=self.device)
         self._probe_fail_bin_count = max(int(self.motion_cfg.probe_fail_bin_count), 1)
         self._probe_fail_bin_hist = torch.zeros(
@@ -2515,11 +2520,13 @@ class MotionCommand(CommandTermBase):
         self._completion_success_ema = torch.zeros(num_motions, dtype=torch.float32, device=self.device)
         self._completion_fail_ema = torch.zeros(num_motions, dtype=torch.float32, device=self.device)
         self._completion_learned_mask = torch.zeros(num_motions, dtype=torch.bool, device=self.device)
-        self._group_probe_completion_ema = torch.zeros(self._num_motion_groups, dtype=torch.float32, device=self.device)
-        self._group_probe_success_ema = torch.zeros(self._num_motion_groups, dtype=torch.float32, device=self.device)
-        self._group_probe_fail_ema = torch.zeros(self._num_motion_groups, dtype=torch.float32, device=self.device)
-        self._group_probe_timeout_ema = torch.zeros(self._num_motion_groups, dtype=torch.float32, device=self.device)
+        self._group_probe_completion_recent30 = torch.zeros(self._num_motion_groups, dtype=torch.float32, device=self.device)
+        self._group_probe_success_recent30 = torch.zeros(self._num_motion_groups, dtype=torch.float32, device=self.device)
+        self._group_probe_fail_recent30 = torch.zeros(self._num_motion_groups, dtype=torch.float32, device=self.device)
+        self._group_probe_timeout_recent30 = torch.zeros(self._num_motion_groups, dtype=torch.float32, device=self.device)
         self._group_probe_count = torch.zeros(self._num_motion_groups, dtype=torch.long, device=self.device)
+        self._init_recent_probe_window()
+        self._init_recent_probe_window(group=True)
         self._group_probe_fail_bin_hist = torch.zeros(
             self._num_motion_groups, self._probe_fail_bin_count, dtype=torch.float32, device=self.device
         )
@@ -2576,6 +2583,46 @@ class MotionCommand(CommandTermBase):
         if hasattr(self, "adaptive_timesteps_sampler"):
             self.adaptive_timesteps_sampler.init_buffers()
 
+    def _init_recent_probe_window(self, *, group: bool = False) -> None:
+        prefix = "_group_probe" if group else "_probe"
+        count = getattr(self, prefix + "_count").numel()
+        setattr(self, prefix + "_recent30_values", torch.zeros(
+            count, self._PROBE_WINDOW_SIZE, 4, device=self.device
+        ))
+        for field in ("count", "cursor"):
+            setattr(self, prefix + "_recent30_" + field, torch.zeros(count, dtype=torch.long, device=self.device))
+
+    def _refresh_recent_probe_means(self, *, group: bool = False) -> None:
+        prefix = "_group_probe" if group else "_probe"
+        means = getattr(self, prefix + "_recent30_values").sum(dim=1) / getattr(
+            self, prefix + "_recent30_count"
+        ).clamp(min=1).unsqueeze(1)
+        for column, metric in enumerate(("completion", "success", "fail", "timeout")):
+            getattr(self, prefix + "_" + metric + "_recent30").copy_(means[:, column])
+
+    def _append_recent_probe_results(self, index: int, completion: torch.Tensor, success: torch.Tensor,
+                                     fail: torch.Tensor, timeout: torch.Tensor, *, group: bool = False) -> None:
+        """Count individual finished episodes, including simultaneous probe finishes."""
+        prefix = "_group_probe" if group else "_probe"
+        if not hasattr(self, prefix + "_recent30_values"):
+            self._init_recent_probe_window(group=group)
+        values = getattr(self, prefix + "_recent30_values")
+        counts = getattr(self, prefix + "_recent30_count")
+        cursors = getattr(self, prefix + "_recent30_cursor")
+        n = completion.numel()
+        kept = min(n, self._PROBE_WINDOW_SIZE)
+        if not kept:
+            return
+        offsets = torch.arange(n - kept, n, device=values.device)
+        slots = (cursors[index] + offsets) % self._PROBE_WINDOW_SIZE
+        outcomes = torch.stack((completion, success, fail, timeout), dim=-1).to(values.dtype)
+        values[index, slots] = outcomes[-kept:]
+        cursors[index] = (cursors[index] + n) % self._PROBE_WINDOW_SIZE
+        counts[index] = (counts[index] + n).clamp(max=self._PROBE_WINDOW_SIZE)
+        mean = values[index].sum(dim=0) / counts[index].clamp(min=1)
+        for column, metric in enumerate(("completion", "success", "fail", "timeout")):
+            getattr(self, prefix + "_" + metric + "_recent30")[index] = mean[column]
+
     def _update_start_probe_stats(
         self,
         env_ids: torch.Tensor,
@@ -2618,7 +2665,6 @@ class MotionCommand(CommandTermBase):
         fail = failure_terminated | force_fail | ~fixed_qualified
         timeout = time_outs
         success = (completion >= 0.98) & fixed_qualified & ~fail & ~timeout
-        alpha = float(self.motion_cfg.probe_completion_alpha)
 
         if getattr(self, "_use_group_probe_envs", False):
             group_ids = self._group_probe_group_ids[probe_env_ids]
@@ -2632,20 +2678,9 @@ class MotionCommand(CommandTermBase):
                 for group_id in group_ids.unique():
                     mask = group_ids == group_id
                     g = int(group_id.item())
-                    completion_mean = completion[mask].mean()
-                    success_mean = success[mask].to(torch.float32).mean()
-                    fail_mean = fail[mask].to(torch.float32).mean()
-                    timeout_mean = timeout[mask].to(torch.float32).mean()
-                    self._group_probe_completion_ema[g] = (1.0 - alpha) * self._group_probe_completion_ema[
-                        g
-                    ] + alpha * completion_mean
-                    self._group_probe_success_ema[g] = (1.0 - alpha) * self._group_probe_success_ema[
-                        g
-                    ] + alpha * success_mean
-                    self._group_probe_fail_ema[g] = (1.0 - alpha) * self._group_probe_fail_ema[g] + alpha * fail_mean
-                    self._group_probe_timeout_ema[g] = (1.0 - alpha) * self._group_probe_timeout_ema[
-                        g
-                    ] + alpha * timeout_mean
+                    self._append_recent_probe_results(
+                        g, completion[mask], success[mask], fail[mask], timeout[mask], group=True
+                    )
                     self._group_probe_count[g] += int(mask.sum().item())
 
                     failed_completion = completion[mask & fail]
@@ -2664,14 +2699,7 @@ class MotionCommand(CommandTermBase):
         for motion_id in motion_ids.unique():
             mask = motion_ids == motion_id
             m = int(motion_id.item())
-            completion_mean = completion[mask].mean()
-            success_mean = success[mask].to(torch.float32).mean()
-            fail_mean = fail[mask].to(torch.float32).mean()
-            timeout_mean = timeout[mask].to(torch.float32).mean()
-            self._probe_completion_ema[m] = (1.0 - alpha) * self._probe_completion_ema[m] + alpha * completion_mean
-            self._probe_success_ema[m] = (1.0 - alpha) * self._probe_success_ema[m] + alpha * success_mean
-            self._probe_fail_ema[m] = (1.0 - alpha) * self._probe_fail_ema[m] + alpha * fail_mean
-            self._probe_timeout_ema[m] = (1.0 - alpha) * self._probe_timeout_ema[m] + alpha * timeout_mean
+            self._append_recent_probe_results(m, completion[mask], success[mask], fail[mask], timeout[mask])
             self._probe_count[m] += int(mask.sum().item())
 
             failed_completion = completion[mask & fail]
@@ -2769,7 +2797,7 @@ class MotionCommand(CommandTermBase):
             )
 
         if getattr(self, "_use_group_probe_envs", False):
-            difficulty = 1.0 - self._group_probe_success_ema
+            difficulty = 1.0 - self._group_probe_success_recent30
             temperature = max(float(self.motion_cfg.probe_priority_temperature), 1e-6)
             priority = torch.softmax(difficulty / temperature, dim=0)
             uniform = torch.full_like(priority, 1.0 / max(priority.numel(), 1))
@@ -2784,7 +2812,7 @@ class MotionCommand(CommandTermBase):
             return
         if not getattr(self, "_use_start_probe_envs", False):
             return
-        difficulty = 1.0 - self._probe_success_ema
+        difficulty = 1.0 - self._probe_success_recent30
         temperature = max(float(self.motion_cfg.probe_priority_temperature), 1e-6)
         priority = torch.softmax(difficulty / temperature, dim=0)
         uniform = torch.full_like(priority, 1.0 / max(priority.numel(), 1))
@@ -2798,6 +2826,26 @@ class MotionCommand(CommandTermBase):
 
     def _checkpoint_motion_keys(self) -> list[str]:
         return [str(Path(path).expanduser().resolve()) for path in self.motion.motion_files]
+
+    def _checkpoint_group_keys(self) -> list[str]:
+        motion_keys = self._checkpoint_motion_keys()
+        groups = self._motion_group_ids.detach().cpu().tolist()
+        return [json.dumps(sorted(key for key, group in zip(motion_keys, groups) if group == index))
+                for index in range(self._num_motion_groups)]
+
+    def _valid_recent_probe_checkpoint(self, tensors: dict, prefix: str, rows: int) -> bool:
+        """Restore the raw window atomically; EMA summaries cannot seed it."""
+        for suffix, shape in (("values", (rows, self._PROBE_WINDOW_SIZE, 4)),
+                              ("count", (rows,)), ("cursor", (rows,))):
+            value = tensors.get(prefix + "_recent30_" + suffix)
+            if not torch.is_tensor(value) or tuple(value.shape) != shape or not torch.isfinite(value).all():
+                return False
+            if suffix == "values":
+                if ((value < 0) | (value > 1)).any():
+                    return False
+            elif value.is_floating_point() or ((value < 0) | (value >= self._PROBE_WINDOW_SIZE + (suffix == "count"))).any():
+                return False
+        return True
 
     def get_checkpoint_state(self) -> dict[str, Any]:
         """Return learned reset-sampler state keyed by canonical motion path."""
@@ -2817,8 +2865,17 @@ class MotionCommand(CommandTermBase):
                 if torch.is_tensor(value) and value.ndim >= 1 and value.shape[0] == len(motion_keys):
                     adaptive[field] = value.detach().cpu().clone()
 
+        group_state = {}
+        if getattr(self, "_use_group_probe_envs", False):
+            fields = ["_group_probe_recent30_" + name for name in self._RECENT_PROBE_FIELDS]
+            fields += ["_normal_group_sampling_weights", "_group_probe_count", "_group_probe_fail_bin_hist"]
+            group_state = {"keys": self._checkpoint_group_keys(), "tensors": {
+                name: getattr(self, name).detach().cpu().clone() for name in fields
+            }}
         return {
             "schema": self._CHECKPOINT_SCHEMA,
+            "probe_statistics": {"kind": "recent30", "window": self._PROBE_WINDOW_SIZE},
+            "group_probe": group_state,
             "motion_keys": motion_keys,
             "tensors": tensors,
             "adaptive_timesteps": adaptive,
@@ -2863,7 +2920,7 @@ class MotionCommand(CommandTermBase):
             self._set_checkpoint_restore_status(restored=False, matched=0, saved=0, reason="legacy_checkpoint")
             logger.warning("WBT sampler state was not restored: legacy checkpoint has no sampler state.")
             return
-        if state.get("schema") != self._CHECKPOINT_SCHEMA:
+        if state.get("schema") not in (self._CHECKPOINT_SCHEMA, "holosoma_wbt_motion_sampler_v1"):
             self._set_checkpoint_restore_status(restored=False, matched=0, saved=0, reason="unsupported_schema")
             logger.warning(
                 "WBT sampler state was not restored: unsupported schema "
@@ -2893,8 +2950,27 @@ class MotionCommand(CommandTermBase):
         saved_indices = torch.tensor([pair[1] for pair in matched_pairs], device=self.device, dtype=torch.long)
         restored_fields = 0
         tensors = state.get("tensors", {})
+        current_statistics = state.get("probe_statistics") == {"kind": "recent30", "window": self._PROBE_WINDOW_SIZE}
+        recent_ok = current_statistics and isinstance(tensors, dict) and self._valid_recent_probe_checkpoint(
+            tensors, "_probe", len(saved_keys)
+        )
+        self._init_recent_probe_window()
+        self._refresh_recent_probe_means()
+        if not recent_ok:
+            logger.info("Recent-30 probe window starts empty; historical EMA is not converted into observations.")
+            if not getattr(self, "_use_completion_learning_sampler", False):
+                base = getattr(self, "_base_motion_sampling_weights", None)
+                if base is None:
+                    base = torch.ones_like(self._normal_motion_sampling_weights)
+                self._normal_motion_sampling_weights.copy_(base / base.sum().clamp(min=1e-8))
         if isinstance(tensors, dict):
             for field in self._PER_MOTION_CHECKPOINT_FIELDS:
+                if field.startswith("_probe_recent30_") and not recent_ok:
+                    continue
+                if field == "_normal_motion_sampling_weights" and not recent_ok and not getattr(
+                    self, "_use_completion_learning_sampler", False
+                ):
+                    continue
                 current = getattr(self, field, None)
                 if not torch.is_tensor(current) or field not in tensors:
                     continue
@@ -2909,6 +2985,30 @@ class MotionCommand(CommandTermBase):
                     continue
                 current.copy_(restored)
                 restored_fields += 1
+
+        self._refresh_recent_probe_means()
+        if getattr(self, "_use_group_probe_envs", False):
+            self._init_recent_probe_window(group=True)
+            saved_group = state.get("group_probe", {})
+            group_keys = saved_group.get("keys", [])
+            group_tensors = saved_group.get("tensors", {})
+            if current_statistics and self._valid_recent_probe_checkpoint(group_tensors, "_group_probe", len(group_keys)):
+                lookup = {key: index for index, key in enumerate(group_keys)}
+                pairs = [(i, lookup[key]) for i, key in enumerate(self._checkpoint_group_keys()) if key in lookup]
+                if pairs:
+                    ci = torch.tensor([i for i, _ in pairs], device=self.device)
+                    si = torch.tensor([i for _, i in pairs], device=self.device)
+                    for field, saved in group_tensors.items():
+                        if field not in {"_normal_group_sampling_weights", "_group_probe_count", "_group_probe_fail_bin_hist",
+                                         *("_group_probe_recent30_" + name for name in self._RECENT_PROBE_FIELDS)}:
+                            continue
+                        restored = self._restore_rows_by_motion_key(getattr(self, field), saved, ci, si)
+                        if restored is not None:
+                            getattr(self, field).copy_(restored)
+                            restored_fields += 1
+            self._refresh_recent_probe_means(group=True)
+            self._normal_group_sampling_weights.div_(self._normal_group_sampling_weights.sum().clamp(min=1e-8))
+            self._refresh_normal_motion_weights_from_group_weights()
 
         weights = getattr(self, "_normal_motion_sampling_weights", None)
         if torch.is_tensor(weights):
@@ -2964,6 +3064,19 @@ class MotionCommand(CommandTermBase):
         )
         return metrics
 
+    @staticmethod
+    def _recent_probe_count_metrics(owner: Any, *, group: bool = False) -> dict[str, float]:
+        prefix = "_group_probe" if group else "_probe"
+        counts = getattr(owner, prefix + "_recent30_count")
+        tag = "group_probe_" if group else ""
+        return {
+            tag + "recent30_window_size": float(MotionCommand._PROBE_WINDOW_SIZE),
+            tag + "recent30_sample_count_min": float(counts.min().item()),
+            tag + "recent30_sample_count_mean": float(counts.float().mean().item()),
+            tag + "recent30_reported_fraction": float((counts > 0).float().mean().item()),
+            tag + "recent30_full_window_fraction": float((counts == MotionCommand._PROBE_WINDOW_SIZE).float().mean().item()),
+        }
+
     def get_motion_learning_progress_metrics(self) -> dict[str, float]:
         """Return probe learning progress metrics for TensorBoard."""
         if getattr(self, "_use_completion_learning_sampler", False):
@@ -2986,24 +3099,25 @@ class MotionCommand(CommandTermBase):
             })
 
         if getattr(self, "_use_group_probe_envs", False):
-            completion = self._group_probe_completion_ema.detach()
-            success = self._group_probe_success_ema.detach()
-            fail = self._group_probe_fail_ema.detach()
-            timeout = self._group_probe_timeout_ema.detach()
+            completion = self._group_probe_completion_recent30.detach()
+            success = self._group_probe_success_recent30.detach()
+            fail = self._group_probe_fail_recent30.detach()
+            timeout = self._group_probe_timeout_recent30.detach()
             weights = self._normal_group_sampling_weights.detach()
             min_completion, min_completion_group = completion.min(dim=0)
             min_success, min_success_group = success.min(dim=0)
             max_weight, max_weight_group = weights.max(dim=0)
 
             return MotionCommand._append_checkpoint_restore_metrics(self, {
-                "group_probe_completion_ema_mean": float(completion.mean().item()),
-                "group_probe_completion_ema_min": float(min_completion.item()),
-                "group_probe_completion_ema_min_group": float(min_completion_group.item()),
-                "group_probe_start_to_end_success_ema_mean": float(success.mean().item()),
-                "group_probe_start_to_end_success_ema_min": float(min_success.item()),
-                "group_probe_start_to_end_success_ema_min_group": float(min_success_group.item()),
-                "group_probe_fail_ema_mean": float(fail.mean().item()),
-                "group_probe_timeout_ema_mean": float(timeout.mean().item()),
+                **MotionCommand._recent_probe_count_metrics(self, group=True),
+                "group_probe_completion_recent30_mean": float(completion.mean().item()),
+                "group_probe_completion_recent30_min": float(min_completion.item()),
+                "group_probe_completion_recent30_min_group": float(min_completion_group.item()),
+                "group_probe_start_to_end_success_recent30_mean": float(success.mean().item()),
+                "group_probe_start_to_end_success_recent30_min": float(min_success.item()),
+                "group_probe_start_to_end_success_recent30_min_group": float(min_success_group.item()),
+                "group_probe_fail_recent30_mean": float(fail.mean().item()),
+                "group_probe_timeout_recent30_mean": float(timeout.mean().item()),
                 "group_probe_normal_group_weight_max": float(max_weight.item()),
                 "group_probe_normal_group_weight_max_group": float(max_weight_group.item()),
             })
@@ -3011,25 +3125,26 @@ class MotionCommand(CommandTermBase):
         if not getattr(self, "_use_start_probe_envs", False):
             return MotionCommand._append_checkpoint_restore_metrics(self, {})
 
-        completion = self._probe_completion_ema.detach()
-        success = self._probe_success_ema.detach()
-        fail = self._probe_fail_ema.detach()
-        timeout = self._probe_timeout_ema.detach()
+        completion = self._probe_completion_recent30.detach()
+        success = self._probe_success_recent30.detach()
+        fail = self._probe_fail_recent30.detach()
+        timeout = self._probe_timeout_recent30.detach()
         weights = self._normal_motion_sampling_weights.detach()
         min_completion, min_completion_motion = completion.min(dim=0)
         min_success, min_success_motion = success.min(dim=0)
         max_weight, max_weight_motion = weights.max(dim=0)
 
         return MotionCommand._append_checkpoint_restore_metrics(self, {
+            **MotionCommand._recent_probe_count_metrics(self),
             "start_probe_episode_count": float(self._probe_count.sum().item()),
-            "completion_ema_mean": float(completion.mean().item()),
-            "completion_ema_min": float(min_completion.item()),
-            "completion_ema_min_motion": float(min_completion_motion.item()),
-            "start_to_end_success_ema_mean": float(success.mean().item()),
-            "start_to_end_success_ema_min": float(min_success.item()),
-            "start_to_end_success_ema_min_motion": float(min_success_motion.item()),
-            "fail_ema_mean": float(fail.mean().item()),
-            "timeout_ema_mean": float(timeout.mean().item()),
+            "completion_recent30_mean": float(completion.mean().item()),
+            "completion_recent30_min": float(min_completion.item()),
+            "completion_recent30_min_motion": float(min_completion_motion.item()),
+            "start_to_end_success_recent30_mean": float(success.mean().item()),
+            "start_to_end_success_recent30_min": float(min_success.item()),
+            "start_to_end_success_recent30_min_motion": float(min_success_motion.item()),
+            "fail_recent30_mean": float(fail.mean().item()),
+            "timeout_recent30_mean": float(timeout.mean().item()),
             "normal_motion_weight_max": float(max_weight.item()),
             "normal_motion_weight_max_motion": float(max_weight_motion.item()),
         })
@@ -3228,14 +3343,15 @@ class MotionCommand(CommandTermBase):
 
         motion_files = getattr(self.motion, "motion_files", [])
         weights = self._normal_motion_sampling_weights.detach().to("cpu")
-        completion = self._probe_completion_ema.detach().to("cpu")
-        success = self._probe_success_ema.detach().to("cpu")
-        fail = self._probe_fail_ema.detach().to("cpu")
-        timeout = self._probe_timeout_ema.detach().to("cpu")
+        completion = self._probe_completion_recent30.detach().to("cpu")
+        success = self._probe_success_recent30.detach().to("cpu")
+        fail = self._probe_fail_recent30.detach().to("cpu")
+        timeout = self._probe_timeout_recent30.detach().to("cpu")
         counts = self._probe_count.detach().to("cpu")
+        recent_counts = self._probe_recent30_count.detach().to("cpu")
         fail_bins = self._probe_fail_bin_hist.detach().to("cpu")
 
-        path = Path(log_dir) / "start_probe_motion_distribution.csv"
+        path = Path(log_dir) / "start_probe_recent30_distribution.csv"
         path.parent.mkdir(parents=True, exist_ok=True)
         write_header = not path.exists()
         bin_fields = [f"fail_bin_{i}" for i in range(self._probe_fail_bin_count)]
@@ -3246,10 +3362,11 @@ class MotionCommand(CommandTermBase):
                 "motion_file",
                 "probe_env_per_motion",
                 "probe_count",
-                "completion_ema",
-                "start_to_end_success_ema",
-                "fail_ema",
-                "timeout_ema",
+                "recent30_count",
+                "completion_recent30",
+                "start_to_end_success_recent30",
+                "fail_recent30",
+                "timeout_recent30",
                 "normal_motion_weight",
                 *bin_fields,
             ]
@@ -3263,10 +3380,11 @@ class MotionCommand(CommandTermBase):
                     "motion_file": motion_files[motion_id] if motion_id < len(motion_files) else "",
                     "probe_env_per_motion": int(self._probe_env_per_motion),
                     "probe_count": int(counts[motion_id].item()),
-                    "completion_ema": f"{float(completion[motion_id]):.8g}",
-                    "start_to_end_success_ema": f"{float(success[motion_id]):.8g}",
-                    "fail_ema": f"{float(fail[motion_id]):.8g}",
-                    "timeout_ema": f"{float(timeout[motion_id]):.8g}",
+                    "recent30_count": int(recent_counts[motion_id].item()),
+                    "completion_recent30": f"{float(completion[motion_id]):.8g}",
+                    "start_to_end_success_recent30": f"{float(success[motion_id]):.8g}",
+                    "fail_recent30": f"{float(fail[motion_id]):.8g}",
+                    "timeout_recent30": f"{float(timeout[motion_id]):.8g}",
                     "normal_motion_weight": f"{float(weights[motion_id]):.8g}",
                 }
                 row.update(
@@ -3355,14 +3473,15 @@ class MotionCommand(CommandTermBase):
         group_motion_counts = self._group_motion_counts.detach().to("cpu")
         group_variant_effective_counts = self._group_variant_effective_counts.detach().to("cpu")
         weights = self._normal_group_sampling_weights.detach().to("cpu")
-        completion = self._group_probe_completion_ema.detach().to("cpu")
-        success = self._group_probe_success_ema.detach().to("cpu")
-        fail = self._group_probe_fail_ema.detach().to("cpu")
-        timeout = self._group_probe_timeout_ema.detach().to("cpu")
+        completion = self._group_probe_completion_recent30.detach().to("cpu")
+        success = self._group_probe_success_recent30.detach().to("cpu")
+        fail = self._group_probe_fail_recent30.detach().to("cpu")
+        timeout = self._group_probe_timeout_recent30.detach().to("cpu")
         counts = self._group_probe_count.detach().to("cpu")
+        recent_counts = self._group_probe_recent30_count.detach().to("cpu")
         fail_bins = self._group_probe_fail_bin_hist.detach().to("cpu")
 
-        path = Path(log_dir) / "group_probe_distribution.csv"
+        path = Path(log_dir) / "group_probe_recent30_distribution.csv"
         path.parent.mkdir(parents=True, exist_ok=True)
         write_header = not path.exists()
         bin_fields = [f"fail_bin_{i}" for i in range(self._probe_fail_bin_count)]
@@ -3378,10 +3497,11 @@ class MotionCommand(CommandTermBase):
                 "group_motion_count",
                 "group_motion_ids",
                 "probe_count",
-                "completion_ema",
-                "start_to_end_success_ema",
-                "fail_ema",
-                "timeout_ema",
+                "recent30_count",
+                "completion_recent30",
+                "start_to_end_success_recent30",
+                "fail_recent30",
+                "timeout_recent30",
                 "normal_group_weight",
                 *bin_fields,
             ]
@@ -3401,10 +3521,11 @@ class MotionCommand(CommandTermBase):
                     "group_motion_count": int(group_motion_counts[group_id].item()),
                     "group_motion_ids": "|".join(str(int(motion_id)) for motion_id in motion_ids),
                     "probe_count": int(counts[group_id].item()),
-                    "completion_ema": f"{float(completion[group_id]):.8g}",
-                    "start_to_end_success_ema": f"{float(success[group_id]):.8g}",
-                    "fail_ema": f"{float(fail[group_id]):.8g}",
-                    "timeout_ema": f"{float(timeout[group_id]):.8g}",
+                    "recent30_count": int(recent_counts[group_id].item()),
+                    "completion_recent30": f"{float(completion[group_id]):.8g}",
+                    "start_to_end_success_recent30": f"{float(success[group_id]):.8g}",
+                    "fail_recent30": f"{float(fail[group_id]):.8g}",
+                    "timeout_recent30": f"{float(timeout[group_id]):.8g}",
                     "normal_group_weight": f"{float(weights[group_id]):.8g}",
                 }
                 row.update(
@@ -3701,7 +3822,7 @@ class MotionCommand(CommandTermBase):
         )
         return sampled
 
-    def _sample_completion_ema_failure_window_time_steps(
+    def _sample_completion_recent30_failure_window_time_steps(
         self, env_ids: torch.Tensor
     ) -> torch.Tensor:
         motion_ids = self.motion_ids[env_ids]
@@ -3725,7 +3846,7 @@ class MotionCommand(CommandTermBase):
             return sampled
 
         candidate_motion_ids = motion_ids[completion_candidate_indices]
-        completion_stats = self._completion_ema_reset_centers(candidate_motion_ids)
+        completion_stats = self._completion_recent30_reset_centers(candidate_motion_ids)
         if completion_stats is None:
             return sampled
         completion_centers, completion_valid = completion_stats
@@ -3752,21 +3873,21 @@ class MotionCommand(CommandTermBase):
         sampled = torch.minimum(torch.maximum(sampled, start_idx), last_idx)
         return sampled
 
-    def _completion_ema_reset_centers(
+    def _completion_recent30_reset_centers(
         self, motion_ids: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor] | None:
         """Return completion-window centers and validity for the requested motions."""
         if getattr(self, "_use_group_probe_envs", False):
             group_ids = self._motion_group_ids[motion_ids]
             return (
-                self._group_probe_completion_ema[group_ids].clamp(0.0, 1.0),
-                self._group_probe_count[group_ids] > 0,
+                self._group_probe_completion_recent30[group_ids].clamp(0.0, 1.0),
+                self._group_probe_recent30_count[group_ids] > 0,
             )
         if not getattr(self, "_use_start_probe_envs", False):
             return None
         return (
-            self._probe_completion_ema[motion_ids].clamp(0.0, 1.0),
-            self._probe_count[motion_ids] > 0,
+            self._probe_completion_recent30[motion_ids].clamp(0.0, 1.0),
+            self._probe_recent30_count[motion_ids] > 0,
         )
 
     def _sample_around_failure_frames(self, motion_ids: torch.Tensor, failed_time_steps: torch.Tensor) -> torch.Tensor:

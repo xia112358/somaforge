@@ -62,3 +62,6 @@ __pycache__
 .logs/
 holosoma_config.yaml
 wandb-metadata.json
+
+# Kit streaming diagnostic traces
+NvStreamer-*.etli

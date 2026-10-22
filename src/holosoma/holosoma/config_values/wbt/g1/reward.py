@@ -296,6 +296,29 @@ g1_29dof_wbt_proto_reward = RewardManagerCfg(
     }
 )
 
+g1_29dof_wbt_native_force_reward = RewardManagerCfg(terms={
+    **g1_29dof_wbt_reward.terms,
+    "native_force_tracking": RewardTermCfg(
+        func="holosoma.managers.reward.terms.wbt_experiment:force_tracking",
+        params={"sigma": 100.0}, weight=1.0,
+    ),
+})
+
+g1_29dof_wbt_native_sparse_reward = RewardManagerCfg(terms={
+    **{name: term for name, term in g1_29dof_wbt_sparse_climb_reward.terms.items()
+       if name != "sparse_climb_contact_match"},
+    "native_contact_match": RewardTermCfg(
+        func="holosoma.managers.reward.terms.wbt_experiment:contact_match", weight=1.0),
+})
+
+g1_29dof_wbt_native_root_contact_reward = RewardManagerCfg(terms={
+    **{name: term for name, term in g1_29dof_wbt_native_sparse_reward.terms.items()
+       if name in {"motion_global_ref_position_error_exp", "motion_global_ref_orientation_error_exp",
+                   "action_rate_l2", "limits_dof_pos", "undesired_contacts"}},
+    "native_contact_match": RewardTermCfg(
+        func="holosoma.managers.reward.terms.wbt_experiment:contact_match", weight=10.0),
+})
+
 __all__ = [
     "g1_29dof_wbt_a2a_reward",
     "g1_29dof_wbt_contact_force_reward",

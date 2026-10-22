@@ -1,6 +1,6 @@
 # Isaac Lab 3 Newton image
-# Runs setup_isaaclab3_newton.sh to create the env_somaforge
-# conda environment with Isaac Sim 6.0 and Isaac Lab Newton.
+# Installs the pinned Isaac Lab 3.0 GA / Isaac Sim 6.2 base and Newton 1.7 overlay.
+# PyTorch supplies its CUDA 13 runtime wheels; the host must provide a compatible driver.
 FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 
 USER root
@@ -20,13 +20,11 @@ RUN mkdir -p /var/lib/apt/lists/partial && \
     wget \
     unzip \
     git \
-    sudo \
-    && rm -rf /var/lib/apt/lists/*
+    sudo
 
 # Install Miniconda
 RUN curl https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o /miniconda.sh && \
-    bash /miniconda.sh -b -u -p $CONDA_ROOT && \
-    rm /miniconda.sh
+    bash /miniconda.sh -b -u -p $CONDA_ROOT
 
 # Configure conda for non-interactive use
 RUN echo ". $CONDA_ROOT/etc/profile.d/conda.sh" >> ~/.bashrc && \
@@ -40,7 +38,8 @@ COPY . ./holosoma
 RUN . $CONDA_ROOT/etc/profile.d/conda.sh && \
     cd /workspace/holosoma/scripts && \
     chmod +x setup_isaaclab3_newton.sh && \
-    OMNI_KIT_ACCEPT_EULA=1 ./setup_isaaclab3_newton.sh
+    conda create -y -n somaforge_setup python=3.12 && \
+    SOMAFORGE_SETUP_PYTHON=$CONDA_ROOT/envs/somaforge_setup/bin/python ./setup_isaaclab3_newton.sh
 
 
 WORKDIR /workspace/holosoma

@@ -335,7 +335,7 @@ def apply_offset_transform(world_transform, offset_pos=(0, 0, 0), offset_rot=(1,
     offset_tf = Gf.Transform()
     offset_tf.SetTranslation(Gf.Vec3d(*offset_pos))
 
-    if isinstance(offset_rot, tuple):
+    if isinstance(offset_rot, (tuple, list)):
         offset_tf.SetRotation(Gf.Rotation(Gf.Quatd(*offset_rot)))
     else:
         offset_tf.SetRotation(offset_rot)
@@ -352,11 +352,11 @@ def get_pose(transform: Gf.Transform):
     Returns:
         Tuple of (position_array, rotation_tuple) where:
         - position_array: numpy array of (x, y, z)
-        - rotation_tuple: (w, x, y, z) quaternion
+        - rotation_tuple: (x, y, z, w) quaternion for Isaac Lab 3
     """
     translation: Gf.Vec3d = transform.GetTranslation()
     rotation: Gf.Quatd = transform.GetRotation().GetQuat()
-    rot_tuple = (rotation.real, rotation.imaginary[0], rotation.imaginary[1], rotation.imaginary[2])
+    rot_tuple = (rotation.imaginary[0], rotation.imaginary[1], rotation.imaginary[2], rotation.real)
     return np.array(translation), rot_tuple
 
 
@@ -441,7 +441,7 @@ def _compute_object_pose(temp_stage, prim_path, cfg):
         cfg: UsdSceneLoaderCfg with scene offset settings
 
     Returns:
-        Tuple of (position, rotation) where position is (x,y,z) and rotation is (w,x,y,z)
+        Tuple of (position, rotation) where position is (x,y,z) and rotation is (x,y,z,w)
     """
     world_transform = compute_world_transform(temp_stage, prim_path)
     offset_transform = apply_offset_transform(world_transform, cfg.scene_pos_offset, cfg.scene_rot_offset)

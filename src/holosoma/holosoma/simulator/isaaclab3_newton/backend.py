@@ -39,9 +39,14 @@ def resolve_bool_attr_or_method(obj: Any, name: str) -> bool:
 
 
 def build_newton_physics_cfg(simulator_config: Any):
-    from somaforge_core.newton_collision_compat import install, install_simulation_guard
+    from somaforge_core.newton_collision_compat import (
+        install,
+        install_mesh_query_launch_tuning,
+        install_simulation_guard,
+    )
     install()
     install_simulation_guard()
+    install_mesh_query_launch_tuning()
     from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg, NewtonCollisionPipelineCfg, NewtonShapeCfg
 
     mjwarp = simulator_config.mujoco_warp

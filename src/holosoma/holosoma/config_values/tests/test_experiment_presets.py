@@ -10,6 +10,10 @@ from holosoma.config_values.wbt.g1.command import (
 from holosoma.config_values.wbt.g1.climb_reference_goal import CLIMB00_TRIMMED_207_MANIFEST, CLIMB00_SINGLE_FULL_MANIFEST
 
 EXPECTED_MANIFESTS = {
+    "wbt_expert_dense": BASELINE_29_MANIFEST,
+    "wbt_expert_sparse": BASELINE_29_MANIFEST,
+    "wbt_expert_force": BASELINE_29_MANIFEST,
+    "wbt_student": BASELINE_29_MANIFEST,
     "g1_29dof_wbt_baseline_single": BASELINE_SINGLE_MANIFEST,
     "g1_29dof_wbt_baseline_29": BASELINE_29_MANIFEST,
     "g1_29dof_wbt_baseline_29_future_ref": BASELINE_29_MANIFEST,
@@ -50,7 +54,7 @@ def test_wbt_reference_observation_has_one_joint_target_source() -> None:
     for name, experiment in DEFAULTS.items():
         for group in ("actor_obs", "critic_obs"):
             terms = _observation_terms(experiment, group)
-            if name.startswith("g1_29dof_wbt_sparse_climb00"):
+            if name.startswith("g1_29dof_wbt_sparse_climb00") or name == "wbt_expert_sparse":
                 expected = "00_sparse_climb_reference_window" if group == "actor_obs" else "00_reference_window"
                 assert expected in terms
             elif name in ("g1_29dof_climb00_reference_goal_24event", "g1_29dof_climb00_single_full_noref_imitation_2k"):
@@ -61,7 +65,7 @@ def test_wbt_reference_observation_has_one_joint_target_source() -> None:
                 assert "00_reference_window" in terms
             else:
                 if (
-                    experiment is DEFAULTS["g1_29dof_wbt_climb00_php_student"]
+                    experiment in (DEFAULTS["g1_29dof_wbt_climb00_php_student"], DEFAULTS["wbt_student"])
                     and group == "actor_obs"
                 ):
                     assert "velocity_command" in terms
@@ -188,7 +192,7 @@ def test_experiments_use_canonical_robot_newton_and_compact_outputs() -> None:
         assert experiment.robot.asset.urdf_file == "g1/g1_29dof_spherehand.urdf"
         assert experiment.simulator.config.name == "isaaclab3_newton"
         assert experiment.simulator.config.mujoco_warp.njmax_per_env == 1536
-        assert experiment.training.num_envs == 4096
+        assert experiment.training.num_envs == (2048 if experiment is DEFAULTS["wbt_student"] else 4096)
         assert experiment.algo.config.export_onnx is False
         expected_iterations = (
             10000
@@ -202,7 +206,7 @@ def test_experiments_use_canonical_robot_newton_and_compact_outputs() -> None:
             else 20000
         )
         assert experiment.algo.config.num_learning_iterations == expected_iterations
-        if experiment is DEFAULTS["g1_29dof_wbt_climb00_php_student"]:
+        if experiment in (DEFAULTS["g1_29dof_wbt_climb00_php_student"], DEFAULTS["wbt_student"]):
             assert experiment.algo.config.num_learning_epochs == 2
             assert experiment.algo.config.actor_learning_rate == 3e-4
             assert experiment.algo.config.critic_learning_rate == 3e-4
@@ -217,14 +221,16 @@ def test_experiments_use_canonical_robot_newton_and_compact_outputs() -> None:
             assert experiment.algo.config.critic_learning_rate == 1e-3
         assert experiment.algo.config.min_actor_learning_rate is None
         assert experiment.algo.config.min_critic_learning_rate is None
-        if experiment is DEFAULTS["g1_29dof_wbt_climb00_php_student"]:
+        if experiment in (DEFAULTS["g1_29dof_wbt_climb00_php_student"], DEFAULTS["wbt_student"]):
             assert experiment.algo.config.max_actor_learning_rate == 3e-4
             assert experiment.algo.config.max_critic_learning_rate == 3e-4
         else:
             assert experiment.algo.config.max_actor_learning_rate is None
             assert experiment.algo.config.max_critic_learning_rate is None
         expected_save_interval = (
-            100
+            200
+            if experiment is DEFAULTS["wbt_student"]
+            else 100
             if experiment is curriculum
             else 50
             if experiment is sparse_resume
@@ -276,11 +282,12 @@ def test_experiment_sampler_roles_are_explicit() -> None:
         expected_sampler = (
             "uniform"
             if experiment in (
+                DEFAULTS["wbt_student"],
                 DEFAULTS["g1_29dof_wbt_climb00_php_student"],
                 DEFAULTS["g1_29dof_climb00_reference_goal_24event"],
                 DEFAULTS["g1_29dof_climb00_single_full_noref_imitation_2k"],
             )
-            else "completion_ema_failure_window"
+            else "completion_recent30_failure_window"
         )
         assert motion.reset_sampler == expected_sampler
         assert motion.start_at_timestep_zero_prob == 0.0

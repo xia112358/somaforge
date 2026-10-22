@@ -14,6 +14,7 @@ from isaaclab.assets import RigidObject, RigidObjectCfg
 import isaaclab.sim as sim_utils
 
 from holosoma.config_types.simulator import SceneConfig, SceneFileConfig, RigidObjectConfig
+from holosoma.simulator.isaacsim.quaternion_utils import config_wxyz_to_xyzw
 from holosoma.simulator.isaacsim.prim_utils import (
     UsdSceneLoaderCfg,
     create_usd_scene_loader,
@@ -140,13 +141,8 @@ class USDFileLoader:
         for rigid_obj in rigid_objects:
             try:
                 if rigid_obj.usd_path:  # Only handle USD objects in this loader
-                    # Keep quaternion in wxyz format for internal consistency
-                    # rigid_obj.position = [x, y, z]
-                    # rigid_obj.orientation = [w, x, y, z] (IsaacLab format)
-                    # Keep as [x, y, z, qw, qx, qy, qz] (wxyz format for internal consistency)
-                    pos = rigid_obj.position[:3]  # [x, y, z]
-                    quat_wxyz = rigid_obj.orientation[:4]  # [w, x, y, z]
-                    pose = pos + quat_wxyz  # [x, y, z, qw, qx, qy, qz] - wxyz format for consistency
+                    # Persisted scene configuration is WXYZ; Isaac Lab 3 expects XYZW.
+                    pose = list(rigid_obj.position[:3]) + list(config_wxyz_to_xyzw(rigid_obj.orientation))
 
                     object_config = {"usd_path": rigid_obj.usd_path, "pose": pose, "physics": rigid_obj.physics}
 
@@ -656,18 +652,11 @@ class USDFileLoader:
                     # Convert RigidObjectConfig to the format expected by _load_individual_object
                     object_config = {
                         "usd_path": rigid_obj.usd_path,
-                        "pose": rigid_obj.position
-                        + rigid_obj.orientation,  # [x,y,z] + [w,x,y,z] = [x,y,z,w,x,y,z] - WRONG FORMAT!
                         "physics": rigid_obj.physics,
                     }
 
-                    # Keep quaternion in wxyz format for internal consistency
-                    # rigid_obj.position = [x, y, z]
-                    # rigid_obj.orientation = [w, x, y, z] (IsaacLab format)
-                    # Keep as [x, y, z, qw, qx, qy, qz] (wxyz format for internal consistency)
-                    pos = rigid_obj.position[:3]  # [x, y, z]
-                    quat_wxyz = rigid_obj.orientation[:4]  # [w, x, y, z]
-                    pose = pos + quat_wxyz  # [x, y, z, qw, qx, qy, qz] - wxyz format for consistency
+                    # Persisted scene configuration is WXYZ; Isaac Lab 3 expects XYZW.
+                    pose = list(rigid_obj.position[:3]) + list(config_wxyz_to_xyzw(rigid_obj.orientation))
 
                     object_config["pose"] = pose
 

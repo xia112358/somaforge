@@ -50,12 +50,12 @@ schema handling. This is a temporary work-around until IsaacLab has these capabi
 
 from __future__ import annotations
 
-import isaacsim.core.utils.prims as prim_utils
-import isaacsim.core.utils.stage as stage_utils
+from isaaclab.sim.utils import stage as stage_utils
 import omni.kit.commands
 import omni.log
 from isaaclab.sim import schemas
 from isaaclab.sim.utils import bind_visual_material, clone, select_usd_variants
+from isaaclab.sim.utils.prims import standardize_xform_ops, convert_world_pose_to_local
 from pxr import Usd, UsdPhysics
 
 from holosoma.simulator.isaacsim.spawners import from_files_cfg
@@ -87,7 +87,7 @@ def create_prim(target_path, usd_path, source_path=None, position=None, translat
 
     Returns
     -------
-    XFormPrim or None
+    Usd.Prim or None
         The created prim or None if creation failed.
 
     Raises
@@ -114,27 +114,15 @@ def create_prim(target_path, usd_path, source_path=None, position=None, translat
     if not success:
         raise FileNotFoundError(f"USD file not found: {usd_path}")
 
-    from isaacsim.core.api.simulation_context.simulation_context import SimulationContext
-    from isaacsim.core.prims import XFormPrim
-
-    if SimulationContext.instance() is None:
-        import isaacsim.core.utils.numpy as backend_utils
-
-        device = "cpu"
-    else:
-        backend_utils = SimulationContext.instance().backend_utils
-        device = SimulationContext.instance().device
-
+    if position is not None and translation is not None:
+        raise ValueError("Specify either world position or local translation, not both.")
     if position is not None:
-        position = backend_utils.expand_dims(backend_utils.convert(position, device), 0)
-    if translation is not None:
-        translation = backend_utils.expand_dims(backend_utils.convert(translation, device), 0)
-    if orientation is not None:
-        orientation = backend_utils.expand_dims(backend_utils.convert(orientation, device), 0)
-    if scale is not None:
-        scale = backend_utils.expand_dims(backend_utils.convert(scale, device), 0)
-    return XFormPrim(target_path, positions=position, translations=translation, orientations=orientation, scales=scale)
-    # return prim
+        translation, orientation = convert_world_pose_to_local(
+            position, orientation, ref_prim=prim.GetParent()
+        )
+    # Isaac Lab 3 utilities take XYZW and convert to USD internally.
+    standardize_xform_ops(prim, translation, orientation, scale)
+    return prim
 
 
 @clone
@@ -169,7 +157,7 @@ def spawn_from_usd(
         The translation to apply to the prim w.r.t. its parent prim. Defaults to None, in which
         case the translation specified in the USD file is used.
     orientation : tuple[float, float, float, float], optional
-        The orientation in (w, x, y, z) to apply to the prim w.r.t. its parent prim. Defaults to None,
+        The orientation in (x, y, z, w) to apply to the prim w.r.t. its parent prim. Defaults to None,
         in which case the orientation specified in the USD file is used.
 
     Returns
@@ -232,7 +220,7 @@ def _spawn_from_usd_file(
     if not stage.ResolveIdentifierToEditTarget(usd_path):
         raise FileNotFoundError(f"USD file not found at path: '{usd_path}'.")
     # spawn asset if it doesn't exist.
-    if not prim_utils.is_prim_path_valid(prim_path):
+    if not stage.GetPrimAtPath(prim_path).IsValid():
         # add prim as reference to stage, replaces built-in create_prim to support source_path
         prim = create_prim(
             prim_path,
@@ -244,7 +232,7 @@ def _spawn_from_usd_file(
         )
     else:
         omni.log.warn(f"A prim already exists at prim path: '{prim_path}'.")
-        prim = prim_utils.get_prim_at_path(prim_path)
+        prim = stage.GetPrimAtPath(prim_path)
 
     # modify variants
     if hasattr(cfg, "variants") and cfg.variants is not None:
@@ -298,4 +286,4 @@ def _spawn_from_usd_file(
         bind_visual_material(prim_path, material_path)
 
     # return the prim
-    return prim_utils.get_prim_at_path(prim_path)
+    return stage.GetPrimAtPath(prim_path)

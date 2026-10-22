@@ -2,11 +2,13 @@
 
 ## Maintained code and entrypoints
 
-Large local runtime data is held outside the checkout at
+This workstation's large runtime data is held outside the checkout at
 `/home/xiaz/somaforge-data/current`, reached through the `runtime/current`
-directory symlink. See [repository-data.md](repository-data.md) for the code/data
-boundary and backup requirements. Required inputs retain their existing paths;
-the relocation does not change baseline weights, contact labels or losses.
+directory symlink. A fresh clone can use a local directory or an explicitly
+selected external data root through `scripts/bootstrap_runtime.py`. See
+[installation](install.md) and [repository data](repository-data.md) for setup,
+the code/data boundary and backup requirements. Moving data does not change
+baseline weights, contact labels or losses.
 
 | Area | Implementation | Entrypoint / tests |
 | --- | --- | --- |
@@ -15,6 +17,9 @@ the relocation does not change baseline weights, contact labels or losses.
 | Predictor and Infiller | `packages/generator` | `python -m generator.train_full1000_position`, package tests |
 | Contact optimization | `packages/contact_solver` | package API; diagnostics under `research/`; package tests |
 | Newton WBT | `src/holosoma` | `train_agent.py`, `eval_agent.py`, `replay.py`, `run_sim.py`; `scripts/train_motion_edit_policy_finetune.py` for edited references |
+| PHP grouped experts | `scripts/train_php_wbt.py` | Explicit group training; use `--help` for current arguments |
+| Modular experts and distillation | Native WBT managers and `RoutedDistillPPO` | [Configuration and invocation guide](wbt-modular-experiments.md); dense/sparse/force experts and student |
+| Native contact-reference preparation | `scripts/record_wbt_contact_reference.py`, `scripts/combine_wbt_manifests.py` | Independent recording/manifest commands; manually supplied expert checkpoints |
 | Retargeting | `src/holosoma_retargeting` | separate retargeting environment |
 
 Shared direct Newton collision queries and canonical self-collision filters live
@@ -67,6 +72,11 @@ contact truth from geometry or force thresholds.
 There is no maintained standalone Viser, workbench server or force-retarget CLI.
 Retargeting does not expose `retargeter.visualize` or `retargeter.debug`.
 Simulation Kit rendering is controlled by AppLauncher.
+Remote simulation playback uses the same evaluator with `--visualizer kit` and
+`--livestream 1`; see the [modular playback guide](wbt-modular-experiments.md#evaluate-or-replay-separately)
+and [installation guide](install.md). TensorBoard reads the selected training run
+directory independently of Kit. A browser Contact Editor review does not run the
+policy or certify native contact execution.
 `export-manifest` and `export-split-npz` require `--motion-version-id`; the old
 layer `--source` path is rejected.
 
@@ -167,6 +177,24 @@ loader test creates its own synthetic fixture, and does not pass silently when
 an external dataset is missing. Local historical corpus integration tests read
 explicit formal archive paths, not `tmp/`.
 
+For the complete CPU regression batch, use importlib collection to avoid same-name
+test modules and expose historical fixture modules only to the test process:
+
+```bash
+source scripts/source_isaaclab3_newton_setup.sh
+test_run="tmp/cpu-regression-$(python -c 'import uuid; print(uuid.uuid4().hex)')"
+mkdir -p "$test_run"
+CUDA_VISIBLE_DEVICES='' JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+PYTHONPATH="$PWD/scripts:$PWD/tests:$PWD/packages/generator/tests:$PYTHONPATH" \
+python -m pytest packages tests src/holosoma/holosoma --ignore=tests/e2e \
+  --import-mode=importlib -m 'not isaacsim and not multi_gpu and not requires_inference' \
+  -p no:cacheprovider -o tmp_path_retention_policy=all --basetemp="$test_run/pytest" -q
+```
+
+Some historical corpus tests require separately restored datasets. Loopback/thread
+access is needed for browser-service tests. GPU checks and end-to-end training are
+separate from this batch.
+
 The temporary-input migration preserves motion/checkpoint bytes and frozen
 source snapshots. Two registered Tracking manifests now live under
 `runtime/current/motions/wbt/`; their relative and absolute input closure is
@@ -190,6 +218,22 @@ verification. The persistent verification and receipt ledger is
 
 IsaacLab/CUDA tests require the host environment. Static/unit checks do not
 establish trajectory acceptance or policy execution quality.
+
+For modular WBT changes, the focused CPU regression set is:
+
+```bash
+python -m pytest tests/test_wbt_modular_experiments.py \
+  src/holosoma/holosoma/config_values/tests/test_experiment_presets.py \
+  src/holosoma/holosoma/utils/tests/test_eval_utils.py -q
+```
+
+These cover configuration, student observation boundaries, teacher routing,
+contact freshness and checkpoint reconstruction. Short GPU smoke runs additionally
+checked dense/sparse/force updates, distillation, independent evaluation and exact
+model/optimizer/probe-history restoration. They do not establish convergence or
+full-size throughput. New native contact labels use constraint activation plus
+allocation and shared surface selection; older eight-part threshold/hysteresis
+masks remain historical force evidence and are not silently certified.
 
 
 The Motion Edit detail cleanup unifies editor and CLI generation through

@@ -124,7 +124,8 @@ class PlannedHeightmapContactPredictor(HeightmapContactLocationPredictor):
 def contact_plan_objective(prediction, target):
     if not bool(torch.isfinite(prediction.role_logits.gather(-1, target['role'][..., None])).all()):
         raise ValueError('Supervised role is outside the actual-contact action space')
-    role = F.cross_entropy(prediction.role_logits.transpose(1, 2), target["role"], reduction="none").mean(-1)
+    from generator.limb_contact import role_objective
+    role = role_objective(prediction, target['role'])
     valid = target["contact_cell_valid"] & (target["role"] != 0)
     if getattr(prediction, 'keep_uses_current_point', False):
         valid &= target['role'] != 2
@@ -134,6 +135,38 @@ def contact_plan_objective(prediction, target):
     if bool((valid & ~torch.isfinite(locations.gather(-1, safe_cells[..., None]).squeeze(-1))).any()):
         raise ValueError('Supervised keep location is outside the observed contact relation')
     cells = F.cross_entropy(locations.transpose(1, 2), safe_cells, reduction="none")
+    region_metrics = {}
+    if 'location_region_points_local' in target:
+        # Training-only proxy: probability mass on nearby observed points of the
+        # demonstrated surface. Surface IDs never enter the learned score.
+        candidates = prediction.candidate_points_local
+        surfaces = prediction.candidate_surfaces
+        observed = prediction.candidate_valid
+        if candidates is None or surfaces is None or observed is None:
+            raise ValueError('Regional location supervision requires registered scan candidates')
+        radius = target['location_region_radius_m']
+        if radius.shape != (len(locations),) or not bool(torch.isfinite(radius).all()) or bool((radius <= 0).any()):
+            raise ValueError('Regional location radius must be finite positive [B]')
+        distance = torch.cdist(target['location_region_points_local'].detach(), candidates.detach())
+        positive = (observed[:, None] & torch.isfinite(locations)
+            & (surfaces[:, None] == target['location_region_surface'][..., None])
+            & (distance <= radius[:, None, None]))
+        eligible = (target['role'] != 0) & (target['role'] != 2)
+        covered = positive.any(-1)
+        valid = valid & eligible & covered
+        # Empty/excluded rows use a finite dummy support to avoid inf*0/NaN
+        # gradients. They contribute neither location loss nor accuracy.
+        fallback = torch.zeros_like(positive).scatter_(-1, locations.argmax(-1)[..., None], True)
+        support = torch.where(valid[..., None], positive, fallback)
+        cells = (torch.logsumexp(locations, -1)
+            - torch.logsumexp(locations.masked_fill(~support, -torch.inf), -1))
+        selected_positive = positive.gather(-1, prediction.cell[..., None]).squeeze(-1)
+        region_metrics = {
+            'plan_region_exact': ((selected_positive | ~valid).all(-1) & valid.any(-1)).float(),
+            'plan_region_supervised_parts': valid.sum(-1).float(),
+            'plan_region_uncovered_parts': (eligible & ~covered).sum(-1).float(),
+            'plan_region_positive_candidates': (positive.sum(-1)*valid).sum(-1).float()/valid.sum(-1).clamp_min(1),
+        }
     location = (cells * valid).sum(-1) / valid.sum(-1).clamp_min(1)
     exact_contact = (prediction.contact == (target["role"] != 0)).all(-1)
     candidates = getattr(prediction, 'candidate_points_local', None)
@@ -146,6 +179,7 @@ def contact_plan_objective(prediction, target):
         col_error = prediction.cell % HEIGHTMAP_COLS - target["contact_cell"] % HEIGHTMAP_COLS
         location_error = (row_error.square() + col_error.square()).float().sqrt() * (100 * HEIGHTMAP_RESOLUTION_M)
     return role + location, {
+        **region_metrics,
         "plan_role_loss": role,
         "plan_location_loss": location,
         "plan_contact_exact": exact_contact.float(),

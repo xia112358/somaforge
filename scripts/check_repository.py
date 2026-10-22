@@ -30,14 +30,190 @@ CANONICAL_ENVIRONMENT_PATHS = (
 )
 
 
+def generated_test_paths(name: str, tree: ast.AST) -> set[int]:
+    """Recognize paths owned by fresh test directories, including fixture returns.
+
+    Only a UUID-named directory created without exist_ok is considered fresh.
+    A test filename alone never exempts reads of pre-existing temporary inputs.
+    """
+    path = Path(name)
+    if 'tests' not in path.parts or not path.name.startswith('test_'):
+        return set()
+    generated = set()
+    fixtures = {}
+
+    class Paths(ast.NodeVisitor):
+        def __init__(self, bindings=None):
+            self.bindings = dict(bindings or {})
+            self.pending = set()
+            self.returns = []
+
+        def value(self, node):
+            if isinstance(node, ast.Name):
+                return self.bindings.get(node.id, False)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if not Path(node.value).is_absolute() and '..' not in Path(node.value).parts:
+                    return frozenset([node.value])
+            if isinstance(node, (ast.Tuple, ast.List)):
+                return tuple(self.value(item) for item in node.elts)
+            if isinstance(node, ast.JoinedStr):
+                choices = {''}
+                for part in node.values:
+                    if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                        values = frozenset([part.value])
+                    elif isinstance(part, ast.FormattedValue) and part.format_spec is None and part.conversion == -1:
+                        values = self.value(part.value)
+                    else:
+                        return False
+                    if not isinstance(values, frozenset):
+                        return False
+                    choices = {prefix + suffix for prefix in choices for suffix in values}
+                    if len(choices) > 64:
+                        return False
+                if all(not Path(value).is_absolute() and '..' not in Path(value).parts for value in choices):
+                    return frozenset(choices)
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+                if self.value(node.left) is True and isinstance(self.value(node.right), frozenset):
+                    return True
+            if isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Name) and node.func.id == 'Path' and len(node.args) == 1:
+                    return self.value(node.args[0])
+                if isinstance(node.func, ast.Attribute) and node.func.attr in ('resolve', 'absolute', 'expanduser', 'with_suffix'):
+                    return self.value(node.func.value) is True
+            return False
+
+        def visit(self, node):
+            if self.value(node) is True:
+                generated.add(id(node))
+            return super().visit(node)
+
+        def bind(self, target, value):
+            if isinstance(target, ast.Name):
+                self.bindings[target.id] = value
+                self.pending.discard(target.id)
+            elif isinstance(target, (ast.Tuple, ast.List)):
+                values = value if isinstance(value, tuple) and len(value) == len(target.elts) else (False,) * len(target.elts)
+                for item, state in zip(target.elts, values):
+                    self.bind(item, state)
+
+        def assignment(self, targets, value):
+            self.visit(value)
+            for target in targets:
+                self.bind(target, self.value(value))
+                if (isinstance(target, ast.Name) and isinstance(value, ast.BinOp)
+                        and isinstance(value.op, ast.Div)
+                        and isinstance(value.right, ast.Attribute) and value.right.attr == 'hex'
+                        and isinstance(value.right.value, ast.Call)
+                        and ast.unparse(value.right.value.func) == 'uuid.uuid4'):
+                    self.pending.add(target.id)
+
+        def visit_Assign(self, node):
+            self.assignment(node.targets, node.value)
+
+        def visit_AnnAssign(self, node):
+            if node.value is not None:
+                self.assignment([node.target], node.value)
+
+        def visit_Expr(self, node):
+            self.generic_visit(node)
+            call = node.value
+            if (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                    and call.func.attr == 'mkdir' and isinstance(call.func.value, ast.Name)
+                    and call.func.value.id in self.pending and not call.args
+                    and all(k.arg in ('parents', 'mode') or
+                            (k.arg == 'exist_ok' and isinstance(k.value, ast.Constant) and k.value.value is False)
+                            for k in call.keywords)):
+                self.bindings[call.func.value.id] = True
+                self.pending.discard(call.func.value.id)
+
+        def visit_branches(self, node):
+            # Creation in one branch cannot prove ownership after that branch.
+            for _, field in ast.iter_fields(node):
+                child = Paths(self.bindings)
+                child.pending = self.pending.copy()
+                for item in field if isinstance(field, list) else [field]:
+                    if isinstance(item, ast.AST):
+                        child.visit(item)
+            for item in ast.walk(node):
+                if isinstance(item, ast.Name) and isinstance(item.ctx, ast.Store):
+                    self.bind(item, False)
+
+        visit_If = visit_branches
+        visit_While = visit_branches
+        visit_Try = visit_branches
+        visit_TryStar = visit_branches
+        visit_Match = visit_branches
+
+        def visit_For(self, node):
+            self.visit(node.iter)
+            child = Paths(self.bindings)
+            child.pending = self.pending.copy()
+            values = self.value(node.iter)
+            child.bind(node.target, frozenset().union(*values) if isinstance(values, tuple) and values
+                       and all(isinstance(value, frozenset) for value in values) else False)
+            for statement in node.body:
+                child.visit(statement)
+            other = Paths(self.bindings)
+            for statement in node.orelse:
+                other.visit(statement)
+            for item in ast.walk(node):
+                if isinstance(item, ast.Name) and isinstance(item.ctx, ast.Store):
+                    self.bind(item, False)
+
+        visit_AsyncFor = visit_For
+
+        def visit_FunctionDef(self, node):
+            child = Paths(self.bindings)
+            arguments = node.args.posonlyargs + node.args.args + node.args.kwonlyargs
+            for argument in arguments:
+                child.bindings[argument.arg] = fixtures.get(argument.arg, False)
+            for statement in node.body:
+                child.visit(statement)
+            decorators = [d.func if isinstance(d, ast.Call) else d for d in node.decorator_list]
+            if any(ast.unparse(d) == 'pytest.fixture' for d in decorators) and child.returns:
+                if all(value == child.returns[0] for value in child.returns):
+                    fixtures[node.name] = child.returns[0]
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_Return(self, node):
+            if node.value is not None:
+                self.visit(node.value)
+                self.returns.append(self.value(node.value))
+
+    # Fixtures may be declared after their consumers. Revisit with known returns.
+    Paths().visit(tree)
+    generated.clear()
+    Paths().visit(tree)
+    return generated
+
+
 def temporary_input_errors(name: str, tree: ast.AST) -> list[str]:
     """Reject temporary code imports and file reads; diagnostic writes are allowed."""
     errors = []
+    generated = generated_test_paths(name, tree)
+    def unowned_nodes(node):
+        if id(node) in generated:
+            return
+        yield node
+        for child in ast.iter_child_nodes(node):
+            yield from unowned_nodes(child)
+    def temporary_literal(node):
+        return (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and (node.value == 'tmp' or node.value.startswith('tmp/') or '/holosoma/tmp/' in node.value))
+    def unproven_generated_path(node, *, literal_escape=False):
+        for item in unowned_nodes(node):
+            if isinstance(item, ast.BinOp) and isinstance(item.op, ast.Div) and id(item.left) in generated:
+                if not literal_escape or any(
+                    isinstance(part, ast.Constant) and isinstance(part.value, str)
+                    and (Path(part.value).is_absolute() or '..' in Path(part.value).parts)
+                    for part in ast.walk(item.right)
+                ):
+                    return True
+        return False
     def temporary_path(node):
-        return any(isinstance(n, ast.Constant) and isinstance(n.value, str)
-                   and (n.value == 'tmp' or n.value.startswith('tmp/')
-                        or '/holosoma/tmp/' in n.value)
-                   for n in ast.walk(node))
+        return (any(temporary_literal(n) for n in unowned_nodes(node))
+                or unproven_generated_path(node, literal_escape=True))
     def call_name(node):
         if isinstance(node, ast.Name): return node.id
         if isinstance(node, ast.Attribute): return call_name(node.value) + '.' + node.attr
@@ -48,11 +224,17 @@ def temporary_input_errors(name: str, tree: ast.AST) -> list[str]:
             if not isinstance(node, (ast.Assign, ast.AnnAssign)): continue
             value = node.value
             if value is None: continue
-            if temporary_path(value) or any(isinstance(n, ast.Name) and n.id in temporary_names for n in ast.walk(value)):
+            if temporary_path(value) or any(isinstance(n, ast.Name) and n.id in temporary_names for n in unowned_nodes(value)):
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 temporary_names.update(n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name))
     def temporary_input(node):
-        return temporary_path(node) or any(isinstance(n, ast.Name) and n.id in temporary_names for n in ast.walk(node))
+        return id(node) not in generated and (
+            temporary_path(node) or unproven_generated_path(node)
+            or any(isinstance(n, ast.Name) and n.id in temporary_names for n in unowned_nodes(node))
+        )
+    def temporary_code_path(node):
+        return any(temporary_literal(n) or (isinstance(n, ast.Name) and n.id in temporary_names)
+                   for n in ast.walk(node))
     for node in ast.walk(tree):
         if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None and temporary_input(node.value):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
@@ -61,9 +243,9 @@ def temporary_input_errors(name: str, tree: ast.AST) -> list[str]:
                 errors.append(f'{name}:{node.lineno}: persistent input/cache assigned a temporary path')
         if not isinstance(node, ast.Call): continue
         function = call_name(node.func)
-        if function in ('sys.path.insert', 'sys.path.append') and temporary_path(node):
+        if function in ('sys.path.insert', 'sys.path.append') and temporary_code_path(node):
             errors.append(f'{name}:{node.lineno}: temporary directory on import path')
-        if function.endswith('spec_from_file_location') and temporary_path(node):
+        if function.endswith('spec_from_file_location') and temporary_code_path(node):
             errors.append(f'{name}:{node.lineno}: import of temporary source file')
         if isinstance(node.func, ast.Attribute) and node.func.attr in ('read_text', 'read_bytes'):
             if temporary_input(node.func.value):

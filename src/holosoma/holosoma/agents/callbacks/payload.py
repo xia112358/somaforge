@@ -123,7 +123,7 @@ class EvalPayloadCallback(RLEvalCallback):
             eid = self.env_id
             body_positions = []
             for _name, _body_names_idx, isaac_body_id in self._resolved_bodies:
-                pos = self._sim._robot.data.body_pos_w[eid, isaac_body_id].detach().cpu().numpy().copy()
+                pos = self._sim._robot.data.body_pos_w.torch[eid, isaac_body_id].detach().cpu().numpy().copy()
                 body_positions.append(pos)
 
             buffers["payload_force_per_body"].append(np.array(self._force_per_body, dtype=np.float32))
@@ -155,7 +155,7 @@ class EvalPayloadCallback(RLEvalCallback):
 
         for _name, _body_names_idx, isaac_body_id in self._resolved_bodies:
             # Transform world-frame force to body-local frame
-            body_quat_w = self._sim._robot.data.body_quat_w[eid, isaac_body_id]
+            body_quat_w = self._sim._robot.data.body_quat_w.torch[eid, isaac_body_id]
             force_body = quat_apply_inverse(body_quat_w, force_world)
 
             forces = force_body.unsqueeze(0).unsqueeze(0)  # [1, 1, 3]

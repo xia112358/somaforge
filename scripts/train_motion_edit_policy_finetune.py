@@ -9,6 +9,7 @@ from pathlib import Path
 
 import tyro
 from holosoma import train_agent
+from holosoma.config_values.wbt.g1.command import motion_config as default_motion_config
 from holosoma.utils.eval_utils import CheckpointConfig, load_saved_experiment_config
 from holosoma.utils.sim_utils import (
     parse_isaaclab_launcher_args,
@@ -27,6 +28,9 @@ class FinetuneOptions:
     iterations: int = 10000
     save_interval: int = 500
     max_episode_length_s: float = 22.0
+    full_checkpoints: bool = False
+    """Deprecated compatibility option; ordinary checkpoints are always used."""
+    warm_start: bool = False
 
 
 def _replace_motion_config(command, manifest: Path):
@@ -40,16 +44,16 @@ def _replace_motion_config(command, manifest: Path):
         motion_dir="",
         motion_manifest=str(manifest),
         canonicalize_motion_order_on_load=True,
-        reset_sampler="hotspot_failure_window",
+        reset_sampler="completion_recent30_failure_window",
         start_at_timestep_zero_prob=0.0,
         freeze_at_timestep_zero_prob=0.0,
         use_start_probe_envs=True,
         probe_env_per_motion=3,
-        probe_completion_alpha=0.02,
         probe_uniform_mix=0.4,
-        failure_window_pre_frames=50,
+        # Use current defaults even when the checkpoint contains older windows.
+        failure_window_pre_frames=default_motion_config.failure_window_pre_frames,
         failure_window_post_frames=20,
-        failure_window_before_prob=0.7,
+        failure_window_before_prob=default_motion_config.failure_window_before_prob,
         failure_window_success_horizon_frames=50,
         hotspot_failure_uniform_mix=0.3,
         hotspot_failure_decay=0.995,
@@ -115,6 +119,8 @@ def main() -> None:
                 config.algo.config,
                 num_learning_iterations=int(options.iterations),
                 save_interval=int(options.save_interval),
+                full_checkpoints=False,
+                warm_start=bool(options.warm_start),
             ),
         ),
         command=_replace_motion_config(config.command, manifest),

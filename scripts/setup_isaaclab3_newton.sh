@@ -1,90 +1,48 @@
 #!/usr/bin/env bash
-set -ex
-
-SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-ROOT_DIR=$(dirname "$SCRIPT_DIR")
-
-if ! command -v sudo &> /dev/null; then
-  echo "Warning: sudo could not be found, you may need to run this script with sudo"
-  function sudo { "$@"; }
-  export -f sudo
+# Install the GA base and the pinned project overlay without replacing older environments.
+set -euo pipefail
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+ISAACLAB_PATH="${SOMAFORGE_ISAACLAB_PATH:-$HOME/isaaclab_3.0_ga}"
+LAB_COMMIT=e3f7d9ff1f5d7f8280de3ece9000b7117f66bcf4
+BASE_ENV="$ROOT_DIR/runtime/environments/isaaclab-ga-3.0.0-base"
+PROJECT_ENV="$ROOT_DIR/runtime/environments/isaaclab-ga-3.0.0-newton-1.7.0"
+python3 "$SCRIPT_DIR/bootstrap_runtime.py"
+if ! command -v uv >/dev/null 2>&1; then
+    TOOLS_ENV="$ROOT_DIR/runtime/environments/runtime-tools"
+    [[ -f "$TOOLS_ENV/pyvenv.cfg" ]] || python3 -m venv "$TOOLS_ENV"
+    "$TOOLS_ENV/bin/python" -m pip install uv==0.13.3
+    export PATH="$TOOLS_ENV/bin:$PATH"
 fi
-
-CONDA_ENV_NAME=${CONDA_ENV_NAME:-${SOMAFORGE_CONDA_ENV:-env_somaforge}}
-ISAACLAB_PATH=${ISAACLAB_PATH:-$HOME/isaaclab_3.0}
-
-source ${SCRIPT_DIR}/source_common.sh
-ENV_ROOT=$CONDA_ROOT/envs/$CONDA_ENV_NAME
-SENTINEL_FILE=${WORKSPACE_DIR}/.env_setup_finished_$CONDA_ENV_NAME
-
-mkdir -p $WORKSPACE_DIR
-
-if [[ ! -f $SENTINEL_FILE ]]; then
-  if [[ ! -d $CONDA_ROOT ]]; then
-    mkdir -p $CONDA_ROOT
-    curl https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o $CONDA_ROOT/miniconda.sh
-    bash $CONDA_ROOT/miniconda.sh -b -u -p $CONDA_ROOT
-    rm $CONDA_ROOT/miniconda.sh
-  fi
-
-  if [[ ! -d $ENV_ROOT ]]; then
-    $CONDA_ROOT/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main || true
-    $CONDA_ROOT/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r || true
-    if [[ ! -f $CONDA_ROOT/bin/mamba ]]; then
-      $CONDA_ROOT/bin/conda install -y mamba -c conda-forge -n base
-    fi
-    MAMBA_ROOT_PREFIX=$CONDA_ROOT $CONDA_ROOT/bin/mamba create -y -n $CONDA_ENV_NAME python=3.12 -c conda-forge --override-channels
-  fi
-
-  source $CONDA_ROOT/bin/activate $CONDA_ENV_NAME
-
-  conda install -c conda-forge -y ffmpeg libiconv libglu
-
-  pip install --upgrade pip
-  pip install -U torch==2.10.0 torchvision==0.25.0 --index-url https://download.pytorch.org/whl/cu128
-  pip install "isaacsim[all,extscache]==6.0.0" --extra-index-url https://pypi.nvidia.com
-  # Motion Edit and Predictor/Infiller share this runtime with Isaac Lab. JAX reuses the
-  # CUDA 12 libraries installed with PyTorch; the matching PTX compiler wheel
-  # is pinned explicitly so PyRoki can compile solver graphs on the GPU.
-  pip install \
-    "jax[cuda12]==0.10.2" \
-    "nvidia-cuda-nvcc-cu12==12.8.93" \
-    "jax_dataclasses==1.6.3" \
-    "jaxlie==1.5.0" \
-    "jaxtyping==0.3.11" \
-    "pyliblzfse==0.4.1" \
-    "robot_descriptions==2.0.0"
-  pip install --no-deps \
-    "git+https://github.com/brentyi/jaxls.git@f8f8dbb54b3e0c16e8bf014496462a4e675e9389" \
-    "git+https://github.com/chungmin99/pyroki.git@388e43e1fc0d0ee382968d3dd72970fd62a0450c"
-
-  if [[ ! -d $ISAACLAB_PATH ]]; then
-    git clone https://github.com/isaac-sim/IsaacLab.git --branch main $ISAACLAB_PATH
-  fi
-
-  sudo apt install -y cmake build-essential
-
-  # Install only the Isaac Lab packages used by Holosoma Newton.  IsaacLab 3.0
-  # still forwards several solver-common material cfg aliases through the
-  # isaaclab_physx Python package, so install that package without its [newton]
-  # extra and do not load its Kit extension.  Do not install isaaclab_ovphysx.
-  pip install -e $ISAACLAB_PATH/source/isaaclab
-  pip install -e $ISAACLAB_PATH/source/isaaclab_assets
-  pip install -e $ISAACLAB_PATH/source/isaaclab_mimic
-  pip install -e $ISAACLAB_PATH/source/isaaclab_newton[all]
-  pip install -e $ISAACLAB_PATH/source/isaaclab_ov
-  pip install -e $ISAACLAB_PATH/source/isaaclab_physx --no-deps
-  pip install -e $ISAACLAB_PATH/source/isaaclab_rl[rsl-rl]
-  pip install -e $ISAACLAB_PATH/source/isaaclab_tasks
-  pip install -e $ISAACLAB_PATH/source/isaaclab_tasks_experimental
-  pip install -e $ISAACLAB_PATH/source/isaaclab_visualizers
-  pip install -e $ROOT_DIR/packages/somaforge_core
-  pip install -e $ROOT_DIR/packages/motion_edit --no-deps
-  pip install -e $ROOT_DIR/packages/contact_solver --no-deps
-  pip install -e $ROOT_DIR/packages/generator --no-deps
-  pip install -e $ROOT_DIR/src/holosoma
-  pip install -e $ROOT_DIR/src/holosoma_retargeting
-  pip install --upgrade 'wandb>=0.21.1'
-
-  touch $SENTINEL_FILE
+if [[ -n "${SOMAFORGE_SETUP_PYTHON:-}" ]]; then
+    PYTHON_BIN="$SOMAFORGE_SETUP_PYTHON"
+elif ! PYTHON_BIN="$(uv python find 3.12 2>/dev/null)"; then
+    uv python install 3.12
+    PYTHON_BIN="$(uv python find 3.12)"
 fi
+"$PYTHON_BIN" -c 'import sys; assert sys.version_info[:2] == (3, 12), "SomaForge requires Python 3.12"'
+if [[ ! -d "$ISAACLAB_PATH" ]]; then
+    git clone --branch v3.0.0 --depth 1 https://github.com/isaac-sim/IsaacLab.git "$ISAACLAB_PATH"
+fi
+if [[ "$(git -C "$ISAACLAB_PATH" rev-parse HEAD)" != "$LAB_COMMIT" ]]; then
+    echo "Expected Isaac Lab GA $LAB_COMMIT at $ISAACLAB_PATH; refusing to overwrite a different checkout." >&2
+    exit 1
+fi
+# --inexact preserves optional packages; never prune a pre-existing environment.
+UV_PROJECT_ENVIRONMENT="$BASE_ENV" uv sync --project "$ISAACLAB_PATH" --frozen --inexact \
+    --python "$PYTHON_BIN" --extra test --extra isaacsim
+[[ -f "$PROJECT_ENV/pyvenv.cfg" ]] || "$PYTHON_BIN" -m venv --without-pip "$PROJECT_ENV"
+uv pip install --python "$PROJECT_ENV/bin/python" --no-deps -r "$ROOT_DIR/configs/isaaclab-ga-overlay-requirements.txt"
+"$PROJECT_ENV/bin/python" - "$BASE_ENV" <<'PYCODE'
+import pathlib, sys, sysconfig
+site = pathlib.Path(sysconfig.get_path("purelib"))
+base_site = pathlib.Path(sys.argv[1]) / "lib/python3.12/site-packages"
+(site / "somaforge_ga_base.pth").write_text(f"import site; site.addsitedir({str(base_site)!r})\n")
+PYCODE
+for package in packages/somaforge_core packages/contact_solver packages/generator packages/motion_edit src/holosoma; do
+    uv pip install --python "$PROJECT_ENV/bin/python" --no-deps -e "$ROOT_DIR/$package"
+done
+source "$SCRIPT_DIR/source_isaaclab3_newton_setup.sh"
+python -c 'from somaforge_core.newton_collision_compat import install; print(install())'
+python -c 'from somaforge_core.robot_assets import canonical_g1_asset_metadata; print(canonical_g1_asset_metadata())'
+echo "SomaForge GA installed. Source scripts/source_isaaclab3_newton_setup.sh to activate."

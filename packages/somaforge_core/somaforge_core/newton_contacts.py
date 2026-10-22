@@ -162,6 +162,56 @@ def actual_contact_faces(point, normal, binding):
     return sorted(matching,key=lambda face:(-float(np.dot(normal,face['normal_w'])),int(face['surface'])))
 
 
+def actual_primary_face_indices(points, normals, binding, *, batch_size=256):
+    """Batch the same finite-triangle attribution and normal/ID tie ordering.
+
+    Contact activation is already known. This performs no distance gating,
+    projection, candidate promotion or geometry modification.
+    """
+    points, normals = np.asarray(points, np.float64), np.asarray(normals, np.float64)
+    if points.shape != normals.shape or points.ndim != 2 or points.shape[1] != 3 or batch_size < 1:
+        raise ValueError('Invalid batched contact face inputs')
+    if not binding or not np.isfinite(points).all() or not np.isfinite(normals).all():
+        raise ValueError('Missing binding or nonfinite contact geometry')
+    if not all('triangles_w' in face for face in binding):
+        return np.asarray([next(i for i,f in enumerate(binding) if f is actual_contact_faces(p,n,binding)[0])
+                           for p,n in zip(points,normals)],np.int64)
+    geometry=[]
+    for face in binding:
+        triangles=np.asarray(face['triangles_w'],np.float64)
+        if triangles.ndim!=3 or triangles.shape[1:]!=(3,3) or not len(triangles) or not np.isfinite(triangles).all():
+            raise ValueError('Missing/invalid actual triangle geometry')
+        a,b,c=triangles[:,0],triangles[:,1],triangles[:,2]
+        u,v=b-a,c-a
+        uu=np.einsum('ij,ij->i',u,u);uv=np.einsum('ij,ij->i',u,v);vv=np.einsum('ij,ij->i',v,v)
+        den=uu*vv-uv*uv
+        if (den<=0).any():raise ValueError('Degenerate triangle in contact surface binding')
+        geometry.append((a,b,c,u,v,uu,uv,vv,den))
+    face_normals=np.asarray([face['normal_w'] for face in binding],float)
+    id_order=np.argsort([int(face['surface']) for face in binding],kind='stable')
+    output=[]
+    for start in range(0,len(points),batch_size):
+        p=points[start:start+batch_size]; distances=[]
+        for a,b,c,u,v,uu,uv,vv,den in geometry:
+            w=p[:,None]-a
+            wu=np.einsum('ptj,tj->pt',w,u);wv=np.einsum('ptj,tj->pt',w,v)
+            s=(wu*vv-wv*uv)/den;r=(wv*uu-wu*uv)/den
+            projection=a+s[...,None]*u+r[...,None]*v
+            distance=np.where((s>=0)&(r>=0)&(s+r<=1),np.sum((projection-p[:,None])**2,axis=-1),np.inf)
+            for left,right in ((a,b),(b,c),(c,a)):
+                edge=right-left
+                parameter=np.sum((p[:,None]-left)*edge,axis=-1)/np.sum(edge*edge,axis=-1)
+                nearest=left+np.clip(parameter,0,1)[...,None]*edge
+                distance=np.minimum(distance,np.sum((nearest-p[:,None])**2,axis=-1))
+            distances.append(distance.min(-1))
+        distances=np.stack(distances,-1)
+        tied=np.isclose(distances,distances.min(-1,keepdims=True),rtol=1e-9,atol=1e-12)
+        dot=np.sum(normals[start:start+len(p),None]*face_normals[None],axis=-1)
+        score=np.where(tied,dot,-np.inf)[:,id_order]
+        output.append(id_order[score.argmax(-1)])
+    return np.concatenate(output) if output else np.empty(0,np.int64)
+
+
 def full_robot_separation(snapshot, *, body_env, shape_surface, env_id=0):
     """Signed Newton distances BEFORE six-part/task-face filtering.
 

@@ -32,14 +32,31 @@ from holosoma.utils.simulator_config import SimulatorType, get_simulator_type, s
 from holosoma.utils.torch_utils import to_torch
 
 
-def parse_isaaclab_launcher_args(description: str) -> argparse.Namespace:
-    """Parse IsaacLab AppLauncher args before Tyro sees project config args."""
+def _add_launcher_arguments(parser: argparse.ArgumentParser) -> None:
+    """Keep the project's explicit headless CLI across launcher API revisions."""
     from isaaclab.app import AppLauncher
+    AppLauncher.add_app_launcher_args(parser)
+    for flag in ("--headless", "--enable_cameras"):
+        if flag not in parser._option_string_actions:
+            parser.add_argument(flag, action="store_true", default=False)
+
+
+def _mark_launcher_intent(args: argparse.Namespace, argv: list[str]) -> None:
+    args.headless_explicit = "--headless" in argv
+    args.visualizer_explicit = any(
+        token in ("--visualizer", "--viz") or token.startswith(("--visualizer=", "--viz="))
+        for token in argv
+    )
+
+
+def parse_isaaclab_launcher_args(description: str) -> argparse.Namespace:
+    """Parse IsaacLab launcher args before Tyro sees project config args."""
 
     parser = argparse.ArgumentParser(description=description, add_help=False)
     parser.add_argument("--_holosoma-launcher-parser", action="store_true", help=argparse.SUPPRESS)
-    AppLauncher.add_app_launcher_args(parser)
+    _add_launcher_arguments(parser)
     launcher_args, remaining_args = parser.parse_known_args()
+    _mark_launcher_intent(launcher_args, sys.argv[1:])
     sys.argv = [sys.argv[0]] + fold_preset_tokens(remaining_args)
     return launcher_args
 
@@ -119,6 +136,7 @@ def sync_launcher_headless_config(
         headless = False if "kit" in visualizer_set else True
     else:
         headless = True
+        launcher_args.visualizer = []
 
     launcher_args.headless = headless
     if tyro_config.training.headless == headless:
@@ -168,8 +186,9 @@ def setup_isaaclab_launcher(
         parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
         parser.add_argument("--env_spacing", type=int, default=20, help="Distance between environments in simulator.")
         parser.add_argument("--output_dir", type=str, default="logs", help="Directory to store the output.")
-        AppLauncher.add_app_launcher_args(parser)
+        _add_launcher_arguments(parser)
         args_cli, unknown_args = parser.parse_known_args()
+        _mark_launcher_intent(args_cli, sys.argv[1:])
     else:
         args_cli = launcher_args
 
@@ -192,12 +211,7 @@ def setup_isaaclab_launcher(
         default_experience = kit_experience if use_kit_experience else headless_experience
         if default_experience:
             args_cli.experience = default_experience
-    isaaclab_path = os.environ.get("ISAACLAB_PATH")
-    if isaaclab_path:
-        ext_folder_arg = f"--ext-folder {os.path.join(isaaclab_path, 'source')}"
-        kit_args = getattr(args_cli, "kit_args", "") or ""
-        if ext_folder_arg not in kit_args:
-            args_cli.kit_args = f"{kit_args} {ext_folder_arg}".strip()
+    # GA Lab packages are Python packages, not Kit extensions.
     if int(os.environ.get("WORLD_SIZE", "1")) > 1:
         # Distribute simulator across GPUs when using multi-gpu training
         args_cli.device = f"cuda:{int(os.environ.get('LOCAL_RANK', '0'))}"
@@ -215,7 +229,6 @@ def setup_isaaclab_launcher(
 
     app_launcher = AppLauncher(args_cli)
     simulation_app = app_launcher.app
-
     logger.info(f"IsaacSim args_cli: {args_cli}")
     logger.info(f"IsaacSim unknown_args: {unknown_args}")
     if launcher_args is None:

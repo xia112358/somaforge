@@ -30,9 +30,13 @@ def _register_self_collision_filters(
         return
 
     def _apply(_event=None):
-        builder = getattr(NewtonManager, "_builder", None)
-        if builder is None:
-            return
+        from isaaclab.sim import SimulationContext
+        from isaaclab_newton.physics import NewtonBuilderCfg
+
+        sim = SimulationContext.instance()
+        if sim is None:
+            raise RuntimeError("Newton self-collision filtering requires an active simulation context.")
+        builder = sim.get_or_create_backend(NewtonBuilderCfg(physics_cfg=sim.cfg.physics))
         from somaforge_core.newton_collision_filter import apply_self_collision_filters_to_builder
 
         body_pairs, shape_pairs = apply_self_collision_filters_to_builder(

@@ -188,6 +188,15 @@ class ExperimentConfig:
             self.algo.config,
             **{name: value for name, value in inference_overrides.items() if name in algo_fields},
         )
+        eval_observation = self.observation
+        if self.algo._target_ == "holosoma.agents.ppo.routed_distill_ppo.RoutedDistillPPO":
+            # Student playback needs neither expert files nor privileged teacher
+            # groups, and a single evaluation environment needs no probe budget.
+            eval_algo_config = dataclasses.replace(eval_algo_config,
+                distill=dataclasses.replace(eval_algo_config.distill, enable_kl=False, teacher_obs_keys=None))
+            eval_observation = dataclasses.replace(self.observation,
+                groups={name: group for name, group in self.observation.groups.items()
+                        if not name.startswith("expert_")})
         eval_termination = self.termination
         if eval_termination is not None:
             eval_terms = {}
@@ -204,6 +213,7 @@ class ExperimentConfig:
         return dataclasses.replace(
             self,
             evaluation=evaluation,
+            observation=eval_observation,
             algo=dataclasses.replace(self.algo, config=eval_algo_config),
             curriculum=CurriculumManagerCfg(),
             termination=eval_termination,

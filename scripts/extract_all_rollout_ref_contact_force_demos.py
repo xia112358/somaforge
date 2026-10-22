@@ -30,9 +30,6 @@ DEFAULT_WORK_DIR = REPO_ROOT / "runtime/current/rollout/newton_contact_force"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "runtime/current/motions/newton_contact_force"
 DEFAULT_MANIFEST_OUTPUT = REPO_ROOT / "runtime/current/manifests/newton_contact_force_8part.json"
 DEFAULT_FAILURE_REPORT = REPO_ROOT / "runtime/current/rollout/newton_contact_force/failures.json"
-DEFAULT_CONDA_ROOT = Path(os.environ.get("CONDA_ROOT", Path.home() / "miniforge3"))
-DEFAULT_CONDA_ENV = os.environ.get("SOMAFORGE_CONDA_ENV", "env_somaforge")
-DEFAULT_CONDA_PYTHON = DEFAULT_CONDA_ROOT / "envs" / DEFAULT_CONDA_ENV / "bin" / "python"
 DEFAULT_PARALLEL_ENVS = 16
 
 
@@ -89,46 +86,12 @@ def _single_motion_manifest(
 
 
 def _default_python() -> str:
-    if DEFAULT_CONDA_PYTHON.exists():
-        return str(DEFAULT_CONDA_PYTHON)
-    return sys.executable
-
+    from somaforge_core.runtime_paths import newton_python
+    return str(newton_python())
 
 def _subprocess_env() -> dict[str, str]:
-    env = os.environ.copy()
-    isaaclab_path = Path(env.get("ISAACLAB_PATH", str(Path.home() / "isaaclab_3.0")))
-    env.setdefault("OMNI_KIT_ACCEPT_EULA", "YES")
-    env.setdefault("ISAACLAB_PATH", str(isaaclab_path))
-    env.setdefault(
-        "HOLOSOMA_ISAACLAB3_NEWTON_HEADLESS_EXPERIENCE",
-        str(REPO_ROOT / "apps/holosoma.isaaclab3_newton.headless.kit"),
-    )
-    env.setdefault(
-        "HOLOSOMA_ISAACLAB3_NEWTON_KIT_EXPERIENCE",
-        str(REPO_ROOT / "apps/holosoma.isaaclab3_newton.kit"),
-    )
-    env.setdefault("MPLCONFIGDIR", str(REPO_ROOT / ".cache/matplotlib"))
-    env.setdefault("WARP_CACHE_PATH", str(REPO_ROOT / ".cache/warp"))
-    source_paths = [
-        str(REPO_ROOT / "packages/somaforge_core"),
-        str(REPO_ROOT / "packages/motion_edit"),
-        str(REPO_ROOT / "src/holosoma"),
-        str(REPO_ROOT / "src/holosoma_retargeting"),
-        str(isaaclab_path / "source/isaaclab"),
-        str(isaaclab_path / "source/isaaclab_assets"),
-        str(isaaclab_path / "source/isaaclab_mimic"),
-        str(isaaclab_path / "source/isaaclab_newton"),
-        str(isaaclab_path / "source/isaaclab_ov"),
-        str(isaaclab_path / "source/isaaclab_rl"),
-        str(isaaclab_path / "source/isaaclab_tasks"),
-        str(isaaclab_path / "source/isaaclab_tasks_experimental"),
-        str(isaaclab_path / "source/isaaclab_visualizers"),
-    ]
-    existing = env.get("PYTHONPATH")
-    if existing:
-        source_paths.append(existing)
-    env["PYTHONPATH"] = os.pathsep.join(source_paths)
-    return env
+    from somaforge_core.runtime_paths import newton_subprocess_environment
+    return newton_subprocess_environment()
 
 
 def _run(cmd: list[str], dry_run: bool) -> bool:

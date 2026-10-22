@@ -404,7 +404,7 @@ class VirtualGantry:
 
         # Get body orientation to transform force from world to body frame
         # IsaacLab applies forces in local frame (is_global=False hardcoded in 2.1)
-        body_quat_w = self.sim._robot.data.body_quat_w[0, isaac_body_id]  # [x,y,z,w] format
+        body_quat_w = self.sim._robot.data.body_quat_w.torch[0, isaac_body_id]  # [x,y,z,w] format
 
         # Transform force from world frame to body frame
         from isaaclab.utils.math import quat_apply_inverse
