@@ -1,3 +1,3 @@
 # Canonical asset fingerprints are byte hashes; do not normalize line endings.
-assets/g1_spherehand_usd/** -text
+assets/g1_spherehand_usd/** -text whitespace=-blank-at-eof
 src/holosoma/holosoma/data/robots/g1/** -text

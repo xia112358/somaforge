@@ -91,4 +91,3 @@ def native_binding(model, info):
             attribution_schema='native_triangle_nearest_v1')
             for p in sorted(planes)] for i,planes in planes_by_shape.items()},
         surface_catalog=[dict(surface=ids[p],normal_w=p[:3],plane_offset=p[3]) for p in ordered])
-
