@@ -177,6 +177,24 @@ loader test creates its own synthetic fixture, and does not pass silently when
 an external dataset is missing. Local historical corpus integration tests read
 explicit formal archive paths, not `tmp/`.
 
+For the complete CPU regression batch, use importlib collection to avoid same-name
+test modules and expose historical fixture modules only to the test process:
+
+```bash
+source scripts/source_isaaclab3_newton_setup.sh
+test_run="tmp/cpu-regression-$(python -c 'import uuid; print(uuid.uuid4().hex)')"
+mkdir -p "$test_run"
+CUDA_VISIBLE_DEVICES='' JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+PYTHONPATH="$PWD/scripts:$PWD/tests:$PWD/packages/generator/tests:$PYTHONPATH" \
+python -m pytest packages tests src/holosoma/holosoma --ignore=tests/e2e \
+  --import-mode=importlib -m 'not isaacsim and not multi_gpu and not requires_inference' \
+  -p no:cacheprovider -o tmp_path_retention_policy=all --basetemp="$test_run/pytest" -q
+```
+
+Some historical corpus tests require separately restored datasets. Loopback/thread
+access is needed for browser-service tests. GPU checks and end-to-end training are
+separate from this batch.
+
 The temporary-input migration preserves motion/checkpoint bytes and frozen
 source snapshots. Two registered Tracking manifests now live under
 `runtime/current/motions/wbt/`; their relative and absolute input closure is

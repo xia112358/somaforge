@@ -1,6 +1,7 @@
 """The maintained trainer imports without executing scratch training scripts."""
 import subprocess
 import sys
+from unittest.mock import Mock
 
 
 def test_training_helpers_do_not_import_scratch_trainers():
@@ -58,17 +59,25 @@ def test_new_trainer_defaults_are_independent_and_build_without_old_weights():
 def test_shared_observation_training_flag_fails_before_output_or_workers(monkeypatch):
     import pytest
     from generator import train_full1000_position as module
+    launcher = Mock(spec=['add_app_launcher_args'])
+    monkeypatch.setattr(module, 'AppLauncher', launcher)
     monkeypatch.setattr(sys, 'argv', ['train', '--architecture', 'full1000_position_predictor_v2', '--execution-observation-gradients'])
     with pytest.raises(ValueError, match='forbids shared'):
         module.main()
+    launcher.add_app_launcher_args.assert_called_once()
+    launcher.assert_not_called()
 
 
 def test_gradient_isolation_migration_requires_full_resume_before_workers(monkeypatch):
     import pytest
     from generator import train_full1000_position as module
+    launcher = Mock(spec=['add_app_launcher_args'])
+    monkeypatch.setattr(module, 'AppLauncher', launcher)
     monkeypatch.setattr(sys, 'argv', ['train', '--resume-gradient-isolation'])
     with pytest.raises(ValueError, match='requires a full v1 resume'):
         module.main()
+    launcher.add_app_launcher_args.assert_called_once()
+    launcher.assert_not_called()
 
 
 def test_v1_scratch_defaults_roundtrip_with_planner_owned_encoder_and_new_interval():

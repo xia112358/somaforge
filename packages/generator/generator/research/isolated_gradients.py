@@ -50,7 +50,9 @@ def audit(model, cfg, inputs, validation, labels_for, objective):
         for key in prediction.__dataclass_fields__:
             first, second = getattr(prediction, key), getattr(repeat, key)
             if first is not None:
-                torch.testing.assert_close(first.detach(), second.detach(), rtol=0, atol=0)
+                torch.testing.assert_close(
+                    first.detach() if isinstance(first, torch.Tensor) else first,
+                    second.detach() if isinstance(second, torch.Tensor) else second, rtol=0, atol=0)
         del repeat
         loss, metrics, queried = objective(prediction, observation, ids,
             labels_for(observation, ids, recursive=source == 'generated_pool_states'))
