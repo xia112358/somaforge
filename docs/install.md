@@ -19,7 +19,7 @@ cd somaforge
 python3 scripts/bootstrap_runtime.py
 bash scripts/setup_isaaclab3_newton.sh
 source scripts/source_isaaclab3_newton_setup.sh
-python scripts/check_somaforge_assets.py
+python scripts/check_somaforge_assets.py --allow-missing
 python -m holosoma.train_agent --help
 python -m holosoma.eval_agent --help
 ```
@@ -115,3 +115,12 @@ ssh -N -L 6006:127.0.0.1:6006 user@training-host
 Then open `http://127.0.0.1:6006` in the client's browser. Dataset restoration,
 NVIDIA driver installation, and Docker/GPU compatibility remain machine-specific
 requirements; the checks reported for this change state exactly what was run.
+
+The 2026-10-22 portability check used a clean Git clone, a separately cloned pinned
+Lab checkout, and new base/project environments on the same Linux host. Asset
+identity and imports outside the checkout passed. After copying one explicit
+motion/terrain input set into that clone, an eight-environment force expert
+completed one update and saved a native checkpoint. This is a bounded installation
+and execution check, not an independent-machine benchmark or a convergence test.
+Optional IK dependency resolution passed; its full environment and Docker images
+were not rebuilt in this check.

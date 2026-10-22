@@ -21,6 +21,20 @@ from holosoma.utils.tyro_utils import TYRO_CONIFG
 from holosoma.utils.viewport_camera import prime_overview_camera
 
 
+def test_evaluation_help_without_checkpoint_never_loads_a_model(monkeypatch, capsys) -> None:
+    from holosoma import eval_agent
+
+    monkeypatch.setattr("sys.argv", ["eval_agent", "--help"])
+    monkeypatch.setattr(eval_agent, "init_eval_logging", lambda: None)
+    monkeypatch.setattr(eval_agent, "parse_isaaclab_launcher_args", lambda description: argparse.Namespace())
+    with mock.patch.object(eval_agent, "load_saved_experiment_config") as load:
+        with pytest.raises(SystemExit) as result:
+            eval_agent.main()
+    assert result.value.code == 0
+    load.assert_not_called()
+    assert "--checkpoint" in capsys.readouterr().out
+
+
 def test_evaluation_cli_owns_runtime_settings() -> None:
     evaluation, remaining = tyro.cli(
         EvaluationConfig,

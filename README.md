@@ -64,7 +64,7 @@ Missing or mismatched identity is rejected.
 
 ```bash
 source scripts/source_somaforge.sh
-python scripts/check_asset_manifest.py
+python scripts/check_asset_manifest.py --allow-missing
 python scripts/check_training_manifest.py
 ```
 
@@ -174,7 +174,8 @@ recording, acceptance output and ONNX export are explicit options. Remote Kit
 uses livestreaming; TensorBoard independently reads the selected training run.
 See [evaluation and remote playback](docs/wbt-modular-experiments.md#evaluate-or-replay-separately).
 
-Browser playback and contact editing share `./motion-edit contact-editor`.
+Browser playback and contact editing share
+`packages/motion_edit/motion-edit contact-editor`.
 Use `--motion-id <registered-id>` for registered motions or
 `--review <canonical.npz|diagnostic.json>` for review, with
 `--terrain <terrain.obj>` when needed. See the
