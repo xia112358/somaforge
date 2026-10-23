@@ -6,6 +6,10 @@ Predictor, Infiller, native contact workers and source retargeting.
 [Installation and dependency ownership](python-environments.md) are defined by
 `configs/environments/profiles.json` and the main lock.
 
+The maintained source branch is Git `main`. The unified runtime and the
+Torch/Newton Motion Edit implementation are included there; the former
+environment-migration and IK experiment branches are development history.
+
 | Component | Pinned version |
 | --- | --- |
 | Python | 3.12 |

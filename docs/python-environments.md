@@ -7,6 +7,12 @@ retargeting. Motion Edit's service and float32 Torch/Newton IK workers use this
 same environment. The separate PyRoki/JAX IK profile and unused standalone
 retarget profile have been retired.
 
+Use Git `main` for the current installation and runtime instructions. Migration
+branches retain their development history; selecting them is not required to
+use the unified environment. The Git branch and runtime profile share the name
+`main` but serve separate purposes: one selects source code, the other selects
+the installed Python dependencies and pinned simulator sources.
+
 The catalog is [`configs/environments/profiles.json`](../configs/environments/profiles.json).
 It declares Python 3.12, the external dependency lock, editable local packages,
 the pinned Isaac Lab source commit and explicit dependency exceptions. Conda

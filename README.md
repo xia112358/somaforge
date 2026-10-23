@@ -5,6 +5,14 @@ distillation, contact-aware motion editing, next-contact prediction, and
 endpoint-conditioned trajectory infilling. Simulation uses the pinned Isaac Lab
 3.0.0 / Isaac Sim 6.2 / Newton 1.7.0 environment.
 
+Git `main` is the maintained integration branch. Its environment catalog declares
+one runtime profile, also named `main`, at `runtime/environments/conda/somaforge`.
+WBT, distillation, Motion Edit, Predictor/Infiller and retargeting all use this
+profile. The separate IK and retargeting environments have been retired.
+Motion Edit uses Torch float32 and native Newton FK, with its existing UI
+interfaces preserved. See [component validation](docs/environments.md#main-consolidation-validation-2026-10-2223)
+for the completed runtime checks and their scope.
+
 ## Start here
 
 - [Fresh-machine installation](docs/install.md) and [runtime compatibility](docs/environments.md)
@@ -21,8 +29,9 @@ From a fresh checkout on a supported Linux NVIDIA workstation:
 
 ```bash
 python3 scripts/bootstrap_runtime.py
-bash scripts/setup_isaaclab3_newton.sh
+python3 scripts/manage_environment.py create --profile main
 source scripts/source_isaaclab3_newton_setup.sh
+python3 scripts/manage_environment.py check --profile main
 python scripts/check_training_manifest.py
 python -m holosoma.train_agent --help
 ```
