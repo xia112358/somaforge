@@ -64,7 +64,7 @@ def newton_subprocess_environment() -> dict[str, str]:
     """Select the same release for native workers and Kit subprocesses."""
     root, lab = project_root(), isaaclab_path()
     env = dict(os.environ)
-    paths = [root, root / "src/holosoma", root / "src/holosoma_retargeting"]
+    paths = [root, root / "src/holosoma"]
     paths.extend(root / "packages" / package for package in (
         "somaforge_core", "contact_solver", "generator", "motion_edit",
     ))

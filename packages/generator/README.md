@@ -1,6 +1,7 @@
 # Generator
 
-Predictor 和 Infiller 的独立实现，以及数据、训练、生成 rollout 工具。
+Predictor 的独立实现，以及数据、训练、递推评估工具。
+Infiller 模块已退役，历史数据和权重保留归档。
 WBT policy、环境、仿真训练与执行仍位于 `src/holosoma/`。
 
 入口导航：[环境配置](../../docs/environments.md)、
@@ -41,7 +42,7 @@ keep 位置监督从起点实际点集中选择离示范终点点集最近的起
 训练启动保存 `reference_contact_point_audit.json`；示范 keep 点集仍超出 4 cm 的样本
 显式屏蔽冲突的姿态模仿项并计数，保留角色标签、位置监督及接触／安全损失。
 连续未断触是 keep 示范标签的前提；
-仅凭两个端点不能验证生成运动中间未断触，仍须由 Infiller／实际轨迹检查。
+仅凭两个端点不能验证生成运动中间未断触，仍须由实际轨迹检查。
 
 2026-10-10 登记的固定比较基线为
 [`predictor.v1_latest.20261010`](../../baselines/predictor_v1_latest_20261010/README.md)。
@@ -71,12 +72,10 @@ v2 整体改版未被采用为基线；代码保留作显式实验，通过
 
 ```python
 from generator.structured_position_predictor import StructuredPositionPredictor
-from generator.neural_infiller import G1ConstrainedKeypointInfiller, G1ContactAwareQInfiller
-from generator.unified_interaction import InteractionQInfiller
 ```
 
 从仓库根目录 `source scripts/source_somaforge.sh` 后使用新入口，例如
-`python -m generator.train_q_infiller --help`。
+`python -m generator.train_full1000_position --help`。
 
 依赖方向为 `generator → contact_solver → somaforge_core`；共享 FK、预测结果结构、
 高度图坐标约定在 core。网络中的几何损失调用 contact_solver。
@@ -199,7 +198,7 @@ checkpoint 和递推报告保存 `complete_solid_endpoint_penetration_v1`、几�
 接触趋近／释放项保留 `log1p(r²)`，只在同一
 材料查询完全一致时去重；深穿透梯度不会随深度减小。固定身体区域的平均项加最大项
 聚合保持不变。`--penetration-penalty log1p` 保留原标量 loss 供 A/B 对照，但仍使用
-相同的完整实体验收。其他调用者默认保留历史 log1p，Infiller 不随此修改切换 loss。
+相同的完整实体验收。其他调用者默认保留历史 log1p。
 此前C1任务退出场在浅侧穿透中会放大错误方向，已
 从训练目标移除。这里反传的是标量loss的真实FK导数，不求QP或注入自定义修正梯度。
 这些改动不保证每次参数更新同时改善所有约束；完整学习和递推效果须通过新训练验证。

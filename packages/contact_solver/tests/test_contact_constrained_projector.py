@@ -6,7 +6,7 @@ from contact_solver.contact_constrained_projector import (
     NewtonContactProjector,
     apply_tangent_delta,
 )
-from generator.neural_infiller import CanonicalG1ForwardKinematics
+from somaforge_core.g1_kinematics import CanonicalG1ForwardKinematics
 
 
 def canonical_q(fk: CanonicalG1ForwardKinematics) -> torch.Tensor:

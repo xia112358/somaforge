@@ -14,13 +14,12 @@ baseline weights, contact labels or losses.
 | --- | --- | --- |
 | Assets, FK, contact semantics | `packages/somaforge_core` | `scripts/check_asset_manifest.py`, package tests |
 | Motion editing and augmentation | `packages/motion_edit` | `motion-edit generate-ref`, `motion-edit contact-editor`, package tests |
-| Predictor and Infiller | `packages/generator` | `python -m generator.train_full1000_position`, package tests |
+| Predictor | `packages/generator` | `python -m generator.train_full1000_position`, package tests |
 | Contact optimization | `packages/contact_solver` | package API; diagnostics under `research/`; package tests |
 | Newton WBT | `src/holosoma` | `train_agent.py`, `eval_agent.py`, `replay.py`, `run_sim.py`; `scripts/train_motion_edit_policy_finetune.py` for edited references |
 | PHP grouped experts | `scripts/train_php_wbt.py` | Explicit group training; use `--help` for current arguments |
 | Modular experts and distillation | Native WBT managers and `RoutedDistillPPO` | [Configuration and invocation guide](wbt-modular-experiments.md); dense/sparse/force experts and student |
 | Native contact-reference preparation | `scripts/record_wbt_contact_reference.py`, `scripts/combine_wbt_manifests.py` | Independent recording/manifest commands; manually supplied expert checkpoints |
-| Retargeting | `src/holosoma_retargeting` | main environment; canonical URDF model adapter |
 
 Shared direct Newton collision queries and canonical self-collision filters live
 in `somaforge_core.newton_collision` and `somaforge_core.newton_collision_filter`.
@@ -70,7 +69,6 @@ Historical diagnostic contact flags remain unverified; playback does not infer
 contact truth from geometry or force thresholds.
 
 There is no maintained standalone Viser, workbench server or force-retarget CLI.
-Retargeting does not expose `retargeter.visualize` or `retargeter.debug`.
 Simulation Kit rendering is controlled by AppLauncher.
 Remote simulation playback uses the same evaluator with `--visualizer kit` and
 `--livestream 1`; see the [modular playback guide](wbt-modular-experiments.md#evaluate-or-replay-separately)

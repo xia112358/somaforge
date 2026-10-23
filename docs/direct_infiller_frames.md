@@ -1,5 +1,9 @@
 # Infiller predicts total segment frames
 
+> Historical experiment: the Infiller implementation and entrypoints were retired
+> on 2026-10-23. Data, checkpoints and the original results below remain archived.
+
+
 This experiment moves segment timing into Infiller. The frozen v1 Predictor
 still supplies the next endpoint and contact intent. Infiller receives the two
 poses, contact contract, and current scene and predicts total frames, including

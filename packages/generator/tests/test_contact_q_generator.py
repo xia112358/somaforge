@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import torch
-from generator.contact_q_generator import ContactPlanQInfiller, SequentialContactQPredictor
+from generator.contact_q_generator import SequentialContactQPredictor
 
 
 def predictor(
@@ -129,63 +129,3 @@ def test_contact_conditioned_selector_and_realized_contact_contract() -> None:
         prediction.plan.target_rotation6d,
         prediction.keypoint_rotation6d[:, (1, 2, 3, 4, 5, 6)],
     )
-
-
-def test_q_infiller_has_immutable_q_boundaries() -> None:
-    torch.manual_seed(4)
-    planner = predictor()
-    batch, frames = 2, 9
-    start = planner.action_base_start_qpos[:batch].clone()
-    end = planner.action_base_end_qpos[:batch].clone()
-    contact = torch.tensor(((1, 1, 0, 0, 0, 0),) * batch, dtype=torch.float32)
-    scan = torch.zeros(batch, 340)
-    _, plan = planner.plan(start, contact, scan, torch.tensor((0, 1)))
-    model = ContactPlanQInfiller(
-        torch.zeros(340),
-        torch.ones(340),
-        width=32,
-        layers=1,
-        heads=4,
-        ffn_width=64,
-    )
-    phase = torch.linspace(0.0, 1.0, frames)[None].expand(batch, -1)
-    base = start[:, None].expand(-1, frames, -1).clone()
-    base[:, :, 0] = torch.linspace(0.0, 0.25, frames)
-    output = model(scan, phase, base, start, end, plan, contact)
-    torch.testing.assert_close(output.auxiliary_qpos[:, 0], start)
-    torch.testing.assert_close(output.auxiliary_qpos[:, -1], end)
-    expected_position, expected_rotation = model.fk(output.auxiliary_qpos)
-    torch.testing.assert_close(output.keypoint_position, expected_position)
-    torch.testing.assert_close(output.keypoint_rotation6d, expected_rotation)
-
-
-def test_q_infiller_residual_envelope_has_zero_endpoint_slope() -> None:
-    torch.manual_seed(8)
-    planner = predictor()
-    start = planner.action_base_start_qpos[:1].clone()
-    end = start.clone()
-    contact = torch.tensor(((1, 1, 0, 0, 0, 0),), dtype=torch.float32)
-    scan = torch.zeros(1, 340)
-    _, plan = planner.plan(start, contact, scan, torch.tensor((0,)))
-    model = ContactPlanQInfiller(
-        torch.zeros(340),
-        torch.ones(340),
-        width=32,
-        layers=1,
-        heads=4,
-        ffn_width=64,
-    )
-    with torch.no_grad():
-        for parameter in model.parameters():
-            parameter.zero_()
-        model.residual_head[-1].bias[0] = 1.0
-    phase = torch.tensor(((0.0, 0.01, 0.02, 0.5, 0.98, 0.99, 1.0),))
-    base = start[:, None].expand(-1, phase.shape[1], -1).clone()
-    output = model(scan, phase, base, start, end, plan, contact).auxiliary_qpos
-    residual_x = output[0, :, 0] - start[0, 0]
-    expected_envelope = 16.0 * phase[0].square() * (1.0 - phase[0]).square()
-    expected_x = expected_envelope * model.maximum_root_translation_m * torch.tanh(torch.tensor(1.0))
-    torch.testing.assert_close(residual_x, expected_x)
-    assert residual_x[1] < 0.3 * residual_x[2]
-    assert residual_x[-2] < 0.3 * residual_x[-3]
-    torch.testing.assert_close(residual_x[3], model.maximum_root_translation_m * torch.tanh(torch.tensor(1.0)))

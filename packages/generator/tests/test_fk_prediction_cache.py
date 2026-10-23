@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from generator.neural_infiller import CanonicalG1ForwardKinematics
+from somaforge_core.g1_kinematics import CanonicalG1ForwardKinematics
 
 
 def test_prediction_cache_survives_target_diagnostics_and_preserves_gradient():

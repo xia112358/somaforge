@@ -1,6 +1,6 @@
 # 目标接触位置的观测覆盖
 
-`packages/contact_observability/` 与其他研究包同级，集中处理目标接触位置是否出现在传感器观测中的审计和独立实验。已有 Predictor、Infiller 和仿真包继续提供机器人资产、观测几何等公共能力。
+`packages/contact_observability/` 与其他研究包同级，集中处理目标接触位置是否出现在传感器观测中的审计和独立实验。已有 Predictor 和仿真包继续提供机器人资产、观测几何等公共能力。
 
 代码和说明放在本目录；导入的历史记录、运行结果、图表和汇总统一放在 `tmp/contact_observability/`。
 

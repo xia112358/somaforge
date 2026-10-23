@@ -51,7 +51,7 @@ jobs:
       - name: Check cleanup scope
         shell: bash
         run: |
-          test -d src/holosoma_retargeting
+          ! test -d src/holosoma_retargeting
           ! test -f scripts/setup_isaacgym.sh
           ! test -f scripts/setup_mujoco.sh
           ! test -d docs/vendor/isaaclab3_newton_refs

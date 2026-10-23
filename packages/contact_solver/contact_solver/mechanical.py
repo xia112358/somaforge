@@ -1,10 +1,9 @@
-"""Canonical G1 FK and full-geometry collision gate for keypoint infillers."""
+"""Canonical G1 FK and full-geometry collision gate for motion trajectories."""
 
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Protocol
 
 import numpy as np
 from somaforge_core.newton_collision import DirectNewtonCollisionScene
@@ -29,15 +28,6 @@ class MechanicalConstraintError(RuntimeError):
     """Raised when an internally generated motion is not executable by G1."""
 
 
-class InternalFullBodyInfiller(Protocol):
-    """Private backend; its full-body output never becomes the public command."""
-
-    def predict_full_body(
-        self,
-        start: SparseKeyframe,
-        end: SparseKeyframe,
-        terrain_condition: NDArray[np.float32],
-    ) -> tuple[FullBodyTrajectory, NDArray[np.bool_]]: ...
 
 
 def _rotation6d_wxyz(quaternion: np.ndarray) -> np.ndarray:
@@ -222,44 +212,3 @@ class G1MechanicalProjector:
             self_body_pairs=tuple(self_pairs),
         )
         return ConstrainedKeypointResult(keypoints, audit)
-
-
-class MechanicallyConstrainedInfiller:
-    """Public keypoint-only infiller with a mandatory full-body collision gate."""
-
-    def __init__(
-        self,
-        backend: InternalFullBodyInfiller,
-        projector: G1MechanicalProjector,
-        *,
-        maximum_penetration_m: float = 0.0,
-        maximum_planned_contact_penetration_m: float = 0.005,
-    ) -> None:
-        self.backend = backend
-        self.projector = projector
-        self.maximum_penetration_m = float(maximum_penetration_m)
-        self.maximum_planned_contact_penetration_m = float(maximum_planned_contact_penetration_m)
-
-    def connect(
-        self,
-        start: SparseKeyframe,
-        end: SparseKeyframe,
-        terrain_condition: NDArray[np.float32],
-    ) -> KeypointTrajectory:
-        full_body, contact = self.backend.predict_full_body(start, end, terrain_condition)
-        result = self.projector.project(full_body, contact)
-        maximum = max(
-            result.audit.maximum_environment_penetration_m,
-            result.audit.maximum_self_penetration_m,
-        )
-        if maximum > self.maximum_penetration_m:
-            raise MechanicalConstraintError(
-                f"full-body collision penetration {maximum:.6f} m exceeds {self.maximum_penetration_m:.6f} m"
-            )
-        if result.audit.maximum_planned_contact_penetration_m > self.maximum_planned_contact_penetration_m:
-            raise MechanicalConstraintError(
-                "planned-contact penetration "
-                f"{result.audit.maximum_planned_contact_penetration_m:.6f} m exceeds "
-                f"{self.maximum_planned_contact_penetration_m:.6f} m"
-            )
-        return result.trajectory

@@ -127,7 +127,7 @@ class TeacherDataset:
             path = Path(self._rows[trajectory_id]["motion_file"])
             raise ValueError(
                 f"{path} is a sparse-only teacher and cannot supervise a mechanically "
-                f"constrained infiller; missing {missing}"
+                f"constrained trajectory; missing {missing}"
             )
         boundary = trajectory["boundary_frames"].astype(np.int64)
         first, last = int(boundary[event_index]), int(boundary[event_index + 1])

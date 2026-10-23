@@ -4,7 +4,7 @@ from torch import Tensor
 
 
 @dataclass(frozen=True)
-class InfillerOutput:
+class TrajectoryPrediction:
     """One forward result: public command and private constraint state."""
 
     keypoint_position: Tensor
@@ -46,4 +46,3 @@ class UnifiedInteractionPrediction:
 
     def swing_from(self, current_contact: Tensor) -> Tensor:
         return (current_contact <= 0.5) & ~self.active_contact
-

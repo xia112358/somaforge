@@ -2,7 +2,7 @@
 
 All maintained components use `main` at
 `runtime/environments/conda/somaforge`: WBT, distillation, Motion Edit,
-Predictor, Infiller, native contact workers and source retargeting.
+Predictor and native contact workers.
 [Installation and dependency ownership](python-environments.md) are defined by
 `configs/environments/profiles.json` and the main lock.
 
@@ -27,9 +27,8 @@ python scripts/train_php_wbt.py --help
 packages/motion_edit/motion-edit --help
 ```
 
-`setup_all.sh`, `setup_isaaclab3_newton.sh`, `setup_motion_edit_ik.sh` and
-`setup_retargeting.sh` are compatibility entrypoints to this same installer.
-Both activation scripts use main. Bare `source_somaforge.sh` sets workspace
+`setup_all.sh`, `setup_isaaclab3_newton.sh` and `setup_motion_edit_ik.sh`
+are compatibility entrypoints to this same installer. The activation script uses main. Bare `source_somaforge.sh` sets workspace
 paths only. Native worker launchers resolve the managed main interpreter and
 its pinned Lab snapshot without inheriting the retired overlays.
 
@@ -37,8 +36,8 @@ Use `--visualizer kit` for a window. With no visualizer argument the launch is
 headless; explicit `--headless` takes precedence. Official AppLauncher arguments
 such as `--device` and `--enable_cameras` are parsed before project configuration.
 Motion Edit optimization uses Torch float32 and native Newton FK; sparse solving
-and COAL geometry remain on CPU. Retargeting builds its kinematic model from the
-canonical URDF through `somaforge_core.robot_assets`.
+and COAL geometry remain on CPU. The standalone Retargeting package and
+its bundled models/examples were retired on 2026-10-23; current input data is supplied separately.
 
 ## Checkpoints and rotations
 
@@ -88,9 +87,8 @@ The Miniforge base installation supplies the environment manager and is not a
 second SomaForge runtime.
 
 Container builds use `docker/Dockerfile` for all maintained image names.
-The old Isaac Sim and retargeting Dockerfile paths retain matching compatibility
-recipes and also install only main; they do not create a setup or retargeting
-environment. The container recipe and build-command dry run were checked, but
+The old Isaac Sim Dockerfile path retains a matching compatibility recipe
+and also installs only main; it does not create a separate environment. The container recipe and build-command dry run were checked, but
 the images were not built during this consolidation. Local execution is the
 acceptance scope; Docker is not a required validation target.
 
@@ -100,9 +98,9 @@ acceptance scope; Docker is not a required validation target.
 | CPU regression | After legacy cleanup, 2,186 tests and three subtests passed with five skipped; 79 focused tests also passed on October 23 |
 | WBT and distillation | Three expert short updates; student optimizer updates and fresh-process resume changed actor and critic parameters |
 | Motion Edit | Original six-task batch reproduced and compared with Torch/Newton; UI uses main |
-| Retargeting | Three-frame solver run; canonical MuJoCo FK matched Torch FK on nonzero poses |
+| Historical Retargeting (retired) | Three-frame solver run; canonical MuJoCo FK matched Torch FK on nonzero poses |
 | Predictor | Fresh current-Newton labels/cache; one optimizer update and single-step diagnostic evaluation completed |
-| Infiller | Full 7,271-segment corpus rebuilt; small-corpus update (eight optimizer states) and evaluation completed; all parameters finite, frozen Predictor unchanged with no gradients |
+| Historical Infiller (retired) | Full 7,271-segment corpus rebuilt; small-corpus update (eight optimizer states) and evaluation completed; all parameters finite, frozen Predictor unchanged with no gradients |
 | Kit | Final-source windowed evaluation loaded the resumed student checkpoint, completed four steps with one environment and exited normally; repeated successfully after legacy environment cleanup |
 
 These are execution and compatibility checks. The one-step Predictor was not
@@ -141,33 +139,9 @@ new `--worker-output` under project `tmp/`. The existing build refuses to
 overwrite an output directory. Its completed invocation and source-integrity
 audit are retained with the local validation evidence.
 
-Infiller defaults use the same runtime input record and
-`runtime/current/motions/infiller_main_20261022/corpus.pt`, registered as
-`dataset.infiller.main_20261022`. The full build completed on October 23 with
-3,105 demonstration segments, 2,660 accepted isolated predictions out of 3,105
-attempts, and 1,506 accepted recursive predictions out of 1,651 attempts. Failed
-endpoints remain in the audit and are excluded from predicted training records.
-The 7,271 records retain the original height split: 4,111 train, 1,501 validation
-and 1,659 test. This is full corpus materialization; the completed short training
-check used the separately capped diagnostic corpus.
-
-Build the corpus once, then explicitly select training with a fresh output
-directory (skip the build command when restoring the registered corpus):
-
-```bash
-python3 scripts/manage_environment.py run --profile main -- \
-  python -m generator.train_frozen_predictor_infiller --mode build \
-  --report tmp/infiller_build_new --device cuda:0
-python3 scripts/manage_environment.py run --profile main -- \
-  python -m generator.train_frozen_predictor_infiller --mode train \
-  --output runtime/current/models/generator/infiller_new_run \
-  --report tmp/infiller_train_new --device cuda:0
-```
-
-The default `--mode all` builds before training and refuses an existing corpus.
-A corpus from a different scene fingerprint must be rebuilt; changing its
-metadata alone is not a migration. Sample-limited `--smoke` builds are diagnostic
-artifacts, not evidence of complete dataset coverage.
+Infiller was retired on 2026-10-23. Its corpus, checkpoints and immutable
+release records remain archived. The former build and validation evidence is
+preserved in [the historical record](history/infiller-main-validation-20261023.md).
 
 ## Earlier migration validation (2026-10-20)
 

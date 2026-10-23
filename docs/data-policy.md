@@ -1,8 +1,7 @@
 # Data policy
 
 This repository integrates Newton whole-body tracking, expert/student
-distillation, contact-aware motion editing, Predictor/Infiller generation and
-retargeting. Keep the Git tree small enough for practical review and checkout.
+distillation, contact-aware motion editing and Predictor generation. Keep the Git tree small enough for practical review and checkout.
 
 ## Allowed in git
 
@@ -85,10 +84,11 @@ contact truth. A recorded executed trajectory must remain identified as executio
 data; do not silently replace clean reference kinematics with rollout tracking
 error. See the [modular recording guide](wbt-modular-experiments.md#prepare-contact-reference-data-independently).
 
-## Retargeting exception
+## Retired components
 
-`src/holosoma_retargeting/` uses an independent environment and has separate data
-requirements. WBT maintenance does not authorize moving or deleting retargeting
-data/scripts. Any cleanup requires an itemized confirmation and the system
-recycle bin, as required by `AGENTS.md`; runtime bootstrap must preserve existing
-directories and links.
+Infiller and the standalone Retargeting package were retired by explicit user
+request on 2026-10-23. Retargeting's bundled models/examples are not the source
+of current runtime inputs. Existing runtime datasets, checkpoints and historical
+provenance remain protected; clearing a source package does not authorize
+clearing those independent inputs. All filesystem removals require itemized
+confirmation and the system recycle bin.

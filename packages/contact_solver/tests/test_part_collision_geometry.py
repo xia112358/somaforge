@@ -3,7 +3,7 @@ import torch
 from contact_solver.contact_constrained_projector import CanonicalContactCollisionGeometry
 from somaforge_core.motion_contracts import BODY_NAMES
 from generator.full1000_position_predictor import Full1000PositionPredictor
-from generator.neural_infiller import CanonicalG1ForwardKinematics
+from somaforge_core.g1_kinematics import CanonicalG1ForwardKinematics
 from generator.next_interaction_heightmap import HEIGHTMAP_ROWS, HEIGHTMAP_COLS
 from generator.next_interaction_heightmap_v2 import _root_yaw_basis
 from contact_solver.part_collision_geometry import PartCollisionGeometry

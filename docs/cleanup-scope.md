@@ -4,9 +4,10 @@ Current scope and verification commands are maintained in
 [repository-maintenance.md](repository-maintenance.md).
 
 The earlier WBT-only cleanup has completed. The workspace now includes Motion
-Edit, Generator, Contact Solver, shared core and WBT. Retargeting tools and
-third-party assets remain dependencies/reference material; they are not unused
-merely because they are outside the main Python packages.
+Edit, Generator, Contact Solver, shared core and WBT.
+Infiller and the standalone Retargeting package have been retired by explicit
+user request. Current runtime data and independent third-party reference material
+remain protected; module retirement does not authorize clearing other inputs.
 
 All cleanup preserves existing source changes, baseline snapshots and referenced
 runtime artifacts. File removals require an enumerated approval and use the

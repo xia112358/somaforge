@@ -17,11 +17,11 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from generator.train_frozen_predictor_infiller import (NativeQueries,Workers,evidence,dump,cpu_tree,
+from generator.predictor_runtime import (NativeQueries,Workers,evidence,dump,cpu_tree,
     audit_prediction,configured_acceptance)
 from generator.predictor_architecture import load_position_predictor
 from generator.full1000_training_variants import event_consistent_roles
-from generator.recursive_refinement import role_consistency_loss
+from generator.role_validity import role_consistency_loss
 from generator.role_validity import mask_role_logits
 from generator.depth_observation import predictor_observation
 from contact_solver.device_contact_objective import acceptance

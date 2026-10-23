@@ -29,7 +29,7 @@ from packaging.utils import canonicalize_name, parse_wheel_filename
 ROOT = Path(__file__).resolve().parents[1]
 LAB_COMMIT = "e3f7d9ff1f5d7f8280de3ece9000b7117f66bcf4"
 LOCAL = ("packages/somaforge_core", "packages/contact_solver", "packages/generator",
-         "packages/motion_edit", "src/holosoma", "src/holosoma_retargeting")
+         "packages/motion_edit", "src/holosoma")
 
 
 def official_packages(lock):

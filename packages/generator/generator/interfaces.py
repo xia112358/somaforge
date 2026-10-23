@@ -1,4 +1,4 @@
-"""Strict two-stage runtime interfaces."""
+"""Runtime interface for next-keyframe prediction."""
 
 from __future__ import annotations
 
@@ -14,14 +14,3 @@ class KeyframeSelector(Protocol):
     """Predict exactly one complete next keyframe from the realized boundary."""
 
     def predict(self, current: SparseKeyframe, terrain_scan: NDArray[np.float32]) -> SparseKeyframe: ...
-
-
-class TrajectoryInfiller(Protocol):
-    """Connect two fixed keyframes without selecting or altering either endpoint."""
-
-    def connect(
-        self,
-        start: SparseKeyframe,
-        end: SparseKeyframe,
-        terrain_scan: NDArray[np.float32],
-    ) -> tuple[NDArray[np.float32], NDArray[np.float32], NDArray[np.bool_]]: ...

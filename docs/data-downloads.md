@@ -70,6 +70,10 @@ payload, not peak installation disk usage or optional retained download caches.
 
 ## Components and retained meaning
 
+Infiller code and training entrypoints were retired on 2026-10-23. Infiller
+components in this immutable release are historical data archives. Downloading
+them does not restore a supported Infiller module.
+
 | Component | Inputs and purpose |
 | --- | --- |
 | `php-wbt-296-data` | 296 canonical G1 motions, all corresponding original PHP motion/terrain inputs, generated terrains, manifests and upstream attribution. No observed contact/force labels. |

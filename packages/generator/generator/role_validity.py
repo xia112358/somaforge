@@ -169,3 +169,16 @@ def subset_observed(observed, indices):
     result['pairs'] = {k: v[chosen] for k, v in pair.items()}
     result['pairs']['sample'] = lookup[pair['sample'][chosen]]
     return result
+
+
+def role_consistency_loss(logits, actual_contact):
+    """A keep role requires current actual contact; other roles remain free.
+
+    This is learning from Newton observations, not an inference-time mask or
+    a claim that an intended future contact has been realized.
+    """
+    if logits.shape != (*actual_contact.shape, 4) or actual_contact.dtype != torch.bool:
+        raise ValueError('Expected role logits [...,6,4] and actual boolean contact')
+    valid = logits.clone()
+    valid[..., 2] = valid[..., 2].masked_fill(~actual_contact, -torch.inf)
+    return (torch.logsumexp(logits, -1)-torch.logsumexp(valid, -1)).mean(-1)

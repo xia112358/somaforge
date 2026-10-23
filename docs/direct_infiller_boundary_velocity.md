@@ -1,5 +1,9 @@
 # Time-conditioned Infiller with generated boundary-velocity history
 
+> Historical experiment: the Infiller implementation and entrypoints were retired
+> on 2026-10-23. Data, checkpoints and the original results below remain archived.
+
+
 This experiment follows independent timing training. The frozen time head
 already predicts demonstration frame counts accurately (0.149 test-frame MAE),
 but the prior decoder forces zero analytical endpoint velocities. At the

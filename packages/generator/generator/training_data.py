@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from generator.conditioned_pose_predictor import ConditionedHeightmapPosePredictor
 from contact_solver.heightmap_contact_projector import observed_surface_indices
-from generator.neural_infiller import _matrix_from_rotation6d
+from somaforge_core.g1_kinematics import _matrix_from_rotation6d
 from generator.next_interaction_heightmap_v2 import render_root_yaw_box_heightmaps
 
 def split_name(height: float) -> str:

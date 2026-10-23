@@ -33,7 +33,7 @@ Bootstrap creates the ignored runtime directories and logical data/log/tmp links
 For external data storage, use `--data-root /absolute/path/to/somaforge-data`
 on the first invocation. Existing directories and links are preserved; conflicts
 are reported instead of replaced. Install Miniforge first. Setup installs Python
-3.12 and the locked dependencies, including retargeting, into
+3.12 and the locked dependencies into
 `runtime/environments/conda/somaforge`, and stages the pinned Isaac Lab sources.
 Use `--conda /path/to/miniforge3/bin/conda` and optionally
 `--isaaclab /path/to/pinned/IsaacLab` on `manage_environment.py create --profile main`.
@@ -83,8 +83,8 @@ Teacher-spec paths can be relative to
 their JSON file. Both motion command and terrain configuration must receive the
 same chosen manifest. Missing required inputs fail explicitly.
 
-The current main-environment Predictor/Infiller defaults use the rematerialized
-`predictor_main_20261022` dataset and its derived Infiller corpus. These local
+The current main-environment Predictor defaults use the rematerialized
+`predictor_main_20261022` dataset. Historical Infiller corpora remain archived. These local
 outputs are not included in the existing published historical data release.
 Restore or explicitly rebuild them using the [main input migration
 instructions](environments.md#generator-inputs-for-main); downloading an old
@@ -95,11 +95,11 @@ For the independent expert, contact recording and student commands, see
 new native DistillPPO student use different checkpoint/network schemas; installing
 the runtime does not convert between them.
 
-## Motion Edit IK and retargeting
+## Motion Edit IK
 
 Motion Edit uses Torch float32 with native Newton FK in the unified `main`
-environment. Source-motion retargeting is included in the same environment.
-No separate IK or retargeting environment is needed. Use the managed setup in
+environment. The standalone Retargeting package is retired.
+No separate IK environment is needed. Use the managed setup in
 [Python environment setup](python-environments.md):
 
 ```bash

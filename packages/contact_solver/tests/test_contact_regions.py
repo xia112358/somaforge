@@ -3,7 +3,7 @@ import torch
 
 from contact_solver.contact_regions import ContactRegions, unified_region_objective
 from generator.full1000_position_predictor import Full1000PositionPredictor
-from generator.neural_infiller import CanonicalG1ForwardKinematics
+from somaforge_core.g1_kinematics import CanonicalG1ForwardKinematics
 from generator.next_interaction_heightmap import HEIGHTMAP_ROWS, HEIGHTMAP_COLS
 from contact_solver.device_contact_objective import DeviceWitnessRows as NativeWitnessRows
 from contact_solver.solid_witness_loss import SolidWitnessRows

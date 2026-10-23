@@ -1,7 +1,6 @@
 {
   "images": {
     "holosoma": "holosoma:2025_1211_0109",
-    "hs-retargeting": "holosoma-retargeting:latest",
     "hs-isaacsim": "holosoma-isaacsim:latest"
   }
 }

@@ -36,21 +36,6 @@
       }
     },
     {
-      "id": "terrain.climb.scenes",
-      "kind": "terrain_scene",
-      "status": "verified",
-      "files": {
-        "root": "src/holosoma_retargeting/holosoma_retargeting/demo_data/climb"
-      },
-      "metadata": {
-        "formats": [
-          "urdf",
-          "xml",
-          "obj"
-        ]
-      }
-    },
-    {
       "id": "motion.current",
       "kind": "motion",
       "status": "verified",
@@ -227,36 +212,6 @@
         "source_motions_modified": false,
         "original_baseline": "predictor.v1_latest.20261010",
         "purpose": "Same frozen v1 weights; explicitly rebuilt current Newton observations, events and caches. Historical results remain attached to original data."
-      }
-    },
-    {
-      "id": "dataset.infiller.main_20261022",
-      "kind": "dataset",
-      "status": "current_runtime_input",
-      "files": {
-        "corpus": "runtime/current/motions/infiller_main_20261022/corpus.pt"
-      },
-      "sha256": {
-        "corpus": "6888571cce941d8c7d6bfbf76af6d841d7d812b593d30937421c6f071c6a2097"
-      },
-      "metadata": {
-        "robot_asset_id": "robot.g1.spherehand",
-        "runtime_inputs": "configs/generator/main_runtime.json",
-        "source_dataset": "dataset.climb00.main_20261022",
-        "records": 7271,
-        "source_motions": 207,
-        "counts": {
-          "test/demonstration": 855,
-          "validation/demonstration": 780,
-          "train/demonstration": 1470,
-          "test/predictor_accepted": 804,
-          "validation/predictor_accepted": 721,
-          "train/predictor_accepted": 2641
-        },
-        "label_policy": "primary_horizontal_upward_faces_v1",
-        "sampling": "fixed_q_forward_no_integration",
-        "dynamic_support": "unknown; no executed loads",
-        "smoke": false
       }
     }
   ]

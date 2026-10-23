@@ -1,4 +1,4 @@
-"""Data contracts shared by the selector, infiller, and closed-loop runner."""
+"""Data contracts shared by the selector and closed-loop runner."""
 
 from __future__ import annotations
 

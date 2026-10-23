@@ -1,5 +1,9 @@
 # Independently supervised timing, time-conditioned trajectories
 
+> Historical experiment: the Infiller implementation and entrypoints were retired
+> on 2026-10-23. Data, checkpoints and the original results below remain archived.
+
+
 This experiment addresses systematic lengthening in the first learned-frame
 Infiller. On the same 780 validation demonstrations, its independent frame
 warmup had 0.518 frames MAE, rising to 8.576 after joint time/trajectory training.

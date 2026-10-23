@@ -1,4 +1,4 @@
-"""Internal full-body representation for mechanically constrained infilling."""
+"""Internal full-body representation for mechanically constrained trajectories."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class FullBodyTrajectory:
         quaternion_norm = np.linalg.norm(self.qpos[:, 3:7], axis=-1)
         if not np.allclose(quaternion_norm, 1.0, atol=1.0e-4):
             raise ValueError("root quaternion must be normalized WXYZ")
-        decode_robot_asset_json(self.robot_asset_json, context="full-body infiller trajectory")
+        decode_robot_asset_json(self.robot_asset_json, context="full-body trajectory")
 
 
 @dataclass(frozen=True)

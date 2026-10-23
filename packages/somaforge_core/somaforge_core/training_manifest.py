@@ -1,4 +1,4 @@
-"""Shared manifest contract for Motion Edit, Predictor/Infiller, and WBT training."""
+"""Shared manifest contract for Motion Edit, Predictor, and WBT training."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 TRAINING_MANIFEST_SCHEMA = "somaforge_training_pipeline_v2"
-STAGES = ("wbt_baseline", "motion_edit", "predictor", "infiller", "holosoma_wbt")
+STAGES = ("wbt_baseline", "motion_edit", "predictor", "holosoma_wbt")
 
 
 def default_training_manifest_path() -> Path:

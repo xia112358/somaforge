@@ -248,7 +248,7 @@ def _local_box(plan: dict, origin: np.ndarray, world_to_local: np.ndarray) -> tu
 
 
 def condition_from_privileged_geometry(geometry: np.ndarray, duration: np.ndarray) -> tuple[np.ndarray, ...]:
-    """Convert the 30D exact terrain contract to the infiller's 14D OBB contract."""
+    """Convert the 30D exact terrain contract to the 14D OBB trajectory contract."""
 
     origin = geometry[:, :3]
     basis = geometry[:, 3:12].reshape(-1, 3, 3)

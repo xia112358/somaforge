@@ -151,3 +151,19 @@ def load_published_json(path: str | os.PathLike[str]) -> Any:
     rules = _load_rules()
     with _resolve(path, None, rules).open(encoding="utf-8") as stream:
         return _relocate_values(json.load(stream), rules)
+
+
+def load_published_tensor_input(path):
+    """Relocate input metadata without traversing model/optimizer/record tensors."""
+    import torch
+    loaded = torch.load(resolve_published_path(path), map_location='cpu', weights_only=False)
+    result = dict(loaded)
+    for key in ('baseline', 'predictor', 'corpus', 'parent_corpus', 'material_source_corpus',
+                'source_audit', 'refinement', 'initialization', 'metadata', 'extension', 'config'):
+        if key in loaded:
+            result[key] = relocate_published_values(loaded[key])
+    if isinstance(result.get('config'), dict):
+        # torch-saved dataclass configurations can contain actual Path objects.
+        result['config'] = {key: resolve_published_path(value) if isinstance(value, Path) else value
+                            for key, value in result['config'].items()}
+    return result

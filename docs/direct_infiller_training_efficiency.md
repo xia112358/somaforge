@@ -1,5 +1,9 @@
 # Infiller training efficiency
 
+> Historical experiment: the Infiller implementation and entrypoints were retired
+> on 2026-10-23. Data, checkpoints and the original results below remain archived.
+
+
 The first boundary-velocity experiment was stopped by explicit user request
 during initial validation, before trajectory optimization. Its logs and selected
 timing artifact remain in place; pipeline status is `stopped_by_user`.

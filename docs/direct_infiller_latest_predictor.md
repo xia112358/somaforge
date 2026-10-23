@@ -1,5 +1,9 @@
 # Frozen latest Predictor → Direct Infiller experiment
 
+> Historical experiment: the Infiller implementation and entrypoints were retired
+> on 2026-10-23. Data, checkpoints and the original results below remain archived.
+
+
 This experiment freezes the checkpoint pinned by
 `baselines/predictor_v1_latest_20261010/baseline.json`. It trains a new Direct
 Infiller with the historical 182 → 256 → 256 → 256 → 36 tanh network, cubic

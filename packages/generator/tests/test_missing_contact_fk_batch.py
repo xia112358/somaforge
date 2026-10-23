@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import torch
 
-from generator.neural_infiller import CanonicalG1ForwardKinematics
+from somaforge_core.g1_kinematics import CanonicalG1ForwardKinematics
 from generator.conditioned_pose_predictor import _missing_intent_surface_distance
 
 

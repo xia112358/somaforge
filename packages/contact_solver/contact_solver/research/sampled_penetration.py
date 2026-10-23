@@ -1,6 +1,6 @@
 """Preserved experiment helpers for regression tests; no training CLI."""
 import torch
-from generator.neural_infiller import full_geometry_box_ground_penetration
+from contact_solver.collision_geometry import full_geometry_box_ground_penetration
 
 def penetration(points, parts, contact, *, box_center, box_rotation, box_half_extents, ground_height, margin_m=0.0, planned_contact_tolerance_m=0.0):
     if margin_m != 0.0 or planned_contact_tolerance_m != 0.0:

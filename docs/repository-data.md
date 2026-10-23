@@ -61,7 +61,7 @@ These are small enough and useful enough to keep in the repository:
   referenced by the committed manifests.
 - `scripts/*motion_matched*.py`, `scripts/*contact_force*.py`: reproducible
   manifest and contact-force helpers.
-- `packages/generator/`: Predictor and Infiller implementations.
+- `packages/generator/`: Predictor implementations.
 - `packages/contact_solver/`: contact optimization and research.
 - `packages/climb00_pipeline/`: import/CLI aliases for historical reproduction only.
 - `baselines/current.json`: current Predictor baseline pointer.
@@ -87,7 +87,7 @@ These must remain local, ignored, or stored externally:
 - `*.npz`, `*.pt`, `*.pth`, `*.ckpt`, `*.onnx`, `*.pdf`: generated arrays,
   checkpoints, model exports, and large copied documents.
 
-## Predictor/Infiller input manifests
+## Predictor input manifests
 
 The canonical 29-motion source manifest is generated locally at:
 
@@ -96,13 +96,13 @@ runtime/current/manifests/omniretarget_baseline_29.json
 ```
 
 Each motion entry binds the source trajectory, Newton-canonicalized trajectory,
-terrain ID, source hash, motion hash, and kinematics provenance. Predictor/Infiller and Motion
+terrain ID, source hash, motion hash, and kinematics provenance. Predictor and Motion
 Edit derive their own manifests from this source rather than maintaining a
 second machine-specific data index.
 
 - raw retarget source: `runtime/current/omniretarget/robot-terrain/`
 - canonical no-force motion: `runtime/current/motions/`
-- derived Motion Edit and Predictor/Infiller data: paths declared by their stage manifests
+- derived Motion Edit and Predictor data: paths declared by their stage manifests
 - terrain assets: entries resolved through `configs/assets_manifest.json`
 
 ## Expert and student inputs

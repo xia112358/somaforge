@@ -14,7 +14,7 @@ have separate preparation or restoration requirements.
 | Find package ownership, entrypoints and verification scope | [Repository maintenance](repository-maintenance.md) |
 | Configure dense, sparse or force experts and distillation independently | [Modular WBT experiments](wbt-modular-experiments.md) |
 | Edit contacts, generate references or review trajectories in the browser | [Motion Edit](../packages/motion_edit/README.md) |
-| Train or evaluate Predictor and Infiller | [Generator](../packages/generator/README.md) |
+| Train or evaluate Predictor | [Generator](../packages/generator/README.md) |
 | Use contact objectives, collision gradients or projection | [Contact Solver](../packages/contact_solver/README.md) |
 | Use shared assets, FK and evidence contracts | [SomaForge Core](../packages/somaforge_core/README.md) |
 | Diagnose whether contact targets are visible | [Contact observability](../packages/contact_observability/README.md) |

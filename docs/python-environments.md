@@ -2,8 +2,7 @@
 
 SomaForge uses one managed Miniforge + pip environment:
 `runtime/environments/conda/somaforge` (`main`). It includes WBT, distillation,
-Predictor/Infiller, Motion Edit, native Newton queries and source-motion
-retargeting. Motion Edit's service and float32 Torch/Newton IK workers use this
+Predictor, Motion Edit and native Newton queries. Motion Edit's service and float32 Torch/Newton IK workers use this
 same environment. The separate PyRoki/JAX IK profile and unused standalone
 retarget profile have been retired.
 
@@ -107,6 +106,6 @@ Torch/Newton after reproducing the original six-task batch and comparing its
 outputs with the frozen JAX baseline. Test results and comparison artifacts are
 kept under project `tmp/`. The subsequent [component verification and current
 Generator inputs](environments.md#main-consolidation-validation-2026-10-2223)
-describe actual training updates, resume checks, retargeting and native queries.
+describe actual training updates, resume checks, historical retargeting and native queries.
 These checks do not certify policy quality or convergence. Training restarts
 remain explicit tasks.

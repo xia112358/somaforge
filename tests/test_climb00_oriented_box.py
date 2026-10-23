@@ -10,10 +10,7 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 
 from generator.training_data import box_obbs  # noqa: E402
-from generator.neural_infiller import (  # noqa: E402
-    full_geometry_box_ground_penetration,
-    full_geometry_box_penetration,
-)
+from contact_solver.collision_geometry import full_geometry_box_ground_penetration, full_geometry_box_penetration
 from generator.unified_interaction import rollout_ground_collision_loss  # noqa: E402
 
 

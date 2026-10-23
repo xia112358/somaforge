@@ -75,29 +75,9 @@
       "archived_baselines": "baselines/archives.json",
       "runtime_inputs": "configs/generator/main_runtime.json"
     },
-    "infiller": {
-      "inputs": [
-        "Newton-validated canonical trajectories",
-        "current and next endpoint poses",
-        "contact plan",
-        "robot.g1.spherehand"
-      ],
-      "outputs": [
-        "endpoint-conditioned trajectory infiller checkpoint",
-        "generated kinematic reference"
-      ],
-      "required_fields": [
-        "robot_asset_json",
-        "joint_names",
-        "endpoint and contact-label provenance"
-      ],
-      "storage": "runtime/current/models",
-      "runtime_inputs": "configs/generator/main_runtime.json",
-      "dataset_asset_id": "dataset.infiller.main_20261022"
-    },
     "holosoma_wbt": {
       "inputs": [
-        "Motion Edit or Predictor/Infiller reference validated by Newton",
+        "Motion Edit or Predictor-derived reference validated by Newton",
         "Newton 8-part force manifest",
         "robot.g1.spherehand",
         "terrain.*"

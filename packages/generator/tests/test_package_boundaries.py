@@ -18,7 +18,7 @@ def legacy_import_path(monkeypatch):
 def test_legacy_module_identity_and_monkeypatch(monkeypatch):
     for legacy, canonical in (
         ('full1000_position_predictor', 'generator.full1000_position_predictor'),
-        ('neural_infiller', 'generator.neural_infiller'),
+        ('contact_q_generator', 'generator.contact_q_generator'),
         ('newton_witness_loss', 'contact_solver.newton_witness_loss'),
         ('contracts', 'somaforge_core.motion_contracts'),
     ):
@@ -73,10 +73,9 @@ def test_maintained_package_dependencies_have_no_cycle():
 
 @pytest.mark.usefixtures('legacy_import_path')
 def test_shared_types_keep_identity():
-    from climb00_pipeline.neural_infiller import InfillerOutput as old_output
-    from generator.neural_infiller import InfillerOutput
-    from somaforge_core.prediction_contracts import InfillerOutput as shared_output
+    from climb00_pipeline import TrajectoryPrediction as old_output
+    from somaforge_core.prediction_contracts import TrajectoryPrediction as shared_output
     from climb00_pipeline.unified_interaction import project_interaction_q_trajectory as old_project
     from contact_solver.trajectory_projection import project_interaction_q_trajectory
-    assert old_output is InfillerOutput is shared_output
+    assert old_output is shared_output
     assert old_project is project_interaction_q_trajectory

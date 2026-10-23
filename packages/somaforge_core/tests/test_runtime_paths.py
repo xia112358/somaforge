@@ -33,7 +33,7 @@ def test_worker_paths_include_only_maintained_packages_and_sorted_lab_modules(wo
     env = runtime_paths.newton_subprocess_environment()
     paths = env['PYTHONPATH'].split(os.pathsep)
     assert paths == list(map(str, [
-        root, root / 'src/holosoma', root / 'src/holosoma_retargeting',
+        root, root / 'src/holosoma',
         root / 'packages/somaforge_core', root / 'packages/contact_solver',
         root / 'packages/generator', root / 'packages/motion_edit',
         lab / 'source/isaaclab', lab / 'source/isaaclab_tasks',

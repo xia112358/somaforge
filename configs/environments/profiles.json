@@ -2,7 +2,7 @@
   "schema": "somaforge_environment_profiles_v1",
   "profiles": {
     "main": {
-      "description": "Unified SomaForge runtime: WBT, distillation, Motion Edit, Predictor, Infiller and retargeting",
+      "description": "Unified SomaForge runtime: WBT, distillation, Motion Edit and Predictor",
       "python": "3.12",
       "prefix": "runtime/environments/conda/somaforge",
       "requirements": "configs/environments/main-linux-x86_64.lock.txt",
@@ -11,8 +11,7 @@
         "packages/contact_solver",
         "packages/generator",
         "packages/motion_edit",
-        "src/holosoma",
-        "src/holosoma_retargeting"
+        "src/holosoma"
       ],
       "isaaclab_commit": "e3f7d9ff1f5d7f8280de3ece9000b7117f66bcf4",
       "isaaclab_packages": [
@@ -79,7 +78,7 @@
           "version": "6.2.0.0",
           "requirement": "numpy==2.3.1",
           "installed": "2.3.5",
-          "reason": "Official GA permits NumPy >=2; retain project retargeting-compatible 2.3.5."
+          "reason": "Official GA permits NumPy >=2; retain the validated project pin 2.3.5."
         },
         {
           "package": "isaacsim-kernel",

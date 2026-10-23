@@ -6,7 +6,7 @@ from generator.next_interaction_surface import objective, SCHEMA
 from somaforge_core.newton_contact_query import query_contacts
 from somaforge_core.contact_face_selection import select_contact_pairs
 from generator.research.archived_experiments.paired_pose_transform import transform_q
-from generator.research.archived_experiments.full_shared_contact_model import COLLISION_TOLERANCE_M
+from generator.research.archived_experiments.contact_geometry import COLLISION_TOLERANCE_M
 GATE_SCHEMA = 'replay_endpoint_feasibility_v1'
 HOLD_DRIFT_BUDGET_M = 0.005
 JOINT_NUMERICAL_TOLERANCE_RAD = 1e-06

@@ -3,11 +3,11 @@ import numpy as np
 import torch
 from somaforge_core.newton_contact_query import query_contacts
 from somaforge_core.contact_face_selection import select_contact_pairs
-from generator.neural_infiller import _matrix_from_rotation6d
+from somaforge_core.g1_kinematics import _matrix_from_rotation6d
 from generator.fullbody_dataset import _matrix_quaternion_wxyz
-from generator.research.archived_experiments.direct_surface_infiller import scene_faces
+from generator.research.archived_experiments.contact_geometry import scene_faces
 from generator.research.archived_experiments.paired_pose_transform import transform_q, yaw_basis
-from generator.research.archived_experiments.full_shared_contact_model import COLLISION_TOLERANCE_M
+from generator.research.archived_experiments.contact_geometry import COLLISION_TOLERANCE_M
 
 def observed_inputs(model, q, active, surface, anchor, scene):
     """Only current q, realized contacts and observed terrain enter forward."""

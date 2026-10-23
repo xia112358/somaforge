@@ -1,14 +1,13 @@
 # SomaForge
 
 SomaForge is a workspace for G1 whole-body tracking (WBT), expert-to-student
-distillation, contact-aware motion editing, next-contact prediction, and
-endpoint-conditioned trajectory infilling. Simulation uses the pinned Isaac Lab
+distillation, contact-aware motion editing, and next-contact prediction.
+Simulation uses the pinned Isaac Lab
 3.0.0 / Isaac Sim 6.2 / Newton 1.7.0 environment.
 
 Git `main` is the maintained integration branch. Its environment catalog declares
 one runtime profile, also named `main`, at `runtime/environments/conda/somaforge`.
-WBT, distillation, Motion Edit, Predictor/Infiller and retargeting all use this
-profile. The separate IK and retargeting environments have been retired.
+WBT, distillation, Motion Edit and Predictor all use this profile. The separate IK environment and the standalone Retargeting package have been retired.
 Motion Edit uses Torch float32 and native Newton FK, with its existing UI
 interfaces preserved. See [component validation](docs/environments.md#main-consolidation-validation-2026-10-2223)
 for the completed runtime checks and their scope.
@@ -21,7 +20,7 @@ for the completed runtime checks and their scope.
 - [Download training inputs, reference models and extracted demonstrations](docs/data-downloads.md)
 - [Motion Edit and browser playback](packages/motion_edit/README.md)
 - [Predictor baseline and reproduction records](baselines/README.md)
-- [Current main-environment Predictor/Infiller inputs](docs/environments.md#generator-inputs-for-main)
+- [Current main-environment Predictor inputs](docs/environments.md#generator-inputs-for-main)
 - [Local data layout](docs/repository-data.md), [data policy](docs/data-policy.md),
   and [repository maintenance](docs/repository-maintenance.md)
 
@@ -46,9 +45,8 @@ Follow the [installation guide](docs/install.md) before launching simulation.
 
 ```text
 src/holosoma/               WBT training, evaluation, and simulator integration
-src/holosoma_retargeting/   Retargeting tools (included in main)
 packages/motion_edit/       Contact editing and validated kinematic candidates
-packages/generator/         Predictor, Infiller, datasets and generation training
+packages/generator/         Predictor, datasets and prediction training
 packages/contact_solver/    Contact objectives, collision gradients and projection
 packages/climb00_pipeline/  Optional historical import/CLI compatibility
 packages/somaforge_core/    Shared assets, FK, contracts and Newton contact semantics
@@ -71,7 +69,7 @@ src/holosoma/holosoma/data/robots/g1/g1_29dof_spherehand.urdf
 ```
 
 All runtime inputs are selected through `configs/assets_manifest.json` and
-`configs/training_pipeline_manifest.json`. Training motions, Predictor/Infiller datasets,
+`configs/training_pipeline_manifest.json`. Training motions, Predictor datasets,
 and checkpoints must carry the matching `robot_asset_json` identity.
 Missing or mismatched identity is rejected.
 
@@ -144,15 +142,11 @@ contact-reference contract does not automatically convert or recertify them.
 The old clean6hz, frame-boundary replay, force-retarget and projector branches
 are not production entrypoints.
 
-Predictor and Infiller live in `packages/generator/` and replace the retired
-GMVQ/HyAR module:
-
-```text
-robot state + actual contact observation + terrain
--> Predictor: next contact plan and endpoint pose
--> Infiller: continuous motion between endpoints
--> independent Newton validation and WBT tracking
-```
+Predictor lives in `packages/generator/` and produces next-contact plans and endpoint
+poses from robot state, actual contact observations and terrain. Candidates use
+independent Newton validation; WBT executes explicitly supplied motion references.
+The Infiller module has been retired. Its historical datasets, checkpoints and
+published release records remain archived.
 
 The current Predictor pointer is [baselines/current.json](baselines/current.json):
 [v1 latest](baselines/predictor_v1_latest_20261010/README.md), using
@@ -161,8 +155,7 @@ Its retained step1000 checkpoint is the latest saved result of the 2026-10-09
 scratch run, not a selection by a single validation peak. The run reached
 1002 of 1100 planned intervals and has no completion report. Static endpoints and
 training-case recursion do not establish held-out recursive generalization or
-executed support/load/slip, and no combined Predictor + Infiller + WBT deployment
-acceptance is asserted.
+executed support/load/slip, and no combined Predictor + WBT deployment acceptance is asserted.
 
 [Archived baselines](baselines/README.md) retain scratch_recipe.20261002,
 source550 and control500 recipes and comparisons. The structured v2 replacement

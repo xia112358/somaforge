@@ -1,7 +1,7 @@
 import torch
 
 from generator.next_interaction import structural_pose_loss
-from generator.neural_infiller import CanonicalG1ForwardKinematics, _matrix_from_rotation6d
+from somaforge_core.g1_kinematics import CanonicalG1ForwardKinematics, _matrix_from_rotation6d
 
 
 def supervision(fk, q):

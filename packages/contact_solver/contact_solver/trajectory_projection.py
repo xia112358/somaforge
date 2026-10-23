@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 from somaforge_core.motion_contracts import CONTACT_PARTS, CONTACT_BODY_INDEX
-from somaforge_core.prediction_contracts import InfillerOutput, UnifiedInteractionPrediction
+from somaforge_core.prediction_contracts import TrajectoryPrediction, UnifiedInteractionPrediction
 from somaforge_core.g1_kinematics import _matrix_from_rotation6d
 
 
@@ -12,7 +12,7 @@ from somaforge_core.g1_kinematics import _matrix_from_rotation6d
 class InteractionProjectionResult:
     """A q-space constrained trajectory and its before/after audit."""
 
-    output: InfillerOutput
+    output: TrajectoryPrediction
     diagnostics: dict[str, float]
 
 
@@ -116,7 +116,7 @@ def contact_rotation_losses(
 
 
 def _trajectory_contact_points(
-    output: InfillerOutput,
+    output: TrajectoryPrediction,
     start_local_offset: Tensor,
     end_local_offset: Tensor,
     phase: Tensor,
@@ -132,7 +132,7 @@ def _trajectory_contact_points(
 
 
 def project_interaction_q_trajectory(
-    output: InfillerOutput,
+    output: TrajectoryPrediction,
     *,
     fk: nn.Module,
     collision_geometry: nn.Module,
@@ -219,7 +219,7 @@ def project_interaction_q_trajectory(
 
     def evaluate(qpos: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         position, rotation6d = fk(qpos)
-        candidate = InfillerOutput(position, rotation6d, output.contact_logits, qpos)
+        candidate = TrajectoryPrediction(position, rotation6d, output.contact_logits, qpos)
         points = _trajectory_contact_points(candidate, start_offsets, end.contact_local_offset.detach(), phase)
         anchor_error = torch.linalg.vector_norm(points - anchor_target, dim=-1)
         collision_points, point_part = collision_geometry(fk, qpos)
@@ -308,7 +308,7 @@ def project_interaction_q_trajectory(
             dim=1,
         )
         position, rotation6d = fk(final_q)
-        projected = InfillerOutput(position, rotation6d, output.contact_logits, final_q)
+        projected = TrajectoryPrediction(position, rotation6d, output.contact_logits, final_q)
         if collect_diagnostics:
             diagnostics.update(audit(final_q, "after"))
             diagnostics["endpoint_root_shift_cm"] = float(
@@ -318,4 +318,3 @@ def project_interaction_q_trajectory(
                 torch.rad2deg(torch.sqrt(torch.mean((final_q[..., 7:] - initial_q[..., 7:]).square()))).item()
             )
     return InteractionProjectionResult(projected, diagnostics)
-
