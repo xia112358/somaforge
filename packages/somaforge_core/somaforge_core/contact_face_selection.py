@@ -39,7 +39,7 @@ def ground_top_catalog(records):
     return {0:ground[0],1:top[0]}
 
 
-def select_contact_pairs(pairs, catalog):
+def select_contact_pairs(pairs, catalog, *, part_count=6):
     """Keep ground/top primary faces, never promote an ambiguous side to top.
 
     Normal tolerance classifies geometry, not whether a contact is active.
@@ -52,17 +52,19 @@ def select_contact_pairs(pairs, catalog):
            not np.isclose(np.linalg.norm(n), 1., atol=1e-6) for n in normals.values()):
         raise ValueError('Invalid actual surface normals')
     upward = {s for s, keep in zip(normals, upward_face_mask(list(normals.values()))) if keep}
-    mask = np.zeros((len(pairs), 6), bool)
+    if not isinstance(part_count, int) or part_count < 1:
+        raise ValueError('Invalid contact part count')
+    mask = np.zeros((len(pairs), part_count), bool)
     surface = np.full(mask.shape, -1, np.int64)
     position = np.zeros((*mask.shape, 3), np.float32)
     kept, excluded = [], []
     for f, row in enumerate(pairs):
         good, bad = [], []
-        score = np.full(6, np.inf)
+        score = np.full(part_count, np.inf)
         for p in row:
             sid, part = int(p['surface']), int(p['part'])
             point = np.asarray(p['position_w'], float)
-            if sid not in normals or not 0 <= part < 6 or not p['allocated']:
+            if sid not in normals or not 0 <= part < part_count or not p['allocated']:
                 raise ValueError('Unknown surface/part or unallocated Newton contact')
             depth = float(p['dist']) - float(p['includemargin'])
             if point.shape != (3,) or not np.isfinite(point).all() or not np.isfinite(depth) or depth >= 0:

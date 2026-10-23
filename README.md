@@ -17,6 +17,7 @@ for the completed runtime checks and their scope.
 - [Fresh-machine installation](docs/install.md) and [runtime compatibility](docs/environments.md)
 - [Unified main Python environment](docs/python-environments.md) for every maintained component
 - [Modular WBT experts, contact-reference recording and distillation](docs/wbt-modular-experiments.md)
+- [ACP single-task reproduction: contact tracking and attention-based planning](docs/acp-reproduction.md)
 - [Download training inputs, reference models and extracted demonstrations](docs/data-downloads.md)
 - [Motion Edit and browser playback](packages/motion_edit/README.md)
 - [Predictor baseline and reproduction records](baselines/README.md)

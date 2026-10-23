@@ -1436,7 +1436,7 @@ class MotionCommand(CommandTermBase):
             if hasattr(self, "adaptive_timesteps_sampler"):
                 phase = self.adaptive_timesteps_sampler.sample(self.motion_ids[env_ids])
             else:
-                phase = torch.rand(env_ids.numel(), device=self.device)
+                phase = self.sample_reset_phase(env_ids)
             if self._use_start_probe_envs or self._use_group_probe_envs:
                 phase[self._probe_env_mask[env_ids]] = 0.0
             motion_len = end_idx - start_idx
@@ -1707,6 +1707,10 @@ class MotionCommand(CommandTermBase):
         ### 1.3 update the adaptive timesteps sampler
         if hasattr(self, "adaptive_timesteps_sampler"):
             self.adaptive_timesteps_sampler.update_bin_failed_count()
+
+    def sample_reset_phase(self, env_ids: torch.Tensor) -> torch.Tensor:
+        """Uniform by default; specialized commands may supply a phase curriculum."""
+        return torch.rand(env_ids.numel(), device=self.device)
 
     def _handle_ended_motion_segments(self, env_ids: torch.Tensor) -> None:
         if not bool(self.motion_cfg.chain_motion_segments):

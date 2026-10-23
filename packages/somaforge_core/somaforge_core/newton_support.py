@@ -27,7 +27,8 @@ def observed_support(snapshot, binding, body_labels, num_envs, *, selection=None
              'normal_force_n', 'loaded_motion_known', 'rms_tangent_speed_m_s', 'slip_state')}
 
 
-def select_support_contacts(snapshot, binding, body_labels, *, face_indexes=None):
+def select_support_contacts(snapshot, binding, body_labels, *, face_indexes=None,
+                            part_names=None, body_names_by_part=None):
     """Resolve actual force application points to native primary mesh faces.
 
 This attributes an existing active constraint, never creates contact from
@@ -36,6 +37,8 @@ distance. All faces, including sides, compete before shared face eligibility.
     from .contact_schema import CONTACT_BODY_NAMES_BY_PART
     from .contact_face_selection import select_contact_pairs
     from .newton_contacts import PARTS, actual_primary_face_indices, constraint_decision
+    parts = PARTS if part_names is None else tuple(part_names)
+    body_names_by_part = CONTACT_BODY_NAMES_BY_PART if body_names_by_part is None else body_names_by_part
     n=int(snapshot['count']);body_env={int(k):v for k,v in binding['body_env'].items()}
     shape_faces={int(k):v for k,v in binding['shape_surface'].items()}
     active,allocated=constraint_decision(snapshot['dist'],snapshot['includemargin'],
@@ -52,12 +55,12 @@ distance. All faces, including sides, compete before shared face eligibility.
         k=robot[0]
         if body_env[bodies[k]]!=int(snapshot['worldid'][i]):continue
         body=body_labels[bodies[k]].rsplit('/',1)[-1]
-        part=next((p for p,name in enumerate(PARTS) if body in CONTACT_BODY_NAMES_BY_PART[name]),None)
+        part=next((p for p,name in enumerate(parts) if body in body_names_by_part[name]),None)
         if part is None:continue
         external=int(snapshot[f'shape{1-k}'][i])
         if external not in shape_faces:raise ValueError('Unknown actual external shape')
         position=np.asarray(snapshot['position_w'][i]);normal=np.asarray(snapshot['frame_w'][i,0])*(1 if k==1 else -1)
-        side[i]=k;group[i]=int(snapshot['worldid'][i])*6+part
+        side[i]=k;group[i]=int(snapshot['worldid'][i])*len(parts)+part
         pending.setdefault(external,[]).append((i,part,position,normal))
     resolved={}
     for external, rows in pending.items():
@@ -74,7 +77,7 @@ distance. All faces, including sides, compete before shared face eligibility.
             position_w=position.tolist(),dist=float(snapshot['dist'][i]),
             includemargin=float(snapshot['includemargin'][i]),
             position_semantics='solver_force_application_point',surface_attribution='native_finite_triangle_primary_at_force_application_point'))
-    selected=select_contact_pairs([records],binding['surface_catalog'])
+    selected=select_contact_pairs([records],binding['surface_catalog'],part_count=len(parts))
     eligible=np.zeros(n,bool)
     eligible[[p['row'] for p in selected['contact_pairs'][0]]]=True
     return dict(eligible=eligible,robot_side=side,groups=group,surfaces=surface,
