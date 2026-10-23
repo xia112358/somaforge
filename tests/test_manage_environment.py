@@ -491,3 +491,19 @@ def test_known_wheel_startup_hook_requires_matching_record_hash(manager, project
     assert not manager.inspect_pth(plan)
     module.write_text("import old_environment_bootstrap\n")
     assert any("unverified" in error for error in manager.inspect_pth(plan))
+
+
+def test_shell_activation_quotes_values_and_matches_clean_run(manager, project, monkeypatch):
+    plan = manager.make_plan(project.root, "fixture")
+    monkeypatch.setenv("PYTHONHOME", "/old/python")
+    monkeypatch.setenv("VIRTUAL_ENV", "/old/venv")
+    # Shell substitutions in a path must stay literal on activation.
+    plan["prefix"] += " spaces ' $(echo unsafe)"
+    script = manager.shell_environment(plan)
+    probe = script + "\n/usr/bin/env -0"
+    result = subprocess.run(["/bin/bash", "-c", probe], capture_output=True, check=True)
+    actual = dict(item.split(b"=", 1) for item in result.stdout.split(b"\0") if b"=" in item)
+    expected = manager.clean_environment(plan)
+    for key in ("PATH", "PYTHONPATH", "SOMAFORGE_ENV_PREFIX", "SOMAFORGE_ENV_PROFILE"):
+        assert actual[key.encode()].decode() == expected[key]
+    assert b"PYTHONHOME" not in actual and b"VIRTUAL_ENV" not in actual

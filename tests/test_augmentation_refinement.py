@@ -148,8 +148,7 @@ def test_parallel_workers_have_isolated_queues_environments_and_reuse_results(ru
     assert len(starts)==count and len(commands)==2
     assert {e['SOMAFORGE_IK_WORKER_SOCKET'] for _,e,_ in commands}=={f'worker-{i}' for i in range(count)}
     assert all(e['CUDA_VISIBLE_DEVICES']==('2' if device=='cuda:2' else '') and e['OMP_NUM_THREADS']=='4' for _,e,_ in commands)
-    assert all(e['JAX_PLATFORMS']==('cuda' if device=='cuda:2' else 'cpu') for e in starts)
-    assert all(e['XLA_PYTHON_CLIENT_PREALLOCATE']=='false' for e in starts)
+    assert all(e['SOMAFORGE_IK_DEVICE']==('cuda:0' if device=='cuda:2' else 'cpu') for e in starts)
     assert admission==([['nvidia-smi','--query-gpu=memory.free','--format=csv,noheader,nounits','--id=2']] if device=='cuda:2' else [])
     assert len({e['SOMAFORGE_LAPLACIAN_TOPOLOGY_CACHE'] for _,e,_ in commands})==count
     if count==2:assert set(commands[0][2]).isdisjoint(commands[1][2])

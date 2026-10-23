@@ -147,3 +147,23 @@ def test_native_batch_buffer_and_index_contract():
                                   (p, ids+1), (p, ids-1)):
         with pytest.raises((ValueError, RuntimeError)):
             native.run(geometry, positions, r, candidates, request)
+
+
+def test_triangle_soup_preserves_disconnected_solids_and_open_mesh_rejection(recorded_pair):
+    import trimesh
+    data, _, _ = recorded_pair
+    data = copy.deepcopy(data)
+    boxes = [trimesh.creation.box(), trimesh.creation.box()]
+    boxes[1].apply_translation([3., 0., 0.])
+    mesh = trimesh.util.concatenate(boxes)
+    vertices = mesh.vertices[mesh.faces].reshape(-1, 3)
+    shape = dict(shape=0, body=None, kind='mesh', scale=[1., 1., 1.],
+                 transform=[0., 0., 0., 0., 0., 0., 1.],
+                 vertices=vertices.tolist(), faces=np.arange(len(vertices)).reshape(-1, 3).tolist())
+    data.update(shapes=[shape], allowed_pairs=[])
+    scene = SolidDistanceScene(data, ())
+    assert len(scene.records) == 2
+    assert all(np.allclose(record['high']-record['low'], 1.) for record in scene.records)
+    shape['faces'] = shape['faces'][1:]
+    with pytest.raises(ValueError, match='not a verified closed convex solid'):
+        SolidDistanceScene(data, ())

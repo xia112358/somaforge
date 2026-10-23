@@ -49,11 +49,11 @@ def test_generation_entrypoints_default_to_selected_profile_and_keep_explicit_na
     root = Path(__file__).resolve().parents[3]
     catalog = tmp_path / "profiles.json"
     catalog.write_text(json.dumps({"schema": "somaforge_environment_profiles_v1", "profiles": {
-        "ik": {"prefix": "runtime/environments/conda/selected-ik"},
+        "main": {"prefix": "runtime/environments/conda/selected-main"},
     }}))
     monkeypatch.setenv("SOMAFORGE_ROOT", str(root))
     monkeypatch.setenv("SOMAFORGE_ENV_PROFILE", profile)
     monkeypatch.setenv("SOMAFORGE_ENV_CATALOG", str(catalog))
-    expected = "env_somaforge" if profile == "legacy" else str(root / "runtime/environments/conda/selected-ik")
+    expected = str(root / "runtime/environments/conda/selected-main")
     assert _parse_entrypoint(entrypoint, [], monkeypatch).ik_conda_env == expected
     assert _parse_entrypoint(entrypoint, ["--ik-conda-env", "env_somaforge"], monkeypatch).ik_conda_env == "env_somaforge"

@@ -1,109 +1,11 @@
-"""Exact trajectory derivatives sharing FK and using analytic temporal blocks.
-
-This optional solver preserves the production residual, including phase-prefix
-material budgets. A pose and its derivatives are evaluated once per frame, then
-reused by frame tasks and both adjacent material intervals. Historical linear
-terms and hinge derivatives never build full residual-by-state dense blocks.
-"""
-from __future__ import annotations
-
+"""Exact host-side sparse assembly for temporal and material phase coupling."""
 import time
 import numpy as np
 from scipy.sparse import coo_matrix
 
-from .continuous_sparse_ik import SparseJointProblem
 
-
-class FactoredJointProblem(SparseJointProblem):
-    def __init__(self, joint, shape, *, dtype=np.float64):
-        if not hasattr(joint.residual, 'continuous_temporal_weights'):
-            raise ValueError('Factored IK requires the explicit production residual layout')
-        if shape[1] != joint.root_dofs + joint.robot.joints.num_actuated_joints:
-            raise ValueError('Factored IK supports pose variables without convex target variables')
-        super().__init__(joint, shape)
-        self.dtype = np.dtype(dtype)
-        if self.dtype not in (np.dtype('float32'), np.dtype('float64')):
-            raise ValueError('IK precision must be float32 or float64')
-        jax, jnp = self.jax, self.jnp
-        names, dimension, rd = joint.names, shape[1], joint.root_dofs
-        self.weights = joint.residual.continuous_temporal_weights
-        self.identity = jnp.eye(dimension, dtype=self.dtype)
-        self.root = jnp.asarray(joint.root, dtype=self.dtype)
-        self.rotations = jnp.asarray(joint.rotations, dtype=self.dtype)
-        # A separate robot tree keeps precision experiments isolated.
-        robot = jax.tree.map(lambda a: a.astype(self.dtype) if hasattr(a, 'dtype')
-                             and np.issubdtype(a.dtype, np.floating) else a, joint.robot)
-
-        def pose(state, rotation):
-            fk = robot.forward_kinematics(state[rd:])
-            if rd == 4:
-                half = state[3]*.5
-                yaw = jnp.concatenate((jnp.cos(half)[None], rotation[2]*jnp.sin(half)))
-                q = fk[:, :4]
-                w = yaw[:1]*q[:, :1]-jnp.sum(yaw[1:]*q[:, 1:], -1, keepdims=True)
-                xyz = yaw[:1]*q[:, 1:]+q[:, :1]*yaw[1:]+jnp.cross(yaw[1:], q[:, 1:])
-                fk = jnp.concatenate((w, xyz, joint.apply(yaw, fk[:, 4:7])), -1)
-            return fk
-
-        def pose_aux(state, rotation):
-            value = pose(state, rotation)
-            return value, value
-
-        pose_derivative = jax.vmap(jax.jacfwd(pose_aux, argnums=0, has_aux=True))
-        self.pose_derivatives = jax.jit(pose_derivative)
-
-        def frame(state, fk, fk_jac, *arguments):
-            args = dict(zip(names, arguments))
-            if 'loaded_scale' in args:
-                args['loaded_scale'] = jnp.zeros_like(args['loaded_scale'])
-            ordered = tuple(args[name] for name in names)
-            _, linear = jax.linearize(
-                lambda s, p: joint.residual(s, *ordered, fk_override=p), state, fk)
-            # The FK derivative is shared rather than propagated through FK again.
-            return jax.vmap(linear)(self.identity, jnp.moveaxis(fk_jac, -1, 0)).T
-
-        def material(state, previous, fk, before, links, local, normals, weights,
-                     root, rotation, previous_root, previous_rotation):
-            from somaforge_core.loaded_material_motion import tangent_material_rms
-            now, old = fk[links], before[links]
-            current = now[..., 4:7]+joint.apply(now[..., :4], local)+state[:3]
-            prior = old[..., 4:7]+joint.apply(old[..., :4], local)+previous[:3]
-            prior_world = previous_root[:3]+jnp.einsum('ij,pnj->pni', previous_rotation, prior)
-            prior_base = jnp.einsum('ji,pnj->pni', rotation, prior_world-root[:3])
-            return tangent_material_rms(current-prior_base, normals, weights, xp=jnp)
-
-        def material_derivative(state, previous, fk, before, fk_jac, before_jac, *args):
-            rms, linear = jax.linearize(lambda s, p, f, b: material(s, p, f, b, *args),
-                                        state, previous, fk, before)
-            zero_state, zero_pose = jnp.zeros_like(state), jnp.zeros_like(fk)
-            current = jax.vmap(lambda ds, df: linear(ds, zero_state, df, zero_pose))(
-                self.identity, jnp.moveaxis(fk_jac, -1, 0)).T
-            previous_jac = jax.vmap(lambda ds, df: linear(zero_state, ds, zero_pose, df))(
-                self.identity, jnp.moveaxis(before_jac, -1, 0)).T
-            return rms, current, previous_jac
-
-        def geometry(states, *arguments):
-            fk_jac, fk = pose_derivative(states, self.rotations)
-            dynamic = joint.dynamic_arguments(states, *arguments, poses_override=fk)
-            ordered = tuple(dynamic[name] for name in names)
-            blocks = jax.vmap(frame)(states, fk, fk_jac, *ordered)
-            if joint.loaded is None:
-                return blocks, (), ()
-            a = dynamic
-            material_data = jax.vmap(material_derivative)(
-                states[1:], states[:-1], fk[1:], fk[:-1], fk_jac[1:], fk_jac[:-1],
-                a['loaded_links'][1:], a['loaded_local'][1:], a['loaded_normals'][1:],
-                a['loaded_weights'][1:], self.root[1:], self.rotations[1:],
-                self.root[:-1], self.rotations[:-1])
-            return blocks, material_data, (a['loaded_remaining'], a['loaded_scale'])
-
-        self.geometry = jax.jit(geometry)
-
-    def set_arguments(self, arguments, progress=None, refresh=None):
-        converted = tuple(np.asarray(a, dtype=self.dtype) if np.issubdtype(np.asarray(a).dtype, np.floating)
-                          else a for a in arguments)
-        super().set_arguments(converted, progress, refresh)
-
+class FactoredJointProblem:
+    """Assembly shared by the Torch derivative provider; no FK or AD backend."""
     def jac(self, x):
         started = time.perf_counter()
         if self.refresh_arguments is not None and (

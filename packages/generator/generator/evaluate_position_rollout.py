@@ -17,7 +17,7 @@ import time
 import numpy as np
 import torch
 import tyro
-from isaaclab.app import AppLauncher
+from somaforge_core.launcher import parse_isaaclab_launcher_args
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -1264,10 +1264,9 @@ class EvaluationConfig:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
-    AppLauncher.add_app_launcher_args(parser)
-    official, remaining = parser.parse_known_args()
-    cfg = tyro.cli(EvaluationConfig, args=remaining)
-    args = argparse.Namespace(**asdict(cfg), device="cpu" if official.cpu else official.device)
+    official = parse_isaaclab_launcher_args(__doc__)
+    cfg = tyro.cli(EvaluationConfig)
+    args = argparse.Namespace(**asdict(cfg), device=official.device)
     if args.extra_steps < 0:
         parser.error("--extra-steps must be non-negative")
     if args.teacher_forced and args.extra_steps:

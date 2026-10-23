@@ -1,28 +1,21 @@
-"""Check the accelerated derivative against the complete coupled JAX graph."""
+"""Check the accelerated derivative against the complete coupled Torch graph."""
 from types import SimpleNamespace
 import numpy as np
 import pytest
 
-jax = pytest.importorskip('jax')
-import jax.numpy as jnp
+from motion_edit.generation.torch_newton_ik import ARRAY_API as jnp
+from motion_edit.generation.torch_newton_kinematics import quat_apply
+from torch_trajectory_helpers import DifferentiableRobot, full_jacobian
 from scipy.spatial.transform import Rotation
-from motion_edit.generation.continuous_ik import JointResidual
-from motion_edit.generation.continuous_factored_ik import FactoredJointProblem
+from motion_edit.generation.torch_newton_ik import TorchJointResidual as JointResidual
+from motion_edit.generation.torch_newton_ik import TorchFactoredJointProblem as FactoredJointProblem
 from somaforge_core.loaded_material_motion import tangent_material_rms
 
 
-@jax.tree_util.register_pytree_node_class
-class Robot:
+class Robot(DifferentiableRobot):
     joints = SimpleNamespace(num_actuated_joints=2)
 
-    def tree_flatten(self):
-        return (), None
-
-    @classmethod
-    def tree_unflatten(cls, auxiliary, children):
-        return cls()
-
-    def forward_kinematics(self, q):
+    def one_pose(self, q):
         return jnp.stack((jnp.cos(q[0]*.5), q[0]*0, q[0]*0, jnp.sin(q[0]*.5),
                           q[1], q[0]*.5, q[0]*0))[None]
 
@@ -49,8 +42,8 @@ def problem_data(*, zero=False):
             q = fk[:, :4]
             w = yaw[:1]*q[:, :1]-jnp.sum(yaw[1:]*q[:, 1:], -1, keepdims=True)
             xyz = yaw[:1]*q[:, 1:]+q[:, :1]*yaw[1:]+jnp.cross(yaw[1:], q[:, 1:])
-            fk = jnp.concatenate((w, xyz, JointResidual.apply(yaw, fk[:, 4:7])), -1)
-        points = fk[loaded_links, 4:]+JointResidual.apply(fk[loaded_links, :4], loaded_local)+state[:3]
+            fk = jnp.concatenate((w, xyz, quat_apply(yaw, fk[:, 4:7])), -1)
+        points = fk[loaded_links, 4:]+quat_apply(fk[loaded_links, :4], loaded_local)+state[:3]
         rms = tangent_material_rms(points-loaded_previous_points, loaded_normals, loaded_weights, xp=jnp)
         loaded_res = (jnp.stack((jnp.maximum(jnp.maximum(rms-loaded_source_step, 0.)-loaded_remaining[0], 0.),
                                 jnp.maximum(rms-loaded_remaining[1], 0.)))*loaded_scale).reshape(-1)
@@ -86,42 +79,29 @@ def problem_data(*, zero=False):
 
 @pytest.mark.parametrize('zero', [False, True])
 def test_shared_pose_and_analytic_history_match_full_graph(zero):
-    jax.config.update('jax_enable_x64', True)
     joint, states, arguments = problem_data(zero=zero)
     problem = FactoredJointProblem(joint, states.shape)
     problem.set_arguments(arguments)
-    expected = np.asarray(jax.jacfwd(lambda x: joint(x.reshape(states.shape), *arguments).reshape(-1))(
-        jnp.asarray(states).reshape(-1)))
-    np.testing.assert_allclose(problem.jac(states.reshape(-1)).toarray(), expected, atol=1.e-10, rtol=1.e-10)
+    expected = full_jacobian(lambda x: joint(x.reshape(states.shape), *arguments).reshape(-1), states.reshape(-1))
+    np.testing.assert_allclose(problem.jac(states.reshape(-1)).toarray(), expected, atol=5.e-5, rtol=5.e-5)
     # Fresh arguments must invalidate cached values and change historical masks.
     changed = list(arguments); changed[joint.names.index('history_mask')] = np.zeros((len(states), 2))
     problem.set_arguments(tuple(changed))
-    expected = np.asarray(jax.jacfwd(lambda x: joint(x.reshape(states.shape), *changed).reshape(-1))(
-        jnp.asarray(states).reshape(-1)))
-    np.testing.assert_allclose(problem.jac(states.reshape(-1)).toarray(), expected, atol=1.e-10, rtol=1.e-10)
+    expected = full_jacobian(lambda x: joint(x.reshape(states.shape), *changed).reshape(-1), states.reshape(-1))
+    np.testing.assert_allclose(problem.jac(states.reshape(-1)).toarray(), expected, atol=5.e-5, rtol=5.e-5)
 
 
 def test_fp32_derivative_matches_same_precision_complete_graph():
-    # The nonlinear material reduction itself can differ between precisions;
-    # validate the factored derivative against the same independent graph.
-    # Production remains FP64, checked separately above.
-    previous_precision = jax.config.jax_enable_x64
-    try:
-        jax.config.update('jax_enable_x64', False)
-        joint, states, arguments = problem_data()
-        problem = FactoredJointProblem(joint, states.shape, dtype=np.float32)
-        problem.set_arguments(arguments)
-        expected = np.asarray(jax.jacfwd(lambda x: joint(x.reshape(states.shape),
-            *problem.arguments).reshape(-1))(jnp.asarray(states).reshape(-1)))
-        actual = problem.jac(states.reshape(-1)).toarray()
-        np.testing.assert_allclose(actual, expected, atol=5.e-5, rtol=5.e-5)
-        assert np.isfinite(actual).all()
-    finally:
-        jax.config.update('jax_enable_x64', previous_precision)
+    joint, states, arguments = problem_data()
+    problem = FactoredJointProblem(joint, states.shape)
+    problem.set_arguments(arguments)
+    expected = full_jacobian(lambda x: joint(x.reshape(states.shape), *problem.arguments).reshape(-1), states.ravel())
+    actual = problem.jac(states.ravel()).toarray()
+    np.testing.assert_allclose(actual, expected, atol=5.e-5, rtol=5.e-5)
+    assert np.isfinite(actual).all()
 
 
 def test_live_refresh_restores_arguments_after_rejected_trial():
-    jax.config.update('jax_enable_x64', True)
     joint, states, arguments = problem_data()
     problem = FactoredJointProblem(joint, states.shape)
     calls = []
@@ -142,16 +122,14 @@ def test_live_refresh_restores_arguments_after_rejected_trial():
     problem.fun(rejected)
     actual = problem.jac(flat).toarray()
     np.testing.assert_array_equal(calls[-1], states)
-    expected = np.asarray(jax.jacfwd(lambda x: joint(x.reshape(states.shape),
-        *problem.arguments).reshape(-1))(jnp.asarray(flat)))
-    np.testing.assert_allclose(actual, expected, atol=1.e-10, rtol=1.e-10)
+    expected = full_jacobian(lambda x: joint(x.reshape(states.shape), *problem.arguments).reshape(-1), flat)
+    np.testing.assert_allclose(actual, expected, atol=5.e-5, rtol=5.e-5)
     np.testing.assert_array_equal(problem.fun(flat), accepted)
 
 
 def test_signed_witness_derivative_preserves_root_yaw_and_self_cancellation():
     from motion_edit.generation.continuous_signed_geometry import linearize_signed_geometry
 
-    jax.config.update('jax_enable_x64', True)
     joint, states, _ = problem_data()
     problem = FactoredJointProblem(joint, states.shape)
     records = (
@@ -166,13 +144,13 @@ def test_signed_witness_derivative_preserves_root_yaw_and_self_cancellation():
         poses = joint.poses(value)
         outputs = []
         for _, t, a, pa, b, pb, normal, _ in records:
-            first = poses[t, a, 4:]+joint.apply(poses[t, a, :4], pa)+value[t, :3]
+            first = poses[t, a, 4:]+quat_apply(poses[t, a, :4], jnp.asarray(pa))+value[t, :3]
             second = (0. if b < 0 else poses[t, b, 4:]
-                      +joint.apply(poses[t, b, :4], pb)+value[t, :3])
-            outputs.append(jnp.dot(normal, first-second))
+                      +quat_apply(poses[t, b, :4], jnp.asarray(pb))+value[t, :3])
+            outputs.append(jnp.dot(jnp.asarray(normal), first-second))
         return jnp.stack(outputs)
 
-    expected = np.asarray(jax.jacfwd(witnesses)(jnp.asarray(states.ravel())))
-    np.testing.assert_allclose(matrix.toarray(), expected, atol=1.e-11, rtol=1.e-11)
+    expected = full_jacobian(witnesses, states.ravel())
+    np.testing.assert_allclose(matrix.toarray(), expected, atol=5.e-6, rtol=5.e-6)
     np.testing.assert_array_equal(gaps, [.01, .02])
     np.testing.assert_array_equal(matrix.toarray()[1, 4*states.shape[1]:4*states.shape[1]+3], 0.)

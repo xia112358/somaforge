@@ -831,6 +831,7 @@ def _cmd_generate_ref(args: argparse.Namespace) -> None:
             overwrite=args.overwrite, allow_draft=args.allow_draft,
             allow_free=args.allow_free, intermediate_dir=args.intermediate_dir,
             ik_conda_env=args.ik_conda_env, ik_max_nfev=args.ik_max_nfev,
+            ik_script=getattr(args, 'ik_script', None),
             ik_q_acceleration_weight=args.ik_q_acceleration_weight,
             source_prefix_config=args.source_prefix_config,
         )
@@ -1358,6 +1359,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--allow-free", action="store_true")
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--ik-conda-env", default=default_ik_conda_environment())
+    p.add_argument("--ik-script", type=Path, default=None,
+                   help="Explicit experimental IK script; preserves the standard task and motion contract")
     p.add_argument("--ik-max-nfev", type=int, default=None)
     p.add_argument("--ik-q-acceleration-weight", type=float, default=None)
     p.add_argument("--source-prefix-config", type=Path, help="Source-clock JSON prefix; standard batches require this or a prefix on every plan")

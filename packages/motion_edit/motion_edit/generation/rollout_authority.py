@@ -441,7 +441,7 @@ def generate_contact_aware_pyroki_preview(
     )
     if not ik_output_path.is_file():
         raise FileNotFoundError(
-            f"PyRoki IK did not produce {ik_output_path}"
+            f"Trajectory IK did not produce {ik_output_path}"
         )
     ik_motion = preview._load_motion_npz(ik_output_path)
     generated = preview.merge_pyroki_preview_motion(
@@ -468,7 +468,7 @@ def generate_contact_aware_pyroki_preview(
             *proxy_warnings,
             *[str(item) for item in binding_summary.get("warnings", [])],
             "pose, force, contact timing, and local patch geometry come from one rollout source",
-            "output is PyRoki-FK-consistent preview only; direct Newton/MJWarp canonicalization is required",
+            "output is an IK preview; direct Newton canonicalization is required",
         ]
     )
     return preview.ContactAwarePreviewResult(

@@ -1,24 +1,5 @@
-#!/bin/bash
-set -e
-
-SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-
-if ! command -v sudo &> /dev/null; then
-  # in docker build sudo isn't available, but it is ok
-  echo "Warning: sudo could not be found, you may need to run this script with sudo"
-  function sudo { "$@"; }
-  export -f sudo
-fi
-
-cd "$SCRIPT_DIR"
-chmod +x setup_isaaclab3_newton.sh
-OMNI_KIT_ACCEPT_EULA=1 ./setup_isaaclab3_newton.sh
-
-cat <<'EOF'
-
-Newton WBT setup complete.
-
-Optional Motion Edit IK: scripts/setup_motion_edit_ik.sh
-Optional source retargeting: scripts/setup_retargeting.sh
-These use separate environments; see docs/install.md.
-EOF
+#!/usr/bin/env bash
+# Compatibility entrypoint: all SomaForge components share main.
+set -euo pipefail
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+exec bash "$SCRIPT_DIR/setup_isaaclab3_newton.sh" "$@"

@@ -83,7 +83,7 @@ def compile_support_motion(compiled, link_names, source_positions, source_rotati
 
 def authored_support_targets(spec, compiled, link_names, positions, rotations, *, return_rotations=False):
     """Resolve the plan's surface edit, not its weak free-landing reference."""
-    from .pyroki_taskspace import resolve_link_index
+    from .taskspace_kinematics import resolve_link_index
     from motion_edit.contact.surface_frame import map_points_between_surface_frames
     transforms = {t['source_surface']['surface_id']: t
                   for t in spec.metadata.get('support_surface_transforms', [])}

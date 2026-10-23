@@ -83,8 +83,8 @@ def test_missing_transform_and_nonzero_frame_start_fail_closed():
 def test_rotated_path_root_heading_body_attitude_and_velocities_share_one_map(angle):
     from scipy.spatial.transform import Rotation
     from motion_edit.contact.surface_frame import map_points_between_surface_frames
-    from motion_edit.generation.pyroki_taskspace import (
-        holosoma_joint_velocities, holosoma_body_velocities, world_body_poses_from_pyroki_fk,
+    from motion_edit.generation.taskspace_kinematics import (
+        holosoma_joint_velocities, holosoma_body_velocities, world_body_poses_from_fk,
     )
     spec, points, config, transform = fixture()
     edit = Rotation.from_euler("z", angle, degrees=True)
@@ -107,8 +107,8 @@ def test_rotated_path_root_heading_body_attitude_and_velocities_share_one_map(an
     np.testing.assert_allclose(Rotation.from_quat(edited_root[:, [4, 5, 6, 3]]).as_matrix(),
                                (edit*source_rotation).as_matrix(), atol=1.e-12)
     fk = np.zeros((len(q), 2, 7)); fk[..., 0] = 1.; fk[:, 1, 4:7] = [.2, -.1, -.8]
-    source_pos, source_quat = world_body_poses_from_pyroki_fk(q[:, :7], fk)
-    new_pos, new_quat = world_body_poses_from_pyroki_fk(edited_root, fk)
+    source_pos, source_quat = world_body_poses_from_fk(q[:, :7], fk)
+    new_pos, new_quat = world_body_poses_from_fk(edited_root, fk)
     np.testing.assert_allclose(new_pos, map_points_between_surface_frames(source_pos,
         transform["source_surface"], transform["target_surface"]), atol=1.e-6)
     # The production FK/export functions store float32 poses. Differentiation

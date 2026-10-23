@@ -744,9 +744,20 @@ def run(plan, command):
     return subprocess.run(argv, env=clean_environment(plan), cwd=plan["root"]).returncode
 
 
+def shell_environment(plan):
+    """Emit a safely quoted activation script using the managed run environment."""
+    import shlex
+    env = clean_environment(plan)
+    lines = ["unset " + name for name in os.environ if name not in env]
+    lines.extend("export " + name + "=" + shlex.quote(value)
+                 for name, value in env.items() if os.environ.get(name) != value)
+    lines.append("hash -r")
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("plan", "create", "check", "run"))
+    parser.add_argument("command", choices=("plan", "create", "check", "run", "shell"))
     parser.add_argument("--profile", required=True)
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--catalog", type=Path)
@@ -760,6 +771,9 @@ def main():
         parser.error("Only run accepts a command after --")
     try:
         plan = make_plan(args.root, args.profile, catalog=args.catalog, conda=args.conda, isaaclab=args.isaaclab)
+        if args.command == "shell":
+            print(shell_environment(plan))
+            return 0
         if args.command == "run":
             return run(plan, command)
         result = plan if args.command == "plan" else create(plan) if args.command == "create" else check(plan)

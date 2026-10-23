@@ -114,7 +114,7 @@ def test_trainer_relocates_parsed_path_fields_before_data_access(tmp_path, monke
     inputs = {name: original / name for name in names}
     output = tmp_path / "new_experiment"
     cfg = trainer.Config(**inputs, output=output, gpu_pipeline=False)
-    monkeypatch.setattr(trainer, "AppLauncher", SimpleNamespace(add_app_launcher_args=lambda parser: None))
+    monkeypatch.setattr(trainer, "parse_isaaclab_launcher_args", lambda description: SimpleNamespace())
     monkeypatch.setattr(trainer.tyro, "cli", lambda *args, **kwargs: cfg)
     monkeypatch.setattr(sys, "argv", ["train"])
     with pytest.raises(ValueError, match="Endpoint training requires complete solids"):

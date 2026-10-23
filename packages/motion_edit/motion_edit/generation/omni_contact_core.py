@@ -154,7 +154,7 @@ def install_contact_core_nodes() -> None:
 
     lte = importlib.import_module("motion_edit.generation.lte_fullbody")
     solver = importlib.import_module("motion_edit.contact_laplacian.solver")
-    pyroki = importlib.import_module("motion_edit.generation.pyroki_taskspace")
+    pyroki = importlib.import_module("motion_edit.generation.taskspace_kinematics")
 
     # The base Omni graph already contains knee -> ankle -> toe. Do not add an
     # independent heel vertex. Only change which physical contact channels drive

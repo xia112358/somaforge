@@ -115,57 +115,6 @@
         "wheel==0.45.1",
         "packaging==26.0"
       ]
-    },
-    "ik": {
-      "description": "Isolated JAX CUDA12 / PyRoki trajectory optimization; CPU Torch and Newton geometry helpers",
-      "python": "3.12",
-      "prefix": "runtime/environments/conda/somaforge-ik",
-      "requirements": "configs/environments/ik-linux-x86_64.lock.txt",
-      "source_requirements": [
-        "configs/environments/ik-sources.lock.txt"
-      ],
-      "local_packages": [
-        "packages/somaforge_core",
-        "packages/contact_solver",
-        "packages/motion_edit"
-      ],
-      "pins": {
-        "jax": "0.10.2",
-        "jaxlib": "0.10.2",
-        "torch": "2.11.0+cpu",
-        "newton": "1.7.0",
-        "warp-lang": "1.18.0",
-        "numpy": "2.3.5"
-      },
-      "bootstrap_requirements": [
-        "pip==26.2.2",
-        "setuptools==81.0.0",
-        "wheel==0.45.1",
-        "packaging==26.0",
-        "hatchling==1.31.0",
-        "pathspec==1.1.1",
-        "pluggy==1.7.0",
-        "trove-classifiers==2026.9.21.13"
-      ]
-    },
-    "retarget": {
-      "description": "Optional standalone source-motion retargeting profile; main already includes retargeting",
-      "python": "3.12",
-      "prefix": "runtime/environments/conda/somaforge-retarget",
-      "requirements": "configs/environments/retarget-linux-x86_64.lock.txt",
-      "local_packages": [
-        "packages/somaforge_core",
-        "src/holosoma_retargeting"
-      ],
-      "pins": {
-        "numpy": "2.3.5"
-      },
-      "bootstrap_requirements": [
-        "pip==26.2.2",
-        "setuptools==81.0.0",
-        "wheel==0.45.1",
-        "packaging==26.3"
-      ]
     }
   }
 }

@@ -1,5 +1,11 @@
 # 编辑轨迹的支撑保持与站立段裁剪
 
+Implementation note (2026-10-22): this document retains historical solver names
+for experiment provenance. Maintained generation now uses `trajectory_problem.py`,
+`trajectory_types.py` and the float32 `torch_newton_ik.py` backend in managed
+`main`. The former PyRoki/JAX solver and dedicated IK environment are retired.
+See [current generation setup](../README.md#torch--newton-generation-backend).
+
 ## 当前接触区域运动口径（2026-09-30）
 
 **目标修正：还原原始物理执行，不用几何滑移代价创造新的执行。**

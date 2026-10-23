@@ -98,85 +98,22 @@ class DistillPPO(PPO):
 
     def _rollout_step(self, obs_dict):
         self._update_php_student_tracking_boundary()
+        return super()._rollout_step(obs_dict)
+
+    def _rollout_observation_extras(self, obs_dict):
         if self._teacher_uses_student_actor_obs:
-            return super()._rollout_step(obs_dict)
-
-        with torch.inference_mode():
-            for _ in range(self.config.num_steps_per_env):
-                actor_obs_raw = torch.cat([obs_dict[k] for k in self.actor_obs_keys], dim=1)
-                critic_obs_raw = torch.cat([obs_dict[k] for k in self.critic_obs_keys], dim=1)
-                teacher_obs_raw = torch.cat([obs_dict[k] for k in self.teacher_obs_keys], dim=1)
-                actor_obs = self._normalize_actor_obs(actor_obs_raw)
-                critic_obs = self._normalize_critic_obs(critic_obs_raw)
-                teacher_obs_raw = self._finite_tensor(teacher_obs_raw, clamp=1.0e6)
-                dagger_valid_mask = self._compute_dagger_valid_mask().view(-1, 1)
-
-                actions = self.actor.act({"actor_obs": actor_obs})
-                actions = self._finite_tensor(actions, clamp=self.config.action_clip)
-                values = self._finite_tensor(self.critic.evaluate({"critic_obs": critic_obs}).detach(), clamp=1.0e4)
-
-                obs_dict, rewards, dones, infos = self.env.step({"actions": actions})
-
-                for obs_key in obs_dict:
-                    obs_dict[obs_key] = self._finite_tensor(obs_dict[obs_key].to(self.device), clamp=1.0e6)
-                rewards, dones = rewards.to(self.device), dones.to(self.device)
-                rewards = self._finite_tensor(rewards, clamp=1.0e4)
-
-                final_rewards = torch.zeros_like(rewards)
-                timeout_env_ids = infos["time_outs"].to(self.device).nonzero(as_tuple=False).flatten()
-                if timeout_env_ids.numel() > 0:
-                    final_critic_obs = torch.cat(
-                        [infos["final_observations"][k][timeout_env_ids].to(self.device) for k in self.critic_obs_keys],
-                        dim=1,
-                    )
-                    final_critic_obs = self._normalize_critic_obs(final_critic_obs, update=False)
-                    final_values = self._finite_tensor(
-                        self.critic.evaluate({"critic_obs": final_critic_obs}).detach(), clamp=1.0e4
-                    )
-                    final_rewards[timeout_env_ids] += self.config.gamma * torch.squeeze(final_values, 1)
-                final_rewards = self._finite_tensor(final_rewards, clamp=1.0e4)
-
-                actions_log_prob = self._finite_tensor(
-                    self.actor.get_actions_log_prob(actions).detach().unsqueeze(1), clamp=1.0e4
-                )
-
-                self.storage.add(
-                    actor_obs=actor_obs,
-                    critic_obs=critic_obs,
-                    teacher_actor_obs=teacher_obs_raw,
-                    dagger_valid_mask=dagger_valid_mask,
-                    actions=actions,
-                    values=values,
-                    actions_log_prob=actions_log_prob,
-                    action_mean=self._finite_tensor(self.actor.action_mean.detach(), clamp=1.0e3),
-                    action_sigma=self._finite_tensor(self.actor.action_std.detach(), fill=1.0, clamp=10.0).clamp_min(
-                        1.0e-6
-                    ),
-                    rewards=self._finite_tensor(rewards + final_rewards, clamp=1.0e4).view(-1, 1),
-                    dones=dones.view(-1, 1),
-                )
-
-                self.actor.reset(dones)
-                self.critic.reset(dones)
-
-                if self.log_dir is not None:
-                    self.logging_helper.update_episode_stats(rewards, dones, infos)
-
-            last_critic_obs = torch.cat([obs_dict[k] for k in self.critic_obs_keys], dim=1)
-            last_critic_obs = self._normalize_critic_obs(last_critic_obs, update=False)
-            last_values = self._finite_tensor(
-                self.critic.evaluate({"critic_obs": last_critic_obs}).detach().to(self.device), clamp=1.0e4
-            )
-            returns, advantages = self._compute_returns_and_advantages(
-                last_values,
-                self.storage["values"].to(self.device),
-                self.storage["dones"].to(self.device),
-                self.storage["rewards"].to(self.device),
-            )
-
-            self.storage["returns"] = returns
-            self.storage["advantages"] = advantages
-        return obs_dict
+            return {}
+        extras = {
+            "teacher_actor_obs": self._finite_tensor(
+                torch.cat([obs_dict[k] for k in self.teacher_obs_keys], dim=1), clamp=1.0e6
+            ),
+        }
+        if (
+            self.config.distill.enable_kl
+            and self.config.distill.distill_type in ("kl", "mse_dagger", "php_dagger_ppo")
+        ):
+            extras["dagger_valid_mask"] = self._compute_dagger_valid_mask().view(-1, 1)
+        return extras
 
     def _update_php_student_tracking_boundary(self) -> None:
         anneal_iters = int(getattr(self.config.distill, "php_student_termination_anneal_iters", 0))

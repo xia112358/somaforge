@@ -104,9 +104,12 @@ class SolidDistanceScene:
             base = dict(shape=shape['shape'], link=-1 if name is None else self.link_names.index(name),
                         body=name, rotation=Rotation.from_quat(transform[3:]).as_matrix(), position=transform[:3])
             if kind in ('mesh', 'convex_mesh'):
-                mesh = trimesh.Trimesh(vertices=np.asarray(shape['vertices'])*scale,
-                                       faces=np.asarray(shape['faces']), process=False)
-                pieces = mesh.split(only_watertight=False) if name is None else [mesh]
+                # Newton can export triangle-soup indices. Weld only exactly
+                # coincident vertices; never round, fill holes or take a hull.
+                vertices, inverse = np.unique(np.asarray(shape['vertices']), axis=0, return_inverse=True)
+                mesh = trimesh.Trimesh(vertices=vertices*scale,
+                                       faces=inverse[np.asarray(shape['faces'])], process=False)
+                pieces = mesh.split(only_watertight=False, repair=False) if name is None else [mesh]
                 if not len(pieces):
                     raise ValueError('Empty realized solid mesh')
                 for component, piece in enumerate(pieces):

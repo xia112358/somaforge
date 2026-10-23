@@ -16,7 +16,6 @@ import clarabel
 from .continuous_signed_geometry import linearize_signed_geometry
 
 from .continuous_ik import ContinuousResult
-from .continuous_factored_ik import FactoredJointProblem
 
 
 def violation(refresh):
@@ -138,13 +137,16 @@ def quadratic_schur(hessian, gradient, geometry, required, lower, upper,
 
 def solve_constrained_trajectory(joint, rows, initial, lower, upper, refresh, *,
                                  max_nfev=125, progress=None,
-                                 problem_class=FactoredJointProblem):
+                                 problem_class=None):
     """Minimize the original full objective with its geometry and pose bounds.
 
     ``max_nfev`` counts whole-trajectory value evaluations, including rejected
     trials. A final restoration query may be required after a rejected trial.
     Numerical KKT tolerances never define simulation contact or task acceptance.
     """
+    if problem_class is None:
+        from .torch_newton_ik import TorchFactoredJointProblem
+        problem_class = TorchFactoredJointProblem
     if max_nfev < 2:
         raise ValueError('Whole-trajectory constrained IK needs at least two evaluations')
     states = np.asarray(initial, dtype=np.float64).copy()

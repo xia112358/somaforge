@@ -18,7 +18,7 @@ from motion_edit.contact import (
     write_contact_layer,
     write_contact_surfaces,
 )
-from motion_edit.generation.robot_mirror_ik import (
+from motion_edit.generation.mirror_trajectory import (
     _blended_contact_target,
     _blended_contact_trajectory,
     _dominant_rigid_contact_proxy,

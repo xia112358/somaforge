@@ -16,6 +16,7 @@ def worker_environment(monkeypatch):
     lab = Path('/isaaclab')
     monkeypatch.setattr(runtime_paths, 'project_root', lambda: root)
     monkeypatch.setattr(runtime_paths, 'isaaclab_path', lambda: lab)
+    monkeypatch.setattr(runtime_paths, 'default_ik_conda_environment', lambda: str(root / 'runtime/environments/conda/somaforge'))
 
     def directories(path):
         # Enumerating workspace packages would reintroduce arbitrary local code.
@@ -37,7 +38,7 @@ def test_worker_paths_include_only_maintained_packages_and_sorted_lab_modules(wo
         root / 'packages/generator', root / 'packages/motion_edit',
         lab / 'source/isaaclab', lab / 'source/isaaclab_tasks',
     ]))
-    assert env['SOMAFORGE_NEWTON_ENV'] == str(root / 'runtime/environments' / runtime_paths.NEWTON_ENV_NAME)
+    assert env['SOMAFORGE_NEWTON_ENV'] == str(root / 'runtime/environments/conda/somaforge')
     assert env['SOMAFORGE_ROOT'] == str(root)
     assert env['ISAACLAB_PATH'] == str(lab)
 
@@ -89,17 +90,18 @@ def test_explicit_main_profile_rejects_missing_or_unmanaged_prefix(worker_enviro
         runtime_paths.newton_environment()
 
 
-def test_ik_profile_does_not_override_legacy_newton_runtime(worker_environment, monkeypatch):
+def test_retired_profile_cannot_select_a_second_runtime(worker_environment, monkeypatch):
     root, _ = worker_environment
     monkeypatch.setenv('SOMAFORGE_ENV_PROFILE', 'ik')
     monkeypatch.setenv('SOMAFORGE_ENV_PREFIX', str(root / 'runtime/environments/conda/somaforge-ik'))
-    assert runtime_paths.newton_environment() == root / 'runtime/environments' / runtime_paths.NEWTON_ENV_NAME
+    assert runtime_paths.newton_environment() == root / 'runtime/environments/conda/somaforge'
 
 
-def test_legacy_ik_default_does_not_read_new_catalog(monkeypatch):
+def test_unmanaged_shell_ik_default_uses_main_catalog(monkeypatch):
     monkeypatch.delenv('SOMAFORGE_ENV_PROFILE', raising=False)
-    monkeypatch.setattr(Path, 'read_text', lambda *a, **k: pytest.fail('Legacy runtime must not read managed config'))
-    assert runtime_paths.default_ik_conda_environment() == 'env_somaforge'
+    root = runtime_paths.project_root()
+    monkeypatch.delenv('SOMAFORGE_ENV_CATALOG', raising=False)
+    assert runtime_paths.default_ik_conda_environment() == str(root / 'runtime/environments/conda/somaforge')
 
 
 @pytest.mark.parametrize('profile', ['main', 'ik'])
@@ -110,8 +112,8 @@ def test_managed_ik_default_uses_catalog_prefix(tmp_path, monkeypatch, profile):
     config = tmp_path / 'configs/environments/profiles.json'
     config.parent.mkdir(parents=True)
     config.write_text(json.dumps({'schema': 'somaforge_environment_profiles_v1',
-        'profiles': {'ik': {'prefix': 'runtime/environments/conda/custom-ik'}}}))
-    assert runtime_paths.default_ik_conda_environment() == str(tmp_path / 'runtime/environments/conda/custom-ik')
+        'profiles': {'main': {'prefix': 'runtime/environments/conda/custom-main'}}}))
+    assert runtime_paths.default_ik_conda_environment() == str(tmp_path / 'runtime/environments/conda/custom-main')
 
 
 def test_managed_ik_default_rejects_external_prefix(tmp_path, monkeypatch):
@@ -121,7 +123,7 @@ def test_managed_ik_default_rejects_external_prefix(tmp_path, monkeypatch):
     config = tmp_path / 'configs/environments/profiles.json'
     config.parent.mkdir(parents=True)
     config.write_text(json.dumps({'schema': 'somaforge_environment_profiles_v1',
-        'profiles': {'ik': {'prefix': '../external'}}}))
+        'profiles': {'main': {'prefix': '../external'}}}))
     with pytest.raises(RuntimeError, match='Managed IK environment'):
         runtime_paths.default_ik_conda_environment()
 
@@ -132,5 +134,5 @@ def test_managed_ik_default_uses_explicit_catalog(tmp_path, monkeypatch):
     config = tmp_path / 'custom-profiles.json'
     monkeypatch.setenv('SOMAFORGE_ENV_CATALOG', str(config))
     config.write_text(json.dumps({'schema': 'somaforge_environment_profiles_v1',
-        'profiles': {'ik': {'prefix': 'runtime/environments/conda/explicit-ik'}}}))
-    assert runtime_paths.default_ik_conda_environment() == str(tmp_path / 'runtime/environments/conda/explicit-ik')
+        'profiles': {'main': {'prefix': 'runtime/environments/conda/explicit-main'}}}))
+    assert runtime_paths.default_ik_conda_environment() == str(tmp_path / 'runtime/environments/conda/explicit-main')

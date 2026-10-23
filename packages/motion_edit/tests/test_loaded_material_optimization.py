@@ -124,20 +124,18 @@ def test_known_unloaded_phase_is_not_pinned_or_certified_as_physical_support():
     assert row['actual_edited_support'] == 'unknown_without_new_execution'
 
 
-def test_dense_rms_matches_shared_material_steps_and_jax_gradients():
-    jax = pytest.importorskip('jax'); import jax.numpy as jnp
+def test_dense_rms_matches_shared_material_steps_and_analytic_gradient():
     delta = np.asarray([[[0., 0, 0], [.02, 0, 0], [-.02, 0, 0]]], np.float32)
     normals = np.broadcast_to([0., 0, 1.], delta.shape).astype(np.float32)
     weights = np.asarray([[1., 2., 2.]], np.float32)
     expected = (.0004*4/5)**.5
     value = tangent_material_rms(torch.tensor(delta), torch.tensor(normals), torch.tensor(weights), xp=torch)
     assert value.item() == pytest.approx(expected)
-    function = lambda x: tangent_material_rms(x, jnp.asarray(normals), jnp.asarray(weights), xp=jnp).sum()
-    assert float(function(jnp.asarray(delta))) == pytest.approx(expected)
-    assert np.isfinite(jax.grad(function)(jnp.zeros_like(jnp.asarray(delta)))).all()
-    np.testing.assert_allclose(jax.grad(function)(jnp.asarray(delta)),
-        torch.autograd.functional.jacobian(lambda x: tangent_material_rms(x,
-            torch.tensor(normals), torch.tensor(weights), xp=torch).sum(), torch.tensor(delta)).numpy(), atol=1.e-6)
+    function = lambda x: tangent_material_rms(x, torch.tensor(normals), torch.tensor(weights), xp=torch).sum()
+    assert np.isfinite(torch.autograd.functional.jacobian(function, torch.zeros_like(torch.tensor(delta))).numpy()).all()
+    derivative = torch.autograd.functional.jacobian(function, torch.tensor(delta)).numpy()
+    analytic = delta*weights[..., None]/(weights.sum(-1)[..., None, None]*expected)
+    np.testing.assert_allclose(derivative, analytic, atol=1.e-6)
 
 
 def test_sequential_objective_and_final_phase_audit_use_same_reference():

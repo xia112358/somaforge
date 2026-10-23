@@ -5,7 +5,7 @@ Pipeline:
   ContactEditPlan
     -> batch contact-Laplacian semantic curve
     -> rigid Newton-recorded contact patch task-space spec
-    -> PyRoki trajectory IK preview
+    -> Torch float32 / Newton trajectory IK preview
     -> direct Newton eval_fk canonical motion
 
 No Isaac Lab, Kit, or SimulationContext is started.

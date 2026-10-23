@@ -76,7 +76,7 @@ def test_generation_uses_one_rollout_source_everywhere(
     root = Path(__file__).resolve().parents[3]
     catalog = tmp_path / "profiles.json"
     catalog.write_text(json.dumps({"schema": "somaforge_environment_profiles_v1", "profiles": {
-        "ik": {"prefix": "runtime/environments/conda/custom-ik"},
+        "main": {"prefix": "runtime/environments/conda/custom-main"},
     }}))
     monkeypatch.setenv("SOMAFORGE_ROOT", str(root))
     monkeypatch.setenv("SOMAFORGE_ENV_PROFILE", "main")
@@ -221,7 +221,7 @@ def test_generation_uses_one_rollout_source_everywhere(
     assert captured["proxy_path"] == source_path.resolve()
     assert captured["pyroki_source_path"] == source_path.resolve()
     assert captured["ik_conda_env"] == (
-        explicit_ik if explicit_ik is not None else str(root / "runtime/environments/conda/custom-ik")
+        explicit_ik if explicit_ik is not None else str(root / "runtime/environments/conda/custom-main")
     )
     assert captured["taskspace_metadata"] == {
         "collision_reference_motion": str(source_path.resolve()),

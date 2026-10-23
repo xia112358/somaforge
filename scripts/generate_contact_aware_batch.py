@@ -181,15 +181,11 @@ def _start_ik_worker(
         capture_output=False,
     )
     name = f"@somaforge-ik-{os.getpid()}-{index}"
-    script = (
-        Path(__file__).resolve().parents[1]
-        / "packages/motion_edit/motion_edit/generation/pyroki_fullbody_ik.py"
-    )
     log_path = work_root / f"ik_worker_{index}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_stream = log_path.open("w", encoding="utf-8")
     process = subprocess.Popen(
-        [*interpreter, str(script), "--worker-socket", name],
+        [*interpreter, '-m', 'motion_edit.generation.torch_newton_worker', "--worker-socket", name],
         env=worker_environment,
         stdout=log_stream,
         stderr=subprocess.STDOUT,
@@ -232,7 +228,6 @@ def _run_worker_queue(
 
 def _batch_environment(work_root: Path) -> dict[str, str]:
     environment = dict(os.environ)
-    environment.setdefault("JAX_PLATFORMS", "cpu")
     environment["SOMAFORGE_LAPLACIAN_TOPOLOGY_CACHE"] = str(
         work_root / "source_laplacian_topology.npz"
     )

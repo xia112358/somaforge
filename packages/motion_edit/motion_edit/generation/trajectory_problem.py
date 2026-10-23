@@ -1,19 +1,14 @@
-"""PyRoki trajectory IK for contact-aware task-space motions.
+"""Shared trajectory problem assembly, residuals and canonical motion export.
 
-This backend is deliberately kinematic. Newton/MJWarp remains the authority for
-collision and contact validation. The output is a PyRoki-FK-consistent preview
-trajectory that must be Newton-canonicalized before training use.
+Torch/Newton supplies FK and differentiation. Geometry here is an optimization
+reference; actual contact remains subject to current Newton/MJWarp validation.
 """
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import os
-import socket
-import sys
-import traceback
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
@@ -27,20 +22,20 @@ from somaforge_core.contact_schema import (
 )
 from somaforge_core.robot_assets import canonical_g1_urdf_path, encode_robot_asset_json
 
-from motion_edit.generation.pyroki_taskspace import (
-    CompiledPyrokiTaskspace,
+from motion_edit.generation.taskspace_kinematics import (
+    CompiledTaskspace,
     SEMANTIC_DEFAULT_WEIGHTS,
     SEMANTIC_LINK_ALIASES,
-    compile_pyroki_taskspace,
+    compile_taskspace,
     holosoma_body_velocities,
     holosoma_joint_velocities,
     normalize_quat_wxyz,
     quat_apply_wxyz,
     resolve_link_index,
-    world_body_poses_from_pyroki_fk,
+    world_body_poses_from_fk,
 )
 from somaforge_core.newton_collision import DirectNewtonCollisionScene, COLLISION_WITNESS_SCHEMA
-from motion_edit.generation.pyroki_trajectory_optimizer import (
+from motion_edit.generation.trajectory_types import (
     EnvironmentContactAnchors,
     ForceLinearization,
 )
@@ -51,10 +46,6 @@ DEFAULT_ROBOT_URDF = canonical_g1_urdf_path()
 COLLISION_REFERENCE_CACHE_SCHEMA = "newton_closed_solid_reference_geometry_surfaces_v4"
 TARGET_LINK_ALIASES = SEMANTIC_LINK_ALIASES
 TARGET_WEIGHTS = SEMANTIC_DEFAULT_WEIGHTS
-_PYROKI_ROBOT_CACHE: dict[
-    tuple[str, int, int],
-    tuple[Any, tuple[str, ...], tuple[str, ...], int],
-] = {}
 _NEWTON_COLLISION_SCENE_CACHE: dict[
     tuple[str | None, str],
     DirectNewtonCollisionScene,
@@ -403,7 +394,7 @@ def _world_body_poses(
 ) -> tuple[np.ndarray, np.ndarray]:
     root = np.asarray(root_qpos, dtype=np.float64).reshape(1, 7)
     transforms = np.asarray(link_tf_base, dtype=np.float64)[None, ...]
-    position_w, quaternion_w = world_body_poses_from_pyroki_fk(
+    position_w, quaternion_w = world_body_poses_from_fk(
         root,
         transforms,
     )
@@ -478,12 +469,7 @@ def _group_positions_w(
     joint_cfg: np.ndarray,
     groups: list[np.ndarray],
 ) -> np.ndarray:
-    import jax.numpy as jnp
-
-    fk = np.asarray(
-        robot.forward_kinematics(jnp.asarray(joint_cfg)),
-        dtype=np.float64,
-    )
+    fk = np.asarray(robot.numpy_fk(joint_cfg), dtype=np.float64)
     positions = np.empty(
         (joint_cfg.shape[0], len(groups), 3),
         dtype=np.float64,
@@ -591,7 +577,7 @@ def _input_problem(
     edited_contact_weight: float,
     fixed_contact_weight: float,
 ) -> tuple[
-    CompiledPyrokiTaskspace,
+    CompiledTaskspace,
     np.ndarray,
     np.ndarray,
     np.ndarray,
@@ -603,7 +589,7 @@ def _input_problem(
 ]:
     if "contact_aware_taskspace_json" in payload:
         spec = ContactAwareTaskspaceMotion.from_arrays(payload)
-        compiled = compile_pyroki_taskspace(
+        compiled = compile_taskspace(
             spec,
             link_names,
             edited_contact_weight=edited_contact_weight,
@@ -830,29 +816,6 @@ def _sha256_file(path: str | Path) -> str:
     return digest.hexdigest()
 
 
-def _cached_pyroki_robot(
-    robot_path: Path,
-    *,
-    pyroki: Any,
-    yourdfpy: Any,
-) -> tuple[Any, tuple[str, ...], tuple[str, ...], int]:
-    resolved = robot_path.expanduser().resolve()
-    stat = resolved.stat()
-    key = (str(resolved), int(stat.st_mtime_ns), int(stat.st_size))
-    cached = _PYROKI_ROBOT_CACHE.get(key)
-    if cached is not None:
-        return cached
-    urdf = yourdfpy.URDF.load(str(resolved), load_meshes=False)
-    robot = pyroki.Robot.from_urdf(urdf)
-    value = (
-        robot,
-        tuple(str(name) for name in robot.joints.actuated_names),
-        tuple(str(name) for name in robot.links.names),
-        int(robot.joints.num_actuated_joints),
-    )
-    _PYROKI_ROBOT_CACHE.clear()
-    _PYROKI_ROBOT_CACHE[key] = value
-    return value
 
 
 def _cached_newton_collision_scene(
@@ -1017,7 +980,7 @@ class FullbodyIKProblem:
     context: dict[str, Any]
 
 
-def assemble_pyroki_fullbody_problem(
+def assemble_trajectory_problem(
     *,
     lte_path: str | Path,
     robot_urdf: str | Path = DEFAULT_ROBOT_URDF,
@@ -1035,20 +998,21 @@ def assemble_pyroki_fullbody_problem(
     collision_max_refinements: int = 1,
     self_collision_weight: float = 20_000.0,
     collision_reference_cache_path: str | Path | None = None,
+    historical_reference_only: bool = False,
+    _backend: Any = None,
 ) -> FullbodyIKProblem:
-    import jax
-    import jax.numpy as jnp
-    import pyroki
-    import yourdfpy
+    if _backend is None:
+        from .torch_newton_ik import TorchNewtonBackend
+        _backend = TorchNewtonBackend()
+    xp = _backend.array_api
     from motion_edit.generation.optimization_geometry import optimizer_scene, source_geometry_distances
     from motion_edit.generation.convex_geometry_distance import ConvexGeometryDistance
     from motion_edit.generation.native_sphere_distance import NativeSphereDistance
-    from motion_edit.generation.continuous_ik import JointResidual, NativeCollisionRows
+    from motion_edit.generation.continuous_ik import NativeCollisionRows
+    JointResidual = _backend.joint_residual_class
 
-    # SciPy solves in float64. Evaluating tightly scaled material residuals
-    # in float32 can stop on rounded steps while their gradients remain large.
-    # Use the same precision for FK, residuals and Jacobians in every IK path.
-    jax.config.update('jax_enable_x64', True)
+    # Newton FK, residuals and derivatives use float32. The shared constrained
+    # driver retains its existing CPU factorization and geometry precision.
     payload = _load_npz(lte_path)
     if "contact_aware_taskspace_json" not in payload:
         raise ValueError("Legacy LTE keypoints are no longer supported; regenerate with generate-ref")
@@ -1086,17 +1050,13 @@ def assemble_pyroki_fullbody_problem(
             )
     robot_path = Path(robot_urdf).expanduser()
     if not robot_path.exists():
-        raise FileNotFoundError(f"robot URDF not found for PyRoki IK: {robot_path}")
+        raise FileNotFoundError(f"robot URDF not found for trajectory IK: {robot_path}")
     (
         robot,
         robot_joint_names,
         link_names,
         actuated_count,
-    ) = _cached_pyroki_robot(
-        robot_path,
-        pyroki=pyroki,
-        yourdfpy=yourdfpy,
-    )
+    ) = _backend.load_robot(robot_path)
 
     (
         compiled,
@@ -1243,14 +1203,15 @@ def assemble_pyroki_fullbody_problem(
     lower = np.where(finite, lower, -np.pi)
     upper = np.where(finite, upper, np.pi)
     cfg_source = np.clip(cfg_source, lower, upper)
-    semantic_indices_jax = jnp.asarray(compiled.semantic_link_indices, dtype=jnp.int32)
-    source_fk = np.asarray(robot.forward_kinematics(jnp.asarray(cfg_source)), dtype=np.float64)
+    semantic_indices = xp.asarray(compiled.semantic_link_indices, dtype=xp.int32)
+    source_fk = np.asarray(robot.numpy_fk(cfg_source) if hasattr(robot, 'numpy_fk')
+        else robot.forward_kinematics(xp.asarray(cfg_source)), dtype=np.float64)
     foot_orientation_indices = tuple(
         index
         for aliases in SOURCE_FOOT_ORIENTATION_LINKS
         if (index := resolve_link_index(link_names, aliases[0], aliases)) is not None
     )
-    foot_orientation_indices_jax = jnp.asarray(foot_orientation_indices, dtype=jnp.int32)
+    foot_orientation_array_indices = xp.asarray(foot_orientation_indices, dtype=xp.int32)
     source_foot_orientations = source_fk[:, foot_orientation_indices, :4]
     free_surface_contacts = bool(collision_spec is not None and collision_spec.metadata.get("free_surface_contacts"))
     from motion_edit.generation.contract import validate_generation_metadata
@@ -1275,7 +1236,8 @@ def assemble_pyroki_fullbody_problem(
         if int(collision_spec.frame_start) != 0:
             raise ValueError('Loaded material editing requires the complete source clock')
         loaded_reference = read_loaded_reference(source_motion_path, loaded_contract['sites'],
-            loaded_contract['observations'], loaded_contract['phases'])
+            loaded_contract['observations'], loaded_contract['phases'],
+            historical_reference_only=historical_reference_only)
         if len(loaded_reference['source_steps'])+1 != n_frames:
             raise ValueError('Loaded material reference and IK clocks differ')
         from somaforge_core.loaded_material_motion import DEFAULT_MATERIAL_RESIDUAL_SCALE_M
@@ -1335,13 +1297,13 @@ def assemble_pyroki_fullbody_problem(
     hard_query_calls = geometry_jacobian_calls = 0
     release_geometry = None
 
-    def quat_apply_jax(quat: Any, vector: Any) -> Any:
+    def quat_apply_array(quat: Any, vector: Any) -> Any:
         qvec = quat[..., 1:4]
-        uv = jnp.cross(qvec, vector)
-        uuv = jnp.cross(qvec, uv)
+        uv = xp.cross(qvec, vector)
+        uuv = xp.cross(qvec, uv)
         return vector + 2.0 * (quat[..., :1] * uv + uuv)
 
-    def residual_jax(
+    def residual_array(
         solve_state: Any,
         semantic_target_base: Any,
         semantic_sqrt_weight: Any,
@@ -1405,35 +1367,35 @@ def assemble_pyroki_fullbody_problem(
         fk = robot.forward_kinematics(q_cfg) if fk_override is None else fk_override
         if yaw_enabled and fk_override is None:
             half = root_state[3] * .5
-            yaw_q = jnp.concatenate((jnp.cos(half)[None], root_yaw_axis_base * jnp.sin(half)))
+            yaw_q = xp.concatenate((xp.cos(half)[None], root_yaw_axis_base * xp.sin(half)))
             original_q = fk[:, :4]
-            w = yaw_q[0] * original_q[:, :1] - jnp.sum(yaw_q[1:] * original_q[:, 1:], axis=-1, keepdims=True)
-            xyz = yaw_q[0] * original_q[:, 1:] + original_q[:, :1] * yaw_q[1:] + jnp.cross(yaw_q[1:], original_q[:, 1:])
-            fk = jnp.concatenate((w, xyz, quat_apply_jax(yaw_q, fk[:, 4:7])), axis=-1)
+            w = yaw_q[0] * original_q[:, :1] - xp.sum(yaw_q[1:] * original_q[:, 1:], axis=-1, keepdims=True)
+            xyz = yaw_q[0] * original_q[:, 1:] + original_q[:, :1] * yaw_q[1:] + xp.cross(yaw_q[1:], original_q[:, 1:])
+            fk = xp.concatenate((w, xyz, quat_apply_array(yaw_q, fk[:, 4:7])), axis=-1)
         loaded_pose = fk[loaded_links]
-        loaded_points = loaded_pose[..., 4:7]+quat_apply_jax(loaded_pose[..., :4], loaded_local)+root_delta
+        loaded_points = loaded_pose[..., 4:7]+quat_apply_array(loaded_pose[..., :4], loaded_local)+root_delta
         loaded_rms = tangent_material_rms(loaded_points-loaded_previous_points,
-            loaded_normals, loaded_weights, xp=jnp)
-        loaded_extra = jnp.maximum(loaded_rms-loaded_source_step, 0.)
-        loaded_res = jnp.stack((jnp.maximum(loaded_extra-loaded_remaining[0], 0.),
-                               jnp.maximum(loaded_rms-loaded_remaining[1], 0.)))*loaded_scale
+            loaded_normals, loaded_weights, xp=xp)
+        loaded_extra = xp.maximum(loaded_rms-loaded_source_step, 0.)
+        loaded_res = xp.stack((xp.maximum(loaded_extra-loaded_remaining[0], 0.),
+                               xp.maximum(loaded_rms-loaded_remaining[1], 0.)))*loaded_scale
         loaded_res = loaded_res.reshape(-1)
-        semantic_pos = fk[semantic_indices_jax, 4:7] + root_delta
+        semantic_pos = fk[semantic_indices, 4:7] + root_delta
         semantic_res = ((semantic_pos - semantic_target_base) * semantic_sqrt_weight[:, None]).reshape(-1)
 
         contact_pose = fk[contact_link_indices]
         contact_pred = (
             contact_pose[:, 4:7]
-            + quat_apply_jax(contact_pose[:, :4], contact_points_local)
+            + quat_apply_array(contact_pose[:, :4], contact_points_local)
             + root_delta
         )
         contact_res = ((contact_pred - contact_target_base) * contact_sqrt_weight[:, None]).reshape(-1)
         if free_surface_contacts:
             contact_res = surface_residual(contact_pred, contact_target_base, surface_normals_base,
-                surface_edges_base, surface_offsets_base, contact_sqrt_weight, surface_reference_ratio, xp=jnp)
+                surface_edges_base, surface_offsets_base, contact_sqrt_weight, surface_reference_ratio, xp=xp)
             contact_res = endpoint_surface_residual(contact_pred, contact_target_base, surface_normals_base,
                 surface_edges_base, surface_offsets_base, contact_sqrt_weight, support_weight,
-                surface_reference_ratio, xp=jnp)
+                surface_reference_ratio, xp=xp)
             # Landing-point continuity is a weak tie-breaker, not a persistent
             # pin that stores posture error until contact release. Joint-space
             # demonstration-relative smoothness remains the primary temporal term.
@@ -1446,9 +1408,9 @@ def assemble_pyroki_fullbody_problem(
         orientation_error = (
             target_orientation[:, :1] * current_orientation[:, 1:]
             - current_orientation[:, :1] * target_orientation[:, 1:]
-            - jnp.cross(target_orientation[:, 1:], current_orientation[:, 1:])
+            - xp.cross(target_orientation[:, 1:], current_orientation[:, 1:])
         )
-        orientation_free = jnp.einsum('nij,nj->ni',support_orientation[:,4:].reshape(-1,3,3),orientation_error)
+        orientation_free = xp.einsum('nij,nj->ni',support_orientation[:,4:].reshape(-1,3,3),orientation_error)
         support_orientation_res = (2.0*orientation_free*support_weight[:,None]).reshape(-1)
         prior_res = (q_cfg - q_prior) * q_prior_scale
         velocity_res = (
@@ -1459,12 +1421,13 @@ def assemble_pyroki_fullbody_problem(
             - (q_prior - 2.0 * q_prior_previous + q_prior_previous_previous)
         ) * float(q_acceleration_weight) * history_mask[1]
 
-        foot_pose = fk[foot_orientation_indices_jax]
+        foot_pose = fk[foot_orientation_array_indices]
         foot_quat = foot_pose[:, :4]
-        target_conjugate = source_foot_orientation.at[:, 1:4].multiply(-1.0)
-        aw, ax, ay, az = jnp.moveaxis(target_conjugate, -1, 0)
-        bw, bx, by, bz = jnp.moveaxis(foot_quat, -1, 0)
-        relative = jnp.stack(
+        target_conjugate = xp.concatenate(
+            (source_foot_orientation[:, :1], -source_foot_orientation[:, 1:4]), axis=-1)
+        aw, ax, ay, az = xp.moveaxis(target_conjugate, -1, 0)
+        bw, bx, by, bz = xp.moveaxis(foot_quat, -1, 0)
+        relative = xp.stack(
             (
                 aw * bw - ax * bx - ay * by - az * bz,
                 aw * bx + ax * bw + ay * bz - az * by,
@@ -1473,29 +1436,29 @@ def assemble_pyroki_fullbody_problem(
             ),
             axis=-1,
         )
-        relative = jnp.where(relative[:, :1] < 0.0, -relative, relative)
+        relative = xp.where(relative[:, :1] < 0.0, -relative, relative)
         foot_orientation_res = (
-            2.0 * relative[:, 1:4] * jnp.sqrt(float(foot_orientation_weight))
+            2.0 * relative[:, 1:4] * xp.sqrt(float(foot_orientation_weight))
         )
         # Material tasks already determine support orientation. Match by
         # endpoint so toe/heel shape switches do not reactivate a second prior.
         from motion_edit.generation.support_motion import endpoint
-        endpoint_groups = jnp.asarray([
+        endpoint_groups = xp.asarray([
             [endpoint(name) == endpoint(link_names[index]) for name in link_names]
             for index in foot_orientation_indices])
-        supported_feet = jnp.any(endpoint_groups[:, contact_link_indices] & (support_weight[None, :] > 0), axis=1)
+        supported_feet = xp.any(endpoint_groups[:, contact_link_indices] & (support_weight[None, :] > 0), axis=1)
         foot_orientation_res = foot_orientation_res * (~supported_feet[:, None])
         foot_orientation_res = foot_orientation_res.reshape(-1)
         collision_pose = fk[collision_link_indices]
         collision_point = (
             collision_pose[:, 4:7]
-            + quat_apply_jax(
+            + quat_apply_array(
                 collision_pose[:, :4],
                 collision_points_local,
             )
             + root_delta
         )
-        collision_signed_distance = jnp.sum(
+        collision_signed_distance = xp.sum(
             (
                 collision_point
                 - collision_terrain_points_base
@@ -1504,26 +1467,26 @@ def assemble_pyroki_fullbody_problem(
             axis=-1,
         )
         collision_deeper_res = (
-            jnp.minimum(collision_signed_distance, 0.0)
+            xp.minimum(collision_signed_distance, 0.0)
             * collision_deeper_weight
         )
         self_pose_a = fk[self_collision_link_a]
         self_pose_b = fk[self_collision_link_b]
         self_point_a = (
             self_pose_a[:, 4:7]
-            + quat_apply_jax(
+            + quat_apply_array(
                 self_pose_a[:, :4],
                 self_collision_point_a_local,
             )
         )
         self_point_b = (
             self_pose_b[:, 4:7]
-            + quat_apply_jax(
+            + quat_apply_array(
                 self_pose_b[:, :4],
                 self_collision_point_b_local,
             )
         )
-        self_signed_distance = jnp.sum(
+        self_signed_distance = xp.sum(
             (self_point_b - self_point_a)
             * self_collision_normals_base,
             axis=-1,
@@ -1531,12 +1494,12 @@ def assemble_pyroki_fullbody_problem(
         self_collision_res = self_collision_barrier_residual(
             self_signed_distance,
             self_collision_sqrt_weight,
-            array_module=jnp,
+            array_module=xp,
         )
         root_delta_prior_res = root_state * np.sqrt(25.0)
         release_pose = fk[release_indices]
-        release_pred = release_pose[:, 4:7] + quat_apply_jax(release_pose[:, :4], release_points) + root_delta
-        release_res = release_residual(release_pred, release_targets, release_normals, release_weights, xp=jnp)
+        release_pred = release_pose[:, 4:7] + quat_apply_array(release_pose[:, :4], release_points) + root_delta
+        release_res = release_residual(release_pred, release_targets, release_normals, release_weights, xp=xp)
         root_delta_velocity_res = (
             root_state - root_delta_previous
         ) * np.sqrt(100.0) * history_mask[0]
@@ -1548,15 +1511,15 @@ def assemble_pyroki_fullbody_problem(
         # Four responsibilities: endpoint tasks, pose reference, correction
         # continuity, and collision. No duplicate support XYZ, absolute
         # motion penalty, or attraction to collision witness planes.
-        endpoint_res = jnp.concatenate((contact_res, support_orientation_res))
-        pose_res = jnp.concatenate((semantic_res, prior_res, foot_orientation_res, root_delta_prior_res))
-        temporal_res = jnp.concatenate((velocity_res, acceleration_res,
+        endpoint_res = xp.concatenate((contact_res, support_orientation_res))
+        pose_res = xp.concatenate((semantic_res, prior_res, foot_orientation_res, root_delta_prior_res))
+        temporal_res = xp.concatenate((velocity_res, acceleration_res,
                                         root_delta_velocity_res, root_delta_acceleration_res, loaded_res))
-        safety_res = jnp.concatenate((collision_deeper_res, self_collision_res, release_res))
-        return jnp.concatenate((endpoint_res, pose_res, temporal_res, safety_res))
+        safety_res = xp.concatenate((collision_deeper_res, self_collision_res, release_res))
+        return xp.concatenate((endpoint_res, pose_res, temporal_res, safety_res))
 
     # Exact shared-FK derivative layout for the complete trajectory.
-    residual_jax.continuous_temporal_weights = (float(q_velocity_weight), float(q_acceleration_weight))
+    residual_array.continuous_temporal_weights = (float(q_velocity_weight), float(q_acceleration_weight))
     out_cfg = cfg_source.copy()
     out_root_delta_base = np.zeros((n_frames, root_dofs), dtype=np.float64)
     q_previous = cfg_source[0]
@@ -1629,6 +1592,8 @@ def assemble_pyroki_fullbody_problem(
             reference_qpos=collision_reference_qpos,
             robot_urdf=robot_path,
         )
+        if _backend is not None:
+            cache_metadata['kinematics_backend'] = _backend.cache_namespace
         cached = (
             _load_collision_reference_cache(
                 collision_reference_cache_path,
@@ -1712,8 +1677,9 @@ def assemble_pyroki_fullbody_problem(
                 prior_root[:3] += prior_rotation.apply(out_root_delta_base[frame-1, :3])
                 if yaw_enabled:
                     prior_root[3:7] = (Rotation.from_rotvec([0., 0., out_root_delta_base[frame-1, 3]])*prior_rotation).as_quat()[[3,0,1,2]]
-                prior_fk = np.asarray(robot.forward_kinematics(jnp.asarray(out_cfg[frame-1:frame])), dtype=np.float64)
-                pp, pq = world_body_poses_from_pyroki_fk(prior_root[None], prior_fk)
+                prior_fk = np.asarray(robot.numpy_fk(out_cfg[frame-1:frame]) if hasattr(robot, 'numpy_fk')
+                    else robot.forward_kinematics(xp.asarray(out_cfg[frame-1:frame])), dtype=np.float64)
+                pp, pq = world_body_poses_from_fk(prior_root[None], prior_fk)
                 loaded_previous_positions = pp[0]
                 loaded_previous_rotations = Rotation.from_quat(pq[0][:, [1,2,3,0]]).as_matrix()
             loaded_args = loaded_motion.frame_args(frame, loaded_previous_positions, loaded_previous_rotations, root[:3], root_rotation.as_matrix())
@@ -1788,7 +1754,7 @@ def assemble_pyroki_fullbody_problem(
 
         rows.append(args)
 
-    joint = JointResidual(residual_jax, robot, root_source, root_dofs, loaded_motion)
+    joint = JointResidual(residual_array, robot, root_source, root_dofs, loaded_motion)
     initial = np.column_stack((np.zeros((n_frames, root_dofs)), cfg_source))
     refresh = (None if collision_scene is None else NativeCollisionRows(joint, collision_scene,
         link_names, collision_reference_signed_distances, active_contact_surface_weight,
@@ -1825,9 +1791,10 @@ def assemble_pyroki_fullbody_problem(
         'hard_query_calls': hard_query_calls,
         'hard_release': hard_release,
         'input_schema': input_schema,
-        'jnp': jnp,
+        'xp': xp,
         'link_names': link_names,
         'loaded_motion': loaded_motion,
+        'historical_reference_only': historical_reference_only,
         'lte_path': lte_path,
         'n_frames': n_frames,
         'normal_solve_lower': normal_solve_lower,
@@ -1838,7 +1805,7 @@ def assemble_pyroki_fullbody_problem(
         'q_velocity_weight': q_velocity_weight,
         'release_data': release_data,
         'release_geometry': release_geometry,
-        'residual_jax': residual_jax,
+        'residual_array': residual_array,
         'robot': robot,
         'robot_joint_names': robot_joint_names,
         'robot_path': robot_path,
@@ -1858,55 +1825,6 @@ def assemble_pyroki_fullbody_problem(
         'yaw_enabled': yaw_enabled
     })
 
-def solve_pyroki_fullbody_ik(
-    *,
-    lte_path: str | Path,
-    output_path: str | Path,
-    robot_urdf: str | Path = DEFAULT_ROBOT_URDF,
-    source_motion_path: str | Path | None = None,
-    max_nfev: int = 25,
-    q_prior_weight: float = 0.25,
-    q_smooth_weight: float = 0.5,
-    boundary_pin_weight: float = 2.0,
-    edited_contact_weight: float = 100.0,
-    fixed_contact_weight: float = 80.0,
-    foot_orientation_weight: float = 20.0,
-    q_velocity_weight: float = 2.0,
-    q_acceleration_weight: float = 1.0,
-    collision_similarity_weight: float = 25.0,
-    collision_max_refinements: int = 1,
-    self_collision_weight: float = 20_000.0,
-    collision_reference_cache_path: str | Path | None = None,
-) -> Path:
-    from motion_edit.generation.continuous_ik import solve_joint_trajectory
-    from motion_edit.generation.continuous_factored_ik import FactoredJointProblem
-    problem = assemble_pyroki_fullbody_problem(
-        lte_path=lte_path,
-        robot_urdf=robot_urdf,
-        source_motion_path=source_motion_path,
-        max_nfev=max_nfev,
-        q_prior_weight=q_prior_weight,
-        q_smooth_weight=q_smooth_weight,
-        boundary_pin_weight=boundary_pin_weight,
-        edited_contact_weight=edited_contact_weight,
-        fixed_contact_weight=fixed_contact_weight,
-        foot_orientation_weight=foot_orientation_weight,
-        q_velocity_weight=q_velocity_weight,
-        q_acceleration_weight=q_acceleration_weight,
-        collision_similarity_weight=collision_similarity_weight,
-        collision_max_refinements=collision_max_refinements,
-        self_collision_weight=self_collision_weight,
-        collision_reference_cache_path=collision_reference_cache_path)
-    def progress(row, states):
-        if row['kind'] == 'solve_finished':
-            print('joint-trajectory '+json.dumps(row, sort_keys=True), flush=True)
-    result = solve_joint_trajectory(problem.joint, problem.rows, problem.initial,
-        problem.lower, problem.upper, max_nfev=max_nfev,
-        refinements=collision_max_refinements, refresh=problem.refresh,
-        progress=progress, problem_class=FactoredJointProblem)
-    if problem.refresh is not None:
-        problem.refresh(result.states, problem.rows)
-    return _write_fullbody_joint_result(problem, result, output_path)
 
 
 def _write_fullbody_joint_result(problem, result, output_path):
@@ -1933,7 +1851,7 @@ def _write_fullbody_joint_result(problem, result, output_path):
     hard_query_calls = problem.context['hard_query_calls']
     hard_release = problem.context['hard_release']
     input_schema = problem.context['input_schema']
-    jnp = problem.context['jnp']
+    xp = problem.context['xp']
     link_names = problem.context['link_names']
     loaded_motion = problem.context['loaded_motion']
     lte_path = problem.context['lte_path']
@@ -1988,8 +1906,9 @@ def _write_fullbody_joint_result(problem, result, output_path):
     # its SQP iterations are not separate outer refinement solves.
     collision_refinement_solve_count = 0 if problem.refresh is not None else max(len(result.solves)-1, 0)
     if loaded_motion is not None:
-        fk = np.asarray(problem.joint.poses(problem.joint.jnp.asarray(result.states)))
-        rotations = np.asarray(problem.joint.rotations)
+        to_numpy = getattr(problem.joint, 'to_numpy', np.asarray)
+        fk = to_numpy(problem.joint.poses(xp.asarray(result.states)))
+        rotations = to_numpy(problem.joint.rotations)
         positions = root_source[:, None, :3]+np.einsum('tij,tnj->tni', rotations,
             fk[..., 4:7]+result.states[:, None, :3])
         body_rotations = rotations[:, None] @ Rotation.from_quat(
@@ -2017,8 +1936,9 @@ def _write_fullbody_joint_result(problem, result, output_path):
     qpos[:, 3:7] = normalize_quat_wxyz(qpos[:, 3:7])
     qvel = holosoma_joint_velocities(qpos, fps)
 
-    fk_base = np.asarray(robot.forward_kinematics(jnp.asarray(out_cfg)), dtype=np.float64)
-    body_pos_w, body_quat_w = world_body_poses_from_pyroki_fk(
+    fk_base = np.asarray(robot.numpy_fk(out_cfg) if hasattr(robot, 'numpy_fk')
+        else robot.forward_kinematics(xp.asarray(out_cfg)), dtype=np.float64)
+    body_pos_w, body_quat_w = world_body_poses_from_fk(
         solved_root,
         fk_base,
     )
@@ -2059,7 +1979,11 @@ def _write_fullbody_joint_result(problem, result, output_path):
     from motion_edit.generation.native_sphere_distance import SPHERE_DISTANCE_SCHEMA
     from motion_edit.generation.convex_geometry_distance import CONVEX_DISTANCE_SCHEMA
     diagnostics = {
-        "ik_solver_schema": SOLVER_SCHEMA,
+        "source_reference_scope": (None if loaded_motion is None else loaded_motion.reference['reference_scope']),
+        "source_reference_original_provenance": (None if loaded_motion is None
+            else loaded_motion.reference['original_provenance']),
+        "actual_edited_support": "unknown_without_new_execution",
+        "ik_solver_schema": problem.context.get('solver_schema', SOLVER_SCHEMA),
         "optimization_geometry_schema": OPTIMIZATION_GEOMETRY_SCHEMA,
         "sphere_distance_schema": SPHERE_DISTANCE_SCHEMA,
         "convex_distance_schema": CONVEX_DISTANCE_SCHEMA,
@@ -2287,8 +2211,8 @@ def _write_fullbody_joint_result(problem, result, output_path):
         body_lin_vel_w=body_lin_vel_w.astype(np.float32),
         body_ang_vel_w=body_ang_vel_w.astype(np.float32),
         is_qpos=np.asarray(True),
-        ik_backend=np.asarray("pyroki_contact_aware_taskspace"),
-        kinematics_backend=np.asarray("pyroki_urdf_fk_preview"),
+        ik_backend=np.asarray(problem.context.get('ik_backend', "torch_newton_contact_aware_taskspace")),
+        kinematics_backend=np.asarray(problem.context.get('kinematics_backend', "newton_urdf_fk_preview")),
         newton_canonicalization_required=np.asarray(True),
         robot_urdf=np.asarray(str(robot_path)),
         robot_asset_json=np.asarray(encode_robot_asset_json()),
@@ -2298,149 +2222,3 @@ def _write_fullbody_joint_result(problem, result, output_path):
         ik_diagnostics_json=np.asarray(json.dumps(diagnostics, sort_keys=True)),
     )
     return output
-
-
-def main(argv: list[str] | None = None) -> None:
-    effective_argv = list(argv) if argv is not None else list(sys.argv[1:])
-    if "--worker-socket" in effective_argv:
-        index = effective_argv.index("--worker-socket")
-        try:
-            worker_name = effective_argv[index + 1]
-        except IndexError as exc:
-            raise ValueError("--worker-socket requires a name") from exc
-        address = (
-            "\0" + worker_name[1:]
-            if worker_name.startswith("@")
-            else worker_name
-        )
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
-            server.bind(address)
-            server.listen(1)
-            while True:
-                connection, _ = server.accept()
-                with connection:
-                    request_stream = connection.makefile("r", encoding="utf-8")
-                    response_stream = connection.makefile("w", encoding="utf-8")
-                    request = json.loads(request_stream.readline())
-                    if request.get("ping"):
-                        response_stream.write(
-                            json.dumps({"ok": True, "pong": True}) + "\n"
-                        )
-                        response_stream.flush()
-                        continue
-                    if request.get("shutdown"):
-                        response_stream.write(
-                            json.dumps({"ok": True, "shutdown": True}) + "\n"
-                        )
-                        response_stream.flush()
-                        return
-                    try:
-                        if request.get("op") == "canonicalize":
-                            from motion_edit.generation.newton_direct_fk import (
-                                canonicalize_motion_with_direct_newton_fk,
-                            )
-
-                            canonical = canonicalize_motion_with_direct_newton_fk(
-                                **dict(request["kwargs"])
-                            )
-                            response = {
-                                "ok": True,
-                                "canonical": {
-                                    "output_path": str(canonical.output_path),
-                                    "body_names": list(canonical.body_names),
-                                    "joint_names": list(canonical.joint_names),
-                                    "frame_count": canonical.frame_count,
-                                    "backend_metadata": canonical.backend_metadata,
-                                },
-                            }
-                            response_stream.write(
-                                json.dumps(response) + "\n"
-                            )
-                            response_stream.flush()
-                            continue
-                        output = solve_pyroki_fullbody_ik(
-                            **dict(request["kwargs"])
-                        )
-                    except Exception:
-                        response = {
-                            "ok": False,
-                            "traceback": traceback.format_exc(),
-                        }
-                    else:
-                        response = {"ok": True, "output": str(output)}
-                    response_stream.write(json.dumps(response) + "\n")
-                    response_stream.flush()
-        return
-    parser = argparse.ArgumentParser(description="Solve contact-aware fullbody trajectory IK with PyRoki.")
-    parser.add_argument("--lte", default=None, help="Legacy LTE keypoints or ContactAwareTaskspaceMotion NPZ.")
-    parser.add_argument("--taskspace-spec", default=None, help="Explicit ContactAwareTaskspaceMotion NPZ.")
-    parser.add_argument("--out", required=True)
-    parser.add_argument("--robot-urdf", default=str(DEFAULT_ROBOT_URDF))
-    parser.add_argument("--source-motion", default=None)
-    parser.add_argument("--max-nfev", type=int, default=25)
-    parser.add_argument("--q-prior-weight", type=float, default=0.25)
-    parser.add_argument("--q-smooth-weight", type=float, default=0.5)
-    parser.add_argument("--boundary-pin-weight", type=float, default=2.0)
-    parser.add_argument("--edited-contact-weight", type=float, default=100.0)
-    parser.add_argument("--fixed-contact-weight", type=float, default=80.0)
-    parser.add_argument("--foot-orientation-weight", type=float, default=20.0)
-    parser.add_argument("--q-velocity-weight", type=float, default=2.0)
-    parser.add_argument("--q-acceleration-weight", type=float, default=1.0)
-    parser.add_argument(
-        "--collision-similarity-weight",
-        "--collision-penetration-depth-weight",
-        dest="collision_similarity_weight",
-        metavar="WEIGHT",
-        type=float,
-        default=25.0,
-    )
-    parser.add_argument(
-        "--collision-max-refinements",
-        type=int,
-        default=1,
-    )
-    parser.add_argument(
-        "--self-collision-weight",
-        type=float,
-        default=20_000.0,
-    )
-    parser.add_argument(
-        "--collision-reference-cache",
-        default=None,
-        help=(
-            "Reusable fail-closed cache for source-rollout Newton signed "
-            "distances. Share this path across variants of one source."
-        ),
-    )
-    # Compatibility arguments retained for existing callers. Contact patch points
-    # replace the old contact-only toe/orientation pseudo-targets.
-    parser.add_argument("--contact-foot-orientation-weight", type=float, default=80.0)
-    parser.add_argument("--foot-toe-weight", type=float, default=20.0)
-    parser.add_argument("--contact-foot-toe-weight", type=float, default=120.0)
-    args = parser.parse_args(argv)
-    input_path = args.taskspace_spec or args.lte
-    if input_path is None:
-        parser.error("one of --lte or --taskspace-spec is required")
-    solve_pyroki_fullbody_ik(
-        lte_path=input_path,
-        output_path=args.out,
-        robot_urdf=args.robot_urdf,
-        source_motion_path=args.source_motion,
-        max_nfev=args.max_nfev,
-        q_prior_weight=args.q_prior_weight,
-        q_smooth_weight=args.q_smooth_weight,
-        boundary_pin_weight=args.boundary_pin_weight,
-        edited_contact_weight=args.edited_contact_weight,
-        fixed_contact_weight=args.fixed_contact_weight,
-        foot_orientation_weight=args.foot_orientation_weight,
-        q_velocity_weight=args.q_velocity_weight,
-        q_acceleration_weight=args.q_acceleration_weight,
-        collision_similarity_weight=args.collision_similarity_weight,
-        collision_max_refinements=args.collision_max_refinements,
-        self_collision_weight=args.self_collision_weight,
-        collision_reference_cache_path=args.collision_reference_cache,
-    )
-
-
-if __name__ == "__main__":
-    main()

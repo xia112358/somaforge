@@ -8,11 +8,12 @@ endpoint-conditioned trajectory infilling. Simulation uses the pinned Isaac Lab
 ## Start here
 
 - [Fresh-machine installation](docs/install.md) and [runtime compatibility](docs/environments.md)
-- [New Miniforge + pip profiles](docs/python-environments.md), selected explicitly while existing runtime defaults remain unchanged
+- [Unified main Python environment](docs/python-environments.md) for every maintained component
 - [Modular WBT experts, contact-reference recording and distillation](docs/wbt-modular-experiments.md)
 - [Download training inputs, reference models and extracted demonstrations](docs/data-downloads.md)
 - [Motion Edit and browser playback](packages/motion_edit/README.md)
 - [Predictor baseline and reproduction records](baselines/README.md)
+- [Current main-environment Predictor/Infiller inputs](docs/environments.md#generator-inputs-for-main)
 - [Local data layout](docs/repository-data.md), [data policy](docs/data-policy.md),
   and [repository maintenance](docs/repository-maintenance.md)
 
@@ -36,7 +37,7 @@ Follow the [installation guide](docs/install.md) before launching simulation.
 
 ```text
 src/holosoma/               WBT training, evaluation, and simulator integration
-src/holosoma_retargeting/   Retargeting tools (main or optional standalone profile)
+src/holosoma_retargeting/   Retargeting tools (included in main)
 packages/motion_edit/       Contact editing and validated kinematic candidates
 packages/generator/         Predictor, Infiller, datasets and generation training
 packages/contact_solver/    Contact objectives, collision gradients and projection
@@ -122,7 +123,7 @@ checks and deliberate conversion.
 The motion-editing branch starts with a canonical source motion and a
 self-collision-enabled WBT policy, collects actual executed contact/force evidence,
 and edits a validated surface-constrained `ContactEditPlan`. Semantic curves and
-Newton rigid patches feed PyRoki trajectory IK; direct Newton FK produces the
+Newton rigid patches feed Torch float32 trajectory IK; direct Newton FK produces the
 edited kinematic candidate. The policy must execute that candidate to produce its
 own actual contact force. Do not copy source force labels into an edited motion.
 

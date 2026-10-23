@@ -1106,7 +1106,8 @@ def _merge_contact_laplacian_ik_output(
     elif lte_repo_root:
         resolved_ik_script = str((Path(lte_repo_root).expanduser() / "scripts" / "solve_lte_fullbody_ik.py"))
     else:
-        resolved_ik_script = str(Path(__file__).with_name("pyroki_fullbody_ik.py"))
+        from .ik_runtime import default_ik_script
+        resolved_ik_script = str(default_ik_script())
     generated = dict(proxy_taskspace)
     for key in ("joint_pos", "joint_vel", "joint_names", "body_pos_w", "body_quat_w", "body_names", "is_qpos"):
         if key in ik_motion:

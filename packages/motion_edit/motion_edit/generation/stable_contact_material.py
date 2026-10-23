@@ -3,7 +3,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from .pyroki_taskspace import quat_apply_wxyz, resolve_link_index
+from .taskspace_kinematics import quat_apply_wxyz, resolve_link_index
 
 MATERIAL_SAMPLE_SCHEMA = 'fixed_observed_material_basis_per_active_episode_v2'
 

@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from motion_edit.generation.pyroki_fullbody_ik import _source_qpos, _world_body_poses
+from motion_edit.generation.trajectory_problem import _source_qpos, _world_body_poses
 
 
 class PyrokiEightPartAdapterTests(unittest.TestCase):

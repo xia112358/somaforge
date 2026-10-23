@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the first contact-aware edited trajectory without starting Isaac.
 
-The output is a PyRoki-FK-consistent preview. Run the direct Newton/MJWarp
+The output uses Torch float32 and Newton FK. Run the direct Newton
 canonicalizer before using it as a WBT training reference.
 """
 
@@ -18,7 +18,7 @@ from motion_edit.generation import generate_contact_aware_pyroki_preview
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--plan", required=True, type=Path, help="Validated ContactEditPlan JSON.")
-    parser.add_argument("--output", required=True, type=Path, help="Output PyRoki preview motion NPZ.")
+    parser.add_argument("--output", required=True, type=Path, help="Output trajectory IK preview NPZ.")
     parser.add_argument("--source-contact-layer", default=None)
     parser.add_argument("--intermediate-dir", type=Path, default=None)
     parser.add_argument("--overwrite", action="store_true")

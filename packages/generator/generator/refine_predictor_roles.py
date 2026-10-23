@@ -200,12 +200,12 @@ def run(cfg,device):
 
 
 def main():
-    from isaaclab.app import AppLauncher
+    from somaforge_core.launcher import parse_isaaclab_launcher_args
     import tyro
-    parser=argparse.ArgumentParser(add_help=False);AppLauncher.add_app_launcher_args(parser)
-    official,remaining=parser.parse_known_args();cfg=tyro.cli(Config,args=remaining)
-    if official.visualizer is not None or official.enable_cameras: raise ValueError('Role refinement is headless')
-    run(cfg,'cpu' if getattr(official,'cpu',False) else official.device)
+    official = parse_isaaclab_launcher_args(__doc__)
+    cfg = tyro.cli(Config)
+    if (official.visualizer and not official.headless_explicit) or official.enable_cameras: raise ValueError('Role refinement is headless')
+    run(cfg,official.device)
 
 
 if __name__=='__main__':main()

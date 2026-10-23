@@ -154,6 +154,7 @@ def test_persistent_worker_selects_ik_environment_and_isolates_imports(tmp_path,
     command, kwargs = calls[0]
     assert command[:6] == [conda, "run", "--no-capture-output", *expected_selector, "python"]
     assert "--worker-socket" in command
+    assert command[6:8] == ['-m', 'motion_edit.generation.torch_newton_worker']
     assert "/main/IsaacLab" not in kwargs["env"]["PYTHONPATH"]
     assert "/old/site-packages" not in kwargs["env"]["PYTHONPATH"]
     assert "PYTHONHOME" not in kwargs["env"]

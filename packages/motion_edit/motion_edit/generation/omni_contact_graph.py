@@ -740,7 +740,7 @@ def install_omni_contact_graph() -> None:
 
     lte = importlib.import_module("motion_edit.generation.lte_fullbody")
     solver = importlib.import_module("motion_edit.contact_laplacian.solver")
-    pyroki = importlib.import_module("motion_edit.generation.pyroki_taskspace")
+    pyroki = importlib.import_module("motion_edit.generation.taskspace_kinematics")
 
     lte.LTE_FULLBODY_KEYPOINT_LINKS.clear()
     lte.LTE_FULLBODY_KEYPOINT_LINKS.update(OMNI_KEYPOINT_LINKS)

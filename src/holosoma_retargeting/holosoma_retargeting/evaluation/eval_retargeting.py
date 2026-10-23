@@ -32,8 +32,7 @@ from holosoma_retargeting.config_types.robot import RobotConfig  # noqa: E402
 from holosoma_retargeting.src.mujoco_utils import _world_mesh_from_geom  # type: ignore[import-not-found]  # noqa: E402
 from holosoma_retargeting.src.utils import (  # type: ignore[import-not-found]  # noqa: E402
     calculate_scale_factor,
-    create_new_scene_xml_file,
-    create_scaled_multi_boxes_xml,
+    create_scaled_multi_boxes_urdf,
     extract_foot_sticking_sequence_velocity,
     load_intermimic_data,
     preprocess_motion_data,
@@ -118,16 +117,9 @@ class RetargetingEvaluator:
         # Foot sliding threshold (velocity in m/s)
         self.sliding_threshold = 0.01
 
-        # Load Mujoco model
-        if self.object_name == "ground":
-            robot_xml_path = robot_model_path.replace(".urdf", ".xml")
-        elif self.object_name == "multi_boxes":
-            robot_xml_path = constants.SCENE_XML_FILE  # type: ignore[attr-defined]
-        else:
-            robot_xml_path = robot_model_path.replace(".urdf", "_w_" + self.object_name + ".xml")
-
-        self.robot_model = mujoco.MjModel.from_xml_path(robot_xml_path)
-        print("Loading robot model from: ", robot_xml_path)
+        from somaforge_core.retarget_model import load_retarget_model
+        self.robot_model = load_retarget_model(robot_model_path, object_model_path,
+            object_name=self.object_name, robot_type=constants.ROBOT_NAME.split("_")[0])
 
         self.robot_data = mujoco.MjData(self.robot_model)
 
@@ -667,24 +659,9 @@ def _evaluate_single_task(
         constants.OBJECT_URDF_FILE = f"{constants.OBJECT_DIR}/{constants.OBJECT_NAME}.urdf"
         constants.OBJECT_MESH_FILE = f"{constants.OBJECT_DIR}/{constants.OBJECT_NAME}.obj"
 
-        box_asset_xml = f"{constants.OBJECT_DIR}/box_assets.xml"
-        scene_xml_name = constants.ROBOT_URDF_FILE.split("/")[-1].replace(".urdf", f"_w_{constants.OBJECT_NAME}.xml")
-        scene_xml_path = f"{constants.OBJECT_DIR}/{scene_xml_name}"
-
-        object_scale = np.array([1, 1, 1])
-        smpl_scale = constants.ROBOT_HEIGHT / 1.78
-
-        # Update object scale in .xml file
-        object_asset_xml_path = create_scaled_multi_boxes_xml(
-            box_asset_xml,
-            object_scale * smpl_scale,
+        constants.OBJECT_URDF_FILE = create_scaled_multi_boxes_urdf(
+            constants.OBJECT_URDF_FILE, (constants.ROBOT_HEIGHT / 1.78,) * 3
         )
-        new_scene_xml_path = create_new_scene_xml_file(
-            scene_xml_path,
-            object_scale * smpl_scale,
-            object_asset_xml_path,
-        )
-        constants.SCENE_XML_FILE = new_scene_xml_path
 
     object_model_path: str | None = getattr(constants, "OBJECT_URDF_FILE", None)
 

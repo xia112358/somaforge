@@ -6,12 +6,9 @@ The objective, original material sites, weights and bounds remain authoritative.
 """
 from __future__ import annotations
 
-import inspect
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.optimize import least_squares
-from scipy.sparse.linalg import LinearOperator
 
 
 SOLVER_SCHEMA = 'joint_trajectory_constrained_shared_fk_live_geometry_v3'
@@ -24,171 +21,10 @@ class ContinuousResult:
     solves: list[dict]
 
 
-def _matrix_free_kernels(residual, shape):
-    import jax
-    import jax.numpy as jnp
-
-    jax.config.update('jax_enable_x64', True)
-
-    def flat_residual(flat, args):
-        return residual(flat.reshape(shape), *args).reshape(-1)
-
-    value = jax.jit(flat_residual)
-    forward = jax.jit(lambda x, v, args: jax.jvp(
-        lambda z: flat_residual(z, args), (x,), (v,))[1])
-    reverse = jax.jit(lambda x, u, args: jax.vjp(
-        lambda z: flat_residual(z, args), x)[1](u)[0])
-    return value, forward, reverse
 
 
-def solve_matrix_free(residual, initial, lower, upper, *, max_nfev=25, arguments=(),
-                      _kernels=None, x_scale=1., progress=None):
-    """Bounded TRF with exact JAX Jacobian products, without a dense T-by-T Jacobian."""
-    import jax.numpy as jnp
-    shape = np.asarray(initial).shape
-    value, forward, reverse = _kernels or _matrix_free_kernels(residual, shape)
-    args = tuple(jnp.asarray(a) for a in arguments)
-    cached = {}
-    evaluations = 0
-
-    def fun(x):
-        nonlocal evaluations
-        if cached and np.array_equal(x, cached['state']):
-            return cached['value']
-        result = np.asarray(value(jnp.asarray(x), args))
-        cached.update(state=np.array(x, copy=True), value=result)
-        evaluations += 1
-        if progress is not None and (evaluations == 1 or evaluations % 5 == 0):
-            progress(dict(evaluation=evaluations, cost=float(.5*np.dot(result, result))),
-                     x.reshape(shape))
-        return result
-
-    def jac(x):
-        state = jnp.asarray(x)
-        size = len(fun(x))
-        return LinearOperator((size, len(x)), dtype=np.float64,
-            matvec=lambda v: np.asarray(forward(state, jnp.asarray(v).reshape(-1), args)),
-            rmatvec=lambda u: np.asarray(reverse(state, jnp.asarray(u).reshape(-1), args)))
-
-    return least_squares(fun, np.asarray(initial).reshape(-1), jac=jac,
-        bounds=(np.broadcast_to(lower, shape).reshape(-1),
-                np.broadcast_to(upper, shape).reshape(-1)),
-        max_nfev=max_nfev, tr_solver='lsmr', x_scale=np.broadcast_to(x_scale, shape).reshape(-1),
-        tr_options=dict(maxiter=150, atol=1.e-5, btol=1.e-5),
-        # A pose clipped onto a bound can have a tiny first TRF step while
-        # still carrying a large constraint gradient. Require stationarity;
-        # do not certify such a step as convergence through xtol/ftol.
-        xtol=None, ftol=None, gtol=1.e-5)
 
 
-class JointResidual:
-    """Couple the exact existing frame residual to live trajectory history."""
-
-    def __init__(self, residual, robot, root_source, root_dofs, loaded_motion=None):
-        import jax
-        import jax.numpy as jnp
-        from scipy.spatial.transform import Rotation
-
-        self.jax, self.jnp = jax, jnp
-        self.residual, self.robot = residual, robot
-        self.root_dofs = root_dofs
-        self.names = tuple(name for name in tuple(inspect.signature(residual).parameters)[1:]
-                           if name != 'fk_override')
-        self.root = jnp.asarray(root_source)
-        self.rotations = jnp.asarray(Rotation.from_quat(
-            np.asarray(root_source)[:, [4, 5, 6, 3]]).as_matrix())
-        self.loaded = loaded_motion
-        history_names = ('q_previous', 'q_previous_previous',
-                         'root_delta_previous', 'root_delta_previous_previous')
-        def column_squares(state, *args):
-            columns = (0, *(self.names.index(name)+1 for name in history_names))
-            return tuple(jnp.sum(jax.jacfwd(residual, argnums=i)(state, *args)**2, axis=0)
-                         for i in columns)
-        self._diagonal_columns = jax.jit(jax.vmap(column_squares))
-
-    def stack(self, rows):
-        if any(len(row) != len(self.names) for row in rows):
-            raise ValueError('Per-frame residual argument layout changed')
-        return tuple(np.stack(values) for values in zip(*rows))
-
-    def diagonal_scale(self, states, arguments):
-        """Scale linear-system columns by the existing local Jacobian norms.
-
-        This is a solver preconditioner; it neither changes residual weights
-        nor introduces another pose, support or contact objective.
-        """
-        columns = self._diagonal_columns(self.jnp.asarray(states),
-            *(self.jnp.asarray(a) for a in arguments))
-        square, previous_q, previous_previous_q, previous_root, previous_previous_root = map(np.asarray, columns)
-        square = square.copy()
-        square[:-1, self.root_dofs:] += previous_q[1:]
-        square[:-2, self.root_dofs:] += previous_previous_q[2:]
-        square[:-1, :self.root_dofs] += previous_root[1:]
-        square[:-2, :self.root_dofs] += previous_previous_root[2:]
-        norm = np.sqrt(square)
-        return 1./np.maximum(norm, np.sqrt(np.finfo(np.float64).eps))
-
-    def poses(self, states):
-        jnp = self.jnp
-        fk = self.jax.vmap(self.robot.forward_kinematics)(states[:, self.root_dofs:])
-        if self.root_dofs == 4:
-            axis = self.rotations[:, 2, :]  # world-up expressed in each source root
-            half = states[:, 3] * .5
-            yaw = jnp.concatenate((jnp.cos(half)[:, None],
-                axis * jnp.sin(half)[:, None]), axis=-1)
-            q = fk[..., :4]
-            w = yaw[:, None, :1]*q[..., :1]-jnp.sum(yaw[:, None, 1:]*q[..., 1:], -1, keepdims=True)
-            xyz = yaw[:, None, :1]*q[..., 1:]+q[..., :1]*yaw[:, None, 1:]+jnp.cross(yaw[:, None, 1:], q[..., 1:])
-            fk = jnp.concatenate((w, xyz, self.apply(yaw[:, None], fk[..., 4:7])), -1)
-        return fk
-
-    @staticmethod
-    def apply(quat, points):
-        import jax.numpy as jnp
-        cross = jnp.cross(quat[..., 1:], points)
-        return points+2.*(quat[..., :1]*cross+jnp.cross(quat[..., 1:], cross))
-
-    def dynamic_arguments(self, states, *arguments, poses_override=None):
-        jnp = self.jnp
-        args = dict(zip(self.names, arguments))
-        previous = jnp.concatenate((states[:1], states[:-1]), axis=0)
-        previous_previous = jnp.concatenate((states[:1], previous[:-1]), axis=0)
-        args['q_previous'] = previous[:, self.root_dofs:]
-        args['q_previous_previous'] = previous_previous[:, self.root_dofs:]
-        args['root_delta_previous'] = previous[:, :self.root_dofs]
-        args['root_delta_previous_previous'] = previous_previous[:, :self.root_dofs]
-        if self.loaded is not None:
-            from somaforge_core.loaded_material_motion import tangent_material_rms, DEFAULT_MATERIAL_PATH_BUDGET_M
-            fk = self.poses(states) if poses_override is None else poses_override
-            links = args['loaded_links'][1:]
-            local = args['loaded_local'][1:]
-            times = jnp.arange(len(states)-1)[:, None, None]
-            now = fk[times+1, links]
-            before = fk[times, links]
-            current_base = now[..., 4:7]+self.apply(now[..., :4], local)+states[1:, None, None, :3]
-            previous_base = before[..., 4:7]+self.apply(before[..., :4], local)+states[:-1, None, None, :3]
-            previous_world = self.root[:-1, None, None, :3]+jnp.einsum('tij,tpnj->tpni', self.rotations[:-1], previous_base)
-            previous_in_base = jnp.einsum('tji,tpnj->tpni', self.rotations[1:],
-                previous_world-self.root[1:, None, None, :3])
-            args['loaded_previous_points'] = jnp.concatenate((args['loaded_previous_points'][:1], previous_in_base), 0)
-            rms = tangent_material_rms(current_base-previous_in_base,
-                args['loaded_normals'][1:], args['loaded_weights'][1:], xp=jnp)
-            extra = jnp.maximum(rms-args['loaded_source_step'][1:], 0.)
-            remaining = jnp.zeros_like(args['loaded_remaining'])
-            for i, phase in enumerate(self.loaded.reference['phases']):
-                a, b, p = (int(phase[k]) for k in ('start', 'end', 'part'))
-                source_remaining = self.loaded.reference['calibration'][i]['allowance_m']
-                prior_extra = jnp.cumsum(extra[a:b, p])-extra[a:b, p]
-                prior_path = jnp.cumsum(rms[a:b, p])-rms[a:b, p]
-                remaining = remaining.at[a+1:b+1, 0, p].set(source_remaining-prior_extra)
-                remaining = remaining.at[a+1:b+1, 1, p].set(DEFAULT_MATERIAL_PATH_BUDGET_M-prior_path)
-            args['loaded_remaining'] = remaining
-        return args
-
-    def __call__(self, states, *arguments):
-        args = self.dynamic_arguments(states, *arguments)
-        ordered = tuple(args[name] for name in self.names)
-        return self.jax.vmap(self.residual)(states, *ordered)
 
 
 def solve_joint_trajectory(joint, rows, initial, lower, upper, *, max_nfev=25,
@@ -198,10 +34,10 @@ def solve_joint_trajectory(joint, rows, initial, lower, upper, *, max_nfev=25,
 
     if refresh is not None:
         from .continuous_constrained_ik import solve_constrained_trajectory
-        from .continuous_factored_ik import FactoredJointProblem
+        from .torch_newton_ik import TorchFactoredJointProblem
         return solve_constrained_trajectory(joint, rows, initial, lower, upper, refresh,
             max_nfev=max_nfev*(refinements+1), progress=progress,
-            problem_class=problem_class or FactoredJointProblem)
+            problem_class=problem_class or TorchFactoredJointProblem)
 
     states = np.asarray(initial).copy()
     solves = []
@@ -269,7 +105,7 @@ class NativeCollisionRows:
 
     def __call__(self, states, rows):
         from scipy.spatial.transform import Rotation
-        from .pyroki_fullbody_ik import (
+        from .trajectory_problem import (
             _terrain_surface_key, _surface_class, _contact_part_for_body_name,
             _is_contact_reference_body, _environment_deeper_weight_for_body)
 

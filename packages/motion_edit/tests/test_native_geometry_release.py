@@ -27,12 +27,12 @@ class GeometryTest(unittest.TestCase):
         self.assertLess(float(g.gaps(np.array([[[0., 0., .05]]]))[0, 0]), 0)
 
     def test_derivative(self):
-        import jax
-        import jax.numpy as jnp
+        import torch
         g = self.geometry()
-        def f(z):
-            return g.gaps(jnp.array([[[0., 0., z]]]))[0, 0]
-        self.assertAlmostEqual(float(jax.grad(f)(.2)), 1.)
+        z = torch.tensor(.2, requires_grad=True)
+        points = torch.stack((z*0, z*0, z)).reshape(1, 1, 3)
+        derivative, = torch.autograd.grad(g.gaps(points)[0, 0], z)
+        self.assertAlmostEqual(float(derivative), 1.)
 
     def test_triangle_diagonal_is_not_xy_bounding_box(self):
         g = self.geometry()

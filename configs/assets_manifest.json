@@ -1,7 +1,9 @@
 {
   "schema": "somaforge_asset_manifest_v1",
   "root": "..",
-  "external_roots": ["runtime/current"],
+  "external_roots": [
+    "runtime/current"
+  ],
   "assets": [
     {
       "id": "robot.g1.spherehand",
@@ -105,15 +107,23 @@
       "status": "archived_quality_review_required",
       "files": {
         "root": "runtime/current/motions/climb00_contact_dataset",
-        "catalog": "runtime/current/motions/climb00_contact_dataset/catalog.json"
+        "catalog": "runtime/current/motions/climb00_contact_dataset/catalog.json",
+        "catalog_before_registration": "runtime/current/motions/climb00_contact_dataset/versions/dynamics_corrected_207_20261017/provenance/catalog_before_registration.json"
       },
       "sha256": {
-        "catalog": "2d15032c663a86e656012395ea1193ff7d8dff570ea3d18ce384a82b77b45110"
+        "catalog": "9a4141300422e88d91968e0544d3849738d265a712043b90008e7b16bbb9d671",
+        "catalog_before_registration": "2d15032c663a86e656012395ea1193ff7d8dff570ea3d18ce384a82b77b45110"
       },
       "metadata": {
         "robot_asset_id": "robot.g1.spherehand",
         "training_approved": false,
-        "purpose": "Formal independent archive of source v5, historical207 variants and single-case support-repair candidates; not a replacement training manifest"
+        "purpose": "Formal independent archive of source v5, historical207 variants and single-case support-repair candidates; not a replacement training manifest",
+        "catalog_registration": {
+          "version": "dynamics_corrected_207_20261017",
+          "original_versions_preserved": true,
+          "registered_payload_files_verified": 621,
+          "training_approved": false
+        }
       }
     },
     {
@@ -185,6 +195,68 @@
         "superseded_by": "predictor.v1_latest.20261010",
         "purpose": "Historical source550 plus500 low-LR updates and architecture comparison evidence",
         "path_migration_original_baseline_sha256": "4ac2e71239c0c4d7a72398a040a807131f17c97868534d1765e5980e8ebf08f8"
+      }
+    },
+    {
+      "id": "dataset.climb00.main_20261022",
+      "kind": "dataset",
+      "status": "current_runtime_input",
+      "files": {
+        "manifest": "runtime/current/motions/climb00_contact_dataset/training/predictor_main_20261022/manifest.json",
+        "data_cache": "runtime/current/motions/climb00_contact_dataset/training/predictor_main_20261022/data.pt",
+        "q_cache": "runtime/current/motions/climb00_contact_dataset/training/predictor_main_20261022/q_cache_64.npz"
+      },
+      "sha256": {
+        "manifest": "e8629595041efada1e057f43707e02091fbf34fa8b72207620f715a4b68b829d",
+        "data_cache": "63f4b3a111311ad1ca43755b4128f3169e19278e93fe8b933298387557d60b19",
+        "q_cache": "050a940d437a3e90ce49f38a722c7ce7b09c690edb8a51722dd617d92198f0d3"
+      },
+      "metadata": {
+        "robot_asset_id": "robot.g1.spherehand",
+        "newton_runtime": {
+          "runtime_id": "newton-1.7.0+7e75abe28b8d69522bc0b34837aaed2c303dff5a",
+          "version": "1.7.0",
+          "source_commit": "7e75abe28b8d69522bc0b34837aaed2c303dff5a",
+          "module": "/home/xiaz/somaforge/runtime/environments/conda/somaforge/lib/python3.12/site-packages/newton/__init__.py",
+          "newton": "1.7.0",
+          "warp-lang": "1.18.0",
+          "mujoco": "3.15.0",
+          "mujoco-warp": "3.15.0"
+        },
+        "rematerialized_motions": 207,
+        "source_motions_modified": false,
+        "original_baseline": "predictor.v1_latest.20261010",
+        "purpose": "Same frozen v1 weights; explicitly rebuilt current Newton observations, events and caches. Historical results remain attached to original data."
+      }
+    },
+    {
+      "id": "dataset.infiller.main_20261022",
+      "kind": "dataset",
+      "status": "current_runtime_input",
+      "files": {
+        "corpus": "runtime/current/motions/infiller_main_20261022/corpus.pt"
+      },
+      "sha256": {
+        "corpus": "6888571cce941d8c7d6bfbf76af6d841d7d812b593d30937421c6f071c6a2097"
+      },
+      "metadata": {
+        "robot_asset_id": "robot.g1.spherehand",
+        "runtime_inputs": "configs/generator/main_runtime.json",
+        "source_dataset": "dataset.climb00.main_20261022",
+        "records": 7271,
+        "source_motions": 207,
+        "counts": {
+          "test/demonstration": 855,
+          "validation/demonstration": 780,
+          "train/demonstration": 1470,
+          "test/predictor_accepted": 804,
+          "validation/predictor_accepted": 721,
+          "train/predictor_accepted": 2641
+        },
+        "label_policy": "primary_horizontal_upward_faces_v1",
+        "sampling": "fixed_q_forward_no_integration",
+        "dynamic_support": "unknown; no executed loads",
+        "smoke": false
       }
     }
   ]

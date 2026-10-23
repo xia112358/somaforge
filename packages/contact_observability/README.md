@@ -79,10 +79,10 @@ python3 packages/contact_observability/run.py summarize
 python3 packages/contact_observability/run.py summarize --write
 
 # 使用原相机重新扫描整条动作。
-runtime/environments/isaaclab-ga-3.0.0-newton-1.7.0/bin/python packages/contact_observability/run.py route
+python3 scripts/manage_environment.py run --profile main -- python packages/contact_observability/run.py route
 
 # 指定根相机配置和独立输出目录。
-runtime/environments/isaaclab-ga-3.0.0-newton-1.7.0/bin/python packages/contact_observability/run.py route \
+python3 scripts/manage_environment.py run --profile main -- python packages/contact_observability/run.py route \
   --profile root_depth_87x58_fov89p5_pitch85_yaw_v1 \
   --output tmp/contact_observability/route_root87
 
