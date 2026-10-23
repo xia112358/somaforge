@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 PACKAGE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$PACKAGE_ROOT/../../scripts/source_isaaclab3_newton_setup.sh" >&2
-exec "$SOMAFORGE_NEWTON_ENV/bin/python" -c 'from motion_edit.cli import main; main()' "$@"
+exec python3 "$PACKAGE_ROOT/../../scripts/manage_environment.py" run --profile main -- \
+    python -c 'from motion_edit.cli import main; main()' "$@"

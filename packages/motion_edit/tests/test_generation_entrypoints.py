@@ -42,7 +42,7 @@ def test_single_and_batch_use_contact_aware_backend(tmp_path, batch):
         args += ['--plan-manifest', str(manifest), '--output-motion-dir', str(tmp_path)]
     else:
         args += ['--plan', str(path), '--output-motion', str(output)]
-    args += ['--ik-q-acceleration-weight', '8']
+    args += ['--ik-q-acceleration-weight', '8', '--ik-script', str(tmp_path/'experimental_ik.py')]
     result = SimpleNamespace(output_motion_path=output, taskspace_spec_path=tmp_path/'task.npz',
         ik_output_path=tmp_path/'ik.npz', diagnostics={'augmentation_objective':'consolidated_v1', 'free_surface_contacts':True,
             'source_prefix_reference':prefix,'root_yaw_condition':dict(reference_delta_degrees=0.),'root_yaw_optimized':True})
@@ -50,6 +50,7 @@ def test_single_and_batch_use_contact_aware_backend(tmp_path, batch):
         parsed=cli.build_parser().parse_args(args);parsed.func(parsed)
     assert generate.call_count == 1
     assert generate.call_args.kwargs['ik_q_acceleration_weight'] == 8
+    assert generate.call_args.kwargs['ik_script'] == tmp_path/'experimental_ik.py'
     if batch:
         assert generate.call_args.args[0].metadata['source_prefix_reference']==prefix
     else:
@@ -87,14 +88,14 @@ def test_backend_rejects_old_plan_before_reading_source(tmp_path, metadata):
 
 
 def test_ik_rejects_legacy_keypoints():
-    from motion_edit.generation.pyroki_fullbody_ik import _input_problem
+    from motion_edit.generation.trajectory_problem import _input_problem
     with pytest.raises(ValueError, match='Legacy LTE keypoints'):
         _input_problem({}, link_names=(), actuated_count=0, robot_joint_names=(),
                        source_motion_path=None, edited_contact_weight=1, fixed_contact_weight=1)
 
 
 def test_robot_mapping_does_not_guess_from_substrings():
-    from motion_edit.generation.pyroki_taskspace import resolve_link_index
+    from motion_edit.generation.taskspace_kinematics import resolve_link_index
     assert resolve_link_index(('left_ankle_roll_link',), 'left_ankle_roll', ()) is None
     assert resolve_link_index(('left_ankle_roll_link',), '/Robot/left_ankle_roll_link', ()) == 0
 

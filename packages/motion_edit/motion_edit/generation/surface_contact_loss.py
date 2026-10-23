@@ -143,7 +143,7 @@ def face_edges(surface):
 
 
 def compile_surface_faces(spec, compiled, link_names):
-    from .pyroki_taskspace import resolve_link_index
+    from .taskspace_kinematics import resolve_link_index
     rows = [[] for _ in range(spec.frame_count)]
     for contact in spec.contacts:
         link = resolve_link_index(link_names, contact.body_label, (contact.body_label,))

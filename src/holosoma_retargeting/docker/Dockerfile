@@ -1,4 +1,6 @@
-# Base image for retargeting without binding this project to an IsaacSim release.
+# Compatibility Dockerfile; keep the runtime recipe identical to docker/Dockerfile.
+# All components are installed into the single managed main environment.
+# PyTorch's CUDA 13 wheels require a compatible host NVIDIA driver.
 FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 
 # Switch to root user for installation
@@ -8,25 +10,27 @@ USER root
 ENV LANG=C.UTF-8
 ENV DEBIAN_FRONTEND=noninteractive
 ENV WORKSPACE_DIR=/workspace
-ENV CONDA_ROOT=/root/.holosoma_deps/miniconda3
+ENV CONDA_ROOT=/opt/miniforge3
+ENV MINIFORGE_ROOT=/opt/miniforge3
 ENV PATH=$CONDA_ROOT/bin:$PATH
 
 RUN mkdir -p /var/lib/apt/lists/partial && \
     apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     build-essential \
+    linux-libc-dev \
+    python3 \
+    ca-certificates \
     swig \
     curl \
     wget \
     unzip \
     git \
-    sudo \
-    && rm -rf /var/lib/apt/lists/*
+    sudo
 
-# Install Miniconda
-RUN curl https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o /miniconda.sh && \
-    bash /miniconda.sh -b -u -p $CONDA_ROOT && \
-    rm /miniconda.sh
+# Install Miniforge as the package manager; main is the only project prefix.
+RUN curl -fsSL https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -o /miniforge.sh && \
+    bash /miniforge.sh -b -p $CONDA_ROOT
 
 # Configure conda for non-interactive use
 RUN echo ". $CONDA_ROOT/etc/profile.d/conda.sh" >> ~/.bashrc && \
@@ -39,64 +43,14 @@ WORKDIR $WORKSPACE_DIR
 # Copy repository contents to holosoma
 COPY . ./holosoma
 
-# run inference setup
-RUN cd /workspace/holosoma && \
-    bash /workspace/holosoma/scripts/setup_retargeting.sh
+##### Run setup
+RUN python3 /workspace/holosoma/scripts/bootstrap_runtime.py && \
+    bash /workspace/holosoma/scripts/setup_all.sh
 
 # Set up conda activation for runtime
-RUN echo "source $CONDA_ROOT/etc/profile.d/conda.sh" >> ~/.bashrc
+RUN echo "source /workspace/holosoma/scripts/source_isaaclab3_newton_setup.sh" >> ~/.bashrc
 
 # Set working directory
-WORKDIR /workspace/holosoma
-
-ENTRYPOINT []
-CMD ["/bin/bash"]
-# Retargeting-only image
-# Runs setup_retargeting.sh to create the hsretargeting conda environment (Python 3.11)
-# with holosoma_retargeting installed.
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
-
-USER root
-
-ENV LANG=C.UTF-8
-ENV DEBIAN_FRONTEND=noninteractive
-ENV WORKSPACE_DIR=/workspace
-ENV CONDA_ROOT=/root/.holosoma_deps/miniconda3
-ENV PATH=$CONDA_ROOT/bin:$PATH
-
-RUN mkdir -p /var/lib/apt/lists/partial && \
-    apt-get update && apt-get install -y --no-install-recommends \
-    cmake \
-    build-essential \
-    swig \
-    curl \
-    wget \
-    unzip \
-    git \
-    sudo \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Miniconda
-RUN curl https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o /miniconda.sh && \
-    bash /miniconda.sh -b -u -p $CONDA_ROOT && \
-    rm /miniconda.sh
-
-# Configure conda for non-interactive use
-RUN echo ". $CONDA_ROOT/etc/profile.d/conda.sh" >> ~/.bashrc && \
-    conda config --set always_yes true
-
-RUN mkdir -p $WORKSPACE_DIR
-WORKDIR $WORKSPACE_DIR
-
-COPY . ./holosoma
-
-RUN . $CONDA_ROOT/etc/profile.d/conda.sh && \
-    cd /workspace/holosoma/scripts && \
-    chmod +x setup_retargeting.sh && \
-    ./setup_retargeting.sh
-
-RUN echo "source $CONDA_ROOT/etc/profile.d/conda.sh" >> ~/.bashrc
-
 WORKDIR /workspace/holosoma
 
 ENTRYPOINT []

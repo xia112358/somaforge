@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from motion_edit.contact.plans import ContactEditPlan
 from motion_edit.generation.contact_aware_preview import (
@@ -19,6 +21,7 @@ def test_contact_aware_ik_reuses_current_conda_interpreter(
 ) -> None:
     calls: list[tuple[list[str], dict[str, object]]] = []
     monkeypatch.setenv("CONDA_DEFAULT_ENV", "env_somaforge")
+    monkeypatch.delenv("SOMAFORGE_IK_WORKER_SOCKET", raising=False)
     monkeypatch.setattr(
         "motion_edit.generation.contact_aware_preview.subprocess.run",
         lambda cmd, **kwargs: calls.append((cmd, kwargs)),
@@ -48,6 +51,79 @@ def test_contact_aware_ik_reuses_current_conda_interpreter(
     assert python_path[0].endswith("/packages/motion_edit")
     assert python_path[1].endswith("/packages/somaforge_core")
     assert all(Path(item).is_absolute() for item in python_path[:2])
+
+
+@pytest.mark.parametrize("target", ["legacy_ik", "prefix with spaces"])
+def test_contact_aware_ik_selects_name_or_prefix_without_inheriting_main_python(
+    tmp_path: Path, monkeypatch, target: str,
+) -> None:
+    calls = []
+    monkeypatch.delenv("SOMAFORGE_IK_WORKER_SOCKET", raising=False)
+    monkeypatch.delenv("SOMAFORGE_CONDA_EXE", raising=False)
+    monkeypatch.setenv("CONDA_DEFAULT_ENV", "main")
+    monkeypatch.setenv("PYTHONPATH", "/legacy/site-packages:/main/IsaacLab/source/isaaclab")
+    monkeypatch.setenv("PYTHONHOME", "/main/python")
+    monkeypatch.setenv("PYTHONUSERBASE", "/legacy/user-site")
+    monkeypatch.setenv("SOMAFORGE_NEWTON_ENV", str(tmp_path / "main"))
+    monkeypatch.setenv("SOMAFORGE_ENV_PROFILE", "main")
+    monkeypatch.setenv("SOMAFORGE_ENV_PREFIX", str(tmp_path / "main"))
+    monkeypatch.setattr(
+        "motion_edit.generation.contact_aware_preview.subprocess.run",
+        lambda cmd, **kwargs: calls.append((cmd, kwargs)),
+    )
+    selector = ["-n", target] if target == "legacy_ik" else ["--prefix", str(tmp_path / target)]
+    _run_pyroki_preview_subprocess(
+        taskspace_path=tmp_path / "taskspace.npz", source_motion_path=tmp_path / "source.npz",
+        ik_output_path=tmp_path / "ik.npz", ik_script=tmp_path / "ik.py",
+        ik_conda_env=selector[1], ik_max_nfev=None,
+    )
+    command, kwargs = calls[0]
+    assert command[:5] == ["conda", "run", *selector, "python"]
+    env = kwargs["env"]
+    assert "PYTHONHOME" not in env and "PYTHONUSERBASE" not in env
+    assert env["PYTHONNOUSERSITE"] == "1"
+    assert len(env["PYTHONPATH"].split(os.pathsep)) == 3
+    assert "/legacy" not in env["PYTHONPATH"] and "/main/IsaacLab" not in env["PYTHONPATH"]
+    assert env["SOMAFORGE_NEWTON_ENV"] == str(tmp_path / "main")
+    assert env["SOMAFORGE_ENV_PROFILE"] == "main"
+    assert env["SOMAFORGE_ENV_PREFIX"] == str(tmp_path / "main")
+
+
+def test_contact_aware_ik_reuses_actual_prefix_without_conda_name(tmp_path: Path, monkeypatch) -> None:
+    calls = []
+    prefix = tmp_path / "ik"
+    monkeypatch.delenv("SOMAFORGE_IK_WORKER_SOCKET", raising=False)
+    monkeypatch.delenv("CONDA_DEFAULT_ENV", raising=False)
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    monkeypatch.setattr(
+        "motion_edit.generation.contact_aware_preview.subprocess.run",
+        lambda cmd, **kwargs: calls.append((cmd, kwargs)),
+    )
+    _run_pyroki_preview_subprocess(
+        taskspace_path=tmp_path / "taskspace.npz", source_motion_path=tmp_path / "source.npz",
+        ik_output_path=tmp_path / "ik.npz", ik_script=tmp_path / "ik.py",
+        ik_conda_env=str(prefix), ik_max_nfev=None,
+    )
+    assert calls[0][0][0] == sys.executable
+    assert "conda" not in calls[0][0]
+
+
+def test_contact_aware_ik_uses_explicit_miniforge_executable(tmp_path: Path, monkeypatch) -> None:
+    calls = []
+    conda = str(tmp_path / "miniforge with spaces" / "bin" / "conda")
+    monkeypatch.delenv("SOMAFORGE_IK_WORKER_SOCKET", raising=False)
+    monkeypatch.setenv("CONDA_DEFAULT_ENV", "main")
+    monkeypatch.setenv("SOMAFORGE_CONDA_EXE", conda)
+    monkeypatch.setattr(
+        "motion_edit.generation.contact_aware_preview.subprocess.run",
+        lambda cmd, **kwargs: calls.append((cmd, kwargs)),
+    )
+    _run_pyroki_preview_subprocess(
+        taskspace_path=tmp_path / "taskspace.npz", source_motion_path=tmp_path / "source.npz",
+        ik_output_path=tmp_path / "ik.npz", ik_script=tmp_path / "ik.py",
+        ik_conda_env=str(tmp_path / "ik"), ik_max_nfev=None,
+    )
+    assert calls[0][0][:5] == [conda, "run", "--prefix", str(tmp_path / "ik"), "python"]
 
 
 

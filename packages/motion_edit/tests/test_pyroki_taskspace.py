@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from motion_edit.generation.pyroki_fullbody_ik import (
+from motion_edit.generation.trajectory_problem import (
     CONTACT_REFERENCE_BODY_BY_PART,
     _contact_part_for_body_name,
     _contact_target_surface_class,
@@ -19,11 +19,11 @@ from motion_edit.generation.pyroki_fullbody_ik import (
     _write_collision_reference_cache,
     self_collision_barrier_residual,
 )
-from motion_edit.generation.pyroki_taskspace import (
-    compile_pyroki_taskspace,
+from motion_edit.generation.taskspace_kinematics import (
+    compile_taskspace,
     holosoma_joint_velocities,
     quat_apply_wxyz,
-    world_body_poses_from_pyroki_fk,
+    world_body_poses_from_fk,
 )
 from motion_edit.generation.taskspace_spec import ContactAwareTaskspaceMotion, ContactPatchTarget
 
@@ -235,9 +235,9 @@ def _spec() -> ContactAwareTaskspaceMotion:
     )
 
 
-def test_compile_pyroki_taskspace_resolves_semantics_and_global_contact_frames() -> None:
+def test_compile_taskspace_resolves_semantics_and_global_contact_frames() -> None:
     spec = _spec()
-    compiled = compile_pyroki_taskspace(
+    compiled = compile_taskspace(
         spec,
         ("pelvis", "left_ankle_roll_sphere_5_link", "left_elbow_link", "left_ankle_roll_link"),
         edited_contact_weight=123.0,
@@ -261,13 +261,13 @@ def test_contact_group_weight_is_independent_of_manifold_point_count() -> None:
     grouped = replace(spec, contacts=(contact, extra),
                       metadata={"normalize_contact_group_weights": True})
     links = ("pelvis", "left_ankle_roll_link", "left_elbow_link")
-    compiled = compile_pyroki_taskspace(grouped, links)
+    compiled = compile_taskspace(grouped, links)
     np.testing.assert_allclose(compiled.contact_weights.sum(axis=1), [0, 100, 100])
     np.testing.assert_allclose(compiled.contact_weights[1], [50, 50])
-    legacy = compile_pyroki_taskspace(replace(grouped, metadata={}), links)
+    legacy = compile_taskspace(replace(grouped, metadata={}), links)
     np.testing.assert_allclose(legacy.contact_weights.sum(axis=1), [0, 200, 100])
     independent = replace(extra, shape_labels=("other_shape",))
-    separate = compile_pyroki_taskspace(replace(grouped, contacts=(contact, independent)), links)
+    separate = compile_taskspace(replace(grouped, contacts=(contact, independent)), links)
     np.testing.assert_allclose(separate.contact_weights.sum(axis=1), [0, 200, 100])
     np.testing.assert_array_equal(compiled.contact_targets_w, legacy.contact_targets_w)
     np.testing.assert_array_equal(compiled.contact_points_local, legacy.contact_points_local)
@@ -278,7 +278,7 @@ def test_contact_group_normalization_requires_surface_identity() -> None:
     import pytest
 
     with pytest.raises(ValueError, match="requires shape and surface identity"):
-        compile_pyroki_taskspace(replace(_spec(), metadata={"normalize_contact_group_weights": True}),
+        compile_taskspace(replace(_spec(), metadata={"normalize_contact_group_weights": True}),
                                 ("pelvis", "left_ankle_roll_link", "left_elbow_link"))
 
 
@@ -356,7 +356,7 @@ def test_sampling_keeps_true_contact_line_and_ignores_float32_roundoff():
     assert additions == []
 
 
-def test_compile_pyroki_taskspace_uses_rolling_local_points_by_frame() -> None:
+def test_compile_taskspace_uses_rolling_local_points_by_frame() -> None:
     spec = _spec()
     rolling = ContactPatchTarget(
         **{
@@ -371,7 +371,7 @@ def test_compile_pyroki_taskspace_uses_rolling_local_points_by_frame() -> None:
         **{**spec.__dict__, "contacts": (rolling,)}
     )
 
-    compiled = compile_pyroki_taskspace(
+    compiled = compile_taskspace(
         rolling_spec,
         ("pelvis", "left_ankle_roll_link", "left_elbow_link"),
     )
@@ -380,9 +380,9 @@ def test_compile_pyroki_taskspace_uses_rolling_local_points_by_frame() -> None:
     np.testing.assert_allclose(compiled.contact_points_local[2, 0], [0.3, 0.0, -0.05])
 
 
-def test_compile_pyroki_taskspace_keeps_full_contact_weight_at_boundaries() -> None:
+def test_compile_taskspace_keeps_full_contact_weight_at_boundaries() -> None:
     spec = _spec()
-    compiled = compile_pyroki_taskspace(
+    compiled = compile_taskspace(
         spec,
         ("pelvis", "left_ankle_roll_sphere_5_link", "left_elbow_link", "left_ankle_roll_link"),
         edited_contact_weight=123.0,
@@ -390,7 +390,7 @@ def test_compile_pyroki_taskspace_keeps_full_contact_weight_at_boundaries() -> N
     assert compiled.contact_weights[:, 0].tolist() == [0.0, 123.0, 123.0]
 
 
-def test_compile_pyroki_taskspace_keeps_short_fixed_contact() -> None:
+def test_compile_taskspace_keeps_short_fixed_contact() -> None:
     edited = _spec()
     fixed_contact = ContactPatchTarget(
         **{
@@ -406,7 +406,7 @@ def test_compile_pyroki_taskspace_keeps_short_fixed_contact() -> None:
         }
     )
 
-    compiled = compile_pyroki_taskspace(
+    compiled = compile_taskspace(
         fixed,
         ("pelvis", "left_ankle_roll_link", "left_elbow_link"),
         fixed_contact_weight=123.0,
@@ -420,7 +420,7 @@ def test_world_body_poses_compose_root_and_link_pose() -> None:
     root_quat = np.asarray([np.cos(angle / 2.0), 0.0, 0.0, np.sin(angle / 2.0)])
     root = np.asarray([[1.0, 2.0, 3.0, *root_quat]], dtype=np.float64)
     fk = np.asarray([[[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]]], dtype=np.float64)
-    body_pos, body_quat = world_body_poses_from_pyroki_fk(root, fk)
+    body_pos, body_quat = world_body_poses_from_fk(root, fk)
     np.testing.assert_allclose(body_pos[0, 0], [1.0, 3.0, 3.0], atol=1.0e-6)
     np.testing.assert_allclose(body_quat[0, 0], root_quat, atol=1.0e-6)
     np.testing.assert_allclose(quat_apply_wxyz(root_quat, [1.0, 0.0, 0.0]), [0.0, 1.0, 0.0], atol=1.0e-6)

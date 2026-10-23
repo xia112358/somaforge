@@ -290,7 +290,7 @@ runtime metadata can be checked without launching physics.
 
 ```bash
 source scripts/source_somaforge.sh
-runtime/environments/isaaclab-ga-3.0.0-newton-1.7.0/bin/python -B \
+python3 scripts/manage_environment.py run --profile main -- python -B \
   scripts/run_trajectory_refinement.py \
   --config configs/trajectory_refinement/climb00_joint_v12.json
 ```
@@ -304,7 +304,7 @@ Checkpoint metadata is checked on CPU when planning/executing training or
 evaluation; prepare only checks its existence and content hash.
 
 ```bash
-runtime/environments/isaaclab-ga-3.0.0-newton-1.7.0/bin/python -B \
+python3 scripts/manage_environment.py run --profile main -- python -B \
   scripts/run_trajectory_refinement.py \
   --config configs/trajectory_refinement/climb00_joint_v12.json \
   --stage prepare --execute
@@ -437,7 +437,7 @@ explicit simulator stages have actually been run.
 ## CPU regression tests
 
 ```bash
-runtime/environments/isaaclab-ga-3.0.0-newton-1.7.0/bin/python -B -m pytest \
+python3 scripts/manage_environment.py run --profile main -- python -B -m pytest \
   tests/test_trajectory_refinement.py -q -p no:cacheprovider
 ```
 

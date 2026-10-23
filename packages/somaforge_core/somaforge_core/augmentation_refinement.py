@@ -94,7 +94,17 @@ def preparation(config):
         root/"packages/motion_edit/motion_edit/generation/jobs.py",
         root/"packages/motion_edit/motion_edit/generation/source_prefix_reference.py",
         root/"packages/motion_edit/motion_edit/generation/rollout_authority.py",
-        root/"packages/motion_edit/motion_edit/generation/pyroki_fullbody_ik.py",
+        root/"packages/motion_edit/motion_edit/generation/trajectory_problem.py",
+        root/"packages/motion_edit/motion_edit/generation/trajectory_types.py",
+        root/"packages/motion_edit/motion_edit/generation/taskspace_kinematics.py",
+        root/"packages/motion_edit/motion_edit/generation/ik_runtime.py",
+        root/"packages/motion_edit/motion_edit/generation/torch_newton_ik.py",
+        root/"packages/motion_edit/motion_edit/generation/torch_newton_kinematics.py",
+        root/"packages/motion_edit/motion_edit/generation/torch_newton_worker.py",
+        root/"packages/motion_edit/motion_edit/generation/loaded_material_reference.py",
+        root/"packages/motion_edit/motion_edit/generation/continuous_ik.py",
+        root/"packages/motion_edit/motion_edit/generation/continuous_factored_ik.py",
+        root/"packages/motion_edit/motion_edit/generation/continuous_constrained_ik.py",
         root/"packages/motion_edit/motion_edit/generation/newton_direct_fk.py"]
     for item in implementation: files[str(item)] = refinement.fingerprint(item)
     return dict(schema=SCHEMA, config=config, jobs=jobs, files=list(files.values()),
@@ -157,7 +167,7 @@ def run_candidate(command, directory, environment, cpus):
 
 
 def generate_parallel(config_path, config, jobs, output, status):
-    """Persistent IK workers use the configured JAX device; Newton stays on CPU."""
+    """Persistent Torch/Newton workers use the configured generation device."""
     from generate_contact_aware_batch import _start_ik_worker,_worker_request,_batch_environment
     import uuid
     completed={job['identity'] for job in jobs if verify_reference(job)}
@@ -176,8 +186,8 @@ def generate_parallel(config_path, config, jobs, output, status):
                    free_mib=free,required_mib=config['gpu']['min_free_mib'])
             time.sleep(config['gpu']['poll_seconds'])
     if config['generation']['workers']==1 and not gpu_started:
-        previous={key:os.environ.get(key) for key in ('CUDA_VISIBLE_DEVICES','JAX_PLATFORMS')}
-        os.environ['CUDA_VISIBLE_DEVICES']='';os.environ['JAX_PLATFORMS']='cpu'
+        previous={key:os.environ.get(key) for key in ('CUDA_VISIBLE_DEVICES','SOMAFORGE_IK_DEVICE')}
+        os.environ['CUDA_VISIBLE_DEVICES']='';os.environ['SOMAFORGE_IK_DEVICE']='cpu'
         try:
             for job in pending:
                 status('generation',completed=len(completed),active=[job['identity']],workers=1,gpu_started=False)
@@ -193,7 +203,7 @@ def generate_parallel(config_path, config, jobs, output, status):
     attempt=output/'generation_workers'/uuid.uuid4().hex;attempt.mkdir(parents=True)
     environment=_batch_environment(attempt)
     environment.update(CUDA_VISIBLE_DEVICES=str(gpu_index) if gpu_started else '',
-        JAX_PLATFORMS='cuda' if gpu_started else 'cpu',XLA_PYTHON_CLIENT_PREALLOCATE='false',OMP_NUM_THREADS=str(threads),
+        SOMAFORGE_IK_DEVICE='cuda:0' if gpu_started else 'cpu',OMP_NUM_THREADS=str(threads),
         OPENBLAS_NUM_THREADS='1',MKL_NUM_THREADS='1',NUMEXPR_NUM_THREADS=str(threads))
     pool=[];active={};lock=threading.Lock();stop=threading.Event()
     def publish():
@@ -202,7 +212,8 @@ def generate_parallel(config_path, config, jobs, output, status):
     try:
         for index in range(count):
             worker_environment=dict(environment,SOMAFORGE_LAPLACIAN_TOPOLOGY_CACHE=str(attempt/f'topology_{index}.npz'))
-            name,process,log=_start_ik_worker(index=index,environment=worker_environment,work_root=attempt)
+            name,process,log=_start_ik_worker(index=index,environment=worker_environment,work_root=attempt,
+                ik_conda_env=config['generation']['ik_conda_env'])
             pool.append((name,process,log,worker_environment,cpus[index*threads:(index+1)*threads]))
             set_affinity(process.pid,pool[-1][4])
         def queue(index):

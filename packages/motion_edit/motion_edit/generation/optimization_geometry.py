@@ -56,20 +56,18 @@ def source_geometry_distances(scene, link_names, qpos, robot, robot_joint_names)
     not become new source constraints. Source poses and contact labels are read
     only; this does not change the native reference execution.
     """
-    import jax
-    import jax.numpy as jnp
     from scipy.spatial.transform import Rotation
     from somaforge_core.newton_collision import G1_29DOF_JOINT_ORDER
     from .convex_geometry_distance import ConvexGeometryDistance
-    from .pyroki_taskspace import world_body_poses_from_pyroki_fk
-    from .pyroki_fullbody_ik import _robot_min_geometry_distance_by_body_surface
+    from .taskspace_kinematics import world_body_poses_from_fk
+    from .trajectory_problem import _robot_min_geometry_distance_by_body_surface
 
     geometry = NativeSphereDistance(scene, link_names)
     convex = ConvexGeometryDistance(scene, link_names)
     indices = [tuple(G1_29DOF_JOINT_ORDER).index(name) for name in robot_joint_names]
     cfg = np.asarray(qpos, dtype=float)[:, 7:][:, indices]
-    fk = np.asarray(jax.jit(jax.vmap(robot.forward_kinematics))(jnp.asarray(cfg)))
-    positions, quaternions = world_body_poses_from_pyroki_fk(np.asarray(qpos)[:, :7], fk)
+    fk = robot.numpy_fk(cfg)
+    positions, quaternions = world_body_poses_from_fk(np.asarray(qpos)[:, :7], fk)
     rotations = Rotation.from_quat(np.asarray(quaternions)[..., [1, 2, 3, 0]].reshape(-1, 4)).as_matrix().reshape(
         len(qpos), len(link_names), 3, 3)
     frames = []

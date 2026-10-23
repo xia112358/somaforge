@@ -68,11 +68,12 @@
       "baseline_role": "Current user-designated v1 scratch recipe and latest saved step1000 analysis checkpoint; old recipes archived",
       "architecture_contract": "shared v1 observation encoder; detached hard contact intent; legacy root+part mean readout",
       "training_config": "baselines/predictor_v1_latest_20261010/training_config.json",
-      "dataset_asset_id": "dataset.climb00.loaded_material207_joint_v12.20261004",
+      "dataset_asset_id": "dataset.climb00.main_20261022",
       "shape_target_interval_schema": "coherent_shape_target_material_query_interval_v2",
       "keep_patch_weight": 1.0,
       "baseline_pointer": "baselines/current.json",
-      "archived_baselines": "baselines/archives.json"
+      "archived_baselines": "baselines/archives.json",
+      "runtime_inputs": "configs/generator/main_runtime.json"
     },
     "infiller": {
       "inputs": [
@@ -90,7 +91,9 @@
         "joint_names",
         "endpoint and contact-label provenance"
       ],
-      "storage": "runtime/current/models"
+      "storage": "runtime/current/models",
+      "runtime_inputs": "configs/generator/main_runtime.json",
+      "dataset_asset_id": "dataset.infiller.main_20261022"
     },
     "holosoma_wbt": {
       "inputs": [

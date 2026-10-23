@@ -45,10 +45,10 @@ from somaforge_core.published_data import load_published_json, relocate_publishe
 
 @dataclass
 class Config:
-    baseline: Path = Path('baselines/predictor_v1_latest_20261010/baseline.json')
-    corpus: Path = Path('runtime/current/motions/infiller_latest_predictor_20261010/corpus.pt')
-    output: Path = Path('runtime/current/models/generator/direct_infiller_latest_predictor_20261010')
-    report: Path = Path('tmp/direct_infiller_latest_predictor_20261010')
+    baseline: Path = Path('configs/generator/main_runtime.json')
+    corpus: Path = Path('runtime/current/motions/infiller_main_20261022/corpus.pt')
+    output: Path = Path('runtime/current/models/generator/direct_infiller_main_new_run')
+    report: Path = Path('tmp/direct_infiller_main')
     mode: str = 'all'  # all, build, train, evaluate, rollout
     checkpoint: Path | None = None
     steps: int = 5000
@@ -1154,13 +1154,11 @@ def run(cfg,device):
 
 
 def main():
-    from isaaclab.app import AppLauncher
+    from somaforge_core.launcher import parse_isaaclab_launcher_args
     import tyro
-    parser=argparse.ArgumentParser(add_help=False)
-    AppLauncher.add_app_launcher_args(parser)
-    official,remaining=parser.parse_known_args()
-    cfg=tyro.cli(Config,args=remaining)
-    device='cpu' if getattr(official,'cpu',False) else official.device
+    official = parse_isaaclab_launcher_args(__doc__)
+    cfg = tyro.cli(Config)
+    device=official.device
     run(cfg,device)
 
 

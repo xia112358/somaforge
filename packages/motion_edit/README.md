@@ -1,9 +1,13 @@
 # motion_edit
 
+Use the unified Miniforge + pip `main` environment; see
+[Python environment setup](../../docs/python-environments.md). The `motion-edit`
+launcher selects this environment automatically.
+
 Contact-centered motion editing workbench for surface-bound contact-anchor editing, explicit ContactEditPlan generation, and Newton-validated policy-reference trajectories.
 
 Motion Edit writes an edited kinematic reference through contact-Laplacian,
-PyRoki trajectory IK, and direct Newton FK. Production force fields are
+Torch float32 trajectory IK, and direct Newton FK. Production force fields are
 measured when the fine-tuned self-collision policy executes the edited
 reference in Newton. Source forces may be optimization or acceptance
 references, but are never copied, migrated, or replay-baked onto edited
@@ -25,6 +29,76 @@ experts and student distillation have independent
 Their six-part contact-reference schema is distinct from this editor's
 eight-part heel/toe force-reference schema; do not relabel or reinterpret arrays
 by changing a part-order field.
+
+## Torch / Newton generation backend
+
+`generation/torch_newton_ik.py` is the default editor, CLI and batch backend. Newton evaluates FK;
+Torch computes float32 residuals and derivatives. It retains the existing
+SciPy/Clarabel sparse constrained trajectory solver. It requires no PyRoki or
+JAX at runtime. Generation uses the managed main environment, without launching
+the separate JAX IK environment. Explicit interpreter/script overrides remain available.
+
+The backend accepts the same taskspace/source inputs and writes the same NPZ
+motion fields. Existing UI sessions and CLI commands use it automatically:
+
+```bash
+packages/motion_edit/motion-edit generate-ref \
+  --plan <current-validated-plan.json> --output-motion tmp/torch-generation/motion.npz
+```
+
+By default the IK process selects CUDA when available and compiles its kernels;
+CPU uses eager kernels. `SOMAFORGE_IK_DEVICE=cpu` selects CPU for editor/batch
+launchers. Standalone IK/worker commands accept `--device cpu` or `--device
+cuda:0`, and `--no-compile-kernels` disables compilation explicitly.
+The compiled path uses exact reverse-mode derivatives to avoid nested forward-AD
+compiler errors in Torch 2.11. Kernel batches default to 8 compiled / 64 eager
+frames; `--kernel-chunk-size` overrides this. Newton FK and all residuals remain
+float32; the existing SciPy/Clarabel constrained solver and COAL geometry remain
+on CPU. No optimization weights, bounds or contact definitions change.
+
+A dedicated persistent worker also supports the existing editor IK protocol:
+
+```bash
+runtime/environments/conda/somaforge/bin/python \
+  -m motion_edit.generation.torch_newton_worker \
+  --worker-socket @somaforge-torch-pilot --device cuda:0 --compile-kernels
+# In the editor's shell, explicitly select that worker:
+SOMAFORGE_IK_WORKER_SOCKET=@somaforge-torch-pilot \
+  packages/motion_edit/motion-edit contact-editor
+```
+
+The worker validates every task and its current evidence again. Default generation
+rejects an inherited worker that does not identify as Torch/Newton. Only native
+models and immutable kernels are cached; each edit starts from its declared
+source, with fresh geometry queries. Cached kernels require identical task and
+source hashes and assembly options. Independent jobs can use a worker pool:
+
+```bash
+runtime/environments/conda/somaforge/bin/python \
+  -m motion_edit.generation.torch_newton_batch \
+  --batch-manifest tmp/torch-pilot/jobs.json --output-dir tmp/torch-pilot/batch \
+  --workers 3 --device cuda:0 --compile-kernels
+```
+
+`jobs.json` contains `{"jobs": [{"lte_path": "...", "source_motion_path": "...",
+"output_path": "...", "max_nfev": 25, "collision_max_refinements": 1}]}`.
+Use fresh output paths. The runner records startup, per-job latency and batch
+throughput, uses one BLAS thread per worker, and closes only its own dedicated
+IK processes. Its maintained backend is Torch/Newton. Historical comparison
+reports and frozen source snapshots remain under project `tmp/`; the retired
+JAX solver and comparison runner are no longer installed.
+
+Historical task reproduction can explicitly set `historical_reference_only:
+true` in each batch job (standalone CLI: `--historical-reference-only`). This
+checks the original motion, recording, asset, sampling and reference hashes,
+and preserves the archived runtime provenance. Archived load masks supply only
+optimization weights and material-point references. The current support loader
+is unchanged; neither these weights nor generated poses establish current
+contact or support. Recheck outputs with current Newton/MJWarp and the shared
+primary-face selection. Do not rebase the source or regenerate task targets
+when comparing an archived batch.
+The dedicated worker accepts the same flag for explicitly selected UI sessions;
+without it the current evidence checks remain the default.
 
 ## Layout
 
@@ -57,19 +131,18 @@ data/
 
 ## Recommended Workflow
 
-Motion Edit uses the pinned Isaac Lab GA / Newton environment. From the
-repository root, install the runtime and build the bundled frontend:
+Motion Edit uses the managed main environment. From the repository root,
+create it if needed and build the bundled frontend:
 
 ```bash
-./scripts/setup_isaaclab3_newton.sh
-source scripts/source_isaaclab3_newton_setup.sh
+python3 scripts/manage_environment.py create --profile main
 npm --prefix packages/motion_edit/web install
 npm --prefix packages/motion_edit/web run build
 ```
 
-The `motion-edit` launcher activates this environment automatically. PyRoki's
-separate optimization environment is selected with `--ik-conda-env`.
-See [environment setup](../../docs/environments.md).
+The `motion-edit` launcher uses managed `main` for the service and IK worker.
+An explicit `--ik-conda-env` remains available for custom interpreters.
+See [environment setup](../../docs/python-environments.md).
 The commands below run from the repository root and use
 `packages/motion_edit/motion-edit`. An installed `motion-edit` console command is
 also available after activating its environment. Local `data/` paths and runtime
@@ -93,7 +166,7 @@ Somaforge Newton 8-part asset manifest
   -> validated surface-constrained ContactEditPlan
   -> contact-Laplacian semantic curves
   -> Newton robot-local contact patches
-  -> PyRoki trajectory IK + Newton soft signed-distance similarity
+  -> Torch float32 trajectory IK + Newton soft signed-distance similarity
   -> direct Newton FK canonical edited trajectory
   -> fine-tune the accepted self-collision policy on the edited trajectory
   -> Newton policy execution records the edited trajectory's real force
@@ -157,7 +230,6 @@ python \
   --plan data/workbench/climb00_surface_edits.json \
   --output ../../tmp/motion_edit_run/final_motion.npz \
   --intermediate-dir ../../tmp/motion_edit_run/work \
-  --ik-conda-env env_somaforge \
   --newton-device cpu \
   --overwrite
 ```
@@ -305,7 +377,7 @@ ContactEditPlan
   -> contact-Laplacian whole-body semantic curves
   -> Newton raw contacts reconstructed as rigid robot-local patches
   -> ContactAwareTaskspaceMotion
-  -> PyRoki trajectory IK
+  -> Torch float32 trajectory IK
   -> Newton soft signed-distance similarity to the source rollout
   -> direct Newton FK canonicalization
   -> final_motion.npz
@@ -326,7 +398,6 @@ python \
   --plan /path/to/validated_plan.json \
   --output ../../tmp/motion_edit_run/final_motion.npz \
   --intermediate-dir ../../tmp/motion_edit_run/work \
-  --ik-conda-env env_somaforge \
   --newton-device cpu
 ```
 
@@ -616,7 +687,7 @@ fields alone is not a migration. CLI, editor and batch scripts share this check.
  The production
 facade extracts semantic `body_pos_w` keypoints, solves the whole-trajectory
 contact-Laplacian curves, binds Newton contact patches in canonical robot-local
-frames, and runs PyRoki IK with direct Newton collision/FK evaluation. The
+frames, and runs Torch/Newton IK with direct Newton collision/FK evaluation. The
 source rollout supplies contact timing, patch geometry, pose/collision
 references, and diagnostics; it does not supply force fields for the edited
 file. Motion Edit never fabricates or migrates the force field written to a
@@ -688,7 +759,7 @@ implementation, and checks that IK actually applied the requested reference.
 Prepare a fresh collection version without starting generation or GPU work:
 
 ```bash
-runtime/environments/isaaclab-ga-3.0.0-newton-1.7.0/bin/python -B \
+python3 scripts/manage_environment.py run --profile main -- python -B \
   scripts/expand_source_preserving_augmentations.py \
   --prepare-from-collection runtime/current/motions/climb00_contact_dataset/versions/loaded_material_rebuild_20261003/edits207_joint_v12/index.json \
   --source-prefix-config configs/motion_edit/climb00_source_prefix_v1.json \

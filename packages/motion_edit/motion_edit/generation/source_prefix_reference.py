@@ -31,7 +31,10 @@ def load_prefix_configuration(path):
 def prefix_implementation_fingerprints():
     root = Path(__file__).parent
     return {name: hashlib.sha256((root/name).read_bytes()).hexdigest()
-            for name in ("source_prefix_reference.py", "rollout_authority.py", "pyroki_fullbody_ik.py")}
+            for name in ("source_prefix_reference.py", "rollout_authority.py", "trajectory_problem.py",
+                         "trajectory_types.py", "taskspace_kinematics.py", "ik_runtime.py", "torch_newton_ik.py", "torch_newton_kinematics.py",
+                         "torch_newton_worker.py", "loaded_material_reference.py",
+                         "continuous_ik.py", "continuous_factored_ik.py", "continuous_constrained_ik.py")}
 
 
 def configure_plan_prefix(plan, config=None, provenance=None, *, required=False):

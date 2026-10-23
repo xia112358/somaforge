@@ -403,21 +403,11 @@ def run_simulator(args_cli: DataConversionConfig):
         object_name=object_name,
     )
 
-    # Load Mujoco model
-    object_name = constants.OBJECT_NAME
-    robot_model_path = constants.ROBOT_URDF_FILE
-    if object_name == "ground":
-        robot_xml_path = robot_model_path.replace(".urdf", ".xml")
-    elif object_name == "multi_boxes":
-        robot_xml_path = constants.SCENE_XML_FILE
-    else:
-        if object_name is None:
-            raise ValueError("object_name cannot be None when it's not 'ground' or 'multi_boxes'")
-        robot_xml_path = robot_model_path.replace(".urdf", "_w_" + object_name + ".xml")
-
-    robot = mujoco.MjModel.from_xml_path(robot_xml_path)
+    from somaforge_core.retarget_model import load_retarget_model
+    robot = load_retarget_model(constants.ROBOT_URDF_FILE,
+        getattr(constants, "OBJECT_URDF_FILE", None), object_name=constants.OBJECT_NAME,
+        robot_type=constants.ROBOT_NAME.split("_")[0])
     robot_data = mujoco.MjData(robot)
-    print("Loading robot model from: ", robot_xml_path)
 
     # Prepare dof index for mujoco to correctly assign the values from input data
     dof_name_list = []

@@ -16,7 +16,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 import torch
 import tyro
-from isaaclab.app import AppLauncher
+from somaforge_core.launcher import parse_isaaclab_launcher_args
 
 ROOT = Path(__file__).resolve().parents[3]
 from generator.predictor_architecture import build_position_predictor, load_position_predictor, ARCHITECTURE_FIELDS, LEGACY_SCHEMA
@@ -77,9 +77,9 @@ class Config:
     query_checkpoint: Path = ROOT / 'runtime/current/holosoma/logs/WholeBodyTracking/20260727_085520-g1_29dof_wbt_single_climb00_completionema_horizon50_ncon160_from4k_to10k-locomotion/model_06000.pt'
     query_source_manifest: Path = ROOT / 'runtime/current/motions/climb00_contact_dataset/versions/loaded_material_rebuild_20261003/edits207_joint_v12/scenes/0e21fa0c89cb673d/manifest.json'
     query_source_model: Path = ROOT / 'runtime/current/motions/climb00_contact_dataset/versions/loaded_material_rebuild_20261003/edits207_joint_v12/scenes/0e21fa0c89cb673d/model.json'
-    manifest: Path = ROOT / 'runtime/current/motions/climb00_contact_dataset/training/predictor_loaded_material207_joint_v12_20261004/manifest.json'
-    data_cache: Path = ROOT / 'runtime/current/motions/climb00_contact_dataset/training/predictor_loaded_material207_joint_v12_20261004/data.pt'
-    q_cache: Path = ROOT / 'runtime/current/motions/climb00_contact_dataset/training/predictor_loaded_material207_joint_v12_20261004/q_cache_64.npz'
+    manifest: Path = ROOT / 'runtime/current/motions/climb00_contact_dataset/training/predictor_main_20261022/manifest.json'
+    data_cache: Path = ROOT / 'runtime/current/motions/climb00_contact_dataset/training/predictor_main_20261022/data.pt'
+    q_cache: Path = ROOT / 'runtime/current/motions/climb00_contact_dataset/training/predictor_main_20261022/q_cache_64.npz'
     output: Path = ROOT / 'runtime/current/models/generator/v1_shared_interval_new_run'
     initialization: Literal['scratch'] = 'scratch'
     architecture: Literal['full1000_position_predictor_v1', 'full1000_position_predictor_v2'] = LEGACY_SCHEMA
@@ -176,10 +176,8 @@ class Config:
 
 
 def main():
-    parser = argparse.ArgumentParser(add_help=False)
-    AppLauncher.add_app_launcher_args(parser)
-    official, remaining = parser.parse_known_args()
-    cfg = tyro.cli(Config, args=remaining)
+    official = parse_isaaclab_launcher_args(__doc__)
+    cfg = tyro.cli(Config)
     for field in fields(cfg):
         value = getattr(cfg, field.name)
         if isinstance(value, Path):
@@ -235,7 +233,7 @@ def main():
         raise ValueError('Legacy recovery/plan-repair flags are unsupported; physically continuable raw-state feedback is now automatic.')
     if cfg.anchored_plan_execution and not (cfg.gpu_pipeline and cfg.parallel_rollouts):
         raise ValueError('Anchored endpoint execution requires parallel GPU training')
-    if official.visualizer is not None or official.enable_cameras:
+    if (official.visualizer and not official.headless_explicit) or official.enable_cameras:
         raise ValueError('predictor training is headless')
     if cfg.query_worlds is None:
         cfg.query_worlds = 32 if cfg.gpu_pipeline else 1
@@ -277,7 +275,7 @@ def main():
     cfg.output.mkdir(exist_ok=False)
     torch.set_num_threads(2)
     torch.manual_seed(cfg.seed)
-    device = torch.device('cpu' if official.cpu else official.device)
+    device = torch.device(official.device)
     manifest = load_published_json(cfg.manifest)
     if cfg.pending_plan_repair and not (cfg.parallel_rollouts and cfg.gpu_pipeline and cfg.event_roles and cfg.region_plan):
         raise ValueError('Pending-plan repair requires parallel GPU regional event-role model')

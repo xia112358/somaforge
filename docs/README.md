@@ -8,6 +8,7 @@ have separate preparation or restoration requirements.
 
 | Task | Guide |
 | --- | --- |
+| Create independent Miniforge + pip profiles without replacing an existing runtime | [Python environment profiles](python-environments.md) |
 | Install the pinned Isaac Lab / Newton runtime; check quaternion conventions | [Environments](environments.md) |
 | Download selected training inputs, reference models or extracted demonstrations | [Data downloads](data-downloads.md) |
 | Find package ownership, entrypoints and verification scope | [Repository maintenance](repository-maintenance.md) |

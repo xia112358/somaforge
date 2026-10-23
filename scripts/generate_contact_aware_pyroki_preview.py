@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the first contact-aware edited trajectory without starting Isaac.
 
-The output is a PyRoki-FK-consistent preview. Run the direct Newton/MJWarp
+The output uses Torch float32 and Newton FK. Run the direct Newton
 canonicalizer before using it as a WBT training reference.
 """
 
@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from somaforge_core.runtime_paths import default_ik_conda_environment
 
 from motion_edit.generation import generate_contact_aware_pyroki_preview
 
@@ -17,7 +18,7 @@ from motion_edit.generation import generate_contact_aware_pyroki_preview
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--plan", required=True, type=Path, help="Validated ContactEditPlan JSON.")
-    parser.add_argument("--output", required=True, type=Path, help="Output PyRoki preview motion NPZ.")
+    parser.add_argument("--output", required=True, type=Path, help="Output trajectory IK preview NPZ.")
     parser.add_argument("--source-contact-layer", default=None)
     parser.add_argument("--intermediate-dir", type=Path, default=None)
     parser.add_argument("--overwrite", action="store_true")
@@ -36,7 +37,7 @@ def main() -> None:
     parser.add_argument("--source-reference-weight", type=float, default=0.01)
     parser.add_argument("--boundary-ramp-frames", type=int, default=10)
     parser.add_argument("--min-raw-contact-force-norm", type=float, default=0.0)
-    parser.add_argument("--ik-conda-env", default="env_somaforge")
+    parser.add_argument("--ik-conda-env", default=default_ik_conda_environment())
     parser.add_argument("--ik-script", type=Path, default=None)
     parser.add_argument("--ik-max-nfev", type=int, default=None)
     parser.add_argument(

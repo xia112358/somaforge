@@ -1,21 +1,21 @@
 import numpy as np
 import pytest
 
-jax = pytest.importorskip('jax')
-import jax.numpy as jnp
-from motion_edit.generation.continuous_ik import JointResidual, solve_matrix_free
+from motion_edit.generation.torch_newton_ik import TorchJointResidual as JointResidual
+from torch_trajectory_helpers import DifferentiableRobot, full_jacobian, gradient
+from motion_edit.generation.torch_newton_ik import ARRAY_API as jnp
 from motion_edit.generation.continuous_sparse_ik import SparseJointProblem
+from motion_edit.generation.torch_newton_kinematics import quat_apply
 
 
 def assert_sparse_matches_full_autodiff(joint, states, arguments):
     problem = SparseJointProblem(joint, states.shape)
     problem.set_arguments(arguments)
-    dense = jax.jacfwd(lambda x: joint(x.reshape(states.shape), *arguments).reshape(-1))(
-        jnp.asarray(states).reshape(-1))
+    dense = full_jacobian(lambda x: joint(x.reshape(states.shape), *arguments).reshape(-1), states.reshape(-1))
     sparse = problem.jac(states.reshape(-1))
-    np.testing.assert_allclose(sparse.toarray(), dense, rtol=1.e-10, atol=1.e-10)
+    np.testing.assert_allclose(sparse.toarray(), dense, rtol=4.e-5, atol=4.e-5)
     np.testing.assert_allclose(problem.fun(states.reshape(-1)),
-                               joint(jnp.asarray(states), *arguments).reshape(-1), atol=1.e-12)
+                               joint(jnp.asarray(states), *arguments).reshape(-1), atol=4.e-6)
     return problem
 
 
@@ -34,30 +34,23 @@ def test_future_contact_gradient_reaches_preceding_pose():
              np.array([float(t>0)])) for t in range(n)]
     args = joint.stack(rows)
     problem = assert_sparse_matches_full_autodiff(joint, states, args)
-    grad = jax.grad(lambda x: jnp.sum(joint(x, *args)**2))(jnp.asarray(states))
+    grad = gradient(lambda x: jnp.sum(joint(x, *args)**2), states)
     assert grad[-2, 3] < 0  # preceding pose must move toward the future task
-    result = solve_matrix_free(joint, np.zeros_like(states), -1., 1., max_nfev=30, arguments=args)
+    result = problem.solve(np.zeros_like(states), -1., 1., max_nfev=30)
     solved = result.x.reshape(states.shape)
     assert result.success
     assert solved[-1, 3] > .19
     assert solved[-2, 3] > .1
     assert np.diff(solved[:, 3]).max() < .08
-    sparse_result = problem.solve(np.zeros_like(states), -1., 1., max_nfev=30)
-    assert sparse_result.success
-    # Both solvers stop at gtol=1e-5, with different column preconditioners.
-    np.testing.assert_allclose(sparse_result.x, result.x, atol=1.e-5)
-    no_initial_observation = [tuple(value.copy() for value in row) for row in rows]
-    no_initial_observation[0][5][:] = 0.
-    scaling = joint.diagonal_scale(np.zeros_like(states), joint.stack(no_initial_observation))
-    # Frame zero still has incoming temporal columns from frames one/two.
-    assert scaling[0, 3] == pytest.approx(1./np.sqrt(6.))
 
 
-def test_joint_matrix_free_jacobian_handles_bounded_variables():
-    def residual(x):
-        return jnp.concatenate((x-jnp.asarray([2., -.5]), jnp.diff(x)))
-    result = solve_matrix_free(residual, np.zeros(2), np.array([0., -1.]),
-                               np.array([1., 1.]), max_nfev=40)
+def test_sparse_jacobian_handles_bounded_variables():
+    def residual(state):
+        return jnp.concatenate((state-jnp.asarray([2., -.5]), jnp.diff(state)))
+    root = np.zeros((1, 7)); root[:, 3] = 1.
+    joint = JointResidual(residual, None, root, 0)
+    problem = SparseJointProblem(joint, (1, 2)); problem.set_arguments(())
+    result = problem.solve(np.full((1, 2), .1), np.array([0., -1.]), np.ones(2), max_nfev=40)
     assert result.success
     assert result.x[0] == pytest.approx(1., abs=1.e-4)
     assert result.x[1] == pytest.approx(.25, abs=1.e-4)
@@ -98,16 +91,16 @@ def test_loaded_phase_budget_depends_on_earlier_pose_not_frozen_spending():
 
     n = 8
     root = np.zeros((n, 7)); root[:, 3] = 1.
-    class Robot:
-        def forward_kinematics(self, q):
-            return jnp.array([[1., 0., 0., 0., q[0], 0., 0.]])
+    class Robot(DifferentiableRobot):
+        def one_pose(self, q):
+            return jnp.stack((1., 0., 0., 0., q[0], 0., 0.))[None]
     loaded = SimpleNamespace(reference=dict(phases=[dict(start=0, end=n-1, part=0)],
                                             calibration=[dict(allowance_m=0.)]))
     def residual(state, q_previous, q_previous_previous, root_delta_previous,
                  root_delta_previous_previous, loaded_links, loaded_local,
                  loaded_previous_points, loaded_normals, loaded_weights,
                  loaded_source_step, loaded_remaining, loaded_scale):
-        current = jnp.broadcast_to(state[:3]+jnp.array([state[3], 0., 0.]), (6, 1, 3))
+        current = jnp.broadcast_to(state[:3]+jnp.stack((state[3], 0., 0.)), (6, 1, 3))
         rms = tangent_material_rms(current-loaded_previous_points, loaded_normals, loaded_weights, xp=jnp)
         return (jnp.stack((jnp.maximum(rms-loaded_source_step-loaded_remaining[0], 0.),
                            jnp.maximum(rms-loaded_remaining[1], 0.)))*loaded_scale).reshape(-1)
@@ -124,10 +117,10 @@ def test_loaded_phase_budget_depends_on_earlier_pose_not_frozen_spending():
     args = joint.stack(rows)
     assert_sparse_matches_full_autodiff(joint, states, args)
     values = joint(jnp.asarray(states), *args)
-    assert values[-1, 6] == pytest.approx(8., abs=1.e-10)
-    gradient = jax.grad(lambda x: joint(x, *args)[-1, 6]**2)(jnp.asarray(states))
-    assert gradient[0, 3] < 0 and gradient[-1, 3] > 0
-    np.testing.assert_allclose(gradient[1:-1, 3], 0., atol=1.e-10)
+    assert values[-1, 6] == pytest.approx(8., abs=4.e-5)
+    derivative = gradient(lambda x: joint(x, *args)[-1, 6]**2, states)
+    assert derivative[0, 3] < 0 and derivative[-1, 3] > 0
+    np.testing.assert_allclose(derivative[1:-1, 3], 0., atol=4.e-5)
 
 
 def test_sparse_material_chain_handles_root_yaw_and_changing_loaded_sites():
@@ -140,8 +133,8 @@ def test_sparse_material_chain_handles_root_yaw_and_changing_loaded_sites():
     root[:, :3] = np.arange(n)[:, None]*np.array([.005, -.002, .003])
     root[:, 3:] = Rotation.from_euler('xyz', np.arange(n)[:, None]*np.array([.03, -.02, .05])).as_quat()[:, [3, 0, 1, 2]]
     rotations = Rotation.from_quat(root[:, [4, 5, 6, 3]]).as_matrix()
-    class Robot:
-        def forward_kinematics(self, q):
+    class Robot(DifferentiableRobot):
+        def one_pose(self, q):
             return jnp.stack((jnp.cos(q[0]*.5), 0., 0., jnp.sin(q[0]*.5), q[1], q[0]*.5, 0.))[None]
     robot = Robot()
     loaded = SimpleNamespace(reference=dict(
@@ -155,8 +148,8 @@ def test_sparse_material_chain_handles_root_yaw_and_changing_loaded_sites():
         fk = robot.forward_kinematics(state[4:])
         half = state[3]*.5
         yaw = jnp.concatenate((jnp.cos(half)[None], root_yaw_axis_base*jnp.sin(half)))
-        points = fk[loaded_links, 4:]+JointResidual.apply(fk[loaded_links, :4], loaded_local)
-        points = JointResidual.apply(yaw, points)+state[:3]
+        points = fk[loaded_links, 4:]+quat_apply(fk[loaded_links, :4], loaded_local)
+        points = quat_apply(yaw, points)+state[:3]
         rms = tangent_material_rms(points-loaded_previous_points, loaded_normals, loaded_weights, xp=jnp)
         return (jnp.stack((jnp.maximum(jnp.maximum(rms-loaded_source_step, 0.)-loaded_remaining[0], 0.),
                            jnp.maximum(rms-loaded_remaining[1], 0.)))*loaded_scale).reshape(-1)

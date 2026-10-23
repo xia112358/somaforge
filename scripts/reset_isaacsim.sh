@@ -1,11 +1,10 @@
-# Move the Isaac Lab 3/Newton environment to the system trash so setup can be rerun.
+# Move the managed main environment to the system trash so setup can be rerun.
 set -e
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 ROOT_DIR=$(dirname "$SCRIPT_DIR")
 
-ENV_ROOT="$ROOT_DIR/runtime/environments/isaaclab-ga-3.0.0-newton-1.7.0"
-BASE_ENV_ROOT="$ROOT_DIR/runtime/environments/isaaclab-ga-3.0.0-base"
+ENV_ROOT="$ROOT_DIR/runtime/environments/conda/somaforge"
 
 if ! command -v gio >/dev/null 2>&1; then
     echo "gio is required to move environment files to the system trash." >&2
@@ -14,7 +13,6 @@ fi
 
 echo "Moving these targets to the system trash:"
 echo "  $ENV_ROOT"
-echo "  $BASE_ENV_ROOT"
 read -p "Continue? [y/N] " -n 1 -r
 echo
 if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -22,4 +20,3 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
 fi
 
 [[ ! -e $ENV_ROOT ]] || gio trash "$ENV_ROOT"
-[[ ! -e $BASE_ENV_ROOT ]] || gio trash "$BASE_ENV_ROOT"

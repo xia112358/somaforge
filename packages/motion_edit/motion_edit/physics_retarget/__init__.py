@@ -2,7 +2,6 @@
 
 from .loop import run_force_guided_retarget
 from .objective import evaluate_rollout_objective
-from .whole_trajectory_projector import WholeTrajectoryPhysicsProjector
 from .newton_runner import NewtonSubprocessRunner
 from .target import NewtonForceTarget, load_newton_force_target
 from .schema import (
@@ -23,7 +22,6 @@ __all__ = [
     "RetargetIteration",
     "evaluate_rollout_objective",
     "run_force_guided_retarget",
-    "WholeTrajectoryPhysicsProjector",
     "NewtonForceTarget",
     "NewtonSubprocessRunner",
     "load_newton_force_target",

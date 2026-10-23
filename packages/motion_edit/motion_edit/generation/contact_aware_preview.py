@@ -114,6 +114,42 @@ def _contact_binding_motion(
     return contact_motion, str(candidate)
 
 
+def pyroki_subprocess_context(
+    ik_conda_env: str, *, environment: dict[str, str] | None = None, capture_output: bool = True,
+) -> tuple[list[str], dict[str, str]]:
+    """Select one IK interpreter without inheriting another runtime's Python paths."""
+    subprocess_env = dict(os.environ if environment is None else environment)
+    target_env = str(ik_conda_env)
+    current_env = subprocess_env.get("CONDA_DEFAULT_ENV", "")
+    current_env_name = Path(current_env).name if current_env else ""
+    target_prefix = Path(target_env).expanduser()
+    if target_prefix.is_absolute():
+        target_env = str(target_prefix.resolve())
+        current_interpreter = target_prefix.resolve() == Path(sys.prefix).resolve()
+        environment_selector = ["--prefix", target_env]
+    else:
+        current_interpreter = bool(target_env) and target_env in {current_env, current_env_name}
+        environment_selector = ["-n", target_env]
+    interpreter = (
+        [sys.executable]
+        if current_interpreter
+        else [subprocess_env.get("SOMAFORGE_CONDA_EXE", "conda"), "run",
+              *([] if capture_output else ["--no-capture-output"]), *environment_selector, "python"]
+    )
+    package_root = Path(__file__).resolve().parents[2]
+    python_paths = [
+        str(package_root),
+        str(package_root.parent / "somaforge_core"),
+        str(package_root.parent / "contact_solver"),
+    ]
+    # Preserve main markers so later native workers return to their main runtime.
+    for name in ("PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE"):
+        subprocess_env.pop(name, None)
+    subprocess_env["PYTHONNOUSERSITE"] = "1"
+    subprocess_env["PYTHONPATH"] = os.pathsep.join(python_paths)
+    return interpreter, subprocess_env
+
+
 def _run_pyroki_preview_subprocess(
     *,
     taskspace_path: Path,
@@ -128,7 +164,12 @@ def _run_pyroki_preview_subprocess(
     ik_collision_reference_cache: str | Path | None = None,
 ) -> None:
     worker_name = os.environ.get("SOMAFORGE_IK_WORKER_SOCKET")
-    if worker_name:
+    if worker_name and ik_script is None:
+        from .ik_runtime import IK_BACKEND
+        from .torch_newton_batch import worker_request
+        identity = worker_request(worker_name, {'ping': True})
+        if identity.get('ik_backend') != IK_BACKEND:
+            raise RuntimeError('Selected IK worker is not the default Torch/Newton backend; restart its launcher')
         kwargs: dict[str, Any] = {
             "lte_path": str(taskspace_path.resolve()),
             "source_motion_path": str(source_motion_path.resolve()),
@@ -163,22 +204,16 @@ def _run_pyroki_preview_subprocess(
             response = json.loads(stream.readline())
         if not response.get("ok"):
             raise RuntimeError(
-                "persistent PyRoki worker failed:\n"
+                "persistent Torch/Newton worker failed:\n"
                 + str(response.get("traceback", response))
             )
         if not ik_output_path.is_file():
             raise FileNotFoundError(ik_output_path)
         return
-    script = Path(ik_script).expanduser() if ik_script is not None else Path(__file__).with_name("pyroki_fullbody_ik.py")
+    from .ik_runtime import default_ik_script
+    script = Path(ik_script).expanduser() if ik_script is not None else default_ik_script()
     package_root = Path(__file__).resolve().parents[2]
-    target_env = str(ik_conda_env)
-    current_env = os.environ.get("CONDA_DEFAULT_ENV", "")
-    current_env_name = Path(current_env).name if current_env else ""
-    interpreter = (
-        [sys.executable]
-        if target_env in {current_env, current_env_name}
-        else ["conda", "run", "-n", target_env, "python"]
-    )
+    interpreter, subprocess_env = pyroki_subprocess_context(ik_conda_env)
     cmd = [
         *interpreter,
         str(script.resolve()),
@@ -214,15 +249,6 @@ def _run_pyroki_preview_subprocess(
                 str(Path(ik_collision_reference_cache).expanduser().resolve()),
             ]
         )
-    subprocess_env = dict(os.environ)
-    python_paths = [
-        str(package_root),
-        str(package_root.parent / "somaforge_core"),
-    ]
-    inherited_python_path = subprocess_env.get("PYTHONPATH")
-    if inherited_python_path:
-        python_paths.append(inherited_python_path)
-    subprocess_env["PYTHONPATH"] = os.pathsep.join(python_paths)
     subprocess.run(
         cmd,
         cwd=str(package_root),
@@ -322,11 +348,16 @@ def merge_pyroki_preview_motion(
         if key in ik_motion:
             generated[key] = np.asarray(ik_motion[key])
 
+    ik_backend = str(np.asarray(ik_motion.get('ik_backend', 'pyroki_contact_aware_taskspace')).item())
+    kinematics_backend = str(np.asarray(ik_motion.get('kinematics_backend', 'pyroki_urdf_fk_preview')).item())
     metadata = {
         **dict(proxy_metadata),
-        "output_kind": "pyroki_contact_aware_preview",
-        "joint_consistency": "pyroki_urdf_fk",
-        "kinematics_provenance": "preview_only_not_newton",
+        "output_kind": ("pyroki_contact_aware_preview" if ik_backend == 'pyroki_contact_aware_taskspace'
+                        else ik_backend + '_preview'),
+        "joint_consistency": ("pyroki_urdf_fk" if kinematics_backend == 'pyroki_urdf_fk_preview'
+                              else kinematics_backend),
+        "kinematics_provenance": ("preview_only_not_newton" if kinematics_backend == 'pyroki_urdf_fk_preview'
+                                  else "newton_fk_preview_not_physical_execution"),
         "newton_canonicalization_required": True,
         "semantic_task_proxy_motion": str(semantic_task_proxy_path) if semantic_task_proxy_path is not None else None,
         "contact_aware_taskspace_motion": str(taskspace_path),

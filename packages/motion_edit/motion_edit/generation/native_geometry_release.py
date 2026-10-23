@@ -128,12 +128,19 @@ class GeometryRelease:
         self.guard = np.finfo(np.float32).eps * max(1., np.abs(triangles).max()) * 4
 
     def gaps(self, world_vertices):
-        import jax.numpy as jnp
-        projection = jnp.einsum('svc,tac->stva', world_vertices, jnp.asarray(self.axes))
-        low = projection.min(2)-jnp.asarray(self.radii)[:, None, None]
-        high = projection.max(2)+jnp.asarray(self.radii)[:, None, None]
-        separation = jnp.maximum(low-jnp.asarray(self.high), jnp.asarray(self.low)-high).max(-1)
-        return separation-jnp.asarray(self.margin)-self.guard
+        import torch
+        if isinstance(world_vertices, torch.Tensor):
+            array = lambda x: torch.as_tensor(x, dtype=world_vertices.dtype, device=world_vertices.device)
+            projection = torch.einsum('svc,tac->stva', world_vertices, array(self.axes))
+            low = projection.amin(2)-array(self.radii)[:, None, None]
+            high = projection.amax(2)+array(self.radii)[:, None, None]
+            separation = torch.maximum(low-array(self.high), array(self.low)-high).amax(-1)
+            return separation-array(self.margin)-self.guard
+        projection = np.einsum('svc,tac->stva', world_vertices, self.axes)
+        low = projection.min(2)-self.radii[:, None, None]
+        high = projection.max(2)+self.radii[:, None, None]
+        separation = np.maximum(low-self.high, self.low-high).max(-1)
+        return separation-self.margin-self.guard
 
 
 class FrameGeometryConstraint:

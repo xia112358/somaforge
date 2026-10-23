@@ -6,7 +6,6 @@
     "output_dir": "runtime/current/motions/climb00_contact_dataset/versions/source_prefix_standard_20261014/edits207_joint_v14/motions",
     "ik_max_nfev": 25,
     "ik_q_acceleration_weight": 8,
-    "ik_conda_env": "env_somaforge",
     "workers": 3,
     "threads_per_worker": 4,
     "device": "cuda:0",

@@ -45,7 +45,7 @@ SEMANTIC_DEFAULT_WEIGHTS: dict[str, float] = {
 
 
 @dataclass(frozen=True)
-class CompiledPyrokiTaskspace:
+class CompiledTaskspace:
     semantic_names: tuple[str, ...]
     semantic_link_indices: np.ndarray
     semantic_targets_w: np.ndarray
@@ -98,14 +98,14 @@ class CompiledPyrokiTaskspace:
             raise ValueError("compiled task-space weights must be nonnegative")
 
 
-def compile_pyroki_taskspace(
+def compile_taskspace(
     spec: ContactAwareTaskspaceMotion,
     link_names: Sequence[str],
     *,
     edited_contact_weight: float = 100.0,
     fixed_contact_weight: float = 80.0,
-) -> CompiledPyrokiTaskspace:
-    """Resolve a contact-aware task-space motion against one PyRoki link list."""
+) -> CompiledTaskspace:
+    """Resolve a contact-aware task-space motion against one canonical robot link list."""
 
     spec.validate()
     links = tuple(str(name) for name in link_names)
@@ -191,7 +191,7 @@ def compile_pyroki_taskspace(
             contact_targets_w[frame, index] = target_w
             contact_weights[frame, index] = weight
 
-    compiled = CompiledPyrokiTaskspace(
+    compiled = CompiledTaskspace(
         semantic_names=tuple(semantic_names),
         semantic_link_indices=np.asarray(semantic_indices, dtype=np.int32),
         semantic_targets_w=semantic_targets,
@@ -253,7 +253,7 @@ def normalize_quat_wxyz(quat: np.ndarray) -> np.ndarray:
     return q / np.maximum(np.linalg.norm(q, axis=-1, keepdims=True), 1.0e-12)
 
 
-def world_body_poses_from_pyroki_fk(root_qpos: np.ndarray, link_poses_base_wxyz_xyz: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def world_body_poses_from_fk(root_qpos: np.ndarray, link_poses_base_wxyz_xyz: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Compose PyRoki base-frame link poses with Holosoma floating-root poses."""
 
     root = np.asarray(root_qpos, dtype=np.float64)

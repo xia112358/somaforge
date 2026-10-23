@@ -26,8 +26,8 @@ TAG="${IMAGE_TAG:-$(date +%Y_%m%d_%H%M)}"
 #   json_key   — key in docker_images.json
 IMAGES=(
   "holosoma|docker/Dockerfile|holosoma|holosoma"
-  "isaacsim|docker/isaacsim.Dockerfile|holosoma-isaacsim|hs-isaacsim"
-  "retargeting|src/holosoma_retargeting/docker/Dockerfile|holosoma-retargeting|hs-retargeting"
+  "isaacsim|docker/Dockerfile|holosoma-isaacsim|hs-isaacsim"
+  "retargeting|docker/Dockerfile|holosoma-retargeting|hs-retargeting"
 )
 
 # ── Parse flags ──────────────────────────────────────────────────────

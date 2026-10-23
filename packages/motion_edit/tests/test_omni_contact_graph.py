@@ -8,7 +8,7 @@ from motion_edit.contact_laplacian.kinematics import BodyPositionTrajectoryKinem
 from motion_edit.contact_laplacian.residuals import LeastSquaresSystem
 from motion_edit.contact_laplacian import solver
 from motion_edit.generation import lte_fullbody
-from motion_edit.generation import pyroki_taskspace
+from motion_edit.generation import taskspace_kinematics
 from motion_edit.generation.omni_contact_graph import (
     OMNI_BODY_EDGES,
     OMNI_KEYPOINT_LINKS,
@@ -26,10 +26,10 @@ def test_omni_semantics_use_sphere_hand_and_separate_ankle_toe() -> None:
     assert lte_fullbody.LTE_FULLBODY_KEYPOINT_LINKS["left_foot"][0] == "left_ankle_roll_sphere_5_link"
     assert lte_fullbody.LTE_FULLBODY_KEYPOINT_LINKS["right_foot"][0] == "right_ankle_roll_sphere_5_link"
 
-    assert pyroki_taskspace.SEMANTIC_LINK_ALIASES["left_hand"][0] == "left_sphere_hand_link"
-    assert pyroki_taskspace.SEMANTIC_LINK_ALIASES["right_hand"][0] == "right_sphere_hand_link"
-    assert pyroki_taskspace.SEMANTIC_LINK_ALIASES["left_foot"][0] == "left_ankle_roll_sphere_5_link"
-    assert pyroki_taskspace.SEMANTIC_LINK_ALIASES["right_foot"][0] == "right_ankle_roll_sphere_5_link"
+    assert taskspace_kinematics.SEMANTIC_LINK_ALIASES["left_hand"][0] == "left_sphere_hand_link"
+    assert taskspace_kinematics.SEMANTIC_LINK_ALIASES["right_hand"][0] == "right_sphere_hand_link"
+    assert taskspace_kinematics.SEMANTIC_LINK_ALIASES["left_foot"][0] == "left_ankle_roll_sphere_5_link"
+    assert taskspace_kinematics.SEMANTIC_LINK_ALIASES["right_foot"][0] == "right_ankle_roll_sphere_5_link"
 
 
 def test_batch_solver_keeps_core_points_and_restores_structure_points() -> None:

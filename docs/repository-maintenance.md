@@ -20,7 +20,7 @@ baseline weights, contact labels or losses.
 | PHP grouped experts | `scripts/train_php_wbt.py` | Explicit group training; use `--help` for current arguments |
 | Modular experts and distillation | Native WBT managers and `RoutedDistillPPO` | [Configuration and invocation guide](wbt-modular-experiments.md); dense/sparse/force experts and student |
 | Native contact-reference preparation | `scripts/record_wbt_contact_reference.py`, `scripts/combine_wbt_manifests.py` | Independent recording/manifest commands; manually supplied expert checkpoints |
-| Retargeting | `src/holosoma_retargeting` | separate retargeting environment |
+| Retargeting | `src/holosoma_retargeting` | main environment; canonical URDF model adapter |
 
 Shared direct Newton collision queries and canonical self-collision filters live
 in `somaforge_core.newton_collision` and `somaforge_core.newton_collision_filter`.
@@ -185,7 +185,7 @@ source scripts/source_isaaclab3_newton_setup.sh
 test_run="tmp/cpu-regression-$(python -c 'import uuid; print(uuid.uuid4().hex)')"
 mkdir -p "$test_run"
 CUDA_VISIBLE_DEVICES='' JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
-PYTHONPATH="$PWD/scripts:$PWD/tests:$PWD/packages/generator/tests:$PYTHONPATH" \
+PYTHONPATH="$PWD/scripts:$PWD/tests:$PWD/packages/generator/tests:$PWD/packages/motion_edit/tests:$PYTHONPATH" \
 python -m pytest packages tests src/holosoma/holosoma --ignore=tests/e2e \
   --import-mode=importlib -m 'not isaacsim and not multi_gpu and not requires_inference' \
   -p no:cacheprovider -o tmp_path_retention_policy=all --basetemp="$test_run/pytest" -q

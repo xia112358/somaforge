@@ -98,17 +98,17 @@ class InteractionMeshRetargeter:
         self._self_collision_config = self_collision
 
 
-        # Load Mujoco model
-        if self.object_name == "ground":
-            robot_xml_path = self.robot_model_path.replace(".urdf", ".xml")
-        elif self.object_name == "multi_boxes":
-            robot_xml_path = self.task_constants.SCENE_XML_FILE
-        else:
-            robot_xml_path = self.robot_model_path.replace(".urdf", "_w_" + self.object_name + ".xml")
+        from somaforge_core.retarget_model import load_retarget_model
+        self.robot_model = load_retarget_model(
+            self.robot_model_path, self.object_model_path, object_name=self.object_name,
+            robot_type=task_constants.ROBOT_NAME.split("_")[0]
+        )
 
-        self.robot_model = mujoco.MjModel.from_xml_path(robot_xml_path)
-        print("Loading robot model from: ", robot_xml_path)
-
+        expected_links = set(self.laplacian_match_links.values()) | set(self.foot_links)
+        missing = sorted(name for name in expected_links
+                         if mujoco.mj_name2id(self.robot_model, mujoco.mjtObj.mjOBJ_BODY, name) < 0)
+        if missing:
+            raise ValueError(f"Retarget landmarks absent from canonical model: {missing}")
         self.robot_data = mujoco.MjData(self.robot_model)
         self._init_self_collision(self._self_collision_config)
 
@@ -127,7 +127,8 @@ class InteractionMeshRetargeter:
         # Create complete limits with floating base (-inf, inf) and actuated joint limits
         n_floating_base = 7
         joint_names = [self.robot_model.joint(i).name for i in range(self.robot_model.njnt)]
-        actuated_joints = [(i, name) for i, name in enumerate(joint_names) if name]  # Filter out None names
+        actuated_joints = [(i, name) for i, name in enumerate(joint_names)
+                           if self.robot_model.jnt_type[i] == mujoco.mjtJoint.mjJNT_HINGE]  # Filter out None names
 
         large_number = 1e6
         complete_lower_limits = np.concatenate(
@@ -263,7 +264,8 @@ class InteractionMeshRetargeter:
             q_locked_list = np.zeros((num_frames, self.nq))
             q_locked_list[0, self.q_a_indices] = q_a_init
 
-        q_locked_list[:, -7:] = object_poses_augmented
+        if self.has_dynamic_object:
+            q_locked_list[:, -7:] = object_poses_augmented
         q = np.copy(q_locked_list[0])
         retargeted_motions = [q]
 
@@ -325,10 +327,14 @@ class InteractionMeshRetargeter:
                 pbar.set_postfix(cost=cost)
 
 
-        # Save results
+        # Save results with the identity of the asset used for this solve.
+        from somaforge_core.robot_assets import encode_robot_asset_json
+        metadata = ({"robot_asset_json": np.array(encode_robot_asset_json())}
+                    if self.task_constants.ROBOT_NAME.startswith("g1_") else {})
         np.savez(
             dest_res_path,
             qpos=np.array(retargeted_motions)[1:],
+            **metadata,
             human_joints=human_joint_motions,
             fps=30,
             cost=cost,

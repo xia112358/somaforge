@@ -133,10 +133,40 @@ def compare_paths(source_steps, edited_steps, phases, *, load_known, load_bearin
     return result
 
 
-def read_loaded_reference(motion, sites_path, observations, phases_path):
-    """Require independent source execution evidence, never static witnesses."""
+def _archived_reference_masks(motion, observations):
+    """Read archived optimization weights, without certifying current contact truth.
+
+    Keep the original runtime and sampling provenance intact. This deliberately
+    does not use or relax the current support-observation loader.
+    """
+    from somaforge_core.published_data import resolve_published_path
+    from somaforge_core.robot_assets import validate_g1_asset_metadata
+    from somaforge_core.support_semantics import SUPPORT_ASSESSMENT_SCHEMA, assess_support
+    with np.load(resolve_published_path(observations), allow_pickle=False) as z:
+        meta = json.loads(z['support_assessment_json'].item())
+        if meta.get('schema') != SUPPORT_ASSESSMENT_SCHEMA or meta.get('status') != 'observed':
+            raise ValueError('Archived reference requires original observed provenance')
+        if meta.get('motion_sha256') != hashlib.sha256(Path(motion).read_bytes()).hexdigest():
+            raise ValueError('Archived reference does not belong to this trajectory')
+        recording = meta.get('recording', {})
+        if (not recording.get('path') or not recording.get('sha256') or not meta.get('sampling')
+                or not meta.get('newton_runtime') or not meta.get('scene_fingerprint')):
+            raise ValueError('Archived reference provenance or solve sampling missing')
+        if hashlib.sha256(resolve_published_path(recording['path']).read_bytes()).hexdigest() != recording['sha256']:
+            raise ValueError('Stale original reference recording')
+        validate_g1_asset_metadata(meta.get('robot_asset'), context=str(observations))
+        values = assess_support(z['contact_activated'], z['normal_force_n'],
+                                z['rms_tangent_speed_m_s'], load_known=z['load_known'])
+    if values['load_known'].ndim != 2 or values['load_known'].shape[1] != 6:
+        raise ValueError('Expected archived reference [frames, six endpoint parts]')
+    return dict(load_known=values['load_known'], load_bearing=values['load_bearing'], provenance=meta)
+
+
+def read_loaded_reference(motion, sites_path, observations, phases_path, *, historical_reference_only=False):
+    """Require bound source evidence; archived weights need explicit opt-in."""
     motion = Path(motion)
-    observed = load_support_observations(motion, observations)
+    observed = (_archived_reference_masks(motion, observations) if historical_reference_only
+                else load_support_observations(motion, observations))
     with np.load(sites_path, allow_pickle=False) as z:
         sites = {key: z[key].copy() for key in z.files}
     metadata = json.loads(sites['metadata_json'].item())
@@ -158,7 +188,10 @@ def read_loaded_reference(motion, sites_path, observations, phases_path):
     if not np.array_equal(np.isfinite(source_steps), known & bearing):
         raise ValueError('Original loaded site coverage differs from support observations')
     return dict(sites=sites, phases=phases, source_steps=source_steps,
-                load_known=known, load_bearing=bearing, calibration=calibration)
+                load_known=known, load_bearing=bearing, calibration=calibration,
+                reference_scope=('archived_optimization_reference_only' if historical_reference_only
+                                 else 'current_source_execution_reference'),
+                original_provenance=observed['provenance'], current_contact_truth=False)
 
 
 class SequentialLoadedMotion:

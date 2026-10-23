@@ -1,11 +1,44 @@
 """Keep edit intentions while preventing inherited execution truth at boundaries."""
 import json
+import hashlib
 
 import numpy as np
+import pytest
 
 from motion_edit.adapters.holosoma_npz import subset_arrays
 from motion_edit.editing.splice import splice_motions
 from somaforge_core.support_evidence import reference_only_support
+
+
+def test_archived_optimization_reference_preserves_provenance_and_content_binding(tmp_path):
+    from motion_edit.generation.loaded_material_reference import _archived_reference_masks
+    from somaforge_core.robot_assets import canonical_g1_source_metadata
+    from somaforge_core.support_evidence import load_support_observations
+    from somaforge_core.support_semantics import SUPPORT_ASSESSMENT_SCHEMA
+    motion, recording, evidence = (tmp_path/name for name in ('motion.npz', 'recording.npz', 'evidence.npz'))
+    motion.write_bytes(b'content-bound reference pose')
+    recording.write_bytes(b'original archived execution')
+    meta = dict(schema=SUPPORT_ASSESSMENT_SCHEMA, status='observed',
+        motion_sha256=hashlib.sha256(motion.read_bytes()).hexdigest(),
+        recording=dict(path=str(recording), sha256=hashlib.sha256(recording.read_bytes()).hexdigest()),
+        robot_asset=canonical_g1_source_metadata(), newton_runtime=dict(runtime_id='archived_test_fixture'),
+        scene_fingerprint='archived_test_scene', sampling=dict(clock='original same solve'))
+    # Mathematical fixture, never written as a production evidence artifact.
+    np.savez(evidence, support_assessment_json=np.array(json.dumps(meta)),
+        contact_activated=np.ones((2, 6), bool), normal_force_n=np.ones((2, 6)),
+        rms_tangent_speed_m_s=np.zeros((2, 6)), load_known=np.ones((2, 6), bool))
+    with pytest.raises(ValueError):
+        load_support_observations(motion, evidence)
+    result = _archived_reference_masks(motion, evidence)
+    assert result['provenance'] == meta
+    assert result['load_bearing'].all()
+    assert 'contact_activated' not in result
+    recording.write_bytes(b'changed recording')
+    with pytest.raises(ValueError, match='Stale original reference recording'):
+        _archived_reference_masks(motion, evidence)
+    motion.write_bytes(b'changed trajectory')
+    with pytest.raises(ValueError, match='does not belong'):
+        _archived_reference_masks(motion, evidence)
 
 
 def test_crop_preserves_native_pose_and_intent_but_requires_rebinding():

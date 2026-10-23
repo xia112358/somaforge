@@ -8,7 +8,7 @@ from motion_edit.generation.lte_fullbody import (
     LTE_FULLBODY_KEYPOINT_LINKS,
     _semantic_keypoints_from_motion,
 )
-from motion_edit.generation.pyroki_fullbody_ik import TARGET_LINK_GROUPS
+from motion_edit.generation.trajectory_problem import TARGET_LINK_GROUPS
 from somaforge_core.contact_schema import CONTACT_BODY_NAMES_BY_PART
 
 

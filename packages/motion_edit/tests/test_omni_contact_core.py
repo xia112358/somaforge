@@ -7,7 +7,7 @@ import numpy as np
 from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord
 from motion_edit.contact_laplacian import solver
 from motion_edit.contact_laplacian.schema import BatchContactLaplacianConfig
-from motion_edit.generation import lte_fullbody, pyroki_taskspace
+from motion_edit.generation import lte_fullbody, taskspace_kinematics
 from motion_edit.generation import omni_contact_graph as omni
 from motion_edit.generation.omni_contact_core import CONTACT_CORE_NAMES
 
@@ -47,31 +47,31 @@ def test_contact_core_uses_only_ankle_and_toe_foot_nodes() -> None:
 
 def test_pyroki_resolves_ankle_toe_and_hemisphere_hand_links() -> None:
     assert (
-        pyroki_taskspace.SEMANTIC_LINK_ALIASES["left_ankle"][0]
+        taskspace_kinematics.SEMANTIC_LINK_ALIASES["left_ankle"][0]
         == "left_ankle_intermediate_1_link"
     )
     assert (
-        pyroki_taskspace.SEMANTIC_LINK_ALIASES["right_ankle"][0]
+        taskspace_kinematics.SEMANTIC_LINK_ALIASES["right_ankle"][0]
         == "right_ankle_intermediate_1_link"
     )
     assert (
-        pyroki_taskspace.SEMANTIC_LINK_ALIASES["left_foot"][0]
+        taskspace_kinematics.SEMANTIC_LINK_ALIASES["left_foot"][0]
         == "left_ankle_roll_sphere_5_link"
     )
     assert (
-        pyroki_taskspace.SEMANTIC_LINK_ALIASES["right_foot"][0]
+        taskspace_kinematics.SEMANTIC_LINK_ALIASES["right_foot"][0]
         == "right_ankle_roll_sphere_5_link"
     )
     assert (
-        pyroki_taskspace.SEMANTIC_LINK_ALIASES["left_hand"][0]
+        taskspace_kinematics.SEMANTIC_LINK_ALIASES["left_hand"][0]
         == "left_sphere_hand_link"
     )
     assert (
-        pyroki_taskspace.SEMANTIC_LINK_ALIASES["right_hand"][0]
+        taskspace_kinematics.SEMANTIC_LINK_ALIASES["right_hand"][0]
         == "right_sphere_hand_link"
     )
-    assert "left_heel" not in pyroki_taskspace.SEMANTIC_LINK_ALIASES
-    assert "right_heel" not in pyroki_taskspace.SEMANTIC_LINK_ALIASES
+    assert "left_heel" not in taskspace_kinematics.SEMANTIC_LINK_ALIASES
+    assert "right_heel" not in taskspace_kinematics.SEMANTIC_LINK_ALIASES
 
 
 def test_contact_masks_map_heel_to_ankle_and_toe_to_foot() -> None:

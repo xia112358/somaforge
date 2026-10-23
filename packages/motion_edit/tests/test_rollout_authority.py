@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -66,10 +67,20 @@ def test_plan_source_is_the_only_rollout_authority(
     assert loaded == [source.resolve()]
 
 
+@pytest.mark.parametrize("explicit_ik", [None, "env_somaforge"])
 def test_generation_uses_one_rollout_source_everywhere(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    explicit_ik: str | None,
 ) -> None:
+    root = Path(__file__).resolve().parents[3]
+    catalog = tmp_path / "profiles.json"
+    catalog.write_text(json.dumps({"schema": "somaforge_environment_profiles_v1", "profiles": {
+        "main": {"prefix": "runtime/environments/conda/custom-main"},
+    }}))
+    monkeypatch.setenv("SOMAFORGE_ROOT", str(root))
+    monkeypatch.setenv("SOMAFORGE_ENV_PROFILE", "main")
+    monkeypatch.setenv("SOMAFORGE_ENV_CATALOG", str(catalog))
     source_path = tmp_path / "source_motion.npz"
     source_terrain = tmp_path / "source_terrain.obj"
     target_terrain = source_terrain
@@ -182,6 +193,7 @@ def test_generation_uses_one_rollout_source_everywhere(
 
     def fake_run(*, source_motion_path, ik_output_path, **kwargs):
         captured["pyroki_source_path"] = Path(source_motion_path).resolve()
+        captured["ik_conda_env"] = kwargs["ik_conda_env"]
         Path(ik_output_path).touch()
 
     monkeypatch.setattr(preview, "_run_pyroki_preview_subprocess", fake_run)
@@ -198,6 +210,7 @@ def test_generation_uses_one_rollout_source_everywhere(
         output_motion_path=output,
         intermediate_dir=work,
         overwrite=True,
+        **({"ik_conda_env": explicit_ik} if explicit_ik is not None else {}),
     )
 
     assert captured["proxy_motion"] is source
@@ -207,6 +220,9 @@ def test_generation_uses_one_rollout_source_everywhere(
     assert captured["merge_source"] is source
     assert captured["proxy_path"] == source_path.resolve()
     assert captured["pyroki_source_path"] == source_path.resolve()
+    assert captured["ik_conda_env"] == (
+        explicit_ik if explicit_ik is not None else str(root / "runtime/environments/conda/custom-main")
+    )
     assert captured["taskspace_metadata"] == {
         "collision_reference_motion": str(source_path.resolve()),
         "contact_patch_source_motion": str(source_path.resolve()),

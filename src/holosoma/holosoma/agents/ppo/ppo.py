@@ -510,6 +510,10 @@ class PPO(BaseAlgo):
             if self.config.export_onnx:
                 self.export(onnx_file_path=os.path.join(self.log_dir, f"model_{self.current_learning_iteration:05d}.onnx"))
 
+    def _rollout_observation_extras(self, obs_dict):
+        """Capture subclass observations before the environment advances."""
+        return {}
+
     def _rollout_step(self, obs_dict):
         with torch.inference_mode():
             for _ in range(self.config.num_steps_per_env):
@@ -528,6 +532,7 @@ class PPO(BaseAlgo):
                 critic_obs_raw = torch.cat([obs_dict[k] for k in self.critic_obs_keys], dim=1)
                 actor_obs = self._normalize_actor_obs(actor_obs_raw)
                 critic_obs = self._normalize_critic_obs(critic_obs_raw)
+                observation_extras = self._rollout_observation_extras(obs_dict)
                 t_obs = _profile_mark()
 
                 actions = self.actor.act({"actor_obs": actor_obs})
@@ -537,7 +542,7 @@ class PPO(BaseAlgo):
                 if probe_env_mask is None:
                     probe_env_mask = torch.zeros(self.env.num_envs, dtype=torch.bool, device=self.device)
                 else:
-                    probe_env_mask = probe_env_mask.to(device=self.device, dtype=torch.bool)
+                    probe_env_mask = probe_env_mask.to(device=self.device, dtype=torch.bool).clone()
                 if torch.any(probe_env_mask):
                     # Competence probes use the same deterministic mean action
                     # as deployment/evaluation.  Their transitions are marked
@@ -612,6 +617,7 @@ class PPO(BaseAlgo):
                 }
                 if exec_state is not None:
                     transition.update(exec_state)
+                transition.update(observation_extras)
                 self.storage.add(**transition)
                 t_store = _profile_mark()
 

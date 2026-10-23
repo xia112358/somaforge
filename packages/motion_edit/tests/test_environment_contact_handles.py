@@ -9,14 +9,14 @@ import numpy as np
 
 from motion_edit.contact.schema import ContactAnchorEditRecord, ContactAnchorRecord
 from motion_edit.generation.lte_fullbody import _environment_contact_anchor_arrays
-from motion_edit.generation.pyroki_fullbody_ik import TARGET_LINK_GROUPS, _environment_contacts_from_lte
-from motion_edit.generation.pyroki_trajectory_optimizer import (
+from motion_edit.generation.trajectory_problem import TARGET_LINK_GROUPS, _environment_contacts_from_lte
+from motion_edit.generation.trajectory_types import (
     EnvironmentContactAnchors,
     _edited_environment_contacts,
     _edited_foot_pose_episodes,
     _environment_contact_constraint_samples,
 )
-from motion_edit.physics_retarget.whole_trajectory_projector import WholeTrajectoryPhysicsProjector
+from motion_edit.generation.torch_newton_ik import assemble_torch_newton_problem
 
 
 class EnvironmentContactHandleTests(unittest.TestCase):
@@ -52,8 +52,8 @@ class EnvironmentContactHandleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             lte_path = Path(tmp) / "legacy_lte.npz"
             np.savez(lte_path, left_hand=np.zeros((2, 3), dtype=np.float64))
-            with self.assertRaisesRegex(ValueError, "environment contact anchors"):
-                WholeTrajectoryPhysicsProjector(lte_path=lte_path)
+            with self.assertRaisesRegex(ValueError, "Legacy LTE keypoints"):
+                assemble_torch_newton_problem(lte_path=lte_path)
 
     def test_same_robot_body_fragments_become_one_environment_episode(self) -> None:
         anchors = [

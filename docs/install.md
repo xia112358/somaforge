@@ -1,5 +1,10 @@
 # Install SomaForge on another machine
 
+All maintained components use the single Miniforge + pip `main` environment.
+See [Python environment setup](python-environments.md) for the pinned catalog,
+installation audit and activation commands. Compatibility setup scripts route
+to this same environment.
+
 The supported simulator profile is Linux x86_64, Ubuntu 22.04 or newer, Python
 3.12, an NVIDIA GPU and a driver compatible with the official Isaac Lab 3.0.0 /
 Isaac Sim 6.2 runtime. Its PyTorch wheels include CUDA 13; the Docker base image's
@@ -27,20 +32,18 @@ python -m holosoma.eval_agent --help
 Bootstrap creates the ignored runtime directories and logical data/log/tmp links.
 For external data storage, use `--data-root /absolute/path/to/somaforge-data`
 on the first invocation. Existing directories and links are preserved; conflicts
-are reported instead of replaced. Setup installs `uv` locally if needed, selects
-or downloads Python 3.12, verifies the pinned Lab checkout, and installs the
-official frozen base plus the project overlay and the five maintained workspace
-packages. It does not install optional retargeting or historical compatibility
-packages into the main environment.
+are reported instead of replaced. Install Miniforge first. Setup installs Python
+3.12 and the locked dependencies, including retargeting, into
+`runtime/environments/conda/somaforge`, and stages the pinned Isaac Lab sources.
+Use `--conda /path/to/miniforge3/bin/conda` and optionally
+`--isaaclab /path/to/pinned/IsaacLab` on `manage_environment.py create --profile main`.
+Network access to GitHub, PyPI and NVIDIA package services is required.
+Isaac Sim use is subject to NVIDIA's license terms; once accepted, pass
+`OMNI_KIT_ACCEPT_EULA=YES` in your shell for noninteractive launches.
 
-`SOMAFORGE_SETUP_PYTHON` may select an existing Python 3.12 executable.
-`SOMAFORGE_ISAACLAB_PATH` may select the Lab checkout; its commit must match the
-pin in the setup script. Network access to GitHub, PyPI and NVIDIA package
-services is required. Isaac Sim use is subject to NVIDIA's license terms.
-
-The root `uv.lock` describes the Python workspace, not the simulator profile.
-Use the setup script for simulation: a root-level `uv sync` does not install the
-official Isaac Lab runtime. Activation is required in each new shell.
+The root `uv.lock` describes the development workspace. Simulator installation
+uses `configs/environments/profiles.json` and its main lock. Activate main in each
+new shell or use `manage_environment.py run --profile main -- <command>`.
 
 ## Robot assets and data
 
@@ -80,28 +83,29 @@ Teacher-spec paths can be relative to
 their JSON file. Both motion command and terrain configuration must receive the
 same chosen manifest. Missing required inputs fail explicitly.
 
+The current main-environment Predictor/Infiller defaults use the rematerialized
+`predictor_main_20261022` dataset and its derived Infiller corpus. These local
+outputs are not included in the existing published historical data release.
+Restore or explicitly rebuild them using the [main input migration
+instructions](environments.md#generator-inputs-for-main); downloading an old
+baseline does not make its contact cache valid for the current Newton runtime.
+
 For the independent expert, contact recording and student commands, see
 [modular WBT experiments](wbt-modular-experiments.md). The old PHP adapter and the
 new native DistillPPO student use different checkpoint/network schemas; installing
 the runtime does not convert between them.
 
-## Optional Motion Edit IK and retargeting
+## Motion Edit IK and retargeting
 
-PyRoki optimization uses a separate Conda environment. After the main setup,
-install Conda if needed, then:
+Motion Edit uses Torch float32 with native Newton FK in the unified `main`
+environment. Source-motion retargeting is included in the same environment.
+No separate IK or retargeting environment is needed. Use the managed setup in
+[Python environment setup](python-environments.md):
 
 ```bash
-bash scripts/setup_motion_edit_ik.sh
-# Override the environment name by passing it as the sole argument.
-conda run -n env_somaforge python -c 'import pyroki, jaxls, coal, clarabel'
+python3 scripts/manage_environment.py check --profile main
+packages/motion_edit/motion-edit --help
 ```
-
-The requirements pin PyRoki and its JAXLS Git source and install JAX's CUDA 12
-backend. Generation commands select this environment with
-`--ik-conda-env env_somaforge`; a different name must be passed explicitly.
-This environment is not required for WBT training or browser playback.
-Source-motion retargeting has its own `scripts/setup_retargeting.sh` and
-`scripts/source_retargeting_setup.sh`; inspect that separate workflow before use.
 
 ## Verification and remote access
 

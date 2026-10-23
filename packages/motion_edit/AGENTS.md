@@ -76,7 +76,7 @@ Expected:
 
 ```bash
 source scripts/source_somaforge.sh
-PYTHONDONTWRITEBYTECODE=1 runtime/environments/isaaclab-ga-3.0.0-newton-1.7.0/bin/python \
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/manage_environment.py run --profile main -- python \
   -m pytest -p no:cacheprovider packages/motion_edit/tests -q
 npm --prefix packages/motion_edit/web run build
 MOTION_EDIT_E2E_MOTION_ID=<current-motion-id> \

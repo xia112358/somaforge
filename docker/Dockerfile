@@ -1,4 +1,4 @@
-# Isaac Sim is installed into the project GA environment.
+# All components are installed into the single managed main environment.
 # PyTorch's CUDA 13 wheels require a compatible host NVIDIA driver.
 FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 
@@ -9,13 +9,17 @@ USER root
 ENV LANG=C.UTF-8
 ENV DEBIAN_FRONTEND=noninteractive
 ENV WORKSPACE_DIR=/workspace
-ENV CONDA_ROOT=/root/.holosoma_deps/miniconda3
+ENV CONDA_ROOT=/opt/miniforge3
+ENV MINIFORGE_ROOT=/opt/miniforge3
 ENV PATH=$CONDA_ROOT/bin:$PATH
 
 RUN mkdir -p /var/lib/apt/lists/partial && \
     apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     build-essential \
+    linux-libc-dev \
+    python3 \
+    ca-certificates \
     swig \
     curl \
     wget \
@@ -23,9 +27,9 @@ RUN mkdir -p /var/lib/apt/lists/partial && \
     git \
     sudo
 
-# Install Miniconda
-RUN curl https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o /miniconda.sh && \
-    bash /miniconda.sh -b -u -p $CONDA_ROOT
+# Install Miniforge as the package manager; main is the only project prefix.
+RUN curl -fsSL https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -o /miniforge.sh && \
+    bash /miniforge.sh -b -p $CONDA_ROOT
 
 # Configure conda for non-interactive use
 RUN echo ". $CONDA_ROOT/etc/profile.d/conda.sh" >> ~/.bashrc && \
@@ -39,12 +43,11 @@ WORKDIR $WORKSPACE_DIR
 COPY . ./holosoma
 
 ##### Run setup
-RUN conda create -y -n somaforge_setup python=3.12 && \
-    SOMAFORGE_SETUP_PYTHON=$CONDA_ROOT/envs/somaforge_setup/bin/python \
+RUN python3 /workspace/holosoma/scripts/bootstrap_runtime.py && \
     bash /workspace/holosoma/scripts/setup_all.sh
 
 # Set up conda activation for runtime
-RUN echo "source $CONDA_ROOT/etc/profile.d/conda.sh" >> ~/.bashrc
+RUN echo "source /workspace/holosoma/scripts/source_isaaclab3_newton_setup.sh" >> ~/.bashrc
 
 # Set working directory
 WORKDIR /workspace/holosoma

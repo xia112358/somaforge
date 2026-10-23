@@ -5,13 +5,23 @@ distillation, contact-aware motion editing, next-contact prediction, and
 endpoint-conditioned trajectory infilling. Simulation uses the pinned Isaac Lab
 3.0.0 / Isaac Sim 6.2 / Newton 1.7.0 environment.
 
+Git `main` is the maintained integration branch. Its environment catalog declares
+one runtime profile, also named `main`, at `runtime/environments/conda/somaforge`.
+WBT, distillation, Motion Edit, Predictor/Infiller and retargeting all use this
+profile. The separate IK and retargeting environments have been retired.
+Motion Edit uses Torch float32 and native Newton FK, with its existing UI
+interfaces preserved. See [component validation](docs/environments.md#main-consolidation-validation-2026-10-2223)
+for the completed runtime checks and their scope.
+
 ## Start here
 
 - [Fresh-machine installation](docs/install.md) and [runtime compatibility](docs/environments.md)
+- [Unified main Python environment](docs/python-environments.md) for every maintained component
 - [Modular WBT experts, contact-reference recording and distillation](docs/wbt-modular-experiments.md)
 - [Download training inputs, reference models and extracted demonstrations](docs/data-downloads.md)
 - [Motion Edit and browser playback](packages/motion_edit/README.md)
 - [Predictor baseline and reproduction records](baselines/README.md)
+- [Current main-environment Predictor/Infiller inputs](docs/environments.md#generator-inputs-for-main)
 - [Local data layout](docs/repository-data.md), [data policy](docs/data-policy.md),
   and [repository maintenance](docs/repository-maintenance.md)
 
@@ -19,8 +29,9 @@ From a fresh checkout on a supported Linux NVIDIA workstation:
 
 ```bash
 python3 scripts/bootstrap_runtime.py
-bash scripts/setup_isaaclab3_newton.sh
+python3 scripts/manage_environment.py create --profile main
 source scripts/source_isaaclab3_newton_setup.sh
+python3 scripts/manage_environment.py check --profile main
 python scripts/check_training_manifest.py
 python -m holosoma.train_agent --help
 ```
@@ -35,7 +46,7 @@ Follow the [installation guide](docs/install.md) before launching simulation.
 
 ```text
 src/holosoma/               WBT training, evaluation, and simulator integration
-src/holosoma_retargeting/   Retargeting tools (separate environment)
+src/holosoma_retargeting/   Retargeting tools (included in main)
 packages/motion_edit/       Contact editing and validated kinematic candidates
 packages/generator/         Predictor, Infiller, datasets and generation training
 packages/contact_solver/    Contact objectives, collision gradients and projection
@@ -121,7 +132,7 @@ checks and deliberate conversion.
 The motion-editing branch starts with a canonical source motion and a
 self-collision-enabled WBT policy, collects actual executed contact/force evidence,
 and edits a validated surface-constrained `ContactEditPlan`. Semantic curves and
-Newton rigid patches feed PyRoki trajectory IK; direct Newton FK produces the
+Newton rigid patches feed Torch float32 trajectory IK; direct Newton FK produces the
 edited kinematic candidate. The policy must execute that candidate to produce its
 own actual contact force. Do not copy source force labels into an edited motion.
 

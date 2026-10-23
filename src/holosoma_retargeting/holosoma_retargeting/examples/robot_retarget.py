@@ -32,9 +32,7 @@ from holosoma_retargeting.src.interaction_mesh_retargeter import (  # noqa: E402
 from holosoma_retargeting.src.utils import (  # noqa: E402
     augment_object_poses,
     calculate_scale_factor,
-    create_new_scene_xml_file,
     create_scaled_multi_boxes_urdf,
-    create_scaled_multi_boxes_xml,
     estimate_human_orientation,
     extract_foot_sticking_sequence_velocity,
     extract_object_first_moving_frame,
@@ -330,12 +328,6 @@ def setup_object_data(
             raise ValueError("object_dir must be provided for climbing task")
 
         # Setup climbing-specific object
-        box_asset_xml = object_dir / "box_assets.xml"
-        scene_xml_name = Path(constants.ROBOT_URDF_FILE).name.replace(".urdf", f"_w_{constants.OBJECT_NAME}.xml")
-        scene_xml_file = object_dir / scene_xml_name
-        # Set SCENE_XML_FILE in constants BEFORE creating retargeter (needed for temp_retargeter)
-        constants.SCENE_XML_FILE = str(scene_xml_file)
-
         np.random.seed(0)
         print("object mesh file: ", constants.OBJECT_MESH_FILE)
         object_local_pts, object_local_pts_demo_original = load_object_data(
@@ -364,10 +356,6 @@ def setup_object_data(
         # Create scaled URDF and XML files
         scale_factors = tuple(float(value) for value in (object_scale * smpl_scale))
         object_urdf_file = create_scaled_multi_boxes_urdf(constants.OBJECT_URDF_FILE, scale_factors)
-        object_asset_xml_path = create_scaled_multi_boxes_xml(str(box_asset_xml), scale_factors)
-        new_scene_xml_path = create_new_scene_xml_file(str(scene_xml_file), scale_factors, object_asset_xml_path)
-        constants.SCENE_XML_FILE = new_scene_xml_path
-
         return object_local_pts, object_local_pts_demo, object_urdf_file
 
     raise ValueError(f"Unknown task type: {task_type}")

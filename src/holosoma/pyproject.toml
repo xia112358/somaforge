@@ -55,6 +55,7 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
+include = ["holosoma*"]
 
 [tool.setuptools.package-data]
 holosoma = [

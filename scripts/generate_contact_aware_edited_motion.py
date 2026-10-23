@@ -5,7 +5,7 @@ Pipeline:
   ContactEditPlan
     -> batch contact-Laplacian semantic curve
     -> rigid Newton-recorded contact patch task-space spec
-    -> PyRoki trajectory IK preview
+    -> Torch float32 / Newton trajectory IK preview
     -> direct Newton eval_fk canonical motion
 
 No Isaac Lab, Kit, or SimulationContext is started.
@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from somaforge_core.runtime_paths import default_ik_conda_environment
 
 from motion_edit.generation import generate_contact_aware_pyroki_preview
 from motion_edit.generation.newton_direct_fk import canonicalize_motion_with_direct_newton_fk
@@ -81,7 +82,7 @@ def main() -> None:
     )
     parser.add_argument("--boundary-ramp-frames", type=int, default=10)
     parser.add_argument("--min-raw-contact-force-norm", type=float, default=0.0)
-    parser.add_argument("--ik-conda-env", default="env_somaforge")
+    parser.add_argument("--ik-conda-env", default=default_ik_conda_environment())
     parser.add_argument("--ik-script", type=Path, default=None)
     parser.add_argument("--ik-max-nfev", type=int, default=None)
     parser.add_argument(

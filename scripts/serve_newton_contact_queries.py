@@ -107,7 +107,7 @@ def main():
     try:
         env, device, app = setup_simulation_environment(saved, device=official.device, launcher_args=official)
         from isaaclab_newton.physics.newton_manager import NewtonManager as manager
-        model = manager._model
+        model = manager.get_model()
         info = inspect_model(model)
         from somaforge_core.newton_runtime_compat import runtime_provenance
         info['newton_runtime'] = runtime_provenance()
