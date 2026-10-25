@@ -294,6 +294,13 @@ class DistillConfig:
     dagger_coef: float = 1.0
     """Multiplier applied to MSE DAgger loss before the DAgger curriculum weight."""
 
+    pure_distill_iters: int | None = None
+    """Optional pure-distillation phase, then fixed final DAgger/PPO weights.
+
+    Iterations [0, pure_distill_iters) update only the teacher-supervised actor;
+    PPO actor and critic gradients are excluded. None preserves the curriculum.
+    """
+
     teacher_prior_coef: float = 1.0
     """Constant multiplier applied to the teacher prior after the curriculum weight."""
 

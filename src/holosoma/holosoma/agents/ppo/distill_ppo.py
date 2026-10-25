@@ -194,8 +194,16 @@ class DistillPPO(PPO):
         distill_type = getattr(self.config.distill, "distill_type", "kl")
         if distill_type in ("mse_dagger", "php_dagger_ppo"):
             ppo_actor_loss = loss_dict["actor_loss"]
-            ppo_actor_active = torch.ones((), dtype=torch.float32, device=self.device)
-            loss_dict["actor_loss"] = ppo_lambda * ppo_actor_loss + distill_loss
+            pure_iters = getattr(self.config.distill, "pure_distill_iters", None)
+            pure_phase = pure_iters is not None and self.current_learning_iteration < pure_iters
+            ppo_actor_active = (ppo_lambda > 0).to(torch.float32)
+            if pure_phase:
+                # Exclude the PPO graph entirely, including entropy and value
+                # learning. AdamW skips critic parameters with no gradients.
+                loss_dict["actor_loss"] = distill_loss
+                loss_dict["critic_loss"] = loss_dict["critic_loss"].detach() * 0
+            else:
+                loss_dict["actor_loss"] = ppo_lambda * ppo_actor_loss + distill_loss
             loss_dict["dagger_mse"] = distill_metric
             loss_dict["dagger_loss"] = distill_loss
             loss_dict["dagger_valid_rate"] = valid_rate
@@ -322,6 +330,9 @@ class DistillPPO(PPO):
         else:
             init = float(distill_cfg.lambda_kl_init)
             final = float(distill_cfg.lambda_kl_final)
+        pure_iters = getattr(distill_cfg, "pure_distill_iters", None)
+        if pure_iters is not None:
+            return init if self.current_learning_iteration < pure_iters else final
         if distill_type == "php_dagger_ppo" or distill_cfg.lambda_kl_anneal_schedule == "php_parkour":
             anneal_iters = self._php_curriculum_anneal_iters()
             progress = min(max(float(self.current_learning_iteration) / float(anneal_iters), 0.0), 1.0)
@@ -337,6 +348,12 @@ class DistillPPO(PPO):
 
     def _current_ppo_lambda(self) -> float:
         distill_cfg = self.config.distill
+        pure_iters = getattr(distill_cfg, "pure_distill_iters", None)
+        if pure_iters is not None:
+            if self.current_learning_iteration < pure_iters:
+                return 0.0
+            final = distill_cfg.lambda_ppo_final
+            return float(final) if final is not None else max(0.0, 1.0-self._current_lambda_d())
         distill_type = getattr(distill_cfg, "distill_type", "kl")
         if distill_type not in ("mse_dagger", "php_dagger_ppo"):
             if distill_cfg.lambda_kl_anneal_schedule == "php_parkour":

@@ -84,6 +84,95 @@ distance. All faces, including sides, compete before shared face eligibility.
                 excluded_rows=[p['row'] for p in selected['abnormal_contact_pairs'][0]])
 
 
+class SupportContactSelector:
+    """Batch the same selection for one immutable realized native binding.
+
+    Static body/part and face eligibility maps are compiled once. Actual solver
+    activation, allocation, world identity and force-point primary faces are
+    still checked on every read. No post-integration pose participates.
+    """
+    def __init__(self, binding, body_labels, *, face_indexes=None,
+                 part_names=None, body_names_by_part=None):
+        from .contact_schema import CONTACT_BODY_NAMES_BY_PART
+        from .contact_face_selection import select_contact_pairs, upward_face_mask
+        from .native_surface_index import NativeSurfaceIndex
+        from .newton_contacts import PARTS
+        parts = PARTS if part_names is None else tuple(part_names)
+        names = CONTACT_BODY_NAMES_BY_PART if body_names_by_part is None else body_names_by_part
+        self.part_count = len(parts)
+        # Validate the same catalog/normal contract once, before compiling it.
+        select_contact_pairs([[]], binding['surface_catalog'], part_count=self.part_count)
+        catalog = {int(face['surface']): face for face in binding['surface_catalog']}
+        upward = {int(face['surface']): bool(keep) for face, keep in zip(
+            binding['surface_catalog'], upward_face_mask([f['normal_w'] for f in binding['surface_catalog']]))}
+        body_env = {int(k): int(v) for k, v in binding['body_env'].items()}
+        size = max(body_env, default=-1)+1
+        self.body_world = np.full(size, -1, np.int64)
+        self.body_part = np.full(size, -1, np.int64)
+        part_by_name = {}
+        for part, name in enumerate(parts):
+            for body in names[name]:
+                part_by_name.setdefault(body, part)
+        for body, world in body_env.items():
+            if body < 0 or world < 0:
+                raise ValueError('Invalid native robot body/world binding')
+            self.body_world[body] = world
+            self.body_part[body] = part_by_name.get(body_labels[body].rsplit('/', 1)[-1], -1)
+        self.indexes, self.face_ids, self.face_upward = {}, {}, {}
+        for shape, faces in binding['shape_surface'].items():
+            shape = int(shape)
+            ids = np.asarray([int(face['surface']) for face in faces], np.int64)
+            if any(int(sid) not in catalog for sid in ids):
+                raise ValueError('Unknown actual surface')
+            self.face_ids[shape] = ids
+            self.face_upward[shape] = np.asarray([upward[int(sid)] for sid in ids], bool)
+            self.indexes[shape] = face_indexes[shape] if face_indexes is not None else NativeSurfaceIndex(faces)
+
+    def __call__(self, snapshot):
+        from .newton_contacts import constraint_decision
+        n = int(snapshot['count'])
+        active, allocated = constraint_decision(snapshot['dist'], snapshot['includemargin'],
+            snapshot['type'], snapshot['efc_address'], n, snapshot['constraint_rows'])
+        if (not np.array_equal(active[:n], snapshot['active'][:n])
+                or not np.array_equal(allocated[:n], snapshot['constraint_allocated'][:n])):
+            raise ValueError('Inconsistent saved solver activation/allocation')
+        if np.any(active[:n] & ~allocated[:n]):
+            raise ValueError('Unallocated active support constraint')
+        bodies = np.stack((snapshot['body0'][:n], snapshot['body1'][:n]), axis=1)
+        valid = (bodies >= 0) & (bodies < len(self.body_world))
+        worlds = np.full(bodies.shape, -1, np.int64)
+        parts = np.full(bodies.shape, -1, np.int64)
+        worlds[valid] = self.body_world[bodies[valid]]
+        parts[valid] = self.body_part[bodies[valid]]
+        robot = worlds >= 0
+        robot_side = robot[:, 1].astype(np.int64)
+        row = np.arange(n)
+        own_world, own_part = worlds[row, robot_side], parts[row, robot_side]
+        choose = active[:n] & (robot.sum(1) == 1) & (own_part >= 0)
+        choose &= own_world == np.asarray(snapshot['worldid'][:n], np.int64)
+        rows = np.flatnonzero(choose)
+        side = np.full(n, -1, np.int64); group = np.full(n, -1, np.int64)
+        surface = np.full(n, -1, np.int64); eligible = np.zeros(n, bool)
+        side[rows] = robot_side[rows]
+        group[rows] = own_world[rows]*self.part_count+own_part[rows]
+        external = np.where(robot_side[rows] == 0, snapshot['shape1'][rows], snapshot['shape0'][rows])
+        depth = (np.asarray(snapshot['dist'][rows], np.float64)
+                 -np.asarray(snapshot['includemargin'][rows], np.float64))
+        if not np.isfinite(depth).all() or (depth >= 0).any():
+            raise ValueError('Invalid activated Newton pair')
+        for shape in np.unique(external):
+            shape = int(shape)
+            if shape not in self.indexes:
+                raise ValueError('Unknown actual external shape')
+            selected = rows[external == shape]
+            normal = snapshot['frame_w'][selected, 0]*np.where(robot_side[selected] == 1, 1., -1.)[:, None]
+            face = self.indexes[shape].query(snapshot['position_w'][selected], normal)
+            surface[selected] = self.face_ids[shape][face]
+            eligible[selected] = self.face_upward[shape][face]
+        return dict(eligible=eligible, robot_side=side, groups=group, surfaces=surface,
+                    excluded_rows=rows[~eligible[rows]].tolist())
+
+
 def snapshot_support(solver, snapshot):
     """Read force and both incoming/resolved velocities at solve geometry."""
     import warp as wp

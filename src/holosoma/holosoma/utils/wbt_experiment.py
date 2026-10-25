@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 ROUTED_ALGO = "holosoma.agents.ppo.routed_distill_ppo.RoutedDistillPPO"
+SEGMENT_DISTILL_ALGO = "holosoma.php_contact.distill.SegmentDistillPPO"
 REFERENCE_SCHEMA = "somaforge_wbt_observed_contact_reference_v1"
 PARTS = ("left_foot", "right_foot", "left_hand", "right_hand", "left_knee", "right_knee")
 STUDENT_FUNCTIONS = frozenset({
@@ -66,7 +67,12 @@ def assert_student_observations(config):
     for key in config.algo.config.module_dict.actor.input_dim:
         group = config.observation.groups[key]
         for name, term in group.terms.items():
-            if term.func not in STUDENT_FUNCTIONS:
+            segment_commands = {
+                'holosoma.php_contact.segments:future_contacts',
+                'holosoma.php_contact.segments:goal',
+                'holosoma.php_contact.terms:height_scan',
+            } if config.algo._target_ == SEGMENT_DISTILL_ALGO else set()
+            if term.func not in STUDENT_FUNCTIONS | segment_commands:
                 raise ValueError(f"Student actor input {key}/{name} is not an approved measured observation: {term.func}")
 
 
@@ -76,7 +82,7 @@ def prepare_routed_distillation(config):
     The caller supplies a combined manifest. Motions are routed by canonical
     file identity, never inferred from filenames, task labels or checkpoint rank.
     """
-    if config.algo._target_ != ROUTED_ALGO:
+    if config.algo._target_ not in (ROUTED_ALGO, SEGMENT_DISTILL_ALGO):
         return config
     import torch
     from holosoma.config_types.observation import ObsGroupCfg, ObsTermCfg
@@ -121,6 +127,10 @@ def prepare_routed_distillation(config):
             source = expert.observation.groups[key]
             terms = {name: dataclasses.replace(term, params={**term.params, "add_noise": False})
                      if "add_noise" in term.params else term for name, term in source.terms.items()}
+            if config.algo._target_ == SEGMENT_DISTILL_ALGO:
+                terms = {name: dataclasses.replace(term,
+                    func='holosoma.php_contact.segments:teacher_observation',
+                    params={'function': term.func, 'parameters': term.params}) for name, term in terms.items()}
             groups[target] = dataclasses.replace(source, enable_noise=False, terms=terms)
             keys.append(target)
         teachers.append(dataclasses.replace(spec, checkpoint=str(checkpoint), observation_keys=tuple(keys)))

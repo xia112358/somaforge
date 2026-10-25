@@ -1647,6 +1647,14 @@ class MotionCommand(CommandTermBase):
 
         self._handle_failure_window_success_horizon()
 
+        self._update_relative_body_targets()
+        self._update_pending_chain_checks()
+        if hasattr(self, "adaptive_timesteps_sampler"):
+            self.adaptive_timesteps_sampler.update_bin_failed_count()
+
+    def _update_relative_body_targets(self) -> None:
+        """Refresh relative reference poses without advancing the command clock."""
+
         # 1. update body_pos_relative_w and body_quat_relative_w
         # definition of body_pos/quat_relative_w:
         # If I take this motion data and adapt it to where my robot currently is
@@ -1701,12 +1709,6 @@ class MotionCommand(CommandTermBase):
             + delta_pos_w_height
             + quat_apply(delta_quat_w, self.body_pos_w - ref_pos_w_repeat, w_last=True)
         )
-
-        self._update_pending_chain_checks()
-
-        ### 1.3 update the adaptive timesteps sampler
-        if hasattr(self, "adaptive_timesteps_sampler"):
-            self.adaptive_timesteps_sampler.update_bin_failed_count()
 
     def sample_reset_phase(self, env_ids: torch.Tensor) -> torch.Tensor:
         """Uniform by default; specialized commands may supply a phase curriculum."""
