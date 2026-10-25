@@ -33,13 +33,20 @@ class ACPEnvironment(WholeBodyTrackingManager):
         self.acp_history = torch.zeros(self.num_envs, 5, 6+3*self.num_dof, device=self.device)
         self.acp_previous_actions = torch.zeros(self.num_envs, self.num_dof, device=self.device)
         self.acp_second_previous_actions = torch.zeros_like(self.acp_previous_actions)
+        self.acp_previous_body_velocity = torch.zeros(self.num_envs, 9, 3, device=self.device)
+        self.acp_body_velocity_ready = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        from holosoma.acp.sensing import PoseHistory
+        self.acp_pose_history = PoseHistory(self.num_envs, self.dt, self.device)
+        self.acp_sensor_step = 0
         self._acp_step_inputs = None
 
     def _compute_observations(self):
         self._holosoma_step_cache.pop("acp_command", None)
         self.acp_history[:, :-1] = self.acp_history[:, 1:].clone()
         measured = obs.proprio(self)
-        if self.acp_settings.get("observation_noise", False) and not self.is_evaluating:
+        from holosoma.acp.randomization import observation_noise_enabled
+        self.acp_pose_history.update(self.simulator.robot_root_states, self.acp_sensor_step)
+        if observation_noise_enabled(self):
             scales = torch.tensor([0.05]*3+[0.0125]*3+[0.01]*self.num_dof
                                   +[1.5]*self.num_dof+[0.0]*self.num_dof, device=self.device)
             measured = measured + (2*torch.rand_like(measured)-1)*scales
@@ -70,10 +77,14 @@ class ACPEnvironment(WholeBodyTrackingManager):
                 "terrain": scan[:count].detach().cpu().numpy().copy(), "valid": valid[:count].cpu().numpy().copy(),
                 "root": root[:count, :3].cpu().numpy().copy(),
                 "yaw": obs.yaw(root[:count, 3:7]).cpu().numpy().copy()}
+        self.acp_sensor_step += 1
         super()._pre_physics_step(actions)
 
     def _compute_reward(self):
         super()._compute_reward()
+        from holosoma.acp.rewards import contact_body_velocities
+        self.acp_previous_body_velocity.copy_(contact_body_velocities(self))
+        self.acp_body_velocity_ready.fill_(True)
         if self._acp_step_inputs is not None:
             actual = measured_contacts(self)
             count = len(self._acp_step_inputs["root"])
@@ -113,6 +124,9 @@ class ACPEnvironment(WholeBodyTrackingManager):
             self.acp_history[env_ids] = 0
             self.acp_previous_actions[env_ids] = 0
             self.acp_second_previous_actions[env_ids] = 0
+            self.acp_previous_body_velocity[env_ids] = 0
+            self.acp_body_velocity_ready[env_ids] = False
+            self.acp_pose_history.ready[env_ids] = False
         for index in env_ids.tolist():
             self.acp_recordings.pop(index, None)
             self.acp_recording_starts.pop(index, None)

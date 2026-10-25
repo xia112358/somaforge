@@ -1,6 +1,6 @@
 # ACP reproduction on SomaForge
 
-Implementation reference: [Humanoid Mobility via Attention-based Contacts](https://leggedrobotics.github.io/ACP/static/media/SR_ACP.pdf),
+Implementation reference: [Humanoid Mobility via Attention-based Contacts](https://arxiv.org/html/2610.31608v1),
 especially Eq. (2), Eq. (3), Table 3 and Tables S2--S6. The project page still
 marks its code release as TBD when inspected on 2026-10-23.
 
@@ -46,6 +46,8 @@ reference tracking for reference-free fine-tuning.
 | `ppo.py` | Existing PPO plus separate planner updates, save/load and stage transitions |
 | `record.py` | Explicitly selected expert execution and raw contact/observation recording |
 | `train.py` | AppLauncher-first independent stage-1/2 CLI |
+| `actions.py`, `randomization.py`, `sensing.py` | Table S2 startup dynamics, substep actuator delay and delayed odometry |
+| `evaluate.py` | Independent Stage-1 evaluation from frame zero with explicit completion accounting |
 | `validate.py` | CPU real-data optimizer diagnostic, explicitly separate from policy evaluation |
 
 Shared code changes are narrow: face selection accepts an optional part count
@@ -86,17 +88,35 @@ without history and a 17x11 scan. The planner takes five-step proprioception, th
 goal and 17x11 XYZ terrain points. These scans query the actual initialized terrain
 mesh. They are simulation ground-truth geometry, not a noisy LiDAR reconstruction.
 
-Only the Table S2 proprioceptive, tracker-height and contact-command observation
-noise is currently included. Other randomization inherits WBT defaults and is
-not a reproduction of all Table S2 distributions. Planner-height/goal noise,
-odometry noise/delay and real perception remain outstanding.
+The aligned interface (version 2) has 558 actor inputs and 383 reference-critic
+inputs for the canonical 29-joint robot. The critic receives noiseless current
+proprioception, base linear velocity, 17x11 heights, reference kinematics and
+nine reference contact flags/positions; it does not additionally receive the
+actor's goal and issued contact commands. Actor and critic both use
+512/256/128-unit ELU networks. The paper's 23-joint critic has 353 inputs.
 
-Stage 1 uses the Table 3 reference task terms plus action rate, second action
-difference, torque and joint-position-limit penalties. Contact-body positions
-are tracked even when not currently active; planner targets alone are occupancy
-gated. Contact acceleration, torque-clipping-gap and velocity-limit penalties
-are outstanding. Until these and the remaining domain randomizations are added,
-quantitative equivalence to the paper must not be asserted.
+Table S2 startup randomization covers leg mass scaling, added torso mass,
+torso CoM offsets, armature, PD gains, joint zero offsets and 0--20 ms actuator
+delay. Observation perturbations include proprioception, contact positions,
+tracker/planner heights, goal direction and heading, and 50--100 ms odometry
+delay. Odometry drift is a per-episode world-frame XYZ offset; poses are
+interpolated at the control rate with wrapped yaw. The 5 ms physics grid uses
+interval-averaged actuator targets when a delay crosses a substep. These are
+explicit simulation approximations, not a reproduced hardware estimator.
+Newton supports one friction coefficient per shape, sampled in [0.3, 1.2],
+and restitution in [0, 0.5]; independent static/dynamic coefficients from the
+paper cannot be represented by this backend. Ground friction remains 1.
+Terrain queries use the delayed/drifted pose but still query the actual mesh;
+the paper's LiDAR mapper remains absent. Startup dynamics are fixed during a
+run; episode resets resample odometry drift and reference-state perturbations.
+
+Stage 1 includes the Table 3 action rate, second action difference, squared
+torque, torque-clipping gap, capped soft position/velocity limits and summed
+nine-body acceleration penalties. Acceleration history is cleared on reset.
+Contact-body reference positions are tracked even when not currently active;
+planner targets alone are occupancy gated. Torque clipping is measured from
+the actual PD command before and after the existing limiter. These changes
+preserve the shared controller's applied torque and all collision assets.
 
 ## Explicit commands
 
@@ -130,9 +150,22 @@ python -m holosoma.acp.train \
   --name climb00_pilot --headless
 ```
 
-Stage 1 starts its initialization curriculum at phase 0.9. Completed, non-failed
-episodes reaching at least 0.99 lower a motion's allowed initial phase by 0.05.
-The state is checkpointed and restored after the normal reset.
+Stage 1 starts each environment's initialization phase at 0.9 and resets at
+that phase. A completed, non-failed episode reaching at least 0.99 lowers its
+phase by 0.05; failure raises it by 0.05, clipped to [0, 0.99]. Empty initial
+resets do not advance the curriculum. Each environment has independent state,
+even when environments share a motion. The state is checkpointed and restored
+after the normal reset. Evaluation always starts at frame zero and freezes CSI.
+Interface-1 checkpoints used a different critic and motion-level curriculum;
+aligned training rejects them and must start from scratch. Same-version resume
+requires the same environment count to restore per-environment curriculum.
+Resume rebuilds the simulator and resamples startup dynamics; it restores
+learning state and curriculum, not an identical physical trajectory.
+
+The PPO defaults follow Table S6: 24-step rollouts, five epochs, eight minibatches,
+initial learning rate 1e-4, target KL 0.02 and entropy coefficient 0.006 in Stage 1.
+The paper uses 12,000 environments per worker. Local single-GPU runs are smaller
+and do not establish equivalence to the paper's training scale or success rate.
 
 Start joint planning from an explicit ACP controller checkpoint:
 
@@ -164,7 +197,23 @@ sub-batches. Default capacity is 100,000 entries with episode FIFO eviction.
 This single-task replay balances tiles; it does not implement Stage-3 quality
 eviction or reference/goal partitions. Distributed ACP training is not validated.
 
-Evaluate a checkpoint using the standard native evaluator:
+Evaluate aligned Stage 1 independently, using deterministic policy means and
+nominal dynamics/noiseless observations by default:
+
+```bash
+python -m holosoma.acp.evaluate --checkpoint /path/to/acp_stage1/model.pt \
+  --episodes 10 --seed 42 --output-dir tmp/acp/my_stage1_evaluation --headless
+```
+
+The report records completion, failure reasons, root/contact errors and missed
+or unexpected native contacts. It saves per-frame raw Newton pairs, post-physics
+poses, the native shape/body binding and contact semantics for audit. Excluded
+faces remain in the raw pairs. A budget cutoff never counts as success. With
+`--randomization`, dynamics are sampled once for the physical evaluation
+environment and episode drift is resampled; this is not a multi-seed dynamics
+generalization estimate. All episodes still start at reference frame zero.
+
+Use the standard native evaluator for interactive inspection:
 
 ```bash
 python -m holosoma.eval_agent --checkpoint /path/to/acp/model.pt \
@@ -176,7 +225,35 @@ saved annealing counter. It still receives a reference-derived high-level goal
 on the reference terrain; it is not reference-free Stage-3 deployment. Omit
 `--visualizer` for headless use.
 
-## Validation evidence, 2026-10-23
+## Aligned Stage-1 validation, 2026-10-24
+
+- Interface-2 training on actual Newton completed two PPO updates with eight
+  randomized environments. Native mass writes were checked against the samples;
+  the local pinned Warp build needs explicit Warp-array arguments for these
+  property setters. No dependency or collision-asset changes were needed.
+- Same-version resume continued at updates 2 and 3. Actor optimizer steps
+  advanced from 80 to 120 and 160; observation counts advanced from 384 to
+  576 and 768. Checkpoints retain finite model parameters, normalizers and
+  independent eight-environment CSI state using the existing checkpoint format.
+- Three independent nominal frame-zero trials of the four-update diagnostic
+  policy all failed with `bad_tracking` after 33 control frames (0.66 s).
+  This validates failure accounting; the diagnostic policy has not learned
+  the complete 1005-frame reference.
+- A 256-environment, eight-update profiling run completed and retained its
+  milestones. It used approximately 1.1 GB GPU memory and about 10 seconds per
+  update on the local RTX 4060 Ti. This scale is smaller than the paper's.
+- Two randomized frame-zero evaluation trials cut off after five steps were
+  correctly reported as truncated and unsuccessful. The selected ACP/shared
+  CPU regression and existing PPO learning-state tests passed all 1353 cases.
+- The aligned single-task training budget is 5000 PPO updates with 256
+  environments (30,720,000 transitions), saving every 100 updates and at the end.
+  It starts from scratch; the earlier interface-1 pilot is incompatible with
+  aligned training. Completion of this budget does not itself establish task
+  success: a later independent frame-zero evaluation is still required.
+- Reports, exact checkpoint checks and runtime logs are under
+  `tmp/acp_stage1_alignment_20261024/`; earlier failed diagnostics are retained.
+
+## Historical interface-1 validation, 2026-10-23
 
 - Complete `climb_00` dense-expert rollout: 1005 frames at 50 Hz, nine native
   contact channels and per-frame raw solver snapshots.

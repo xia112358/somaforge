@@ -4,6 +4,7 @@ from __future__ import annotations
 import torch
 
 from holosoma.acp.models import contact_schedule
+from holosoma.acp.randomization import observation_noise_enabled
 from holosoma.managers.observation.terms.wbt import base_ang_vel, base_lin_vel, projected_gravity
 
 
@@ -23,9 +24,19 @@ def rotate_yaw(points, angle):
     return torch.stack((angle.cos()*x-angle.sin()*y, angle.sin()*x+angle.cos()*y, z), -1)
 
 
-def to_local(env, points):
+def observation_pose(env, measured=False):
     root = env.simulator.robot_root_states
-    return rotate_yaw(points-root[:, None, :3], -yaw(root[:, 3:7]))
+    if (measured and env.acp_settings.get('interface_version', 1) >= 2
+            and observation_noise_enabled(env) and getattr(env, 'acp_pose_history', None) is not None):
+        history = env.acp_pose_history
+        history.update(root, env.acp_sensor_step)
+        return history.measured(env.acp_odometry_delay_s, env.acp_odometry_drift)
+    return root[:, :3], yaw(root[:, 3:7])
+
+
+def to_local(env, points, measured=False):
+    position, angle = observation_pose(env, measured)
+    return rotate_yaw(points-position[:, None], -angle)
 
 
 def proprio(env):
@@ -34,14 +45,14 @@ def proprio(env):
                       env.simulator.dof_pos-env.default_dof_pos, env.simulator.dof_vel, actions), -1)
 
 
-def terrain(env, rows=17, columns=11):
-    root = env.simulator.robot_root_states
+def terrain(env, rows=17, columns=11, measured=False):
+    position, angle = observation_pose(env, measured)
     x = torch.linspace(-(rows-1)*0.05, (rows-1)*0.05, rows, device=env.device)
     y = torch.linspace(-(columns-1)*0.05, (columns-1)*0.05, columns, device=env.device)
     xx, yy = torch.meshgrid(x, y, indexing="ij")
     local = torch.stack((xx.flatten(), yy.flatten(), torch.zeros_like(xx.flatten())), -1)
     local = local[None].expand(env.num_envs, -1, -1)
-    world = rotate_yaw(local, yaw(root[:, 3:7]))+root[:, None, :3]
+    world = rotate_yaw(local, angle)+position[:, None]
     state = env.terrain_manager.get_state("locomotion_terrain")
     query = getattr(state, "query_terrain_heights", None)
     if not callable(query):
@@ -50,19 +61,29 @@ def terrain(env, rows=17, columns=11):
     valid = torch.isfinite(heights)
     if not valid.any(-1).all():
         raise RuntimeError("ACP height scan has no observed terrain")
-    return torch.cat((local[..., :2], torch.where(valid, heights-root[:, 2:3], 0)[..., None]), -1), valid
+    return torch.cat((local[..., :2], torch.where(valid, heights-position[:, 2:3], 0)[..., None]), -1), valid
 
 
-def goal(env):
+def goal(env, measured=False):
     cmd = command(env)
     steps = (cmd.time_steps + cmd.acp_goal_lookahead).minimum(cmd.motion.motion_end_idx[cmd.motion_ids]-1)
     target = cmd.motion.body_pos_w[steps, 0]+cmd._reference_env_origins
     target_quat = cmd.motion.body_quat_w[steps, 0]
-    root = env.simulator.robot_root_states
-    delta = rotate_yaw(target-root[:, :3], -yaw(root[:, 3:7]))[:, :2]
+    position, angle = observation_pose(env, measured)
+    delta = rotate_yaw(target-position, -angle)[:, :2]
     delta = delta / delta.norm(dim=-1, keepdim=True).clamp_min(0.3)
-    heading = yaw(target_quat)-yaw(root[:, 3:7])
+    heading = yaw(target_quat)-angle
     return torch.cat((delta, torch.atan2(heading.sin(), heading.cos())[:, None]), -1)
+
+
+def actor_goal(env):
+    value = goal(env, measured=True)
+    if observation_noise_enabled(env):
+        noise = torch.empty(env.num_envs, 2, device=env.device).uniform_(-0.2, 0.2)
+        xy = rotate_yaw(torch.cat((value[:, :2], torch.zeros_like(value[:, :1])), -1), noise[:, 0])[:, :2]
+        heading = value[:, 2]+noise[:, 1]
+        value = torch.cat((xy, torch.atan2(heading.sin(), heading.cos())[:, None]), -1)
+    return value
 
 
 def contact_targets(env):
@@ -70,17 +91,20 @@ def contact_targets(env):
     if "acp_command" not in cache:
         cmd = command(env)
         idx = cmd.time_steps
-        target = to_local(env, cmd.acp_target_w[idx]+cmd._reference_env_origins[:, None])
+        target = to_local(env, cmd.acp_target_w[idx]+cmd._reference_env_origins[:, None], measured=True)
         occupancy = cmd.acp_target_occupancy[idx]
         inside = (target[..., 0].abs() <= 0.8) & (target[..., 1].abs() <= 0.5)
         reference = target * (occupancy & inside)[..., None]
         stage = env.acp_settings["stage"]
         predicted = torch.zeros_like(reference)
         if stage > 1 and env.acp_planner is not None:
-            scan, valid = terrain(env)
+            scan, valid = terrain(env, measured=True)
+            if observation_noise_enabled(env):
+                scan = scan.clone()
+                scan[..., 2] += torch.randn_like(scan[..., 2])*0.03
             history = history_observation(env)
             with torch.no_grad():
-                predicted = env.acp_planner(history, goal(env), scan, valid)["positions"]
+                predicted = env.acp_planner(history, actor_goal(env), scan, valid)["positions"]
             probability = contact_schedule(env.acp_iteration, env.acp_settings["input_start"],
                                             env.acp_settings["anneal_steps"])
             if env.is_evaluating:
@@ -100,15 +124,15 @@ def history_observation(env):
 
 def actor_contacts(env):
     contacts = contact_targets(env).reshape(env.num_envs, 9, 3)
-    if env.acp_settings.get("observation_noise", False) and not env.is_evaluating:
+    if observation_noise_enabled(env):
         valid = contacts.abs().sum(-1) > 0
         contacts = contacts + (2*torch.rand_like(contacts)-1)*0.1*valid[..., None]
     return contacts.flatten(1)
 
 
 def tracker_scan(env):
-    scan = terrain(env, 9, 7)[0][..., 2]
-    if env.acp_settings.get("observation_noise", False) and not env.is_evaluating:
+    scan = terrain(env, 9, 7, measured=True)[0][..., 2]
+    if observation_noise_enabled(env):
         scan = scan + (2*torch.rand_like(scan)-1)*0.1
     return scan
 
@@ -125,5 +149,9 @@ def critic_reference(env):
 
 
 def critic_observation(env):
-    return torch.cat((proprio(env), base_lin_vel(env), terrain(env)[0][..., 2], goal(env),
-                      contact_targets(env), critic_reference(env)), -1)
+    state = (proprio(env), base_lin_vel(env), terrain(env)[0][..., 2])
+    if env.acp_settings.get("interface_version", 1) < 2:
+        # Saved v1 experiment configurations retain their historical input width
+        # for explicit inference. Aligned training uses the reference critic only.
+        return torch.cat((*state, goal(env), contact_targets(env), critic_reference(env)), -1)
+    return torch.cat((*state, critic_reference(env)), -1)

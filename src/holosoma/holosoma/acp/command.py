@@ -20,7 +20,7 @@ class ACPCommand(MotionCommand):
 
     def setup(self):
         super().setup()
-        targets, occupancy, known, active, position = [], [], [], [], []
+        targets, occupancy, known, active, position, reference_known = [], [], [], [], [], []
         for path in self.motion.motion_files:
             with np.load(path, allow_pickle=False) as data:
                 decode_robot_asset_json(data["robot_asset_json"], context=str(path))
@@ -43,6 +43,7 @@ class ACPCommand(MotionCommand):
                                            data["observed_contact_position_w"], data["observed_contact_known"])
                 targets.append(labels["target_w"]); occupancy.append(labels["occupancy"]); known.append(labels["known"])
                 active.append(data["observed_contact_active"]); position.append(data["observed_contact_position_w"])
+                reference_known.append(data['observed_contact_known'])
         def tensor(rows, dtype):
             return torch.as_tensor(np.concatenate(rows), dtype=dtype, device=self.device)
         self.acp_target_w = tensor(targets, torch.float32)
@@ -50,15 +51,17 @@ class ACPCommand(MotionCommand):
         self.acp_target_known = tensor(known, torch.bool)
         self.acp_reference_active = tensor(active, torch.bool)
         self.acp_reference_position = tensor(position, torch.float32)
+        self.acp_reference_known = tensor(reference_known, torch.bool)
         initial = 0.9 if self.acp_settings["stage"] == 1 else 0.0
-        self.csi_phase = torch.full((self.motion.num_motions,), initial, device=self.device)
+        self.csi_phase = torch.full((self.num_envs,), initial, device=self.device)
         self.acp_goal_lookahead = torch.full((self.num_envs,), 50, dtype=torch.long, device=self.device)
 
     def sample_reset_phase(self, env_ids):
         if self.csi_phase is None or self.acp_settings["stage"] != 1:
             return super().sample_reset_phase(env_ids)
-        lower = self.csi_phase[self.motion_ids[env_ids]]
-        return lower + torch.rand_like(lower) * (0.99 - lower)
+        if self._env.is_evaluating:
+            return torch.zeros(len(env_ids), device=self.device)
+        return self.csi_phase[env_ids].clone()
 
     def reset(self, env_ids):
         ids = self._ensure_index_tensor(env_ids)
@@ -66,21 +69,32 @@ class ACPCommand(MotionCommand):
             mids = self.motion_ids[ids]
             starts, ends = self.motion.motion_start_idx[mids], self.motion.motion_end_idx[mids]
             completed = ((self.time_steps[ids] - starts).float() / (ends-starts-1).clamp_min(1)) >= 0.99
-            completed &= self._env._pending_episode_lengths[ids] > 0
+            valid = self._env._pending_episode_lengths[ids] > 0
             terminated = self._env.termination_manager.terminated[ids]
-            for mid in mids[completed & ~terminated].unique():
-                self.csi_phase[mid] = (self.csi_phase[mid] - 0.05).clamp_min(0)
+            if not self._env.is_evaluating:
+                selected = ids[valid]
+                success = (completed & ~terminated)[valid]
+                delta = torch.where(success, -0.05, 0.05)
+                self.csi_phase[selected] = (self.csi_phase[selected] + delta).clamp(0, 0.99)
         super().reset(env_ids)
+        from holosoma.acp.randomization import dynamics_enabled
+        if dynamics_enabled(self._env):
+            self._env.simulator.robot_root_states[ids, 2] += torch.rand(len(ids), device=self.device)*0.05
         if hasattr(self, "acp_goal_lookahead"):
             self.acp_goal_lookahead[ids] = torch.randint(25, 76, (len(ids),), device=self.device)
 
     def get_checkpoint_state(self):
-        return {**super().get_checkpoint_state(), "acp_csi_phase": self.csi_phase.clone()}
+        return {**super().get_checkpoint_state(), "acp_csi_phase": self.csi_phase.clone(),
+                "acp_csi_version": 2}
 
     def load_checkpoint_state(self, state):
         super().load_checkpoint_state(state)
         if state and "acp_csi_phase" in state:
+            if state.get("acp_csi_version") != 2:
+                raise ValueError("Legacy ACP CSI used motion-level phase bounds; start an aligned Stage-1 run")
             phases = state["acp_csi_phase"].to(self.device)
             if phases.shape != self.csi_phase.shape:
-                raise ValueError("ACP curriculum motion count changed")
+                raise ValueError("ACP curriculum environment count changed")
+            if not torch.isfinite(phases).all() or ((phases < 0) | (phases > 0.99)).any():
+                raise ValueError("Invalid saved ACP curriculum phases")
             self.csi_phase.copy_(phases)

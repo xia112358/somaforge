@@ -60,3 +60,31 @@ def task(env):
 
 def action_jerk(env):
     return (env.action_manager.action-2*env.acp_previous_actions+env.acp_second_previous_actions).square().sum(-1)
+
+
+def torque_limits(env):
+    """Table 3 difference between the command before and after limiting."""
+    term = env.action_manager.get_term("joint_control")
+    if not hasattr(term, "computed_torques"):
+        raise RuntimeError("ACP torque regularization requires the pre-limit PD command")
+    return (term.computed_torques-term.torques).abs().sum(-1)
+
+
+def joint_position_limits(env):
+    from holosoma.managers.reward.terms.wbt import limits_dof_pos
+    return limits_dof_pos(env, soft_dof_pos_limit=0.9).clamp_max(30)
+
+
+def joint_velocity_limits(env):
+    return (env.simulator.dof_vel.abs()-0.9*env.dof_vel_limits).clamp(0, 1).sum(-1)
+
+
+def contact_body_velocities(env):
+    ids = [env.simulator.body_names.index(name) for name in BODY_NAMES]
+    return env.simulator._robot.data.body_lin_vel_w.torch[:, ids]
+
+
+def contact_acceleration(env):
+    acceleration = (contact_body_velocities(env)-env.acp_previous_body_velocity)/env.dt
+    value = acceleration.norm(dim=-1).sum(-1).clamp_max(1e4)
+    return value*env.acp_body_velocity_ready

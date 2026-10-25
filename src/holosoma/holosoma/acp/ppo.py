@@ -80,6 +80,11 @@ class ACPPPO(PPO):
             self._pending_env_state = None
 
     def load(self, ckpt_path):
+        if ckpt_path:
+            saved = self._load_checked_checkpoint(ckpt_path).get('acp', {})
+            old_version = saved.get('settings', {}).get('interface_version', 1)
+            if old_version != self.env.acp_settings.get('interface_version', 1):
+                raise ValueError('ACP critic/CSI interface changed; start an aligned run from scratch')
         result = super().load(ckpt_path)
         if ckpt_path:
             self._load_planner(ckpt_path, training=True)

@@ -210,6 +210,9 @@ class JointPositionActionTerm(ActionTermBase):
             )
 
         torques = torch.nan_to_num(torques, nan=0.0, posinf=0.0, neginf=0.0)
+        # Keep the command before actuator limiting for diagnostics/regularizers.
+        # This reference does not change the torque sent to the simulator.
+        self.computed_torques = torques
 
         # Clip torques if configured
         if self.env.robot_config.control.clip_torques:
