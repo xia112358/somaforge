@@ -21,6 +21,23 @@ OLD_CHECKOUT = Path("/unmounted/source_somaforge")
 OLD_RUNTIME = Path("/unmounted/source_somaforge_data/current")
 
 
+def test_nested_release_installation_paths_are_not_relocated_twice(tmp_path, monkeypatch):
+    from somaforge_core.published_data import resolve_published_path, relocate_published_values
+    old = tmp_path / 'original_data'
+    root = old / 'release_validation/checkout'
+    installed = root / 'runtime/current'
+    mapping = installed / 'manifests/published_data_paths.json'
+    mapping.parent.mkdir(parents=True)
+    mapping.write_text(json.dumps(dict(schema='somaforge_published_data_paths_v1', files=[],
+        prefixes=[dict(source=str(old), target=str(installed)),
+                  dict(source=str(tmp_path/'original_checkout'), target=str(root))])))
+    monkeypatch.setenv('SOMAFORGE_ROOT', str(root))
+    expected = installed / 'motions/reference.npz'
+    assert resolve_published_path(old/'motions/reference.npz') == expected
+    assert resolve_published_path(expected) == expected
+    assert relocate_published_values(relocate_published_values(str(old/'motions/reference.npz'))) == str(expected)
+
+
 @pytest.fixture
 def publication(tmp_path, monkeypatch):
     root = tmp_path / "new_checkout"

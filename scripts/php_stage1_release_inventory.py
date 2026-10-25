@@ -56,10 +56,9 @@ def build(root, php_checkout):
             if path.is_file() and '__pycache__' not in path.parts and path.suffix not in ('.pyc', '.lock', '.log'):
                 add(comp, path)
 
-    deps = component('php-stage1-runtime-inputs', 'Original low-climb teacher 03600, its 76-task inputs, and upstream attribution')
+    deps = component('php-stage1-runtime-inputs', 'Original low-climb teacher 03600, its 40-task manifest inputs, and upstream attribution')
     refs = component('php-stage1-native-references', '40 canonical native references, native point-pair labels, 775 action segments and provenance', [deps['id']])
     student = component('php-stage1-checkpoint', 'Unmodified student 07000 checkpoint, native configuration and 40-task evaluation reports', [refs['id']])
-    audit = component('php-stage1-native-audit', 'Optional complete retained extraction intermediates and source dynamic recording', [refs['id']])
     prepared = root / 'tmp/php_action_segments_20261024/segments_all40_v1'
     bind(prepared, destination_root / 'prepared')
     tree(refs, prepared)
@@ -84,29 +83,16 @@ def build(root, php_checkout):
     source_manifest = Path(manifest['source_manifest'])
     bind(source_manifest.parent, destination_root / 'extraction')
     add(refs, source_manifest)
-    motion_roots = set()
     for row in manifest['motion_files']:
         mid = int(row['motion_id'])
         motion = Path(row['motion_file'])
         bind(motion.parent, destination_root / 'native' / f'motion_{mid:06d}')
-        motion_roots.add(motion.parent)
         add(refs, motion)
         with np.load(row['contact_file'], allow_pickle=False) as z:
             meta = json.loads(z['metadata_json'].item())
         for key in ('source_labels', 'events', 'evidence'):
             add(refs, Path(meta[key]))
         add(refs, Path(meta['alignment']['path']))
-        for name in ('result.json', 'continuity.json', 'source_continuity.json', 'event_targets.json', 'event_consensus.json'):
-            path = motion.parent / name
-            if path.is_file():
-                add(refs, path)
-    # Include all retained intermediates and original solver recording separately.
-    for directory in sorted(motion_roots):
-        tree(audit, directory)
-    tree(audit, source_manifest.parent)
-    collection = root / 'tmp/php_segment_distill_20261024/collection_v2'
-    bind(collection, destination_root / 'audit/collection_v2')
-    tree(audit, collection)
 
     model = root / 'runtime/current/models/php_continuous/low_climb_20261024_112654/PHPSegmentDistill/20261024_112701-low_climb_continuous_20261024_112654-locomotion'
     add(student, model / 'model_07000.pt')
@@ -117,9 +103,6 @@ def build(root, php_checkout):
     for name in ('eval7000_20261025_v1', 'eval7000_20261025_contacts_v1'):
         add(student, evaluation / name / 'evaluation.json')
         add(student, evaluation / name / 'binding.json')
-        tree(audit, evaluation / name)
-    for name in ('evaluate7000_contacts.py', 'analyze7000_contacts.py'):
-        add(audit, evaluation / name)
     return dict(schema='somaforge_data_release_inventory_v1', repo_root=str(root),
                 source_roots_aliases=[dict(source=k, target=v) for k, v in sorted(aliases.items())],
                 components=list(components.values()))

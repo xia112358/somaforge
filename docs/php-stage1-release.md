@@ -19,9 +19,8 @@ python3 scripts/download_data.py verify php-stage1-checkpoint \
 
 The checkpoint component automatically includes the reference and teacher input
 dependencies. To download only the reference data, select
-`php-stage1-native-references`. For complete retained extraction intermediates
-and source recordings, additionally fetch `php-stage1-native-audit` with the
-same catalog. The optional audit component is substantially larger.
+`php-stage1-native-references`. This release contains runtime-required evidence;
+bulk extraction intermediates and source execution recordings are not included.
 
 Archives and every installed file have SHA256 checksums. Existing files with
 different bytes are rejected. The installer records old-machine path aliases in
@@ -84,7 +83,9 @@ teacher specification, continuous mode, 200-iteration distillation schedule and
 The student was trained on all 40 low-climb trajectories, with 775 action
 segments and 4096 parallel environments. Its first 3500 updates used independent
 segments; the selected checkpoint is iteration 7000 after continuous training.
-The explicit original teacher is low-climb checkpoint 03600, also included.
+The explicit original teacher is low-climb checkpoint 03600, also included with
+the 40 inputs selected by its saved manifest (the dataset directory is named
+`motions-low-climb-76`).
 
 Reference labels were measured by Newton/MJWarp at fixed poses without
 integration. They represent contact intentions on the fitted reference, not

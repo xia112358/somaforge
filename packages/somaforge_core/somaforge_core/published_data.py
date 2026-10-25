@@ -84,6 +84,12 @@ def _relocated_path(value: str | os.PathLike[str], rules) -> Path | None:
         return files[path]
     for source, target in prefixes:
         if path.is_relative_to(source):
+            # An installed checkout may be nested inside the historical data
+            # root (for example an isolated release validation checkout). Do
+            # not reinterpret its already relocated paths as old inputs.
+            if any(len(installed.parts) > len(source.parts)
+                   and path.is_relative_to(installed) for _, installed in prefixes):
+                return path
             return target / path.relative_to(source)
     return None
 
